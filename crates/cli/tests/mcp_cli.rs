@@ -2,6 +2,7 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use crate::scratch::Scratch;
+use crate::yi_bin::yi_command;
 
 #[path = "../../tools/tests/support/seatbelt.rs"]
 mod seatbelt;
@@ -43,13 +44,8 @@ struct Output {
 }
 
 fn yi(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the contract under test is the spawned binary's stdio"
-    )]
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yi"))
+    let output = yi_command(&home.home)
         .args(args)
-        .env("HOME", &home.home)
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("YI_CLAUDE_HOOKS_FILES")
         .output()?;
@@ -62,13 +58,8 @@ fn yi(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
 
 /// `yi <args>` run from `cwd`, the directory a stored relative command would resolve against.
 fn yi_in(home: &McpHome, cwd: &std::path::Path, args: &[&str]) -> Result<Output, Box<dyn Error>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the contract under test is the spawned binary's stdio"
-    )]
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yi"))
+    let output = yi_command(&home.home)
         .args(args)
-        .env("HOME", &home.home)
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("YI_CLAUDE_HOOKS_FILES")
         .current_dir(cwd)
@@ -606,7 +597,6 @@ mod sealed_store {
         let _ = std::fs::remove_file(&marker);
         let entry = format!("yi584-{}", std::process::id());
         let mut registry = HostRegistry::default();
-        registry.register_mcp_stubs();
         fetch_through_yi_mcp(&mut registry);
         let kernel = Arc::new(KernelService::new(KernelServiceOptions {
             cwd: project,

@@ -166,7 +166,7 @@ impl RuntimeWiring {
 
     /// The kernel's and its `bash()` jobs' profile holds the wall and a contained call's walled
     /// roots (#889), since a cell opens files past the tool seam; the board reads again.
-    fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
+    pub(crate) fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
         let private = self.writable_kernel_dir();
         let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
         sandbox.host_owned.extend(self.sessions_dir.clone());
@@ -181,6 +181,11 @@ impl RuntimeWiring {
             let board =
                 Some(self.family_dir()).filter(|dir| crate::tools::unwalled(&self.wall, dir));
             sandbox.spared.extend(board);
+        }
+        // Invariant: a contained member's kernel writes no board the root unpickles from, so
+        // D240's grant (kernel_profile) is cancelled here by a deny that outranks it.
+        if self.wall.contained() {
+            sandbox.deny_write.push(self.family_dir());
         }
         Some(sandbox)
     }
@@ -290,7 +295,6 @@ fn wire_goal(
     service.register(registry);
     session.set_goal_service(service);
     let plan = crate::plan::attach_plan(session, plan_stale_turns, plans_dir.to_path_buf());
-    plan.register(registry);
     session.set_plan_service(plan);
 }
 
@@ -340,42 +344,7 @@ fn wire_fetch(
     let handler = Arc::clone(&resolver);
     registry.register("fetch", move |payload| {
         let resolver = Arc::clone(&handler);
-        Box::pin(async move {
-            let raw = payload
-                .str_of("url")
-                .ok_or_else(|| "fetch requires a \"url\" argument".to_owned())?
-                .to_owned();
-            let url: yi_types::url::Url = raw
-                .parse()
-                .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
-            let page = crate::fetch::Page::from_payload(&payload, "fetch")?;
-            // a family member asks for the object; the owner dills it to the family dir (D164).
-            if payload.bool_of("object") == Some(true) {
-                if page.is_some() {
-                    return Err(
-                        "fetch pages text; drop \"object\" to page a kernel:// read".to_owned()
-                    );
-                }
-                let dump = Arc::clone(&resolver);
-                let (path, bytes) = tokio::task::spawn_blocking(move || dump.dump_kernel(&url))
-                    .await
-                    .map_err(|error| format!("fetch task failed: {error}"))?
-                    .map_err(|error| error.to_string())?;
-                let mut reply = Map::new();
-                reply.insert("url".to_owned(), Value::String(raw));
-                reply.insert(
-                    "path".to_owned(),
-                    Value::String(path.to_string_lossy().into_owned()),
-                );
-                reply.insert("bytes".to_owned(), Value::from(bytes));
-                return Ok(reply);
-            }
-            let fetched = tokio::task::spawn_blocking(move || resolver.fetch_page(&url, page))
-                .await
-                .map_err(|error| format!("fetch task failed: {error}"))?
-                .map_err(|error| error.to_string())?;
-            Ok(fetched.into_reply(page.is_some()))
-        })
+        Box::pin(async move { crate::fetch::serve(&resolver, &payload).await })
     });
     crate::history::register_grep(registry, session.store_handle(), &wiring.wall);
     if let Some(dir) = wiring.sessions_dir.clone().filter(|_| wiring.depth == 0) {
@@ -515,6 +484,7 @@ fn wire_plan_engine(
     tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
     plan: Option<PlanWiring>,
 ) {
+    crate::spec::wire(session, wiring, tools);
     let Some((engine, actor, todos)) = plan else {
         return;
     };
@@ -598,51 +568,9 @@ fn wire_plan_engine(
             eager: crate::todo::coupling::Eager::Prelude,
             children_running: Arc::new(move || children.busy()),
             inner,
+            deadline: wiring.deadline,
         },
     );
-}
-
-fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
-    let hold_sink: Option<crate::advisor::HoldSink> = wiring.broker.as_ref().map(|broker| {
-        let broker = Arc::clone(broker);
-        Arc::new(move |advice: &yi_types::advisor::Advice| {
-            let pattern = advice
-                .target
-                .as_deref()
-                .and_then(yi_permission::HoldPattern::new);
-            let Some(pattern) = pattern.filter(|_| broker.can_ask()) else {
-                return false;
-            };
-            broker.insert_hold(yi_permission::Hold {
-                pattern,
-                reason: advice.text.clone(),
-                source: yi_permission::HoldSource::Advisor,
-                expires_at_ms: Some(yi_session::now_ms().saturating_add(3_600_000)),
-            });
-            true
-        }) as crate::advisor::HoldSink
-    });
-    // §16: ADVISOR.md attention text, project-local, best-effort.
-    let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
-    let llm = wiring.advisor.clone().map(|model| {
-        // Its own conversation: the root's ledger estimate and hour prefix are not its (D315).
-        Arc::new(crate::advisor::review::LlmReviewer::new(
-            Arc::new(wiring.provider.for_child()),
-            model,
-            attention.clone(),
-        ))
-    });
-    let advisor = crate::advisor::attach_advisor(
-        session,
-        crate::advisor::AdvisorConfig {
-            attention,
-            reviewer: llm.is_some(),
-            rules_dir: Some(wiring.cwd.join(".yi/rules")),
-            ..crate::advisor::AdvisorConfig::default()
-        },
-        crate::advisor::AdvisorDeps { hold_sink, llm },
-    );
-    session.set_advisor(advisor);
 }
 
 /// A job this session started reports through its follow-up queue and wakes it when idle; the
@@ -738,7 +666,6 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     }
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
-    registry.register_mcp_stubs();
     registry.register_exec(
         wiring.exec_home(),
         crate::kernel_state::job_profile(&wiring, session),
@@ -811,7 +738,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
     let service = wire_kernel(session, &wiring, registry);
     host.attach_kernel(&service);
-    wire_advisor(session, &wiring);
+    crate::advisor::wire::attach(session, &wiring);
     if wiring.kernel_prewarm {
         let warm = Arc::clone(&service);
         tokio::spawn(async move { warm.prewarm().await });

@@ -269,9 +269,12 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
-  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s.
+  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s. A
+  server wait past 60 s or `x-should-retry: false` ends the turn stamped `retry refused:`, which
+  the loop reads as final; `x-should-retry: true` retries any status.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
-  into a `ToolCall` (id `leak-N`) and `Stop` into `ToolUse`.
+  outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
+  into `ToolUse`.
 - Stable cached prefix: `read`'s description fixed per session, content-hashed fence ids, a
   minute-cached `time:`; adapters set `cache_control`, `prompt_cache_key`, cache retention.
 - yi-oauth: PKCE S256 from `/dev/urandom`, a `127.0.0.1` loopback, `login`/`logout`; tokens in
@@ -314,8 +317,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
-  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
-  comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
+  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for whole-line
+  HTML comments and the leading, trailing or doubled blank line a removed comment leaves behind
+  rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
   granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
 - The table persists as `custom{ext_state2}` when an extension changes it: the build's own slots
@@ -376,10 +380,10 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
-  never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
-  (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
-  the whole guide; `read`, `grep`, `bash`, `write`, `get_context` and `ipython` stay whole. An
-  edit refusal names the address. There is no dispatcher tool.
+  never the tool. `edit`, `annotate`, `answer`, `get_context`, `plan`, `todo` and `ask_user`
+  carry a summary, their full schema (`plan` without field prose below the top level) and
+  `read("yi://tools/<name>")`, which serves the whole guide; `read`, `grep`, `bash`, `write`
+  and `ipython` stay whole. An edit refusal names the address. There is no dispatcher tool.
 - `Tool { name, description, schema, kind, kind_for, freeform, irreversible, validate, preview,
   execute -> ToolOutput }`. `kind_for` decides per call; Read runs parallel, the rest sequential.
   The adapter runs rule check, reviewer wall, permission gate (§8), next-step lines (§6).
@@ -692,11 +696,11 @@ A persistent IPython process per session that reaches the host only through host
 
 | owner | verbs |
 |---|---|
-| `kernel.rs` | `exec.spawn/tail/poll/kill/release` (the `bash()` handle), `mcp.config` (`{}`), `mcp.refresh` (error) |
+| `kernel.rs` | `exec.spawn/tail/poll/kill/release` (the `bash()` handle) |
 | `wiring.rs`, `memory/mod.rs`, `history.rs` | `fetch`, `history.grep`, `history.search`, `compact.run` (schedules only), `compact.status`; `memory.save/read/search/forget` |
 | `subagent.rs` | `rlm.run` (returns at admission), `rlm.result/wait/status/list_subagents/delete_subagent/merge_worktree/discard_worktree/find_models`, `model.info`, parent-side `agent_message.send/request/list_agents` |
 | `mailbox.rs`, `lease.rs`, `subagent/service.rs` | child-side `agent_message.send/request/list_agents`, `rlm.receive`; `rlm.interrupt`, `rlm.revoke`; `rlm.service` |
-| `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.get`, `plan.op` |
+| `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.op` |
 | `kernel_tools.rs` | `tool.list` (the session's table, `ipython` and a root's `ask_user` named as excluded), `tool.call {name, args, cell}` |
 
 - `tool.call` runs the session's own adapter, found at call time, so rules, wall and broker judge
@@ -749,10 +753,12 @@ A persistent IPython process per session that reaches the host only through host
   `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`.
 - Snapshot: `<kernel dir>/<store id>.kernel-state.dill` is an index over per-variable blobs in
   `<store id>.kernel-state.blobs/`; only changed variables are rewritten. Dilled 1.5 s after an `ok`
-  cell, flushed on dispose (≤ 5 s), restored at boot; ≤ 256 MiB, 16 MiB per variable.
+  cell, flushed on dispose (≤ 5 s), restored at boot; ≤ 256 MiB, 16 MiB per variable. A pass after a
+  cell re-dills only the names the cells' source could change; every 20th cell and the flush are full.
+  A variable over the cap stays live and unsaved. The kernel runs with `cache_size=0`: no `Out`.
 - Owner: [`kernel/src/client.rs`](../crates/kernel/src/client.rs),
   [`bootstrap.rs`](../crates/kernel/src/bootstrap.rs),
-  [`uv_install.rs`](../crates/kernel/src/uv_install.rs),
+  [`install/uv.rs`](../crates/kernel/src/install/uv.rs),
   [`runtime/src/kernel.rs`](../crates/runtime/src/kernel.rs),
   [`rlm/__init__.py`](../python/yi_runtime/src/rlm/__init__.py)
 - Shapes: [`types/src/kernel.rs`](../crates/types/src/kernel.rs)
@@ -795,10 +801,12 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
   deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns,
   schema`;
-  `fork=all` refuses a model. `fork=N` counts typed turns only, never host notices, and
-  keeps what fits from the first cut point compaction would take, behind a `[… fork kept K of N`
-  row when the budget cut; the seed is appended to the child's transcript, so a respawned
-  service keeps it.
+  `fork=all` refuses a model and seeds the child from the parent's view: its cut results rendered
+  as the placeholders the parent's own requests carry, never the bytes behind them. `fork=N`
+  counts typed turns only, never host notices; both keep what fits from the first cut point
+  compaction would take, inside 80% of the child's own route window and under its compaction threshold, behind a `[… fork kept K
+  of N` row when that ceiling cut; the seed is appended to the child's transcript, so a
+  respawned service keeps it.
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
@@ -955,7 +963,7 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - Shapes: `.yi/plans/<root>/ops.jsonl` (gitignored) of `JournalRecord`
   ([`ledger.rs`](../crates/types/src/plan/ledger.rs)), `.yi/plans/<id>/{plan.json, artifacts/}`,
   `.yi/plans/.lock` (an OS file lock naming its holder's pid), `.yi/schemas/plan.schema.json`. Surfaces: the `plan` tool, host requests
-  `plan.get` and `plan.op`, RPC `plan`, `yi plan`. The session holds `Fact::Plan` as a pointer.
+  `plan.op`, RPC `plan`, `yi plan`. The session holds `Fact::Plan` as a pointer.
 - Settled by: D192, D193, D223, D313.
 
 ### 13.1 Contracts
@@ -1476,16 +1484,20 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines plus inline `#[cfg(test)]` lines in `src/` ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/`, tests, scripts, workflows and the justfile is declared, every declared name is read, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
+| `check_scan` | pinned zizmor over workflows, gitleaks over tree/PR diff/rewritten mirror history, and vendored-rule Semgrep over Python and production Rust; new rule ids and counts above baseline fail; local tool/cache misses announce a skip and CI refuses them | `scan.json` |
 | `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |
 | `check_growth` | net `src/` growth over the fork point past 150 lines needs `growth: +N <memo>` in the change file, past 2,000 a `decision:`; full run only | the fork point |
 | `check_changes` | a change is a file under `docs/changes/` in the header format; a branch never edits the `version:` line, a changelog row, a decision row, an ADR or a change file main holds | — |
 | `check_pr_metadata` | PR title as `check_commit_style`; a feature or over-band PR names an open, sized issue (D106); CI only | — |
+Zizmor and Semgrep run through pinned `uv` packages; gitleaks is a checksum-verified release binary.
+They are development tools, not Rust crate dependencies, so §18.3 gains no dependency rows.
 
 Also run: `codespell`, the `python/yi_runtime` unittests, `evals/selftest.py`, each script's
 `--selfcheck`, `cargo doc` (§19), `cargo machete` and `cargo deny` (§18.1); a missing tool fails
-its gate. Settled by: D68, D70, D76, D91, D106, D109, D172, D188.
+its gate except the announced local offline `check_scan` skip, which CI refuses.
+Settled by: D68, D70, D76, D91, D106, D109, D172, D188.
 
 
 ## 22. External GitHub intake

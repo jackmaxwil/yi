@@ -118,7 +118,6 @@ async fn run_cells(
     let mut session = session(cwd, codes);
     let calls = Arc::new(Calls::default());
     let mut registry = HostRegistry::default();
-    registry.register_mcp_stubs();
     let table = session.tools_handle();
     register(&mut registry, table, Arc::clone(&calls), true);
     let service = Arc::new(KernelService::new(KernelServiceOptions {
@@ -458,16 +457,38 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
     yi_context::details::extract_file_ops_from_message(&stored(&cell, false), &mut ops);
     let view = yi_context::CompiledView::default();
     let (summary, details) = yi_context::compose_summary("## Goal", &ops, &view);
+    let listed_cap = kept.min(yi_context::details::FILE_LIST_CAP);
     let notice = format!(
-        "[… {kept} read files listed; 1 more read calls from cells are not, and their paths were not kept: a cell keeps {kept} distinct read rows (NESTED_READS_KEPT); the cells that made them: grep(pattern=\"yi.tools\", path=\"history://self\")]"
+        "[… {listed_cap} read files listed; 1 more read calls from cells are not, and their paths were not kept: a cell keeps {kept} distinct read rows (NESTED_READS_KEPT); the cells that made them: grep(pattern=\"yi.tools\", path=\"history://self\")]"
     );
-    let row = summary.lines().find(|line| line.starts_with("[…"));
-    assert_eq!(row, Some(notice.as_str()), "{summary}");
+    let dropped_row = |text: &str| {
+        text.lines()
+            .find(|line| line.starts_with("[…") && line.contains("read calls from cells"))
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        dropped_row(&summary).as_deref(),
+        Some(notice.as_str()),
+        "{summary}"
+    );
+    let listed = summary
+        .lines()
+        .filter(|line| line.ends_with(".txt"))
+        .count();
+    let cap = summary
+        .lines()
+        .find(|line| line.contains("FILE_LIST_CAP"))
+        .ok_or("the read list names its cap")?;
+    let cap_at = yi_context::details::FILE_LIST_CAP;
+    assert!(
+        cap.starts_with(&format!("[… {cap_at} of "))
+            && cap.contains(&format!("read files (FILE_LIST_CAP {cap_at})")),
+        "{cap} against {listed} listed rows"
+    );
     let again = yi_context::details::extract_file_ops(&[], Some(&details));
     let (resummary, _) = yi_context::compose_summary("## Goal", &again, &view);
-    let row = resummary.lines().find(|line| line.starts_with("[…"));
     assert_eq!(
-        row,
+        dropped_row(&resummary).as_deref(),
         Some(notice.as_str()),
         "the next compaction lost the row"
     );

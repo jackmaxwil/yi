@@ -158,6 +158,8 @@ fn a_tool_turn_replays_reasoning_content_for_a_direct_kimi_id() -> TestResult {
                 thinking: "read the readme first".to_owned(),
                 thinking_signature: Some("reasoning_content".to_owned()),
                 redacted: None,
+                reasoning_field: None,
+                reasoning_details: None,
             },
             call("read:0"),
         ],
@@ -255,11 +257,12 @@ fn every_agent_identifies_as_yi_and_a_profile_header_replaces_it() -> TestResult
     let probe =
         yi_ai::breakpoints::Encoded::provider_prefix(json!({"model": "p"}), "messages", Vec::new());
     let quiet = |_| {};
-    yi_ai::request::send_with_retry(&format!("{base}/chat"), &[], &probe, None, &quiet)?;
+    yi_ai::request::send_with_retry(&format!("{base}/chat"), &[], &probe, None, None, &quiet)?;
     yi_ai::request::send_with_retry(
         &format!("{base}/chat"),
         &[("User-Agent".to_owned(), "profile/1".to_owned())],
         &probe,
+        None,
         None,
         &quiet,
     )?;
@@ -322,6 +325,8 @@ fn a_non_moonshot_route_is_byte_identical() -> TestResult {
                     thinking: "look".to_owned(),
                     thinking_signature: Some("reasoning_content".to_owned()),
                     redacted: None,
+                    reasoning_field: None,
+                    reasoning_details: None,
                 },
                 call("read:0"),
             ],

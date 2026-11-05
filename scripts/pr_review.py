@@ -41,8 +41,8 @@ import forge_pr  # noqa: E402
 from check_commit_style import subject_errors  # noqa: E402
 from check_pr_metadata import CITE, DRAFT, section, template_problems  # noqa: E402
 
-# Shadow posts every round and blocks nothing; blocking makes `just pr ready` refuse a
-# draft whose rounds are not clean. The flip waits for the replay on the labelled set.
+# Shadow posts every round and blocks nothing; blocking makes `just pr ready` and `just pr merge`
+# refuse a draft whose rounds are not clean. `just pr calibrate` reads the replay on the labelled set.
 MODE = "blocking"
 SEVERITIES = ("high", "medium", "low")
 # Measured over 194 rounds to 2026-10-01: half of 1,520 findings were low, and none of them blocked
@@ -477,7 +477,7 @@ def windows(diff):
     for lines in added_lines(diff).values():
         kept = [re.sub(r"\s+", " ", line.strip()) for line in lines if len(line.strip()) > 3]
         for i in range(len(kept) - DUP_WINDOW + 1):
-            hashes.add(hashlib.sha1("\n".join(kept[i:i + DUP_WINDOW]).encode()).hexdigest())
+            hashes.add(hashlib.sha256("\n".join(kept[i:i + DUP_WINDOW]).encode()).hexdigest())
     return hashes
 
 
@@ -682,7 +682,7 @@ def yi_bin():
         if not _REFRESHED and not os.environ.get("YI_BIN"):
             # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the reviewer's
             # model as unknown; a failed refresh falls back to the bundle, and a pinned YI_BIN is left alone.
-            _REFRESHED.append(subprocess.run([found, "catalog", "refresh", "openrouter"], capture_output=True, check=False))
+            _REFRESHED.append(subprocess.run([found, "catalog", "refresh", "openrouter"], capture_output=True, check=False))  # nosemgrep: dangerous-subprocess-use-tainted-env-args Direct argv exec of the selected Yi binary, no shell.
         return found
 
 
@@ -744,12 +744,19 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
         # Under a tenth of the budget is no attempt: it could only time out.
         if left < (deadline + 120) / 10:
             return subprocess.CompletedProcess(command, 124, "", spent)
-        try:
-            return subprocess.run(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], input=text,
-                                  capture_output=True, text=True, timeout=left, check=False,
-                                  env=env if env is not None else token_free_env)
-        except subprocess.TimeoutExpired as err:
-            return subprocess.CompletedProcess(command, 124, "", f"timed out after {err.timeout:.0f}s")
+        # Incident: #1779's clone kept a git the model's timed-out turn left running; killing only `yi ask`
+        # orphaned its children, so the child leads its own session and the whole group dies on timeout.
+        with subprocess.Popen(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                              env=env if env is not None else token_free_env) as proc:
+            try:
+                out, err = proc.communicate(text, timeout=left)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, 9)
+                proc.communicate()
+                return subprocess.CompletedProcess(command, 124, "", f"timed out after {left:.0f}s")
+            return subprocess.CompletedProcess(command, proc.returncode, out, err)
 
     def is_json(text):
         try:
@@ -894,16 +901,24 @@ def raw_diff(repo, number):
     return out.stdout
 
 
-def checkout(sha, ref):
+@contextlib.contextmanager
+def scratch_worktree(run, rev, prefix, name="w"):
+    """A detached worktree of `rev` in a temp dir of its own, deregistered and deleted however the block ends."""
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
+    tree = tmp / name
+    try:
+        run("worktree", "add", "-q", "--detach", "-f", str(tree), rev, check=True)
+        yield tree
+    finally:
+        run("worktree", "remove", "--force", str(tree), check=False)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def checked_out(sha, ref):
     forge_pr.git("fetch", "-q", "origin", ref, check=True)
-    tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-"))
-    forge_pr.git("worktree", "add", "-q", "--detach", str(tree), sha, check=True)
-    return tree
-
-
-def discard(tree):
-    forge_pr.git("worktree", "remove", "--force", str(tree))
-    shutil.rmtree(tree, ignore_errors=True)
+    with scratch_worktree(forge_pr.git, sha, "yi-round-") as tree:
+        yield tree
 
 
 def intake_of(repo, pr):
@@ -930,8 +945,7 @@ def read_pr(repo, number, allowed):
     pr = forge_pr.pull(number)
     notes = comments(repo, number)
     rounds, sha = rounds_of(notes, allowed, number), pr["head"]["sha"]
-    tree = checkout(sha, f"refs/pull/{number}/head")
-    try:
+    with checked_out(sha, f"refs/pull/{number}/head") as tree:
         forge_pr.git("fetch", "-q", "origin", pr["base"]["ref"])
         merge_base = forge_pr.git("merge-base", f"origin/{pr['base']['ref']}", sha, check=True)
         is_ancestor = lambda rev: subprocess.run(("git", "-C", str(ROOT), "merge-base", "--is-ancestor", rev, sha), capture_output=True).returncode == 0
@@ -955,8 +969,6 @@ def read_pr(repo, number, allowed):
                 pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING, until=JOB_ENDS),
                 load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds, mine), fix_note=fix_note, memory=earlier(rounds),
                 narrow=lambda fit: lost_only(fit, attempts_of(notes, allowed, number), sha, holds_for(number, pr["base"]["ref"])))
-    finally:
-        discard(tree)
     # A second round on an unchanged head is a second independent read, which a draft needs.
     return {"pr": pr, "n": rounds[-1]["n"] + 1 if rounds else 1, "sha": sha, "base": base,
             "intake": found, "kept": kept, "dropped": dropped, "outside": outside,
@@ -1067,7 +1079,7 @@ def replay_row(read, label):
     written before the v2 template fails it whatever its code is worth."""
     severity = {s: sum(f["severity"] == s for f in read["kept"]) for s in SEVERITIES}
     return {"pr": read["pr"]["number"], "label": label, "sha": read["sha"], "severity": severity,
-            "intake": sorted({f["lens"] for f in read["intake"]}), "dropped": read["dropped"], "outside": read.get("outside", 0),
+            "intake": sorted({f["lens"] for f in read["intake"]}), "dropped": read["dropped"], "outside": read.get("outside", 0), "unanswered": read["unanswered"],
             "findings": [{k: f[k] for k in ("lens", "severity", "claim", "path", "line")} for f in read["kept"]]}
 
 
@@ -1084,6 +1096,34 @@ def cmd_replay(args):
             out.write(json.dumps(row) + "\n")
             out.flush()
             print(json.dumps({k: row.get(k) for k in ("pr", "label", "severity", "intake", "unanswered")}))
+    return 0
+
+
+def calibration(rows):
+    """Invariant: a PR whose reading was unanswered, or partly silent, is listed, never counted.
+    The last row of a PR wins; only `bad` and `kept` are judged."""
+    latest = {r["pr"]: r for r in rows}
+    judged = [r for r in latest.values() if r["label"] in ("bad", "kept")]
+    answered = [r for r in judged if "severity" in r and not r.get("unanswered")]
+    flagged = [r for r in answered if r["severity"]["high"]]
+    bad = [r for r in answered if r["label"] == "bad"]
+    kept = [r for r in answered if r["label"] == "kept"]
+    return {"precision": (sum(r["label"] == "bad" for r in flagged), len(flagged)),
+            "recall": (sum(bool(r["severity"]["high"]) for r in bad), len(bad)),
+            "kept_clean": (sum(not r["severity"]["high"] for r in kept), len(kept)),
+            "unanswered": sorted(r["pr"] for r in judged if r not in answered),
+            "ignored": len(latest) - len(judged)}
+
+
+def cmd_calibrate(args):
+    """Print precision, recall and kept-clean of a high finding over replay rows; no threshold here.
+    Files are read in argument order, so list them oldest first."""
+    rows = [json.loads(line) for path in args.files for line in pathlib.Path(path).read_text().splitlines() if line.strip()]
+    got = calibration(rows)
+    for name, label in (("precision", "flagged PRs that are bad"), ("recall", "bad PRs flagged"), ("kept_clean", "kept PRs with no high")):
+        hit, of = got[name]
+        print(f"{name:<11} {hit}/{of} {f'{100 * hit // of}%' if of else '-'}  {label}")
+    print(f"unanswered {got['unanswered']}  ignored {got['ignored']} (labels other than bad and kept)")
     return 0
 
 
@@ -1714,9 +1754,36 @@ def selfcheck():
     assert intake(dict(pr, body=""), "", [], diffs.get, "apex/yi")[0]["lens"] == "template"
 
     read = {"pr": {"number": 340}, "sha": "abc", "intake": [{"lens": "template", "severity": "high"}],
-            "kept": [finding, dict(finding, severity="low")], "dropped": 2}
+            "kept": [finding, dict(finding, severity="low")], "dropped": 2, "unanswered": ["correctness lens"]}
     row = replay_row(read, "bad")
     assert row["severity"] == {"high": 1, "medium": 0, "low": 1} and row["intake"] == ["template"], row
+    assert row["unanswered"] == ["correctness lens"], "a silent lens must reach the calibration row"
+
+    rows = [{"pr": 1, "label": "bad", "severity": {"high": 2, "medium": 0, "low": 0}},
+            {"pr": 2, "label": "bad", "severity": {"high": 0, "medium": 3, "low": 0}},
+            {"pr": 3, "label": "bad", "unanswered": "yi ask exited 3"},
+            {"pr": 8, "label": "bad", "severity": {"high": 0, "medium": 0, "low": 0}, "unanswered": ["correctness lens"]},
+            {"pr": 4, "label": "kept", "severity": {"high": 1, "medium": 0, "low": 0}},
+            {"pr": 5, "label": "kept", "severity": {"high": 0, "medium": 0, "low": 4}},
+            {"pr": 6, "label": "kept", "severity": {"high": 0, "medium": 1, "low": 0}},
+            {"pr": 7, "label": "closed", "severity": {"high": 1, "medium": 0, "low": 0}},
+            {"pr": 1, "label": "bad", "severity": {"high": 0, "medium": 0, "low": 0}}]
+    got = calibration(rows[:-1])
+    assert (got["precision"], got["recall"], got["kept_clean"]) == ((1, 2), (1, 2), (2, 3)), got
+    assert got["unanswered"] == [3, 8] and got["ignored"] == 1, got
+    assert calibration(rows)["recall"] == (0, 2), "a later reading of a PR replaces the earlier one"
+    assert calibration([])["precision"] == (0, 0), "no flagged PR is no precision, not a division"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        old, new = pathlib.Path(tmp, "old.jsonl"), pathlib.Path(tmp, "new.jsonl")
+        old.write_text("".join(json.dumps(r) + "\n" for r in rows[:-1]) + "\n")
+        new.write_text(json.dumps(rows[-1]) + "\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert cmd_calibrate(argparse.Namespace(files=[str(old), str(new)])) == 0
+        assert buf.getvalue().splitlines() == [
+            "precision   0/1 0%  flagged PRs that are bad", "recall      0/2 0%  bad PRs flagged",
+            "kept_clean  2/3 66%  kept PRs with no high", "unanswered [3, 8]  ignored 1 (labels other than bad and kept)"], buf.getvalue()
 
     repo_dir = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-wall-"))
     try:

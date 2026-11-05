@@ -10,7 +10,7 @@ use yi_tools::{CancelFlag, KernelCellOutcome, ToolOutput};
 
 use crate::args::Args;
 pub use crate::kernel_bootstrap::{
-    BootFn, RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code,
+    BootFn, RLM_BOOTSTRAP_CODE, compaction_notice, restore_notice_text, rlm_bootstrap_code,
 };
 use crate::kernel_variables::{
     VARIABLE_MARKER, VariableReply, dump_variable_code, parse_variable_reply, read_variable_code,
@@ -138,20 +138,6 @@ impl HostRegistry {
             })
         });
     }
-
-    /// `mcp.config` returns `{}` (Python raises its own KeyError), `mcp.refresh` throws, and
-    /// `mcp.begin_login` is never registered: a 401 must not open a browser.
-    pub fn register_mcp_stubs(&mut self) {
-        self.register("mcp.config", |_payload| Box::pin(async { Ok(Map::new()) }));
-        self.register("mcp.refresh", |_payload| {
-            Box::pin(async {
-                Err(
-                    "mcp.refresh is unavailable: run `yi mcp login <server>` on the host"
-                        .to_owned(),
-                )
-            })
-        });
-    }
 }
 
 fn job_id_of(payload: &Map<String, Value>, request: &str) -> Result<yi_tools::JobId, String> {
@@ -243,7 +229,8 @@ pub(crate) fn kernel_profile(
 ) -> yi_tools::Sandbox {
     // ~/.yi stays read-only: the MCP session store is the host's alone (D296).
     let mut profile = sandbox.clone();
-    // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
+    // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling,
+    // granted here and withdrawn from a contained member by the deny `session_sandbox` adds.
     profile
         .writable
         .extend(family_dir.map(std::path::Path::to_path_buf));
@@ -612,35 +599,14 @@ impl KernelService {
             .map(Arc::clone)
     }
 
-    /// Prune oversized variables, list what survives, return the model-facing
-    /// notice — None when no kernel is live to report on.
+    /// List what survives compaction as the model-facing notice — None when no kernel is live.
     pub async fn sync_after_compaction(&self) -> Option<String> {
         let manager = self.manager_if_running().await?;
-        let pruned = manager
-            .prune_oversized_variables()
-            .await
-            .map(|result| result.pruned)
-            .unwrap_or_default();
         let names = manager.list_namespace_names().await;
         if names.is_none() && !manager.is_running() {
             return None;
         }
-        let detail = match &names {
-            None => String::new(),
-            Some(names) if names.is_empty() => " You have not defined any names yet.".to_owned(),
-            Some(names) => format!(" These names are still defined: {}.", names.join(", ")),
-        };
-        let pruned_detail = if pruned.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " Variables above the per-variable snapshot limit were removed: {}.",
-                pruned.join(", ")
-            )
-        };
-        Some(format!(
-            "<ipython_state>\nYour IPython kernel persisted through compaction; its remaining variables, imports, and helpers are still available.{pruned_detail}{detail}\n</ipython_state>"
-        ))
+        Some(crate::kernel_bootstrap::compaction_notice(names.as_deref()))
     }
 
     pub async fn dispose(&self) {
@@ -854,6 +820,15 @@ impl KernelService {
         self.variable_cell(name, dump_variable_code(name, path))
             .await
             .map(|reply| reply.map(|(_, chars)| u64::try_from(chars).unwrap_or(u64::MAX)))
+    }
+
+    /// Invariant: the parent loads a member's pickle only from a member whose own kernel may
+    /// write the board it was dumped onto, so this is the one answer both ends ask.
+    pub fn writes_board(&self) -> bool {
+        match (&self.options.sandbox, &self.options.family_dir) {
+            (Some(sandbox), Some(board)) => !sandbox.deny_write.contains(board),
+            _ => true,
+        }
     }
 
     async fn variable_cell(
@@ -1230,8 +1205,7 @@ mod tests {
     }
 
     fn service() -> KernelService {
-        let mut registry = HostRegistry::default();
-        registry.register_mcp_stubs();
+        let registry = HostRegistry::default();
         KernelService::new(KernelServiceOptions {
             cwd: std::env::temp_dir(),
             home: std::env::var_os("HOME")

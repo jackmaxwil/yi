@@ -670,7 +670,8 @@ impl Pool {
             }
             match self.read_state(slot)?.session {
                 Some(_) if self.abandoned(slot)? => {
-                    self.detach(slot, self.branch_of(slot).as_deref())?;
+                    let branch = self.branch_of(slot);
+                    self.detach(slot, branch.as_deref(), reap::Handback::Deleted)?;
                     self.clear_session(slot)?;
                     free = Some((slot, guard, false));
                     break;
@@ -710,7 +711,7 @@ impl Pool {
             checkout.extend(["-B", branch.as_str(), &sha]);
         }
         if fresh {
-            git(&self.repo, &add)?;
+            self.rebuild(&add)?;
         } else {
             self.stop_warmer(slot)?;
             git(&path, &checkout)?;
@@ -760,22 +761,6 @@ impl Pool {
         let path = self.slot_path(slot);
         path.join(".git").is_file() && yi_permission::git_dirs(&path).is_empty()
     }
-
-    fn detach(&self, slot: SlotIndex, branch: Option<&str>) -> Result<bool, LaneError> {
-        let path = self.slot_path(slot);
-        let text = path.to_string_lossy().into_owned();
-        let _ = git(&self.repo, &["worktree", "unlock", &text]);
-        git(&path, &["checkout", "-q", "--detach"])?;
-        let Some(branch) = branch else {
-            return Ok(false);
-        };
-        let base = self.resolve(&ClaimBase::Main, false)?;
-        let merged = git(&self.repo, &["merge-base", "--is-ancestor", branch, &base]).is_ok();
-        if merged {
-            git(&self.repo, &["branch", "-q", "-D", branch])?;
-        }
-        Ok(!merged)
-    }
 }
 
 /// A git query's exit 1 is its answer no; any other failure is an error, never a no.
@@ -814,17 +799,23 @@ impl Drop for Lane {
             return;
         }
         self.released = true;
-        let _ = self.pool.lock().and_then(|_pool| {
-            if self.pool.dirty(self.slot) {
-                return Ok(());
-            }
-            self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-            self.pool.clear_session(self.slot)
-        });
+        let _ = self.handback();
     }
 }
 
 impl Lane {
+    /// Invariant: read-only until the lock, so a dirty tree costs one status read.
+    fn handback(&self) -> Result<(), LaneError> {
+        if self.pool.dirty(self.slot) {
+            return Ok(());
+        }
+        let landed = self.pool.land(self.branch.as_str())?;
+        let _pool = self.pool.lock()?;
+        self.pool
+            .detach(self.slot, Some(self.branch.as_str()), landed)?;
+        self.pool.clear_session(self.slot)
+    }
+
     pub fn slot(&self) -> SlotIndex {
         self.slot
     }
@@ -903,8 +894,10 @@ impl Lane {
     /// `wiped` is the measurement a caller already made of a tree it found clean; `None` wipes now.
     fn finish(mut self, quit: bool, wiped: Option<Wiped>) -> Result<Wiped, LaneError> {
         self.released = true;
+        let landing = self.pool.land(self.branch.as_str())?;
         let _pool = self.pool.lock()?;
-        self.pool.detach(self.slot, Some(self.branch.as_str()))?;
+        self.pool
+            .detach(self.slot, Some(self.branch.as_str()), landing)?;
         let wiped = match wiped {
             Some(wiped) => wiped,
             None => self.pool.wipe(self.slot)?,

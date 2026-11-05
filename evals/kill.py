@@ -262,12 +262,12 @@ def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
     deadline = int(spec.get("deadline", 600))
     row = {"test": test, "family": family, "id": spec["id"], "run": run, "model": route["model"], "startedAt": clock()}
     try:
-        seed_home(home, binary, route, deadline + 600)
+        seed_home(home, spec.get("binary") or binary, route, deadline + 600)
         subprocess.run(["git", "clone", "--shared", "-q", str(spec.get("repo") or ROOT.parent), str(repo)], check=True)
         if spec.get("rev"):
             subprocess.run(["git", "-C", str(repo), "checkout", "-q", spec["rev"]], check=True)
         venvs = venv_ids(home)
-        command = [binary, "ask", "--json", "--here", "--yolo", "--model", route["model"], "--session-dir",
+        command = [spec.get("binary") or binary, "ask", "--json", "--here", "--yolo", "--model", route["model"], "--session-dir",
                    str(base / "sessions"), "--deadline", str(deadline), *spec.get("args", ()), spec["prompt"]]
         started = time.monotonic()
         with (base / "stderr.txt").open("w") as errors:

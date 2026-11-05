@@ -47,6 +47,8 @@ const GATES: [(&str, &str); 6] = [
     ("pyproject.toml", "pytest"),
 ];
 
+pub const GUIDE: &str = "One orientation packet for the working directory: task map, symbol neighborhood, file skeletons, git change heat, gate commands, prior mining issues. Layers are clamped and name what they cut; the header says how many were available. Call it once, first, in a repository you have not read this session. PARTIAL - k of n layers means the missing layers are absent, not empty; read what the packet names.";
+
 /// Invariant: an absent layer is named, never dropped — Err carries the reason.
 type LayerBody = Result<String, String>;
 
@@ -58,7 +60,7 @@ impl Tool for GetContextTool {
     }
 
     fn description(&self) -> &str {
-        "One orientation packet for the working directory: task map, symbol neighborhood, file skeletons, git change heat, gate commands, prior mining issues. Layers are clamped and name what they cut; the header says how many were available. Call it once, first, in a repository you have not read this session. PARTIAL - k of n layers means the missing layers are absent, not empty; read what the packet names."
+        "One orientation packet for the working directory; call it once, first, in a repository you have not read this session. Guide: read(\"yi://tools/get_context\")."
     }
 
     fn schema(&self) -> Value {

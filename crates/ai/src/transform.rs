@@ -1,6 +1,7 @@
+use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet};
 
-use yi_types::message::{AgentMessage, Content, StopReason};
+use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{Model, SYSTEM_BLOCK_SEPARATOR};
 
 /// The assembled system prompt for a wire that takes one string: each block separator
@@ -52,38 +53,33 @@ pub fn normalize_anthropic_tool_call_id(id: &str) -> String {
 
 /// Cross-model replay: content content downgrades, tool-call id
 /// normalization, dropped errored/aborted assistants, synthetic results for orphaned calls.
-pub fn transform_messages(
-    messages: &[AgentMessage],
+pub fn transform_messages<'a>(
+    messages: &'a [AgentMessage],
     model: &Model,
     normalize_id: Option<fn(&str) -> String>,
-) -> Vec<AgentMessage> {
+) -> Vec<Cow<'a, AgentMessage>> {
     let _span = yi_types::trace::span("ai.transform_messages").arg("messages", messages.len());
     let vision = is_vision(model);
     let mut id_map: HashMap<String, String> = HashMap::new();
-    let mut transformed: Vec<AgentMessage> = Vec::new();
+    let mut transformed: Vec<Cow<'a, AgentMessage>> = Vec::new();
 
     for message in messages {
         match message {
             AgentMessage::User {
-                content,
+                content: UserContent::Blocks(blocks),
                 timestamp,
                 attribution,
-            } => {
-                let content = match content {
-                    yi_types::message::UserContent::Blocks(blocks) if !vision => {
-                        yi_types::message::UserContent::Blocks(downgrade_images(
-                            blocks,
-                            "(image omitted: model does not support images)",
-                        ))
-                    }
-                    other => other.clone(),
-                };
-                transformed.push(AgentMessage::User {
-                    content,
+            } if !vision => {
+                transformed.push(Cow::Owned(AgentMessage::User {
+                    content: UserContent::Blocks(downgrade_images(
+                        blocks,
+                        "(image omitted: model does not support images)",
+                    )),
                     timestamp: *timestamp,
                     attribution: *attribution,
-                });
+                }));
             }
+            AgentMessage::User { .. } => transformed.push(Cow::Borrowed(message)),
             AgentMessage::ToolResult {
                 tool_call_id,
                 tool_name,
@@ -94,6 +90,11 @@ pub fn transform_messages(
                 is_error,
                 timestamp,
             } => {
+                let mapped = id_map.get(tool_call_id);
+                if vision && mapped.is_none() {
+                    transformed.push(Cow::Borrowed(message));
+                    continue;
+                }
                 let content = if vision {
                     content.clone()
                 } else {
@@ -102,12 +103,8 @@ pub fn transform_messages(
                         "(tool image omitted: model does not support images)",
                     )
                 };
-                let tool_call_id = id_map
-                    .get(tool_call_id)
-                    .cloned()
-                    .unwrap_or_else(|| tool_call_id.clone());
-                transformed.push(AgentMessage::ToolResult {
-                    tool_call_id,
+                transformed.push(Cow::Owned(AgentMessage::ToolResult {
+                    tool_call_id: mapped.cloned().unwrap_or_else(|| tool_call_id.clone()),
                     tool_name: tool_name.clone(),
                     content,
                     details: details.clone(),
@@ -115,7 +112,7 @@ pub fn transform_messages(
                     added_tool_names: added_tool_names.clone(),
                     is_error: *is_error,
                     timestamp: *timestamp,
-                });
+                }));
             }
             AgentMessage::Assistant {
                 content,
@@ -137,6 +134,7 @@ pub fn transform_messages(
                             thinking,
                             thinking_signature,
                             redacted,
+                            ..
                         } => {
                             if redacted == &Some(true) {
                                 if same_model {
@@ -206,23 +204,23 @@ pub fn transform_messages(
                 if let AgentMessage::Assistant { content, .. } = &mut kept {
                     *content = new_content;
                 }
-                transformed.push(kept);
+                transformed.push(Cow::Owned(kept));
             }
             _ => {}
         }
     }
 
-    let mut result: Vec<AgentMessage> = Vec::new();
+    let mut result: Vec<Cow<'a, AgentMessage>> = Vec::new();
     let mut pending: Vec<(String, String)> = Vec::new();
     let mut seen_results: HashSet<String> = HashSet::new();
     let synthesize = |pending: &mut Vec<(String, String)>,
                       seen: &mut HashSet<String>,
-                      result: &mut Vec<AgentMessage>| {
+                      result: &mut Vec<Cow<'a, AgentMessage>>| {
         for (id, name) in pending.drain(..) {
             if seen.contains(&id) {
                 continue;
             }
-            result.push(AgentMessage::ToolResult {
+            result.push(Cow::Owned(AgentMessage::ToolResult {
                 tool_call_id: id,
                 tool_name: name,
                 content: vec![Content::Text {
@@ -234,13 +232,13 @@ pub fn transform_messages(
                 added_tool_names: None,
                 is_error: true,
                 timestamp: 0,
-            });
+            }));
         }
         seen.clear();
     };
 
     for message in transformed {
-        match &message {
+        match message.as_ref() {
             AgentMessage::Assistant { content, .. } => {
                 synthesize(&mut pending, &mut seen_results, &mut result);
                 pending = content
@@ -277,49 +275,90 @@ pub fn transform_messages(
 const CLAUDE_MAX_IMAGES: usize = 20;
 const CLAUDE_MAX_IMAGE_CHARS: usize = 24_000_000;
 
-/// Every image block in `messages`, newest first.
-fn images_newest_first(messages: &mut [AgentMessage]) -> impl Iterator<Item = &mut Content> {
-    messages
-        .iter_mut()
-        .rev()
-        .flat_map(|message| match message {
-            AgentMessage::User {
-                content: yi_types::message::UserContent::Blocks(blocks),
-                ..
-            }
-            | AgentMessage::ToolResult {
-                content: blocks, ..
-            } => blocks.iter_mut().rev(),
-            _ => [].iter_mut().rev(),
-        })
-        .filter(|block| matches!(block, Content::Image { .. }))
+fn blocks_of(message: &AgentMessage) -> &[Content] {
+    match message {
+        AgentMessage::User {
+            content: UserContent::Blocks(blocks),
+            ..
+        }
+        | AgentMessage::ToolResult {
+            content: blocks, ..
+        } => blocks,
+        _ => &[],
+    }
 }
 
-/// Incident: a provider refuses a malformed image on every later request (#860), and a kernel
-/// header check cannot see a truncated body or a session saved before it existed.
-fn omit_refused_images(messages: &mut [AgentMessage]) {
-    for block in images_newest_first(messages) {
-        let Content::Image { data, mime_type } = block else {
-            continue;
-        };
-        let Some(defect) = yi_types::image::image_defect(mime_type, data) else {
-            continue;
-        };
+fn images_newest_first<M: Borrow<AgentMessage>>(messages: &[M]) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    for (at, message) in messages.iter().enumerate().rev() {
+        for (index, block) in blocks_of(message.borrow()).iter().enumerate().rev() {
+            if matches!(block, Content::Image { .. }) {
+                found.push((at, index));
+            }
+        }
+    }
+    found
+}
+
+fn image_at<'m>(
+    messages: &'m [Cow<'_, AgentMessage>],
+    at: usize,
+    index: usize,
+) -> Option<(&'m str, &'m str)> {
+    match blocks_of(messages.get(at)?).get(index)? {
+        Content::Image { data, mime_type } => Some((data, mime_type)),
+        _ => None,
+    }
+}
+
+/// Only a message that loses an image is copied; the rest stay borrowed from the history.
+fn replace_with_text(
+    messages: &mut [Cow<'_, AgentMessage>],
+    at: usize,
+    index: usize,
+    text: String,
+) {
+    let blocks = match messages.get_mut(at).map(Cow::to_mut) {
+        Some(AgentMessage::User {
+            content: UserContent::Blocks(blocks),
+            ..
+        })
+        | Some(AgentMessage::ToolResult {
+            content: blocks, ..
+        }) => blocks,
+        _ => return,
+    };
+    if let Some(block) = blocks.get_mut(index) {
         *block = Content::Text {
-            text: format!(
-                "[image omitted: {mime_type}, {} KB of base64; the image {defect}, which the provider refuses. {}]",
-                data.len() / 1000,
-                defect.remedy()
-            ),
+            text,
             text_signature: None,
         };
     }
 }
 
-fn keep_newest_images(messages: &mut [AgentMessage]) {
+/// Incident: a provider refuses a malformed image on every later request (#860), and a kernel
+/// header check cannot see a truncated body or a session saved before it existed.
+fn omit_refused_images(messages: &mut [Cow<'_, AgentMessage>]) {
+    for (at, index) in images_newest_first(messages) {
+        let Some((data, mime_type)) = image_at(messages, at, index) else {
+            continue;
+        };
+        let Some(defect) = yi_types::image::image_defect(mime_type, data) else {
+            continue;
+        };
+        let text = format!(
+            "[image omitted: {mime_type}, {} KB of base64; the image {defect}, which the provider refuses. {}]",
+            data.len() / 1000,
+            defect.remedy()
+        );
+        replace_with_text(messages, at, index, text);
+    }
+}
+
+fn keep_newest_images(messages: &mut [Cow<'_, AgentMessage>]) {
     let (mut kept, mut chars) = (0usize, 0usize);
-    for block in images_newest_first(messages) {
-        let Content::Image { data, mime_type } = block else {
+    for (at, index) in images_newest_first(messages) {
+        let Some((data, mime_type)) = image_at(messages, at, index) else {
             continue;
         };
         let total = chars.saturating_add(data.len());
@@ -327,12 +366,10 @@ fn keep_newest_images(messages: &mut [AgentMessage]) {
             (kept, chars) = (kept.saturating_add(1), total);
             continue;
         }
-        *block = Content::Text {
-            text: format!(
-                "(earlier image omitted: {mime_type}, {} KB of base64; the request keeps its newest {CLAUDE_MAX_IMAGES})",
-                data.len() / 1000
-            ),
-            text_signature: None,
-        };
+        let text = format!(
+            "(earlier image omitted: {mime_type}, {} KB of base64; the request keeps its newest {CLAUDE_MAX_IMAGES})",
+            data.len() / 1000
+        );
+        replace_with_text(messages, at, index, text);
     }
 }

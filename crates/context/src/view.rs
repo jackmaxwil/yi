@@ -44,6 +44,25 @@ impl BriefLine {
 }
 
 impl CompiledView {
+    fn earlier_row(&self) -> String {
+        let (demoted, exact) = span_lines(&self.earlier);
+        let total = self.brief.len().saturating_add(demoted);
+        cut_row(
+            self.brief.len(),
+            total,
+            if exact {
+                "brief lines, the newest"
+            } else {
+                "or more brief lines, the newest"
+            },
+            "BRIEF_LINE_CAP",
+            BRIEF_LINE_CAP,
+            &format!(
+                "id spans below (more than EARLIER_CAP {EARLIER_CAP} merge the oldest); read(\"history://self/since/0\")"
+            ),
+        )
+    }
+
     pub fn render(&self) -> String {
         let mut sections = Vec::new();
         if !self.outstanding.is_empty() {
@@ -72,6 +91,8 @@ impl CompiledView {
         }
         if !self.earlier.is_empty() {
             let mut block = String::from("[Earlier]");
+            block.push('\n');
+            block.push_str(&self.earlier_row());
             for line in &self.earlier {
                 block.push('\n');
                 block.push_str(line);
@@ -136,7 +157,10 @@ pub fn compile_view(attributed: &[Attributed], previous: Option<&CompiledView>) 
         earlier.push(earlier_line(&demoted));
     }
     if earlier.len() > EARLIER_CAP {
-        earlier = earlier.split_off(earlier.len().saturating_sub(EARLIER_CAP));
+        let newest = earlier.split_off(earlier.len().saturating_sub(EARLIER_CAP.saturating_sub(1)));
+        earlier = std::iter::once(merged_line(&earlier))
+            .chain(newest)
+            .collect();
     }
 
     CompiledView {
@@ -159,7 +183,41 @@ fn earlier_line(lines: &[BriefLine]) -> String {
     let ids = || lines.iter().filter_map(|line| line.id.as_deref());
     let first = ids().next().unwrap_or("?");
     let last = ids().next_back().unwrap_or(first);
-    format!("(#{first}..#{last})")
+    format!("(#{first}..#{last}, {} lines)", lines.len())
+}
+
+fn span(line: &str) -> Option<(&str, &str, Option<usize>)> {
+    let inner = line.strip_prefix("(#")?.strip_suffix(')')?;
+    let (first, rest) = inner.split_once("..#")?;
+    match rest.split_once(", ") {
+        Some((last, count)) => Some((
+            first,
+            last,
+            Some(count.strip_suffix(" lines")?.parse().ok()?),
+        )),
+        None => Some((first, rest, None)),
+    }
+}
+
+/// Lines the spans stand for, and whether every span said how many (a span stored before
+/// counts existed, or one that does not parse, did not).
+fn span_lines(lines: &[String]) -> (usize, bool) {
+    lines
+        .iter()
+        .fold((0, true), |(sum, exact), line| match span(line) {
+            Some((_, _, Some(n))) => (sum.saturating_add(n), exact),
+            _ => (sum, false),
+        })
+}
+
+fn merged_line(lines: &[String]) -> String {
+    let spans: Vec<_> = lines.iter().filter_map(|line| span(line)).collect();
+    let first = spans.first().map_or("?", |span| span.0);
+    let last = spans.last().map_or(first, |span| span.1);
+    match span_lines(lines) {
+        (count, true) => format!("(#{first}..#{last}, {count} lines)"),
+        _ => format!("(#{first}..#{last})"),
+    }
 }
 
 fn first_edit_index(attributed: &[Attributed]) -> BTreeMap<String, usize> {
@@ -225,11 +283,16 @@ fn brief_text(
         } => {
             if exit_code.is_some_and(|code| code != 0) {
                 format!(
-                    "bash: {command} {}",
+                    "bash: {} {}",
+                    truncate(&one_line(command), BRIEF_LINE_CHARS),
                     truncate(&one_line(output), BRIEF_LINE_CHARS)
                 )
             } else {
-                format!("bash: {command} → {} chars", output.chars().count())
+                format!(
+                    "bash: {} → {} chars",
+                    truncate(&one_line(command), BRIEF_LINE_CHARS),
+                    output.chars().count()
+                )
             }
         }
         AgentMessage::BranchSummary { summary, .. } => format!("earlier attempt: {summary}"),
@@ -275,24 +338,38 @@ fn assistant_tools(
 // Only `path` and `command` name a call: the map's "first string argument" was
 // order-dependent, so the same call briefed differently between runs.
 fn tool_call_brief(name: &str, arguments: &serde_json::Map<String, serde_json::Value>) -> String {
-    let first = arguments
-        .get("path")
-        .or_else(|| arguments.get("command"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    if first.is_empty() {
-        name.to_owned()
-    } else {
-        format!("{name} {first}")
+    let text = |key| arguments.get(key).and_then(|value| value.as_str());
+    let first = match name {
+        "ipython" => {
+            text("code").and_then(|code| code.lines().find(|line| !line.trim().is_empty()))
+        }
+        _ => text("path").or_else(|| text("command")),
+    };
+    match first.map(one_line).filter(|first| !first.is_empty()) {
+        Some(first) => format!("{name} {}", truncate(&first, BRIEF_LINE_CHARS)),
+        None => name.to_owned(),
     }
 }
 
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn truncate(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
+    let total = text.chars().count();
+    if total <= max {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(max).collect();
+    let row = cut_row(
+        max,
+        total,
+        "chars",
+        "BRIEF_LINE_CHARS",
+        BRIEF_LINE_CHARS,
+        "read history://self",
+    );
+    format!("{kept}{row}")
 }
 
 pub fn view_extra(view: &CompiledView) -> Vec<(String, serde_json::Value)> {

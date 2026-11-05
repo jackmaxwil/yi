@@ -71,7 +71,8 @@ impl Lane {
             return Err(error);
         }
         let branch = self.branch.as_str().to_owned();
-        self.pool.detach(self.slot, None)?;
+        self.pool
+            .detach(self.slot, None, super::reap::Handback::Deleted)?;
         let _kept_only_by_its_own_name = git(&self.pool.repo, &["branch", "-q", "-D", &branch]);
         self.pool.clear_session(self.slot)
     }
@@ -127,6 +128,7 @@ fn temp_index(tree: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let name = format!("yi-check-index-{}-{n}", std::process::id());
+    // nosemgrep: yi-rust-temp-dir the pid and a process counter make every index name unique.
     std::env::temp_dir().join(tree.file_name().map_or_else(
         || name.clone(),
         |dir| format!("{name}-{}", dir.to_string_lossy()),

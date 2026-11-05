@@ -145,7 +145,10 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     // D164: the same variable as an object, dilled by the child's own kernel.
     let object: yi_types::url::Url = "kernel://helper/answer".parse()?;
     let dumper = Arc::clone(&resolver);
-    let (path, bytes) = tokio::task::spawn_blocking(move || dumper.dump_kernel(&object)).await??;
+    let dumped = tokio::task::spawn_blocking(move || dumper.dump_kernel(&object)).await??;
+    let Some((path, bytes)) = dumped else {
+        return Err("the helper may write the board".into());
+    };
     assert_eq!(path, family.join("helper.answer.dill"));
     assert!(bytes > 0 && path.is_file(), "{path:?} {bytes}");
     Ok(())
@@ -247,8 +250,7 @@ async fn the_family_board_belongs_to_the_root_session() -> TestResult {
 }
 
 fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
-    let mut registry = yi_runtime::HostRegistry::default();
-    registry.register_mcp_stubs();
+    let registry = yi_runtime::HostRegistry::default();
     Ok(Arc::new(yi_runtime::KernelService::new(
         yi_runtime::KernelServiceOptions {
             cwd: root.to_path_buf(),

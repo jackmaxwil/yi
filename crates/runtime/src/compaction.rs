@@ -1,11 +1,13 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub use yi_context::Tokens;
 use yi_context::{
-    Preparation, Settings, Tokens, compose_summary, convert_to_llm, drop_internal,
-    estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
+    CompiledView, Preparation, Settings, compose_summary, drop_internal, estimate_context,
+    estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
+
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
@@ -40,6 +42,8 @@ pub struct Replacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Elision {
     pub messages: usize,
+    pub total: usize,
+    pub window: Tokens,
 }
 
 /// One text for the user's notice, the summary's line and the marker where the messages sat.
@@ -49,8 +53,12 @@ impl std::fmt::Display for Elision {
         write!(
             formatter,
             "[compaction elided {} earlier message{plural} from the model's view: summary failed; \
-             the transcript keeps them]",
-            self.messages
+             kept {} of {} (context_window {} tokens); the transcript keeps them: \
+             read(\"history://self/since/0\")]",
+            self.messages,
+            self.total.saturating_sub(self.messages),
+            self.total,
+            self.window.0
         )
     }
 }
@@ -113,6 +121,16 @@ fn carried(summary: &str) -> &str {
     body.get(..end).unwrap_or(body).trim()
 }
 
+fn left(messages: &[AgentMessage]) -> u64 {
+    wide(
+        messages
+            .iter()
+            .map(estimate_message)
+            .fold(Tokens(0), Tokens::saturating_add),
+    )
+    .0
+}
+
 /// The earliest cut point from which the rest of `messages` fits `budget`.
 pub(crate) fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option<usize> {
     let (mut kept, mut found) = (Tokens(0), None);
@@ -151,13 +169,17 @@ impl Drop for Closing {
     }
 }
 
+/// The loop's view stage, cuts included: the compaction sends the bytes the loop last sent.
+pub type Convert = Arc<dyn Fn(&[AgentMessage]) -> Vec<AgentMessage> + Send + Sync>;
+
 /// What the loop sends beside its messages (its tool choice past the first request is none): a
 /// compaction on the session's model sends the same, so its prefix is a cache read (design §7).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LoopRequest {
     pub system_prompt: String,
     pub tools: Option<Vec<ToolDef>>,
     pub effort: Effort,
+    pub convert: Convert,
 }
 
 impl LoopRequest {
@@ -166,12 +188,14 @@ impl LoopRequest {
         system_prompt: String,
         tools: &[Arc<dyn yi_loop::AgentTool>],
         effort: Effort,
+        convert: Convert,
     ) -> Self {
         let tools: Vec<ToolDef> = tools.iter().map(|tool| tool.definition()).collect();
         Self {
             system_prompt,
             tools: (!tools.is_empty()).then_some(tools),
             effort,
+            convert,
         }
     }
 }
@@ -277,6 +301,9 @@ pub struct Compactor {
     /// `compaction.at` in tokens, 0 when unset: due once the request passes it, if that comes
     /// before the window's reserve.
     ceiling: AtomicU64,
+    /// Invariant: the messages a compaction left, at bytes/3 without the prefix; 0 before the first.
+    /// Incident: a kept tail over the ceiling made every request summarize again (#1757).
+    settled: AtomicU64,
 }
 
 struct Raised<'a>(&'a AtomicBool);
@@ -421,9 +448,24 @@ impl Compactor {
     /// otherwise compact once more. A branch with none (a rewind past it) has no stale reply.
     pub fn resume(&self, entries: &[yi_types::entry::Entry]) {
         let latest = entries.iter().rev().find_map(|entry| match entry {
-            yi_types::entry::Entry::Compaction { retained_tail, .. } => Some(retained_tail),
+            yi_types::entry::Entry::Compaction {
+                summary,
+                retained_tail,
+                tokens_before,
+                ..
+            } => Some((summary, retained_tail, *tokens_before)),
             _ => None,
         });
+        let settled = latest.map_or(0, |(summary, tail, tokens_before)| {
+            let head = AgentMessage::CompactionSummary {
+                summary: summary.clone(),
+                tokens_before,
+                timestamp: 0,
+            };
+            left(&[head]).saturating_add(left(tail))
+        });
+        self.settled.store(settled, Ordering::Relaxed);
+        let latest = latest.map(|(_, tail, _)| tail);
         if let Ok(mut slot) = self.stale.lock() {
             *slot = latest.and_then(|tail| {
                 tail.iter()
@@ -523,12 +565,7 @@ impl Compactor {
                 .usage_tokens
                 .saturating_add(wide(estimate.trailing_tokens))
         } else {
-            wide(
-                messages
-                    .iter()
-                    .map(estimate_message)
-                    .fold(Tokens(0), Tokens::saturating_add),
-            )
+            Tokens(left(messages))
         };
         let window = match self.ceiling.load(Ordering::Relaxed) {
             0 => model.context_window,
@@ -540,7 +577,12 @@ impl Compactor {
                 }
             }
         };
-        should_compact(sent, Tokens(window), &self.settings)
+        let settled = self.settled.load(Ordering::Relaxed);
+        let grown =
+            settled == 0 || left(messages) > settled.saturating_add(self.settings.reserve_tokens.0);
+        (model.context_window != 0
+            && should_compact(sent, Tokens(model.context_window), &self.settings))
+            || (grown && should_compact(sent, Tokens(window), &self.settings))
     }
 
     /// No summary, no room (D337): keep the first user message, the work's opening and the earlier
@@ -576,7 +618,10 @@ impl Compactor {
         // The marker rides twice: in the summary and where the dropped messages sat.
         let line = format!("[{}]", "#".repeat(96));
         let widest = format!("{earlier}\n\n{line}");
-        let (summary_room, _) = compose_summary(&widest, &prepared.file_ops, &prepared.view);
+        // Incident: charging the whole-cut view here ate the room of every recent tool step. The
+        // view rides only in what the kept tail leaves spare.
+        let bare = CompiledView::default();
+        let (summary_room, _) = compose_summary(&widest, &prepared.file_ops, &bare);
         let cost = |index: usize| wide(estimate_message(&messages[index]));
         let room = [&loop_request.system_prompt, &tools, &summary_room, &line]
             .into_iter()
@@ -594,38 +639,49 @@ impl Compactor {
         // The run's opening rides in the kept tail when it fits, else it is kept ahead of it.
         let mut cut = fit(room);
         let run = run.filter(|run| *run < cut);
+        let mut room = room;
         if let Some(run) = run {
-            cut = fit(room.saturating_sub(cost(run)));
+            room = room.saturating_sub(cost(run));
+            cut = fit(room);
         }
         let mut pinned: Vec<usize> = first.into_iter().chain(run).collect();
         pinned.sort_unstable();
+        let mut tail: Vec<AgentMessage> = pinned
+            .iter()
+            .map(|index| messages[*index].clone())
+            .collect();
+        tail.extend_from_slice(&messages[cut..]);
+        let mut tail = drop_internal(&tail);
+        let dropped = (start..cut)
+            .filter(|index| !pinned.contains(index))
+            .filter(|index| !matches!(messages[*index], AgentMessage::Custom { .. }))
+            .count();
         let elision = Elision {
-            messages: (start..cut)
-                .filter(|index| !pinned.contains(index))
-                .filter(|index| !matches!(messages[*index], AgentMessage::Custom { .. }))
-                .count(),
+            total: tail.len().saturating_add(dropped),
+            window,
+            messages: dropped,
         };
         if elision.messages == 0 {
             return None;
         }
         let marker = elision.to_string();
-        let mut tail: Vec<AgentMessage> = pinned
-            .iter()
-            .map(|index| messages[*index].clone())
-            .collect();
-        tail.push(AgentMessage::host_note(
-            COMPACTION_NOTICE,
-            marker.clone(),
-            0,
-        ));
-        tail.extend_from_slice(&messages[cut..]);
+        tail.insert(
+            pinned.len().min(tail.len()),
+            AgentMessage::host_note(COMPACTION_NOTICE, marker.clone(), 0),
+        );
         let body = if earlier.is_empty() {
             marker
         } else {
             format!("{earlier}\n\n{marker}")
         };
-        let (summary, _) = compose_summary(&body, &prepared.file_ops, &prepared.view);
-        Some((summary, drop_internal(&tail), elision))
+        let spare = (cut..messages.len())
+            .map(cost)
+            .fold(room, Tokens::saturating_sub);
+        let (bare_summary, _) = compose_summary(&body, &prepared.file_ops, &bare);
+        let (full, _) = compose_summary(&body, &prepared.file_ops, &prepared.view);
+        let extra = text_tokens(&full).saturating_sub(text_tokens(&bare_summary));
+        let summary = if extra <= spare { full } else { bare_summary };
+        Some((summary, tail, elision))
     }
 
     /// The loop's request plus the directive, a cache read on its model (§7). A failed summary
@@ -681,13 +737,14 @@ impl Compactor {
             cache_ttl: yi_types::model::Ttl::Min5,
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
-                let mut converted = convert_to_llm(window_messages);
                 // A cold attempt sends no tools, and Anthropic refuses tool blocks without them
-                // (#948): it reads the history as text.
-                if !warm {
-                    let text = serialize_conversation(&converted);
-                    converted = vec![AgentMessage::task(&text, 0)];
-                }
+                // (#948): it reads the history as text, whole, since no cache is gained by a cut.
+                let mut converted = if warm {
+                    (loop_request.convert)(window_messages)
+                } else {
+                    let text = serialize_conversation(&yi_context::convert_to_llm(window_messages));
+                    vec![AgentMessage::task(&text, 0)]
+                };
                 let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
                 converted.push(directive_message(&prepared, instructions.as_deref(), &key));
                 converted
@@ -755,6 +812,10 @@ impl Compactor {
         };
         let (composed, details, retained_tail, elision) = match summary {
             Ok(text) => {
+                let text = match inputs.as_deref() {
+                    Some(inputs) => yi_context::mark_unmatched_quotes(&text, inputs),
+                    None => text,
+                };
                 let (composed, details) =
                     compose_summary(&text, &prepared.file_ops, &prepared.view);
                 (
@@ -807,6 +868,7 @@ impl Compactor {
             timestamp,
         });
         replacement.extend(retained_tail);
+        self.settled.store(left(&replacement), Ordering::Relaxed);
         Ok(Compacted::Applied(Replacement {
             messages: replacement,
             elision,

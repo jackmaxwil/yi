@@ -9,6 +9,8 @@ on:
     paths: [".forgejo/workflows/**"]
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
   the-bench-runner-drives-its-own-daemon:
     # The design's table: bench never runs on an imported external PR.

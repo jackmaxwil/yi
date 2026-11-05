@@ -1,5 +1,5 @@
-# The merge queue's tick (scripts/pr_queue.py): it merges a `queue`-labelled PR onto current main on
-# queue/candidate, reads that ref's gate, and fast-forwards main to the exact commit that went green.
+# The merge queue's tick (scripts/pr_queue.py): it merges up to four `queue`-labelled PRs onto current main on
+# queue/candidate, reads that ref's gate, and fast-forwards main to the exact commits that went green.
 # MERGE_QUEUE is `off`, `shadow` or `on`: shadow does everything up to the push and says what it would land.
 name: queue
 
@@ -11,6 +11,9 @@ on:
 concurrency:
   group: queue
   cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   queue:
@@ -35,7 +38,7 @@ jobs:
           ref=$(fgj api --hostname git.example.invalid "repos/${{ github.repository }}/branches/queue%2Fcandidate" >/dev/null 2>&1 && echo 1 || echo 0)
           [ "$labelled$ref" = "00" ] && echo "run=no" >> "$GITHUB_OUTPUT" || echo "run=yes" >> "$GITHUB_OUTPUT"
       - if: steps.work.outputs.run == 'yes'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the tick pushes candidates and main with the checkout's token.
         with:
           ref: main
           fetch-depth: 0

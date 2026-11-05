@@ -122,11 +122,29 @@ def selfcheck():
     log = ["\x1eme", "diff --git a/p/planted b/p/planted", "+estate.lan", "\x1eestate.lan"]
     assert history(log, deny, ["p/*"]) == ["(message): estate.lan"]
     assert history(log, deny, []) == ["p/planted: +estate.lan", "(message): estate.lan"]
-    # The planted fakes are skipped by the list GitGuardian already reads.
-    assert "**/fixtures/planted*" in unscanned()
+    # The planted fakes are skipped, at any depth, and no real source is: `tree()` and `history()`
+    # match this list with fnmatch, so the selfcheck does too.
+    nested = "crates/runtime/tests/fixtures/behavior/a/b/planted-key"
+    assert any(fnmatch.fnmatch(nested, g) for g in unscanned()), "a nested planted path is not skipped"
+    for path in (
+        "crates/oauth/tests/device_login.rs",
+        "crates/oauth/tests/flow.rs",
+        "crates/runtime/tests/kept_rules.rs",
+        "docs/archive/plans/2026-09-06-prompt-surface/prior-art-codex-jcode.md",
+        "docs/archive/plans/2026-09-06-prompt-surface/openai.md",
+    ):
+        assert not any(fnmatch.fnmatch(path, g) for g in unscanned()), (
+            f"public-surface scanning skips real source: {path}")
     # A message is judged as the mirror rewrites it, and a hit names its own commit.
     log = "\x1eaaa\nhost git.estate.lan\n\n\x1ebbb\nsubject\n\nsays ESTATE.LAN\n"
     assert messages(log, deny, swaps) == ["bbb:3: says ESTATE.LAN"]
+    # A planted fake the scanners skip still reaches the mirror unless exclude.txt names it, and
+    # GitHub's push protection refuses the key by its own rule (GH013). Incident: the push was refused.
+    if (RULES / "exclude.txt").is_file():
+        prefixes = rule_lines(RULES / "exclude.txt")
+        for planted in sorted((ROOT / "scripts/scan/fixtures/gitleaks").glob("*.txt")):
+            rel = planted.relative_to(ROOT).as_posix()
+            assert excluded(rel, prefixes), f"the mirror would carry the planted fixture {rel}"
     wired()
     print("ok   public_surface --selfcheck")
 

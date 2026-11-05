@@ -14,6 +14,7 @@ them without a server.
 """
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -239,14 +240,17 @@ def cmd_commit(args):
     if dirty(baseline_paths()):
         print("commit: baselines moved — ratcheting them into their own commit first")
         cmd_ratchet(argparse.Namespace(topic=args.topic or "", no_binary=True))
-    git("add", "-A", check=True)
+    if args.paths:
+        git("add", "--", *args.paths, check=True)
     if not git("diff", "--cached", "--name-only"):
-        print("commit: nothing to commit")
-        return 0
+        left = git("status", "--porcelain")
+        print("commit: nothing staged; name the paths to commit:" if left else "commit: nothing to commit")
+        print(left)
+        return 1 if left else 0
     message = ["-m", args.subject.strip()]
     if args.body:
         message += ["-m", pathlib.Path(args.body).read_text().strip()]
-    out = subprocess.run(("git", "-C", str(ROOT), "commit", "-q", *message), check=False)
+    out = subprocess.run(("git", "-C", str(ROOT), "commit", "-q", *message, *(("--", *args.paths) if args.paths else ())), check=False)
     if out.returncode != 0:
         return out.returncode
     print(f"committed {git('rev-parse', '--short', 'HEAD')} {args.subject.strip()}")
@@ -516,7 +520,7 @@ def report(pr, jobs, need, verdict):
         print(f"  {jobs.get(job, 'not run'):<10} {job}")
     hints = {
         "draft": f"a draft; the forge will not merge it — just pr ready {pr['number']} once it is reviewed",
-        "behind": f"main moved under it — just pr update {pr['number']}",
+        "behind": f"main moved under it — just pr merge {pr['number']} lands it as it stands, or just pr update {pr['number']}",
         "failed:title": f"the title job refused — just pr check {pr['number']} prints why",
         "pending": "the gate is still running",
         "green": f"green — just pr merge {pr['number']}",
@@ -569,6 +573,19 @@ def cmd_rerun(args):
     return 0
 
 
+def queue_mode():
+    """The queue's switch as the tick reads it: the forge's repository variable, and the environment only
+    when that read fails, because a workflow exports the variable to the tick and a shell has nothing."""
+    answer = fgj_api("GET", f"repos/{repo()}/actions/variables/MERGE_QUEUE")
+    mode = answer.get("data") if isinstance(answer, dict) else None
+    if mode in ("off", "shadow", "on"):
+        return mode
+    why = answer.get("message") if isinstance(answer, dict) else "no answer"
+    told = os.environ.get("MERGE_QUEUE") or "off"
+    print(f"merge: the forge did not read MERGE_QUEUE ({why}), so the environment says {told}")
+    return told
+
+
 def unreviewed(number, pr):
     """What the rounds still owe before a merge; nothing while rounds only report (shadow)."""
     import pr_review
@@ -585,20 +602,30 @@ def cmd_merge(args):
         import pr_queue
 
         return pr_queue.cmd_merge_now(number)
+    mode = queue_mode()
     need = required()
     deadline = time.monotonic() + args.timeout * 60
     while True:
         pr = pull(number)
         jobs = jobs_of(pr)
         verdict = decide(pr, jobs, need, is_behind(pr))
+        if verdict == "behind" and pr.get("mergeable") is not False and mode != "on":
+            # Invariant: main's rule no longer blocks an outdated branch, so a clean behind PR merges as it stands.
+            verdict = decide(pr, jobs, need, False)
         if verdict == "merged":
             print(f"#{number} merged")
             return 0
         if verdict == "behind":
-            print(f"#{number} is behind main; updating")
-            if cmd_update(argparse.Namespace(number=number)):
-                print(f"merge: stopped — the forge refused to update #{number}; merge origin/main by hand")
-                return 1
+            if pr.get("mergeable") is False:
+                print(f"#{number} conflicts with main; updating to surface it")
+                if cmd_update(argparse.Namespace(number=number)):
+                    print(f"merge: stopped — the forge refused to update #{number}; merge origin/main by hand")
+                    return 1
+            else:
+                import pr_queue
+
+                print(f"#{number} is behind main without a conflict; queueing it")
+                return pr_queue.cmd_queue(argparse.Namespace(number=number), mode)
         elif verdict == "green":
             if errs := unreviewed(number, pr):
                 for err in errs:
@@ -612,6 +639,11 @@ def cmd_merge(args):
                 print(f"merge refused: {answer['message']}")
                 if "behind" not in answer["message"]:
                     return 1
+                if mode != "on":
+                    # Incident: with main's rule back on, this POST was re-posted every POLL until the
+                    # deadline, so the verb never reached the update that could resolve the refusal.
+                    print(f"merge: the forge wants #{number} up to date first; updating it")
+                    return cmd_update(argparse.Namespace(number=number))
         elif verdict.startswith("failed:") or verdict in ("closed", "draft"):
             report(pr, jobs, need, verdict)
             if verdict == "failed:title":
@@ -802,18 +834,29 @@ def selfcheck():
     assert unread == 1 and "refused" in said.getvalue(), "a draft with no rounds is not readied"
     assert stopped == 1 and "not readied" in patched.getvalue(), "a refused title PATCH stops the ready verb"
     fakes = {name: globals()[name] for name in ("pull", "jobs_of", "required", "is_behind", "decide", "unreviewed", "fgj_api")}
+    def forge_variable(mode, sink=None, merge=None):
+        """A forge whose MERGE_QUEUE answers `mode` (None: the token may not read it); other calls land in `sink`."""
+        def forge(method, path, payload=None):
+            if "actions/variables" in path:
+                return {"message": "403 the token may not read variables"} if mode is None else {"name": "MERGE_QUEUE", "data": mode}
+            if sink is not None:
+                sink.append(path)
+            return (merge or {}) if path.endswith("/merge") else {}
+        return forge
+
     posted = []
     globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
                      jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: False, decide=lambda *a: "green",
                      unreviewed=lambda n, pr: ["0 review round(s); a PR needs two"],
-                     fgj_api=lambda method, path, payload=None: posted.append(path))
+                     fgj_api=forge_variable("off", posted))
     try:
         with contextlib.redirect_stdout(io.StringIO()) as merging:
             held = cmd_merge(argparse.Namespace(number=7, timeout=1, wait=False))
     finally:
         globals().update(fakes)
     assert held == 1 and not posted and "needs two review rounds" in merging.getvalue(), "a green PR without rounds is not merged"
-    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": False,
+                                     "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
                      jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, decide=lambda *a: "behind",
                      fgj_api=lambda method, path, payload=None: {"message": "merge conflict"})
     try:
@@ -822,6 +865,66 @@ def selfcheck():
     finally:
         globals().update(fakes)
     assert refused == 1 and "refused to update" in conflicted.getvalue(), "a refused update stops the merge loop"
+    import os, pr_queue
+    from unittest import mock
+
+    # The switch is the forge's repository variable: queue.yml exports it to the tick, and a shell has nothing.
+    globals().update(fgj_api=forge_variable("on"))
+    try:
+        with mock.patch.dict(os.environ, {"MERGE_QUEUE": "off"}), contextlib.redirect_stdout(io.StringIO()):
+            told = queue_mode()
+    finally:
+        globals().update(fakes)
+    assert told == "on", f"the queue's switch was read from the shell while the forge said on: {told}"
+    globals().update(fgj_api=forge_variable(None))
+    try:
+        with mock.patch.dict(os.environ, {"MERGE_QUEUE": "shadow"}), contextlib.redirect_stdout(io.StringIO()) as unread:
+            told = queue_mode()
+    finally:
+        globals().update(fakes)
+    assert told == "shadow" and "403 the token may not read variables" in unread.getvalue() and "shadow" in unread.getvalue(), (
+        f"a forge that cannot answer MERGE_QUEUE fell back without saying which it used: {told}, {unread.getvalue()!r}")
+
+    behind = {"number": 7, "title": "Keep the gate", "mergeable": True, "head": {"sha": "abc1234"}, "base": {"ref": "main"}}
+    queued = []
+    globals().update(pull=lambda n: behind, jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True,
+                     decide=lambda pr, jobs, need, is_behind: "behind" if is_behind else "green", unreviewed=lambda n, pr: [],
+                     fgj_api=forge_variable("on", queued))
+    try:
+        with mock.patch.dict(os.environ, {"MERGE_QUEUE": "off"}), \
+                mock.patch.object(pr_queue, "cmd_queue", lambda args, mode: queued.append((args.number, mode)) or 0), \
+                contextlib.redirect_stdout(io.StringIO()):
+            clean = cmd_merge(argparse.Namespace(number=7, timeout=0, wait=False))
+    finally:
+        globals().update(fakes)
+    assert clean == 0 and queued == [(7, "on")], (
+        f"a behind, clean PR did not reach the queue the forge says is on: exit={clean}, calls={queued}")
+    merged = []
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": True, "merged": bool(merged),
+                                     "state": "open", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+                     jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, unreviewed=lambda n, pr: [],
+                     decide=lambda pr, jobs, need, behind: "merged" if pr["merged"] else "behind" if behind else "green",
+                     fgj_api=forge_variable("off", merged))
+    try:
+        with mock.patch.dict(os.environ, {"MERGE_QUEUE": "on"}), contextlib.redirect_stdout(io.StringIO()):
+            cmd_merge(argparse.Namespace(number=7, timeout=0, wait=False))
+    finally:
+        globals().update(fakes)
+    assert merged and merged[-1].endswith("pulls/7/merge"), (
+        f"a behind, clean PR was queued for a forge whose variable is off: {merged}")
+    updated = []
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": True, "merged": False,
+                                     "state": "open", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+                     jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: False,
+                     decide=lambda pr, jobs, need, behind: "green", unreviewed=lambda n, pr: [],
+                     fgj_api=forge_variable("off", updated, merge={"message": "This branch is behind main; the merge was refused"}))
+    try:
+        with mock.patch.dict(os.environ, {"MERGE_QUEUE": "off"}), contextlib.redirect_stdout(io.StringIO()):
+            code = cmd_merge(argparse.Namespace(number=7, timeout=0, wait=True))
+    finally:
+        globals().update(fakes)
+    assert code == 0 and [path.rsplit("/pulls/7/", 1)[-1] for path in updated] == ["merge", "update?style=merge"], (
+        f"a green merge the forge refused as out of date never reached the update: exit={code}, calls={updated}")
 
     def merge_on_fake_forge(protected, statuses):
         """cmd_merge for #7 against a forge whose rule lists `protected` and whose head `abc1234` ran
@@ -939,7 +1042,45 @@ def selfcheck():
     except SystemExit:
         pass
     assert flags.get("closes") == ["1"] and flags.get("refs") == ["2"], ("pr check takes the flags pr open takes", flags)
+    # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green.
+    commit_selfcheck()
     print("ok   forge_pr selfcheck")
+
+
+def commit_selfcheck():
+    """`commit` in a scratch repository holding one named and one unnamed untracked file."""
+    import contextlib, io, os
+
+    names = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths", "binary_ratchet")}
+    with tempfile.TemporaryDirectory() as scratch:
+        os.environ.update(names)
+        subprocess.run(("git", "-C", scratch, "init", "-q"), check=True)
+        globals().update(ROOT=pathlib.Path(scratch), baseline_paths=lambda: [], binary_ratchet=lambda topic: 0)
+        parse = build_parser().parse_args
+        try:
+            (pathlib.Path(scratch) / "a.txt").write_text("a\n")
+            (pathlib.Path(scratch) / "b.txt").write_text("b\n")
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                refused = cmd_commit(parse(["commit", "Add the files"]))
+            assert refused == 1 and "b.txt" in said.getvalue() and not git("log", "--oneline"), ("nothing named, nothing staged", said.getvalue())
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the named file", "a.txt"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "a.txt", git("show", "--name-only", "--format=", "HEAD")
+            assert git("status", "--porcelain") == "?? b.txt", "a path the caller did not name stays out of the commit"
+            git("add", "--", "b.txt", check=True)
+            (pathlib.Path(scratch) / "c.txt").write_text("c\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the third file", "c.txt"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "c.txt", "a file staged by someone else rides into a named-path commit"
+            assert git("diff", "--cached", "--name-only") == "b.txt", "the unrelated staged file stays staged"
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the staged file"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "b.txt", "no paths named commits what is staged"
+        finally:
+            globals().update(saved)
+            for name in names:
+                del os.environ[name]
 
 
 def build_parser():
@@ -951,6 +1092,7 @@ def build_parser():
     ratchet.set_defaults(run=cmd_ratchet)
     commit = verbs.add_parser("commit")
     commit.add_argument("subject")
+    commit.add_argument("paths", nargs="*")
     commit.add_argument("--body")
     commit.add_argument("--topic", default="")
     commit.set_defaults(run=cmd_commit)
@@ -1005,6 +1147,9 @@ def build_parser():
     replay.add_argument("--label", required=True, help="what the PR is known to be: bad, kept, closed")
     replay.add_argument("--out", required=True, help="the JSON-lines file each reading is appended to")
     replay.set_defaults(run=pr_review.cmd_replay)
+    calibrate = pr.add_parser("calibrate", help="precision and recall of a high finding on replay files")
+    calibrate.add_argument("files", nargs="+")
+    calibrate.set_defaults(run=pr_review.cmd_calibrate)
     merge = pr.add_parser("merge")
     merge.add_argument("number", nargs="?")
     merge.add_argument("--no-wait", dest="wait", action="store_false")
