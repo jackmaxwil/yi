@@ -63,7 +63,9 @@ def errors(bin_path, budgets, runs=50, off="", env=None):
                 diagnostic = run.stderr.strip()
                 errs.append(f"{args}: hyperfine exit {run.returncode}: {diagnostic[-300:] if off == 'stderr' else diagnostic}")
                 continue
-            min_ms = json.loads(out.read_text())["results"][0]["min"] * 1000
+            result = json.loads(out.read_text())["results"][0]
+            min_seconds = result.get("min", result.get("summary", {}).get("time_wall_clock", {}).get("min"))
+            min_ms = min_seconds * 1000
             report.append(f"{args}: {min_ms:.2f} ms / {max_ms:.1f} ms")
             if min_ms > max_ms:
                 errs.append(f"{args}: {min_ms:.2f} ms > {max_ms} ms")

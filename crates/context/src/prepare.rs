@@ -88,7 +88,7 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
         .as_ref()
         .and_then(|d| view_from_extra(&d.extra));
     let view = compile_view(
-        &attributed[work_start..][..history_end],
+        &attributed[work_start..][..cut.first_kept_index],
         previous_view.as_ref(),
     );
     Some(Preparation {
