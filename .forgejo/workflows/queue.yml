@@ -1,5 +1,5 @@
-# The merge queue's tick (scripts/pr_queue.py): it merges a `queue`-labelled PR onto current main on
-# queue/candidate, reads that ref's gate, and fast-forwards main to the exact commit that went green.
+# The merge queue's tick (scripts/pr_queue.py): it merges up to four `queue`-labelled PRs onto current main on
+# queue/candidate, reads that ref's gate, and fast-forwards main to the exact commits that went green.
 # MERGE_QUEUE is `off`, `shadow` or `on`: shadow does everything up to the push and says what it would land.
 name: queue
 
