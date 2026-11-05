@@ -517,5 +517,7 @@ edited by hand.
 - [D544](adr/d544.md) - a server wait past the retry cap, or `x-should-retry
 - [D545](adr/d545.md) - amends D278's lowercase ASCII tokens
 - [D546](adr/d546.md) - the spec is the harness's object, not the model's
+- [D547](adr/d547.md) - a branch whose content is in trunk counts as merged however it landed
+- [D548](adr/d548.md) - A release goes out every night from CI, on the forge and on GitHub, and yi...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
