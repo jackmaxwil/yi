@@ -1124,7 +1124,7 @@ fn a_steer_keeps_the_answer_file_the_prompt_named() -> TestResult {
 fn only_a_data_file_the_prompt_named_earns_the_artifact_re_drive() -> TestResult {
     let r = rig("artifact-named")?;
     let hooks = prelude_hooks(&r);
-    let prompt = user("Write the detection limit to /app/answer.txt");
+    let prompt = user("Write the detection limit to /app/answer.txt; read /app/config.yaml.bak");
     assert!((hooks.on_prompt)(&prompt).is_none());
     yi_session::lock_session(&r.store).append_message("main", prompt)?;
     let write = |id: &str, path: &str, body: &str| {
@@ -1139,7 +1139,7 @@ fn only_a_data_file_the_prompt_named_earns_the_artifact_re_drive() -> TestResult
     assert_eq!(
         (hooks.intercept_stop)(&snap(&done, &[])).map(|message| custom_type(&message).2),
         None,
-        "a data file the prompt never named is not the answer file"
+        "a path named only as a longer backup name is not the answer file"
     );
     yi_session::lock_session(&r.store)
         .append_message("main", write("c2", "/app/answer.txt", "limit 4242\n"))?;

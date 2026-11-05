@@ -143,13 +143,21 @@ impl History {
         &self.written
     }
 
-    /// The prompt named this path: whole, or by the file name it was written under.
+    /// The prompt named this path or a path with the same whole file name.
     pub(crate) fn names(&self, path: &str) -> bool {
         let name = std::path::Path::new(path)
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(path);
-        self.asked.contains(path) || self.asked.contains(name)
+        let path_char =
+            |c: char| c.is_alphanumeric() || matches!(c, '/' | '\\' | '.' | '_' | '-' | '~');
+        self.asked.split(|c: char| !path_char(c)).any(|token| {
+            token == path
+                || std::path::Path::new(token)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|token_name| token_name == name)
+        })
     }
 }
 

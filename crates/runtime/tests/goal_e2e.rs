@@ -15,7 +15,7 @@ use yi_ai::sse::SseDecoder;
 use yi_loop::ExecutionMode;
 use yi_runtime::goal::{
     GOAL_EXISTS_ERROR, GoalService, StoreHandle, attach_goal, budget_limit_text, continuation_text,
-    objective_updated_text, record_discovery,
+    objective_updated_text, record_discovery, released_text,
 };
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::goal::{Goal, GoalStatus};
@@ -115,11 +115,18 @@ fn every_goal_prompt_fills_every_placeholder() {
             continuation_text(&goal, None),
             budget_limit_text(&goal),
             objective_updated_text(&goal),
+            released_text(&goal, 3),
         ] {
             let quoted = format!("<untrusted_objective>\n{objective}\n</untrusted_objective>");
             assert!(text.contains(&quoted), "{text}");
             let rest = text.replacen(objective, "", 1);
             assert!(!rest.contains("{{") && !rest.contains("}}"), "{text}");
+        }
+        for text in [
+            continuation_text(&goal, None),
+            budget_limit_text(&goal),
+            objective_updated_text(&goal),
+        ] {
             assert!(text.contains("Tokens used: 250") && text.contains("Token budget: 1000"));
         }
     }
@@ -1165,13 +1172,18 @@ fn goal_rig() -> Result<(Scratch, yi_session::SharedSession, Arc<GoalService>), 
     Ok((root, store, service))
 }
 
-fn goal_run(service: &GoalService, tool: bool, stop: StopReason, reason: yi_types::event::RunEnd) {
+fn goal_run(
+    service: &GoalService,
+    tool: Option<&str>,
+    stop: StopReason,
+    reason: yi_types::event::RunEnd,
+) {
     use yi_types::event::AgentEvent;
     service.observe(&AgentEvent::AgentStart);
-    if tool {
+    if let Some(tool) = tool {
         service.observe(&AgentEvent::ToolExecutionStart {
             tool_call_id: "c1".to_owned(),
-            tool_name: "bash".to_owned(),
+            tool_name: tool.to_owned(),
             args: json!({"command": "cargo test"}),
         });
     }
@@ -1190,20 +1202,63 @@ fn goal_active(store: &yi_session::SharedSession) -> bool {
         .is_some_and(|goal| goal.status.is_active())
 }
 
-/// Dies with a productive run between quiet ones not resetting the count: a goal blocked after
+/// Dies with a productive user run between quiet ones not resetting the count: a goal blocked after
 /// three quiet runs in total although work happened between them.
 #[tokio::test]
-async fn a_run_that_calls_a_tool_resets_the_quiet_count() -> TestResult {
-    use yi_types::event::RunEnd;
+async fn a_productive_user_run_resets_the_quiet_count() -> TestResult {
+    use yi_types::event::{AgentEvent, RunEnd};
+    assert!(!yi_runtime::todo::coupling::quiet_call("write", None));
     let (_root, store, service) = goal_rig()?;
-    goal_run(&service, false, StopReason::Stop, RunEnd::Stop);
-    for tool in [false, false, true, false, false] {
-        goal_run(&service, tool, StopReason::Stop, RunEnd::Stop);
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    for _ in 0..2 {
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
     }
+    service.observe(&AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("work".to_owned()), 0),
+    });
+    goal_run(&service, Some("write"), StopReason::Stop, RunEnd::Stop);
     assert!(
         goal_active(&store),
-        "two quiet runs after a working one leave the goal active"
+        "the productive user run itself leaves the goal active"
     );
+    for run in 1..=2 {
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+        assert!(
+            goal_active(&store),
+            "quiet run {run} after a working user run leaves the goal active"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with read-only exploration buying more continuations: the third quiet run must block
+/// whether it called nothing or spent the run reading.
+#[test]
+fn a_read_only_continuation_counts_as_a_run_that_changed_nothing() -> TestResult {
+    use yi_types::event::RunEnd;
+    let (_root, store, service) = goal_rig()?;
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    for _ in 0..2 {
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    }
+    goal_run(&service, Some("read"), StopReason::Stop, RunEnd::Stop);
+    assert!(!goal_active(&store), "the third quiet continuation blocks");
+    Ok(())
+}
+
+/// Dies with one goal's quiet count blocking the next goal after its first quiet continuation.
+#[test]
+fn a_new_goal_starts_with_no_quiet_runs() -> TestResult {
+    use yi_types::event::RunEnd;
+    let (_root, store, service) = goal_rig()?;
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    for _ in 0..2 {
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    }
+    service.update("complete")?;
+    service.create("a fresh objective", None, None, None)?;
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    assert!(goal_active(&store), "one quiet run is below the cap");
     Ok(())
 }
 
@@ -1213,13 +1268,13 @@ async fn a_run_that_calls_a_tool_resets_the_quiet_count() -> TestResult {
 async fn an_interrupted_continuation_is_not_a_quiet_run() -> TestResult {
     use yi_types::event::{AgentEvent, RunEnd};
     let (_root, store, service) = goal_rig()?;
-    goal_run(&service, false, StopReason::Stop, RunEnd::Stop);
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
     for _ in 0..3 {
-        goal_run(&service, false, StopReason::Aborted, RunEnd::Aborted);
+        goal_run(&service, None, StopReason::Aborted, RunEnd::Aborted);
         service.observe(&AgentEvent::MessageStart {
             message: AgentMessage::user_input(UserContent::Text("go on".to_owned()), 0),
         });
-        goal_run(&service, false, StopReason::Stop, RunEnd::Stop);
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
     }
     assert!(
         goal_active(&store),

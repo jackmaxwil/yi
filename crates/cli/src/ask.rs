@@ -360,7 +360,7 @@ async fn follow(
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything, mut due) = (None, false, false);
     let (mut last_error, mut finished, mut schema_failed) = (None, false, false);
-    let mut run_end = None;
+    let (mut run_end, mut answered) = (None, false);
     let (mut calls, mut denied) = (std::collections::HashMap::new(), None);
     loop {
         let next = match patience(holding, ends) {
@@ -432,6 +432,15 @@ async fn follow(
             due |= text;
             last_stop = Some((*stop_reason, text));
             said.push(std::mem::take(&mut answer));
+        }
+        if let AgentEvent::AgentEnd { messages, .. } = &event {
+            answered = if messages.is_empty() {
+                said_anything
+            } else {
+                messages.iter().any(|message| {
+                    matches!(message, AgentMessage::Assistant { content, .. } if yi_types::message::has_text(content))
+                })
+            };
         }
         match &event {
             AgentEvent::ToolExecutionStart {
@@ -514,7 +523,7 @@ async fn follow(
         how,
         RunEnd::Error | RunEnd::Aborted | RunEnd::Length | RunEnd::Guard
     );
-    let final_answer = closed && matches!(last_stop, Some((StopReason::Stop, true)));
+    let final_answer = closed && answered;
     if ended && eval && !final_answer {
         let stop = last_stop.map(|(stop, _)| stop);
         eprintln!("warning: the run ended without a final answer");
@@ -980,6 +989,39 @@ mod tests {
             assert_eq!(line["kind"], "error", "json {json}");
             assert_eq!(code == 0, json, "a plain run exits 1 on it: json {json}");
         }
+        Ok(())
+    }
+    /// Dies with the last reply's stop reason overriding the run's own clean end: text was present,
+    /// yet a deferred reply closed an answered run as `no_answer`.
+    #[test]
+    fn a_clean_end_with_text_answers_despite_the_last_reply_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::event::RunEnd;
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let answer =
+            faux_assistant_message(vec![faux_text("deferred but said")], StopReason::Deferred);
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        events.send(AgentEvent::MessageEnd {
+            message: answer.clone(),
+        })?;
+        events.send(AgentEvent::AgentEnd {
+            messages: vec![answer],
+            reason: Some(RunEnd::Stop),
+        })?;
+        let never = || false;
+        let modes = super::Modes {
+            json: true,
+            eval: true,
+            no_deltas: false,
+            headless: true,
+        };
+        let (_code, line) =
+            runtime.block_on(super::follow(receiver, [&never, &never], modes, None, None));
+        assert_eq!(line["kind"], "stop");
         Ok(())
     }
 }

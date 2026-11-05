@@ -1,7 +1,7 @@
 ---
 issue: Closes #1516
-growth: +253 the reason on every end, its five loop exits and the done.rs seam the file cap forced; weighed for deletion: the duplicate end() body, yi ask's second inference of the end, and the blocked-row skip that no reachable list needed
-raise: crate cli +59, crate loop +15, crate runtime +139, crate tui +2, crate types +38, tests +607, comments +8
+growth: +326 the reason on every end, its five loop exits and the done.rs seam the file cap forced; weighed for deletion: the duplicate end() body, yi ask's second inference of the end, and the blocked-row skip that no reachable list needed
+raise: crate cli +101, crate loop +15, crate runtime +170, crate tui +2, crate types +38, tests +695, comments +8
 ledger~: goals + autonomous | p, error-turn blocks | p released after three runs that changed nothing
 ---
 
@@ -11,4 +11,4 @@ The stop-claim re-drives stop firing on text that only looks like a claim. `clai
 
 A `done` with no target keeps blocked rows open. The call reached every row only when nothing was runnable — a list whose rows all wait on someone else — and closed them with their asks; it now closes pending rows only and names each blocked row it kept in the result note.
 
-A goal releases its continuation after three runs that changed nothing. `GoalService` counts continuation runs that ended on an error or called no tool, and at three it stops continuing, marks the goal blocked and steers one notice naming the cap and the two ways back (`goal.update` to finish, `goal.objective` to restate). A single failed turn no longer blocks a goal on its own, and a run that called a tool resets the count.
+A goal releases its continuation after three runs that changed nothing. `GoalService` counts continuation runs that ended on an error, called no tool, or made only read-only calls, using the same predicate as the todo quiet-turn coupling. At three it stops continuing, marks the goal blocked and steers one notice naming the cap and the two ways back (`goal.update` to finish, `goal.objective` to restate). A single failed turn no longer blocks a goal on its own. A productive user-driven run resets the count, and a create, status update or objective edit starts the next objective with a fresh count.

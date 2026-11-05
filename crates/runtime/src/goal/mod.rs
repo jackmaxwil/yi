@@ -17,6 +17,7 @@ pub use quiet::QUIET_RUNS_CAP;
 pub const CONTINUATION_TEMPLATE: &str = include_str!("prompts/continuation.md");
 pub const BUDGET_LIMIT_TEMPLATE: &str = include_str!("prompts/budget_limit.md");
 pub const OBJECTIVE_UPDATED_TEMPLATE: &str = include_str!("prompts/objective_updated.md");
+pub const RELEASED_TEMPLATE: &str = include_str!("prompts/released.md");
 
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
@@ -472,6 +473,14 @@ pub fn objective_updated_text(goal: &Goal) -> String {
     fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
 }
 
+pub fn released_text(goal: &Goal, runs: u32) -> String {
+    let extra = vec![
+        ("runs", runs.to_string()),
+        ("cap", QUIET_RUNS_CAP.to_string()),
+    ];
+    fill(RELEASED_TEMPLATE, goal, extra)
+}
+
 /// The objective-edit and budget notices ride the continuation kind but are never superseded.
 fn goal_notice_message(text: String) -> AgentMessage {
     AgentMessage::Custom {
@@ -510,8 +519,8 @@ pub struct GoalService {
     /// Cleared at AgentStart so idle cannot double-fire.
     pending: Mutex<bool>,
     continuing: Mutex<bool>,
-    called: Mutex<bool>,
-    /// Continuation runs in a row that ended on an error or called no tool.
+    worked: Mutex<bool>,
+    /// Continuation runs in a row that ended on an error or changed nothing.
     quiet: Mutex<u32>,
     wall_mark: Mutex<Option<Instant>>,
     checker: Checker,
@@ -528,7 +537,7 @@ impl GoalService {
             continuing: Mutex::new(false),
             checker: Checker::default(),
             pending: Mutex::new(false),
-            called: Mutex::new(false),
+            worked: Mutex::new(false),
             quiet: Mutex::new(0),
             wall_mark: Mutex::new(None),
         }
@@ -617,6 +626,7 @@ impl GoalService {
             extra: Map::new(),
         };
         self.write_goal(goal.clone())?;
+        self.reset_quiet();
         if let Ok(mut mark) = self.wall_mark.lock() {
             *mark = Some(Instant::now());
         }
@@ -662,6 +672,7 @@ impl GoalService {
         goal.status = status;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
+        self.reset_quiet();
         Ok(goal_json(&goal))
     }
 
@@ -740,6 +751,7 @@ impl GoalService {
         goal.check_failure = None;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
+        self.reset_quiet();
         (self.deliver)(
             goal_notice_message(objective_updated_text(&goal)),
             DeliveryMode::Steer,
@@ -857,7 +869,7 @@ impl GoalService {
         match event {
             AgentEvent::AgentStart => {
                 Self::set_flag(&self.pending, false);
-                Self::set_flag(&self.called, false);
+                Self::set_flag(&self.worked, false);
             }
             AgentEvent::MessageStart {
                 message: AgentMessage::User { .. },
@@ -865,7 +877,14 @@ impl GoalService {
                 Self::set_flag(&self.deferred, false);
                 Self::set_flag(&self.continuing, false);
             }
-            AgentEvent::ToolExecutionStart { .. } => Self::set_flag(&self.called, true),
+            AgentEvent::ToolExecutionStart {
+                tool_name, args, ..
+            } => {
+                let command = args.get("command").and_then(serde_json::Value::as_str);
+                if !crate::todo::coupling::quiet_call(tool_name, command) {
+                    Self::set_flag(&self.worked, true);
+                }
+            }
             AgentEvent::MessageEnd {
                 message:
                     AgentMessage::Assistant {

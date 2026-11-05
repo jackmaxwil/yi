@@ -10,7 +10,7 @@ use crate::goal::StoreHandle;
 
 pub mod claims;
 pub mod coupling;
-pub mod done;
+mod done;
 pub mod mirror;
 pub mod text;
 pub mod tool;

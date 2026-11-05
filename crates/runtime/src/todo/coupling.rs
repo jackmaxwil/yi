@@ -257,6 +257,13 @@ fn bounded(lower: &str, at: usize, word: &str) -> bool {
 const QUIET_TOOLS: [&str; 5] = ["read", "grep", "glob", "todo", "get_context"];
 
 /// A turn is quiet when every call reads: the read tools, or bash the gate proves safe.
+pub fn quiet_call(tool_name: &str, command: Option<&str>) -> bool {
+    match tool_name {
+        "bash" => command.is_some_and(|command| !mutating_command(command)),
+        name => QUIET_TOOLS.contains(&name),
+    }
+}
+
 pub fn quiet_turn(message: &AgentMessage, results: &[AgentMessage]) -> bool {
     let commands = commands_of(message);
     let mut any = false;
@@ -270,13 +277,11 @@ pub fn quiet_turn(message: &AgentMessage, results: &[AgentMessage]) -> bool {
             continue;
         };
         any = true;
-        let quiet = match tool_name.as_str() {
-            "bash" => commands
-                .iter()
-                .any(|(id, command)| id == tool_call_id && !mutating_command(command)),
-            name => QUIET_TOOLS.contains(&name),
-        };
-        if !quiet {
+        let command = commands
+            .iter()
+            .find(|(id, _)| id == tool_call_id)
+            .map(|(_, command)| command.as_str());
+        if !quiet_call(tool_name, command) {
             return false;
         }
     }
