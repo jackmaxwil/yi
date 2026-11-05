@@ -38,8 +38,8 @@ pub use diff::{GitPatch, patch};
 pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
 pub use exec::discover_exec_tools;
 pub use grep::{GrepTool, line_matcher};
-pub use ipython::cell_output;
 pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
+pub use ipython::{cell_output, shell_cell};
 pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, run_or_background};
 pub use orient::GetContextTool;
 pub use process::{
