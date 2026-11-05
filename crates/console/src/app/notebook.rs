@@ -5,18 +5,21 @@ const TEXT_CAP: usize = 8 * 1024;
 const RESULT_CAP: usize = 2 * 1024;
 use crate::model::{IMAGE_BYTES_MAX, IMAGES_PER_CELL};
 
-fn clamp_bytes(text: &str, cap: usize) -> String {
+fn clamp_bytes(text: &str, cap: usize) -> (String, bool) {
     if text.len() <= cap {
-        return text.to_owned();
+        return (text.to_owned(), false);
     }
     let head = text
         .get(..text.floor_char_boundary(cap))
         .unwrap_or_default();
-    format!(
-        "{head}\n[… {} of {} bytes kept · notebook cap {} KiB · the transcript holds all of it]",
-        head.len(),
-        text.len(),
-        cap / 1024
+    (
+        format!(
+            "{head}\n[… {} of {} bytes kept · notebook cap {} KiB · the transcript holds all of it]",
+            head.len(),
+            text.len(),
+            cap / 1024
+        ),
+        true,
     )
 }
 
@@ -66,13 +69,15 @@ pub(super) fn apply_notebook(
                 cell.stdout = details
                     .get("stdout")
                     .and_then(Value::as_str)
-                    .map(|text| clamp_bytes(text, TEXT_CAP))
+                    .map(|text| clamp_bytes(text, TEXT_CAP).0)
                     .unwrap_or_default();
-                cell.result = details
+                let result = details
                     .get("result")
                     .and_then(Value::as_str)
                     .filter(|text| !text.is_empty())
                     .map(|text| clamp_bytes(text, RESULT_CAP));
+                cell.result_capped = result.as_ref().is_some_and(|(_, capped)| *capped);
+                cell.result = result.map(|(text, _)| text);
                 cell.result_mime = details
                     .get("resultMime")
                     .and_then(Value::as_str)
@@ -80,7 +85,7 @@ pub(super) fn apply_notebook(
                 cell.stderr = details
                     .get("stderr")
                     .and_then(Value::as_str)
-                    .map(|text| clamp_bytes(text, TEXT_CAP))
+                    .map(|text| clamp_bytes(text, TEXT_CAP).0)
                     .unwrap_or_default();
                 cell.duration_ms = details.get("durationMs").and_then(Value::as_u64);
                 cell.error =
@@ -1037,6 +1042,45 @@ mod tests {
         assert!(
             drawn.iter().any(|row| row.contains("{\"cut\":")),
             "the value itself is gone"
+        );
+        Ok(())
+    }
+
+    /// Dies with a value's own last row peeled into a cap notice, or invalid JSON announcing a
+    /// byte cut that never happened.
+    #[test]
+    fn a_result_value_that_looks_like_a_cap_notice_stays_value() -> TestResult {
+        let markdown = rows(
+            &[kind_cell(Some("text/markdown"), "Before\n\n[…] own row")],
+            72,
+            false,
+        );
+        assert!(
+            markdown.iter().any(|row| row.starts_with("↳ […] own row")),
+            "the value's own row was not rendered as markdown: {markdown:#?}"
+        );
+        assert!(
+            !markdown.iter().any(|row| row == "  […] own row"),
+            "the value's own row became a pane notice: {markdown:#?}"
+        );
+
+        let json = rows(
+            &[kind_cell(
+                Some("application/json"),
+                "{\"cut\": \n[…] own row",
+            )],
+            72,
+            false,
+        );
+        assert!(
+            json.iter().any(|row| row.contains("did not parse as JSON")),
+            "the parse fallback was not named: {json:#?}"
+        );
+        assert!(
+            !json
+                .iter()
+                .any(|row| row.contains("past the cell's byte cap")),
+            "the value forged a byte cap: {json:#?}"
         );
         Ok(())
     }

@@ -448,10 +448,10 @@ fn markdown_rows(
 }
 
 /// Incident: the notebook's byte-cap notice rode inside a markdown table or fence and drew as a
-/// cell or as code; a trailing `[…` row is peeled off to draw as the pane's own muted row.
-fn split_notice(result: &str) -> (&str, Option<&str>) {
+/// cell or as code; only a result the cell says was byte-capped has its notice peeled off.
+fn split_notice(result: &str, byte_capped: bool) -> (&str, Option<&str>) {
     match result.rsplit_once('\n') {
-        Some((body, row)) if row.starts_with("[…") => (body, Some(row)),
+        Some((body, row)) if byte_capped => (body, Some(row)),
         _ => (result, None),
     }
 }
@@ -459,6 +459,7 @@ fn split_notice(result: &str) -> (&str, Option<&str>) {
 fn result_rows(
     result: &str,
     mime: Option<&str>,
+    byte_capped: bool,
     lead: Span<'static>,
     style: Style,
     shape: (usize, usize, bool, bool),
@@ -469,7 +470,7 @@ fn result_rows(
     }
     match renderer_for(mime) {
         Renderer::Markdown => {
-            let (body, notice) = split_notice(result);
+            let (body, notice) = split_notice(result, byte_capped);
             let mut rows = markdown_rows(body, &lead, shape, "result", theme);
             rows.extend(notice.map(|row| Line::styled(format!("  {row}"), theme.muted_style())));
             rows
@@ -482,7 +483,7 @@ fn result_rows(
             }
             Err(_) => {
                 let mut rows = capped(result, lead, style, None, shape, "result", theme);
-                let why = if split_notice(result).1.is_some() {
+                let why = if byte_capped {
                     "application/json result is past the cell's byte cap · the transcript holds all of it"
                 } else {
                     "application/json result did not parse as JSON · shown as text"
@@ -624,6 +625,7 @@ pub fn notebook_lines(
             out.extend(result_rows(
                 result,
                 cell.result_mime.as_deref(),
+                cell.result_capped,
                 Span::styled("↳ ", teal),
                 teal.add_modifier(Modifier::BOLD),
                 shape(RESULT_ROWS, false),
