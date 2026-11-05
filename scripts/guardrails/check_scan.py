@@ -78,7 +78,10 @@ class Unavailable(Exception):
 
 def environment():
     env = dict(os.environ)
-    env["UV_CACHE_DIR"] = str(ROOT / "target/uv-cache")
+    # Incident: rust-cache prunes any target/ dir holding a CACHEDIR.TAG as a build dir, so a restored
+    # cache gave CI a gutted uv cache and zizmor failed with no output; CI keeps uv's own cache dir.
+    if not env.get("CI"):
+        env["UV_CACHE_DIR"] = str(ROOT / "target/uv-cache")
     return env
 
 
@@ -97,7 +100,7 @@ def require_uv(package, executable, version):
     proc = run(uv_argv(package, executable, ["--version"]))
     if proc.returncode or version not in proc.stdout:
         reason = (proc.stdout + proc.stderr).strip().splitlines()
-        raise Unavailable(reason[-1] if reason else f"{executable} {version} is unavailable")
+        raise Unavailable(reason[-1] if reason else f"{executable} {version} exited {proc.returncode} with no output")
 
 
 def install_gitleaks(script):
@@ -435,6 +438,16 @@ def selfcheck(off="", fixtures=None):
             errors.append(f"a missing scanner with CI {'set did not abort' if strict else 'unset aborted the run'}")
         if not strict and "skip scan (probe)" not in printed.getvalue():
             errors.append("the announced skip row was not printed")
+    with mock.patch.dict(os.environ, {"CI": "1", "UV_CACHE_DIR": str(ROOT / "target/uv-cache")}):
+        if off != "uv-cache":
+            del os.environ["UV_CACHE_DIR"]
+        cache = environment().get("UV_CACHE_DIR")
+    if cache and pathlib.Path(cache).is_relative_to(ROOT / "target"):
+        errors.append(f"a CI scan put uv's cache under target/, which rust-cache prunes: {cache}")
+    with mock.patch.dict(os.environ, {"UV_CACHE_DIR": "elsewhere"}):
+        os.environ.pop("CI", None)
+        if environment()["UV_CACHE_DIR"] != str(ROOT / "target/uv-cache"):
+            errors.append("a local scan lost the target/uv-cache its offline mode reads")
     ci = os.environ.pop("CI", None)
     with tempfile.TemporaryDirectory() as tmp:
         fake = pathlib.Path(tmp) / "bin/gitleaks"
@@ -595,7 +608,7 @@ def main(argv):
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for tool, (cases, _) in FAMILIES.items() if tool in fixtures
                   for rules in cases.values() for rule in rules}
-        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout"}
+        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout", "uv-cache"}
         if "gitleaks" in fixtures:
             checks |= {"history", "diff"}
         for off in sorted(checks):
