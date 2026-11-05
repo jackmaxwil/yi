@@ -67,20 +67,24 @@ jobs:
       - name: toolchains, the macOS SDK and the release key
         if: steps.plan.outputs.forge == 'todo' || steps.plan.outputs.github == 'todo'
         env:
-          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SDK_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          # Incident 2026-11-05: a release download is a web route, which 404s the job token on a
+          # private repository, so the SDK is fetched with the review bot's user token.
+          test -n "${SDK_TOKEN:-}" || { echo "no REVIEW_BOT_TOKEN secret: the macOS SDK cannot be fetched"; exit 1; }
+          (umask 077 && printf 'Authorization: token %s\n' "$SDK_TOKEN" > "$RUNNER_TEMP/sdk-auth")
           test -n "${RELEASE_SIGNING_KEY:-}" || { echo "no RELEASE_SIGNING_KEY secret: nothing can be signed"; exit 1; }
           (umask 077 && printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/yi-release")
           echo "YI_SIGNING_KEY=$RUNNER_TEMP/yi-release" >> "$GITHUB_ENV"
-          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends musl-tools xz-utils >/dev/null
+          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xz-utils >/dev/null
           rustup target add x86_64-unknown-linux-musl aarch64-apple-darwin
           uv tool install -q cargo-zigbuild==0.24.0
           uv tool install -q ziglang==0.17.0
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "CARGO_ZIGBUILD_ZIG_PATH=$HOME/.local/bin/python-zig" >> "$GITHUB_ENV"
-          curl -fsSL -H @"$RUNNER_TEMP/forge-auth" -o "$RUNNER_TEMP/sdk.tar.xz" "$SDK_URL"
+          curl -fsSL -H @"$RUNNER_TEMP/sdk-auth" -o "$RUNNER_TEMP/sdk.tar.xz" "$SDK_URL"
           echo "$SDK_SHA256  $RUNNER_TEMP/sdk.tar.xz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/sdk" && tar -C "$RUNNER_TEMP/sdk" -xJf "$RUNNER_TEMP/sdk.tar.xz"
           echo "SDKROOT=$RUNNER_TEMP/sdk/MacOSX15.4.sdk" >> "$GITHUB_ENV"

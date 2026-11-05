@@ -349,14 +349,17 @@ impl AgentSession {
         })
     }
 
+    /// What a fork is seeded with: the history as this session's requests send it, cut results as
+    /// placeholders, so a child never carries bytes this session's model already stopped seeing.
     pub fn history_handle(&self) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {
-            shared
+            let messages = shared
                 .messages
                 .lock()
                 .map(|messages| messages.clone())
-                .unwrap_or_default()
+                .unwrap_or_default();
+            crate::reclaim::for_fork(&shared.reclaimed, messages)
         })
     }
 

@@ -50,6 +50,8 @@ pub fn faux_thinking(thinking: &str) -> Content {
         thinking: thinking.to_owned(),
         thinking_signature: None,
         redacted: None,
+        reasoning_field: None,
+        reasoning_details: None,
     }
 }
 
