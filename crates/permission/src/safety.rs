@@ -772,10 +772,14 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     scopes.dedup();
     scopes
 }
+
+mod redirects;
+pub(crate) use redirects::redirect_targets;
+
 /// What a command writes as an honest agent spells it: redirects (which the lenient splitter
 /// skips), in-place edits, file verbs. `2>&1` names no file.
 pub fn write_targets(command: &str) -> Vec<String> {
-    let mut out: Vec<String> = crate::scope::redirect_targets(command)
+    let mut out: Vec<String> = redirect_targets(command)
         .into_iter()
         .map(|target| target.path)
         .collect();

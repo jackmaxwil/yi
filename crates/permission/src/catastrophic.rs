@@ -812,9 +812,9 @@ fn wildcard(glob: &[char], name: &[char]) -> bool {
 }
 
 /// Wrappers that run another command: argv0 alone lets `nice rm -rf .git` past the belt (D205).
-const WRAPPERS: [&str; 11] = [
-    "command", "doas", "env", "ionice", "nice", "nohup", "stdbuf", "sudo", "time", "timeout",
-    "xargs",
+const WRAPPERS: [&str; 14] = [
+    "builtin", "command", "doas", "env", "exec", "ionice", "nice", "nohup", "stdbuf", "strace",
+    "sudo", "time", "timeout", "xargs",
 ];
 
 pub(crate) const SEPARATORS: [char; 7] = [';', '&', '|', '\n', '(', ')', '`'];

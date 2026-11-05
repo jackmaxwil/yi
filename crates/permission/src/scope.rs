@@ -3,110 +3,11 @@ use std::path::Path;
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use yi_types::permission::RuleKind;
 
-use crate::catastrophic::{CatastrophicContext, absolute, lexical_normalize, resolve_links, word};
+use crate::catastrophic::{CatastrophicContext, absolute, lexical_normalize, resolve_links};
 use crate::decide::ToolCall;
 use crate::rules::{Grant, SessionRules, identity, tagged};
 
 const SCOPE: &str = "write-scope";
-pub(crate) struct RedirectTarget {
-    pub(crate) path: String,
-    pub(crate) directory_known: bool,
-}
-/// Incident: a character-boundary scan misread `%cd`, `grep cd` and `'cd'`; this reads shell words.
-const DIRECTORY_WORDS: [&str; 3] = ["cd", "pushd", "popd"];
-const COMMAND_OPENERS: [&str; 12] = [
-    "if", "then", "elif", "else", "while", "until", "do", "!", "builtin", "command", "time", "}",
-];
-const WORD_BREAKS: &str = ";&|(){}<>`";
-fn end_word(word: &mut String, command_start: &mut bool, moved: &mut bool) {
-    if word.is_empty() {
-        return;
-    }
-    *moved |= *command_start && DIRECTORY_WORDS.contains(&word.as_str());
-    *command_start = COMMAND_OPENERS.contains(&word.as_str());
-    word.clear();
-}
-
-/// The files a command redirects into; quotes, comments and heredoc bodies name nothing.
-pub(crate) fn redirect_targets(command: &str) -> Vec<RedirectTarget> {
-    let (mut files, mut quote, mut ends) = (Vec::new(), None, Vec::<String>::new());
-    let (mut moved, mut command_start) = (false, true);
-    let mut token = String::new();
-    let mut continued = false;
-    for line in command.split('\n') {
-        let mut prev = ' ';
-        let continuing = std::mem::take(&mut continued);
-        if let Some(end) = ends.first() {
-            if line.trim() == end {
-                ends.remove(0);
-            }
-            token.clear();
-            command_start = true;
-            continue;
-        }
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            match (quote, c) {
-                (Some(open), c) if c == open => quote = None,
-                (Some('"'), '\\') => match chars.next() {
-                    Some(next) => token.push(next),
-                    None => continued = true,
-                },
-                (Some(_), _) => token.push(c),
-                (None, '\\') => match chars.next() {
-                    Some(next) => token.push(next),
-                    None => continued = true,
-                },
-                (None, '#') if prev.is_whitespace() => break,
-                (None, '\'' | '"') => quote = Some(c),
-                (None, '<') => {
-                    if !token.chars().all(|c| c.is_ascii_digit()) {
-                        end_word(&mut token, &mut command_start, &mut moved);
-                    }
-                    token.clear();
-                    let heredoc =
-                        chars.next_if_eq(&'<').is_some() && chars.next_if_eq(&'<').is_none();
-                    if heredoc {
-                        chars.next_if_eq(&'-');
-                        ends.extend(word(&mut chars));
-                    }
-                }
-                (None, '>') => {
-                    if !token.chars().all(|c| c.is_ascii_digit()) {
-                        end_word(&mut token, &mut command_start, &mut moved);
-                    }
-                    token.clear();
-                    while chars.next_if(|next| matches!(next, '>' | '|')).is_some() {}
-                    let combined = chars.next_if_eq(&'&').is_some();
-                    if let Some(target) = word(&mut chars)
-                        && (!combined
-                            || (target != "-" && !target.chars().all(|c| c.is_ascii_digit())))
-                    {
-                        let relative = !Path::new(&target).is_absolute();
-                        files.push(RedirectTarget {
-                            path: target,
-                            directory_known: !(moved && relative),
-                        });
-                    }
-                }
-                (None, c) if WORD_BREAKS.contains(c) => {
-                    end_word(&mut token, &mut command_start, &mut moved);
-                    command_start = true;
-                }
-                (None, c) if c.is_whitespace() => {
-                    end_word(&mut token, &mut command_start, &mut moved);
-                }
-                (None, c) => token.push(c),
-            }
-            prev = c;
-        }
-        if !continuing {
-            end_word(&mut token, &mut command_start, &mut moved);
-            command_start = true;
-        }
-    }
-    files
-}
 fn compile(pattern: &str) -> Result<Glob, String> {
     if pattern.is_empty() || pattern.starts_with('/') {
         return Err(format!(
@@ -151,7 +52,7 @@ pub(crate) fn outside(
     let set = builder.build().unwrap_or_else(|_| GlobSet::empty());
     let root = resolve_links(&lexical_normalize(context.working_dir.as_deref()?));
     let redirected: Vec<_> = (call.command.into_iter())
-        .flat_map(redirect_targets)
+        .flat_map(crate::safety::redirect_targets)
         .collect();
     let unreadable = (redirected.iter())
         .find(|target| !target.directory_known)

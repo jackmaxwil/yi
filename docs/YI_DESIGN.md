@@ -620,10 +620,10 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   every mode, yolo too, naming scope and path. Judged: `write`, `edit` (`MV` destinations too),
   `grep` with `apply`, and the unquoted redirects of a shell command. A relative redirect after a
   `cd`, `pushd` or `popd` is refused, the shell's directory never interpreted; the word is assembled
-  as a shell assembles it, quotes and escapes folded into it, and read where a shell would run one —
-  behind `if`, `then`, `elif`, `else`, `while`, `until`, `do`, `{`, `!`, `builtin`, `command` or
-  `time` as much as at a command's start, never inside a longer word or in argument position. An
-  absolute redirect target is judged as written.
+  as a shell assembles it, quotes and escapes folded into it, and read at command position. The same
+  `wraps` vocabulary as the other command checks reads past wrappers, keywords, flags, assignments
+  and numbers, never inside a longer word or in argument position. An absolute redirect target is
+  judged as written.
   Not judged: what a program writes (`sed -i`, `tee`, `cp`, `cargo`, a kernel
   cell), one in quotes or built by expansion, and paths outside the tree, which the sandbox bounds.
 - A contained failure is remembered by the path the sandbox denied, and a later write under its

@@ -46,16 +46,6 @@ pub struct Flags {
 }
 
 impl Flags {
-    pub fn set(&mut self, flag: String, value: String) {
-        let slot = match flag.as_str() {
-            "since" => &mut self.since,
-            "by" => &mut self.by,
-            "top" => &mut self.top,
-            _ => return,
-        };
-        *slot = Some(value);
-    }
-
     pub fn typed(self) -> Result<Query, lexopt::Error> {
         let bad = |flag: &str, value: &str, wants: &str| {
             lexopt::Error::Custom(format!("--{flag} {value}: {wants}").into())

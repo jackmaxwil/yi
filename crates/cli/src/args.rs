@@ -78,8 +78,7 @@ pub(super) fn parse_from(
     let mut no_deltas = false;
     let mut no_tools = false;
     let mut mode = None;
-    let mut allow_write = Vec::new();
-    let mut scope = Vec::new();
+    let (mut allow_write, mut scope) = (Vec::new(), Vec::new());
     let mut session_dir = None;
     let mut cwd = None;
     let mut here = false;
@@ -147,9 +146,11 @@ pub(super) fn parse_from(
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
             Long("check") => check = Some(parser.value()?.string()?),
-            Long(name @ ("since" | "by" | "top")) if command == "stats" => {
-                stats_flags.set(name.to_owned(), parser.value()?.string()?);
+            Long("since") if command == "stats" => {
+                stats_flags.since = Some(parser.value()?.string()?)
             }
+            Long("by") if command == "stats" => stats_flags.by = Some(parser.value()?.string()?),
+            Long("top") if command == "stats" => stats_flags.top = Some(parser.value()?.string()?),
             Long("role") if command == "models" => role = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
