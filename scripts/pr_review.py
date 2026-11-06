@@ -672,12 +672,14 @@ def yi_bin():
     """The yi a model call runs; with none built and none on PATH, the first call builds it.
     Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read."""
     with _BUILT:
+        # Incident: the autofixer's worker builds into its own CARGO_TARGET_DIR, and every fix died looking
+        # for target/debug/yi under the checkout (2026-11-05), so the search reads where cargo writes.
+        target = ROOT / os.environ.get("CARGO_TARGET_DIR", "target")
         found = os.environ.get("YI_BIN") or next(
-            (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()),
-            None)
+            (str(p) for p in (target / "dist/yi", target / "release/yi", target / "debug/yi") if p.exists()), None)
         if not (found or shutil.which("yi")):
             subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True)
-            found = str(ROOT / "target/debug/yi")
+            found = str(target / "debug/yi")
         found = found or "yi"
         if not _REFRESHED and not os.environ.get("YI_BIN"):
             # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the reviewer's
@@ -1443,27 +1445,36 @@ def selfcheck():
 
     # A job with no yi builds it once, on the first model call, however many lenses ask at once; it
     # refreshes the OpenRouter catalog once, then.
-    builds, keep = [], (subprocess.run, shutil.which, globals()["ROOT"], os.environ.pop("YI_BIN", None))
+    # The autofixer's worker sets CARGO_TARGET_DIR outside the checkout, and the stand-in writes where cargo would.
+    builds, keep = [], (subprocess.run, shutil.which, globals()["ROOT"], os.environ.pop("YI_BIN", None),
+                        os.environ.pop("CARGO_TARGET_DIR", None))
     root = pathlib.Path(tempfile.mkdtemp(prefix="yi-bin-check-"))
 
     def build(argv, cwd=None, check=False, **_):
         builds.append(argv)
-        (root / "target/debug").mkdir(parents=True, exist_ok=True)
-        (root / "target/debug/yi").write_text("")
+        if argv[0] == "cargo":
+            out = pathlib.Path(cwd) / os.environ.get("CARGO_TARGET_DIR", "target") / "debug"
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "yi").write_text("")
 
     subprocess.run, shutil.which, globals()["ROOT"] = build, (lambda name: None), root
-    _REFRESHED.clear()
     try:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            got = set(pool.map(lambda _: yi_bin(), range(8)))
-        yi = str(root / "target/debug/yi")
-        assert builds == [["cargo", "build", "-q", "-p", "yi-cli"], [yi, "catalog", "refresh", "openrouter"]] and got == {yi}, (builds, got)
+        for target in (None, str(root.parent / (root.name + "-worker-target"))):
+            builds.clear()
+            _REFRESHED.clear()
+            if target:
+                os.environ["CARGO_TARGET_DIR"] = target
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                got = set(pool.map(lambda _: yi_bin(), range(8)))
+            yi = str(pathlib.Path(target or root / "target") / "debug/yi")
+            assert builds == [["cargo", "build", "-q", "-p", "yi-cli"], [yi, "catalog", "refresh", "openrouter"]] and got == {yi}, (target, builds, got)
     finally:
         _REFRESHED.clear()
         subprocess.run, shutil.which, globals()["ROOT"] = keep[:3]
-        if keep[3] is not None:
-            os.environ["YI_BIN"] = keep[3]
+        for name, value in (("YI_BIN", keep[3]), ("CARGO_TARGET_DIR", keep[4])):
+            os.environ.pop(name, None) if value is None else os.environ.update({name: value})
         shutil.rmtree(root)
+        shutil.rmtree(root.parent / (root.name + "-worker-target"), ignore_errors=True)
     tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-check-"))
     try:
         (tree / "a.rs").write_text("fn main() {\n    let x = 1;\n}\n")
