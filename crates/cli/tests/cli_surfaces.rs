@@ -2464,14 +2464,13 @@ fn stats_counts_a_followed_skill_pointer_in_one_session_and_the_fold() -> TestRe
         ))?,
     )?;
     let expected = json!({
-        "catalogReads": 0, "skillReads": 1, "pointers": 1, "followed": 1, "followWindow": 3,
-        "notes": 0, "nudges": 0,
+        "skillReads": 1, "pointers": 1, "followed": 1, "followWindow": 3,
     });
     let one: Value =
         serde_json::from_str(&stdout(&workspace.yi(&["stats", "--json", "recorded"])?))?;
     assert_eq!(one["skills"], expected, "{one}");
     let text = stdout(&workspace.yi(&["stats", "recorded"])?);
-    let line = "skills  catalog reads 0, skill reads 1, pointers 1 (1 followed by a read within 3 turns), start notes 0, nudges 0";
+    let line = "skills  skill reads 1, pointers 1 (1 followed by a read within 3 turns)";
     assert!(text.lines().any(|row| row == line), "{text}");
     let fold = rolled(&workspace, &["stats", "--by", "skills", "--json"])?;
     assert_eq!(fold["skills"], expected, "{fold}");

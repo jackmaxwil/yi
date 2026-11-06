@@ -14,10 +14,12 @@ use yi_types::record::LaneRecord;
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::cache_miss::diagnostic_detail;
+use crate::fetch::FETCH_ENTRY_TYPE;
 use crate::journal::{Damage, Journal, RealFs};
 use crate::plan::ops::{CLASSIFIER_ACTOR, ENGINE_AGENT, HOST_ACTOR};
 use crate::plan::state::{KIND_DONE_REFUSED, KIND_VERIFICATION_STALE};
 use crate::plan::store::JOURNAL_NAME;
+use crate::rules::SKILL_ADDRESS;
 use crate::schedule::Zone;
 
 pub use yi_session::now_ms;
@@ -121,22 +123,33 @@ impl Scan {
 /// Assistant turns after a skill pointer within which a read of that skill counts as following it.
 pub const FOLLOW_WINDOW: u64 = 3;
 
-/// Skill catalog reads, skill reads, start-step notes and the `Relevant:` pointers a read followed,
-/// over sessions' messages in order; [`SkillUptake::next_session`] starts each one's turn count.
+/// Served skill reads and the `Relevant:` pointers a read followed, over sessions' messages in
+/// order; [`SkillUptake::next_session`] starts each one's turn count.
 #[derive(Default)]
 pub struct SkillUptake {
-    catalog_reads: u64,
     skill_reads: u64,
     pointers: u64,
     followed: u64,
-    notes: u64,
-    nudges: u64,
     pending: Vec<(String, u64)>,
     turn: u64,
 }
 
 impl SkillUptake {
     pub fn observe(&mut self, entry: &Entry) {
+        if let Entry::Custom {
+            custom_type, data, ..
+        } = entry
+            && custom_type == FETCH_ENTRY_TYPE
+        {
+            if let Some(url) = data
+                .as_ref()
+                .and_then(|data| data.get("url"))
+                .and_then(serde_json::Value::as_str)
+            {
+                self.served(url);
+            }
+            return;
+        }
         let Entry::Message { message, .. } = entry else {
             return;
         };
@@ -161,40 +174,55 @@ impl SkillUptake {
                 custom_type,
                 content,
                 ..
-            } => match (custom_type.as_str(), content) {
-                ("reminder", UserContent::Text(text)) => {
-                    let Some(rest) = text
-                        .strip_prefix("Relevant: ")
-                        .and_then(|rest| rest.strip_prefix(crate::rules::SKILL_ADDRESS))
-                    else {
-                        return;
-                    };
-                    let name = rest.split([' ', '#', '/']).next().unwrap_or_default();
-                    self.pointers = self.pointers.saturating_add(1);
-                    let deadline = self.turn.saturating_add(FOLLOW_WINDOW);
-                    self.pending.push((name.to_owned(), deadline));
+            } => {
+                if custom_type != "reminder" {
+                    return;
                 }
-                ("skills_prelude", _) => self.notes = self.notes.saturating_add(1),
-                ("skills_nudge", _) => self.nudges = self.nudges.saturating_add(1),
-                _ => {}
-            },
+                let UserContent::Text(text) = content else {
+                    return;
+                };
+                let Some(rest) = text
+                    .strip_prefix("Relevant: ")
+                    .and_then(|rest| rest.strip_prefix(SKILL_ADDRESS))
+                else {
+                    return;
+                };
+                let name = rest.split([' ', '#', '/']).next().unwrap_or_default();
+                self.pointers = self.pointers.saturating_add(1);
+                let deadline = self.turn.saturating_add(FOLLOW_WINDOW);
+                self.pending.push((name.to_owned(), deadline));
+            }
             _ => {}
         }
     }
 
-    /// A read of a file beside a skill, or of `<name>/SKILL.md` by path, counts for the skill.
-    fn read(&mut self, path: &str) {
-        let name = match path.strip_prefix(crate::rules::SKILL_ADDRESS) {
-            Some(rest) => rest.split(['#', '/']).next(),
-            None if path.trim_end_matches('/') == "yi://skills" => {
-                self.catalog_reads = self.catalog_reads.saturating_add(1);
-                return;
-            }
-            None => path
-                .strip_suffix("/SKILL.md")
-                .and_then(|dir| dir.rsplit('/').next()),
+    fn served(&mut self, url: &str) {
+        let Some(address) = url.strip_prefix(SKILL_ADDRESS) else {
+            return;
         };
-        let Some(name) = name.filter(|name| !name.is_empty()) else {
+        self.skill_read(address);
+    }
+
+    /// A filesystem `SKILL.md` read is the fallback where no skill fetch row can attribute it.
+    fn read(&mut self, path: &str) {
+        if path.starts_with(SKILL_ADDRESS) {
+            return;
+        }
+        let Some(name) = path
+            .strip_suffix("/SKILL.md")
+            .and_then(|dir| dir.rsplit('/').next())
+        else {
+            return;
+        };
+        self.skill_read(name);
+    }
+
+    fn skill_read(&mut self, address: &str) {
+        let Some(name) = address
+            .split(['#', '/'])
+            .next()
+            .filter(|name| !name.is_empty())
+        else {
             return;
         };
         self.skill_reads = self.skill_reads.saturating_add(1);
@@ -211,21 +239,15 @@ impl SkillUptake {
 
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
-            "catalogReads": self.catalog_reads, "skillReads": self.skill_reads,
+            "skillReads": self.skill_reads,
             "pointers": self.pointers, "followed": self.followed, "followWindow": FOLLOW_WINDOW,
-            "notes": self.notes, "nudges": self.nudges,
         })
     }
 
     pub fn line(&self) -> String {
         format!(
-            "skills  catalog reads {}, skill reads {}, pointers {} ({} followed by a read within {FOLLOW_WINDOW} turns), start notes {}, nudges {}",
-            self.catalog_reads,
-            self.skill_reads,
-            self.pointers,
-            self.followed,
-            self.notes,
-            self.nudges
+            "skills  skill reads {}, pointers {} ({} followed by a read within {FOLLOW_WINDOW} turns)",
+            self.skill_reads, self.pointers, self.followed
         )
     }
 }
@@ -283,6 +305,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
     let mut scan = Scan::default();
     let mut seen = HashSet::new();
     let plan_op = format!("\"customType\":\"{PLAN_OP_ENTRY_TYPE}\"");
+    let fetch = format!("\"customType\":\"{FETCH_ENTRY_TYPE}\"");
     for path in files {
         let text = std::fs::read(&path)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
@@ -308,6 +331,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                 || line.contains(crate::spend::TOOL_USAGE_PREFIX)
                 || line.contains(&plan_op)
                 || line.contains("\"role\":\"custom\"")
+                || line.contains(&fetch)
         }) {
             if entry_stamp(line).is_some_and(|stamp| stamp > 0 && stamp < since_ms) {
                 continue;
@@ -366,15 +390,14 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                 },
                 ..
             } = &parsed
+                && custom_type == PLAN_OP_ENTRY_TYPE
             {
-                if custom_type == PLAN_OP_ENTRY_TYPE {
-                    match data
-                        .clone()
-                        .and_then(|data| serde_json::from_value::<PlanOpRecord>(data).ok())
-                    {
-                        Some(record) => scan.add_plan_op(&record, since_ms),
-                        None => scan.bad_lines = scan.bad_lines.saturating_add(1),
-                    }
+                match data
+                    .clone()
+                    .and_then(|data| serde_json::from_value::<PlanOpRecord>(data).ok())
+                {
+                    Some(record) => scan.add_plan_op(&record, since_ms),
+                    None => scan.bad_lines = scan.bad_lines.saturating_add(1),
                 }
                 continue;
             }

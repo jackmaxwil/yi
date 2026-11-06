@@ -377,14 +377,7 @@ fn a_tool_usage_record_is_one_request_inside_its_window() -> TestResult {
 }
 
 fn skill_counts(skills: &Value) -> Value {
-    json!([
-        skills["catalogReads"],
-        skills["skillReads"],
-        skills["pointers"],
-        skills["followed"],
-        skills["notes"],
-        skills["nudges"],
-    ])
+    json!([skills["skillReads"], skills["pointers"], skills["followed"],])
 }
 
 /// Dies when the scan drops a `Relevant:` pointer or the read that followed it: the recorded
@@ -395,11 +388,11 @@ fn a_recorded_pointer_and_its_read_count_as_followed_and_a_plain_session_counts_
     let dir = Scratch::new("rollup-skills")?;
     put(&dir, "--proj--/1_pointed.jsonl", POINTED)?;
     let skills = scan(&dir, 0).skills.json();
-    assert_eq!(skill_counts(&skills), json!([0, 1, 1, 1, 0, 0]), "{skills}");
+    assert_eq!(skill_counts(&skills), json!([1, 1, 1]), "{skills}");
     let plain = Scratch::new("rollup-skills-none")?;
     put(&plain, "--proj--/1_plain.jsonl", ROOT)?;
     let skills = scan(&plain, 0).skills.json();
-    assert_eq!(skill_counts(&skills), json!([0, 0, 0, 0, 0, 0]), "{skills}");
+    assert_eq!(skill_counts(&skills), json!([0, 0, 0]), "{skills}");
     Ok(())
 }
 
@@ -429,10 +422,34 @@ fn turn(paths: &[&str]) -> Result<Entry, Box<dyn Error>> {
             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
     }))
 }
+fn fetched(path: &str) -> Result<Entry, Box<dyn Error>> {
+    Ok(serde_json::from_value(json!({
+        "type": "custom", "id": "f", "customType": "fetch",
+        "data": {"url": path, "hash": "deadbeef", "servedBy": "skill"},
+        "parentId": null, "seq": 1, "timestamp": 1_790_000_000_000_u64,
+    }))?)
+}
 
-/// Dies when the follow window is off by one either way, or a read of a skill's own file, or of
-/// its `SKILL.md` by path, is not the skill's read: `a` is read on the window's last turn, `b` one
-/// turn past it.
+/// Dies when an attempted read counts before the resolver served it, or a bare catalog address
+/// counts although the resolver refuses it.
+#[test]
+fn a_skill_read_counts_only_when_its_fetch_record_arrives() -> TestResult {
+    let mut uptake = SkillUptake::default();
+    uptake.observe(&turn(&["yi://skills", "yi://skills/debug"])?);
+    assert_eq!(
+        uptake.json(),
+        json!({"skillReads": 0, "pointers": 0, "followed": 0, "followWindow": 3})
+    );
+    uptake.observe(&fetched("yi://skills/debug")?);
+    assert_eq!(
+        uptake.json(),
+        json!({"skillReads": 1, "pointers": 0, "followed": 0, "followWindow": 3})
+    );
+    Ok(())
+}
+
+/// Dies when the follow window is off by one either way, a served skill file does not clear its
+/// pointer, or a local `SKILL.md` fallback stops counting: `a` is served on the last turn, `b` late.
 #[test]
 fn a_read_on_the_windows_last_turn_follows_and_one_past_it_does_not() -> TestResult {
     let mut uptake = SkillUptake::default();
@@ -443,43 +460,13 @@ fn a_read_on_the_windows_last_turn_follows_and_one_past_it_does_not() -> TestRes
     uptake.observe(&turn(&["crates/a/SKILL.rs"])?);
     uptake.observe(&turn(&[])?);
     uptake.observe(&turn(&["yi://skills/a/references/x.md"])?);
+    uptake.observe(&fetched("yi://skills/a/references/x.md")?);
     uptake.observe(&turn(&[
         "/home/me/.claude/skills/b/SKILL.md",
-        "yi://skills",
+        "yi://skills/c",
     ])?);
     let skills = uptake.json();
-    assert_eq!(skill_counts(&skills), json!([1, 2, 3, 1, 0, 0]), "{skills}");
-    Ok(())
-}
-
-/// Dies when the scan drops a start-step note or nudge line, or counts another model-only note as
-/// one; the recorded sessions above predate the note and count zero.
-#[test]
-fn start_notes_and_nudges_count_and_other_notes_do_not() -> TestResult {
-    let dir = Scratch::new("rollup-skills-notes")?;
-    let header = ROOT.lines().next().ok_or("empty fixture")?;
-    let mut lines = vec![header.to_owned()];
-    for (seq, custom) in ["skills_prelude", "skills_nudge", "todo_prelude"]
-        .iter()
-        .enumerate()
-    {
-        let message = json!({
-            "role": "custom", "customType": custom, "display": false, "timestamp": 0,
-            "content": "Before anything else: read yi://skills.",
-        });
-        lines.push(
-            json!({"kind": "entry", "lane": "main", "type": "message", "id": format!("n{seq}"),
-                "message": message, "seq": seq, "timestamp": 1_790_000_000_000_u64})
-            .to_string(),
-        );
-    }
-    put(&dir, "--proj--/1_notes.jsonl", &(lines.join("\n") + "\n"))?;
-    let found = scan(&dir, 0);
-    assert_eq!(found.bad_lines, 0);
-    assert_eq!(
-        skill_counts(&found.skills.json()),
-        json!([0, 0, 0, 0, 1, 1])
-    );
+    assert_eq!(skill_counts(&skills), json!([2, 3, 1]), "{skills}");
     Ok(())
 }
 
@@ -499,9 +486,9 @@ fn a_pointer_is_not_followed_by_a_read_in_another_session() -> TestResult {
     put(
         &dir,
         "--proj--/2_read.jsonl",
-        &file(turn(&["yi://skills/debug"])?)?,
+        &file(fetched("yi://skills/debug")?)?,
     )?;
     let skills = scan(&dir, 0).skills.json();
-    assert_eq!(skill_counts(&skills), json!([0, 1, 1, 0, 0, 0]), "{skills}");
+    assert_eq!(skill_counts(&skills), json!([1, 1, 0]), "{skills}");
     Ok(())
 }
