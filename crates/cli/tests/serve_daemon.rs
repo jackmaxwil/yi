@@ -920,6 +920,78 @@ fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
     outcome
 }
 
+/// A request waiting in the mailbox of a session no process holds starts it: the daemon resumes
+/// it through the worker for its repository, with no client and no model turn asked for, and
+/// the session reads the letter.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_request_in_a_stopped_sessions_mailbox_starts_it_and_is_read() -> TestResult {
+    use yi_runtime::session_store::{JsonlRepo, SessionRepo, lock_session};
+    use yi_types::mail::{Envelope, Hops, Kind, MailId};
+    let dir = Scratch::new("yi-serve-mail-start")?;
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    let sessions = dir.join("sessions");
+    let id = {
+        let mut store = JsonlRepo::new(sessions.clone(), repo.display().to_string());
+        let store = store.create(Default::default())?;
+        lock_session(&store).set_name(Some("sleeper".to_owned()))?;
+        lock_session(&store).metadata().id.clone()
+    };
+    let channels = sessions.join("channels");
+    let long_ago = yi_runtime::session_store::now_ms().saturating_sub(10 * 60_000);
+    let request = Envelope {
+        id: MailId("asker-1".to_owned()),
+        from: "history://asker".to_owned(),
+        from_incarnation: None,
+        to: format!("history://{id}"),
+        to_incarnation: None,
+        kind: Kind::Request,
+        conversation: MailId("asker-1".to_owned()),
+        in_reply_to: None,
+        seq: long_ago,
+        sent_at: long_ago,
+        deadline_ms: None,
+        body: "is the gate green?".to_owned(),
+        reference: None,
+        answered_by: None,
+        origin: None,
+        intent: Vec::new(),
+        hops: Hops(1),
+    };
+    std::fs::create_dir_all(&channels)?;
+    let address = yi_runtime::post::mailbox(&id);
+    let channel = yi_runtime::schedule::channel::Channel::named(&channels, &address)?;
+    channel.open(&address, None)?;
+    channel.append(&request.id.0, long_ago, serde_json::to_value(&request)?)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let meta = channels.join(format!("mail-{id}.json"));
+        wait_until(Instant::now() + Duration::from_secs(60), || {
+            let acked = std::fs::read_to_string(&meta)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|meta| {
+                    meta["acks"]
+                        .as_object()?
+                        .values()
+                        .filter_map(Value::as_u64)
+                        .max()
+                });
+            Ok(acked.is_some_and(|offset| offset > 0))
+        })?;
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let row =
+            listed_row(&mut client, &id)?.ok_or("the daemon must list the session it started")?;
+        assert_eq!(row["cwd"], repo.display().to_string(), "{row}");
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// The pids of the workers serving `root`, read from the process table.
 fn worker_pids(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     #[expect(
