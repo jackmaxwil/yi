@@ -2,7 +2,7 @@
 issue: Closes #1824
 growth: +205 deadline plumbing through three adapters, the read-deadline pool and the loop guard; the refresh merge moved onto the catalog overlay and the fixture dedupe deleted what it could
 decision: a catalog entry's `readTimeoutSecs` (default 60 s) is the model's own read deadline, applied per read so it bounds the idle gap between chunks and never the whole body, and a timeout is neither retried nor resent | four commands ended mid-task on a gateway that answers only when its first token is ready, the fixed 60 s was the HTTP client's and named nothing, and the retry layers spent it three times over | delete the field from the catalog entry, which restores the client's constant
-raise: crate ai +136, crate cli +42, crate tui +1, crate types +36, comments +12
+raise: crate ai +137, crate cli +48, crate tui +1, crate types +36, comments +12
 ledger=: model read deadline | 5 | core | M | L | a catalog entry's `readTimeoutSecs` (default 60 s) is the wait for one read, so an idle gap between chunks and not the whole body; a timeout is neither retried nor resent, its refusal names the field, the default and the attempts that ran, a `yi ask` run that ends on one exits 1 with `--json` too, and a cursor-agent entry carrying the field is refused at load because that wire bounds its own connect and headers
 ---
 A run no longer dies on the wait for its first byte without being told what to change. `Model` gains

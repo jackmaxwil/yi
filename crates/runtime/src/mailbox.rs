@@ -11,14 +11,14 @@ use crate::family::Cause;
 pub use crate::mail::register_receive;
 use crate::mail::{Desk, Draft};
 use crate::subagent::{
-    ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, last_assistant_text,
+    ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, answer_text,
 };
 
 pub(crate) const WAIT_MIN_MS: u64 = 1_000;
 pub(crate) const WAIT_MAX_MS: u64 = 300_000;
 const WAIT_POLL_MS: u64 = 100;
 /// Stuck is a function of time, so a family wait re-derives it on this cadence.
-const STUCK_CHECK_MS: u64 = 1_000;
+pub(crate) const STUCK_CHECK_MS: u64 = 1_000;
 
 pub(crate) const CONTEXT_MAX_KEYS: usize = 8;
 pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
@@ -513,7 +513,7 @@ impl SubagentHost {
         let mut stuck_check = std::time::Instant::now();
         crate::session::until(&stirred, || {
             if stuck_check <= std::time::Instant::now() {
-                self.mark_stuck();
+                let _shared_with_every_other_waiter = self.mark_stuck();
                 stuck_check += std::time::Duration::from_millis(STUCK_CHECK_MS);
             }
             let (epoch, moved, live) = self.changed_since(since);
@@ -626,7 +626,6 @@ impl SubagentHost {
         reply.insert("counts".to_owned(), json!(counts));
         reply.insert("states".to_owned(), Value::Object(states));
         reply.insert("notes".to_owned(), Value::Object(notes));
-        reply.insert("updated".to_owned(), json!(changed));
         reply.insert("timeout_ms".to_owned(), Value::from(timeout_ms));
         reply.insert("clamped".to_owned(), Value::Bool(clamped));
         reply
@@ -800,7 +799,7 @@ impl SubagentHost {
             });
             let text = match red {
                 Some((id, evidence)) => {
-                    crate::goal::record_discovery(&self.options.store, row).map_err(|error| {
+                    let gated = crate::goal::record_discovery(&self.options.store, row).map_err(|error| {
                         format!(
                             "the HIGH discovery {} could not be recorded, so the completion gate would never see it: {error}",
                             row.fingerprint
@@ -811,8 +810,13 @@ impl SubagentHost {
                         map.insert("evidence".to_owned(), Value::String(evidence.clone()));
                     }
                     let shown_text = crate::goal::evidence_once(shown.insert(id), evidence);
+                    let gate = if gated {
+                        ""
+                    } else {
+                        "\nNo goal exists, so no completion gate holds on it."
+                    };
                     format!(
-                        "HIGH discovery from {child}: {}\nThe check of task {} is red — address it before continuing:\n{shown_text}",
+                        "HIGH discovery from {child}: {}\nThe check of task {} is red — address it before continuing:\n{shown_text}{gate}",
                         row.text,
                         id.as_str()
                     )
@@ -923,7 +927,7 @@ impl SubagentHost {
     /// owner one line on every later request and the product is one read away.
     pub fn reap(&self, target: &str) -> Result<Harvest, String> {
         let (_key, record, _settled) = self.retire(target)?;
-        let produced = last_assistant_text(&record.session.messages()).is_some();
+        let produced = answer_text(&record.session.messages()).is_some();
         let name = record.session_name.clone();
         let kept = (record.session.store())
             .map(|store| self.reaped.keep(name.clone(), store))
@@ -973,6 +977,10 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn memory_store_with_goal() -> Result<yi_session::SharedSession, Box<dyn std::error::Error>> {
+        memory_store(true)
+    }
+
+    fn memory_store(goal: bool) -> Result<yi_session::SharedSession, Box<dyn std::error::Error>> {
         let store: yi_session::SharedSession = Arc::new(Mutex::new(
             yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
                 id: "mailbox-test".to_owned(),
@@ -981,7 +989,7 @@ mod tests {
                 name: None,
             }),
         ));
-        yi_session::lock_session(&store).set_goal(yi_types::goal::Goal {
+        let objective = yi_types::goal::Goal {
             objective: "adjudicate".to_owned(),
             status: yi_types::goal::GoalStatus::Active,
             token_budget: None,
@@ -994,7 +1002,10 @@ mod tests {
             check_failure: None,
             discoveries: Vec::new(),
             extra: Map::new(),
-        })?;
+        };
+        if goal {
+            yi_session::lock_session(&store).set_goal(objective)?;
+        }
         // The owner opened the plan `write_canonical_plan` writes; nobody else's plan adjudicates.
         let opened = serde_json::json!({"plan": "adjudication", "op": "open", "actor": "owner", "at": 0, "todos": 1});
         yi_session::lock_session(&store).append_custom(
@@ -1059,33 +1070,7 @@ mod tests {
             cwd,
             home: std::env::temp_dir(),
             lane_slots: 1,
-            defaults: Arc::new(|| {
-                (
-                    yi_types::model::Model {
-                        id: "faux-1".to_owned(),
-                        name: "Faux".to_owned(),
-                        api: "faux".to_owned(),
-                        provider: "faux".to_owned(),
-                        base_url: "http://localhost:0".to_owned(),
-                        reasoning: false,
-                        input: vec!["text".to_owned()],
-                        cost: yi_types::model::ModelCost {
-                            input: serde_json::Number::from(0u64),
-                            output: serde_json::Number::from(0u64),
-                            cache_read: serde_json::Number::from(0u64),
-                            cache_write: serde_json::Number::from(0u64),
-                            tiers: None,
-                        },
-                        context_window: 128_000,
-                        max_tokens: 16_384,
-                        compat: None,
-                        thinking_level_map: None,
-                        headers: None,
-                        read_timeout_secs: None,
-                    },
-                    yi_types::model::Effort::Medium,
-                )
-            }),
+            defaults: Arc::new(|| (yi_ai::faux::faux_model(), yi_types::model::Effort::Medium)),
             factory: Arc::new(|_build| Err("no child in this test".to_owned())),
             notice: Arc::new(|_text: &str, _| {}),
             events,
@@ -1189,6 +1174,36 @@ mod tests {
             reports.lock().map_err(|_| "poisoned")?.is_empty(),
             "nothing is routed when adjudication is impossible"
         );
+        Ok(())
+    }
+
+    /// Dies with a HIGH row refused for want of a goal: the child's good work was held back
+    /// though no completion gate existed to hold it.
+    #[test]
+    fn a_high_discovery_with_no_goal_reaches_the_parent_and_holds_nothing_back() -> TestResult {
+        let cwd = Scratch::new("yi-mailbox-no-goal")?;
+        write_canonical_plan(&cwd, "echo t1 broken; exit 4")?;
+        let (host, reports) = host_at(cwd.to_path_buf(), memory_store(false)?)?;
+        host.route_discoveries("finder", &[row(true)])?;
+        let reports = reports.lock().map_err(|_| "poisoned")?;
+        let texts: Vec<String> = reports.iter().map(AgentMessage::plain_text).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.starts_with("HIGH discovery from finder")
+                    && text.contains("No goal exists, so no completion gate holds on it")),
+            "{texts:?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with every waiter running its own stuck check: N waiters times N children a second.
+    #[test]
+    fn the_stuck_check_runs_once_a_second_per_host() -> TestResult {
+        let cwd = Scratch::new("yi-mailbox-stuck-once")?;
+        let (host, _reports) = host_at(cwd.to_path_buf(), memory_store_with_goal()?)?;
+        let ran = (0..16).filter(|_| host.mark_stuck()).count();
+        assert_eq!(ran, 1, "sixteen waiters in one second share one check");
         Ok(())
     }
 }
