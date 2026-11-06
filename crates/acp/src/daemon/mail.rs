@@ -57,9 +57,6 @@ impl Supervisor {
             return;
         };
         let (owed, provisional) = (std::mem::take(&mut entry.owed), entry.provisional);
-        for request in &owed {
-            entry.woken.remove(&request.id.0);
-        }
         entry.headless = false;
         if provisional {
             self.sessions.remove(&id);
@@ -139,15 +136,10 @@ impl Supervisor {
             root,
         } in waiting
         {
-            if self
-                .sessions
-                .get(&session)
-                .is_some_and(|entry| entry.woken.contains(&request.id.0))
-            {
+            if !self.woken.insert((session.clone(), request.id.0.clone())) {
                 continue;
             }
             if let Some(entry) = self.sessions.get_mut(&session).filter(|e| e.loaded) {
-                entry.woken.insert(request.id.0.clone());
                 if entry.headless {
                     entry.owed.push(request);
                 }
@@ -168,7 +160,6 @@ impl Supervisor {
             }
             let entry = (self.sessions.entry(session.clone()))
                 .or_insert_with(|| SessionEntry::provisional(root.clone()));
-            entry.woken.insert(request.id.0.clone());
             if entry.attached.is_empty() {
                 entry.headless = true;
                 entry.owed.push(request);

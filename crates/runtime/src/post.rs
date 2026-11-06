@@ -68,9 +68,10 @@ fn eligible(request: &Envelope, now: u64) -> bool {
 }
 
 fn resolve_roots(channels: &Path, session: &str, waiting: &mut [Waiting]) {
-    for item in waiting.iter_mut().filter(|item| item.root.is_none()) {
-        item.root =
-            (channels.parent()).and_then(|sessions| crate::history::session_cwd(sessions, session));
+    let root =
+        (channels.parent()).and_then(|sessions| crate::history::session_cwd(sessions, session));
+    for item in waiting {
+        item.root = root.clone();
     }
 }
 
@@ -97,8 +98,7 @@ pub fn waiting_requests(channels: &Path, now: u64, quiet: &mut Quiet) -> Vec<Wai
             && cached == &stamp
             && next.is_none_or(|due| now < due)
         {
-            let mut waiting = waiting.clone();
-            resolve_roots(channels, session, &mut waiting);
+            let waiting = waiting.clone();
             found.extend(
                 waiting
                     .into_iter()
@@ -124,7 +124,7 @@ pub fn waiting_requests(channels: &Path, now: u64, quiet: &mut Quiet) -> Vec<Wai
                     request: letter,
                     root: None,
                 });
-            } else if letter.deadline_ms.is_none_or(|deadline| deadline > due) {
+            } else if due > now && letter.deadline_ms.is_none_or(|deadline| deadline > due) {
                 next = Some(next.map_or(due, |known: u64| known.min(due)));
             }
         }
@@ -571,6 +571,42 @@ mod tests {
         assert_eq!(appended.len(), 1, "{appended:?}");
         assert_eq!(appended[0].request.id, newer.request.id);
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Dies with an already-expired request arming a past due time and forcing a rescan each poll.
+    #[test]
+    fn an_expired_request_does_not_arm_a_rescan() -> TestResult {
+        let dir = scratch("expired")?;
+        request_in(&dir, Kind::Request, 1_000, Some(76_500))?;
+        let now = 1_000 + 76_000;
+        let mut quiet = Quiet::new();
+        assert!(waiting_requests(&dir, now, &mut quiet).is_empty());
+        let next = quiet.values().next().ok_or("the mailbox was not cached")?.2;
+        assert_eq!(next, None, "an expired request armed a rescan at {next:?}");
+        assert!(waiting_requests(&dir, now, &mut quiet).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Dies with a cache hit walking session history again for a root already resolved as absent.
+    #[test]
+    fn a_cached_missing_root_is_not_resolved_again() -> TestResult {
+        let sessions = scratch("cached-root")?;
+        let channels = sessions.join("channels");
+        std::fs::create_dir_all(&channels)?;
+        request_in(&channels, Kind::Request, 1_000, None)?;
+        let now = 1_000 + 75_000;
+        let mut quiet = Quiet::new();
+        let found = waiting_requests(&channels, now, &mut quiet);
+        assert_eq!(found.first().and_then(|item| item.root.clone()), None);
+        std::fs::create_dir_all(sessions.join("repo"))?;
+        let header = r#"{"kind":"header","version":4,"id":"sleeper","createdAt":1,"cwd":"/repo"}"#;
+        std::fs::write(sessions.join("repo/1_sleeper.jsonl"), format!("{header}\n"))?;
+        let cached = waiting_requests(&channels, now, &mut quiet);
+        let first = cached.first().ok_or("the cached request disappeared")?;
+        assert_eq!(first.root, None, "the absent root was resolved again");
+        let _ = std::fs::remove_dir_all(&sessions);
         Ok(())
     }
 
