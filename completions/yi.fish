@@ -29,6 +29,7 @@ complete -c yi -n __fish_use_subcommand -a login -d 'store a provider credential
 complete -c yi -n __fish_use_subcommand -a logout -d 'remove a provider credential'
 complete -c yi -n __fish_use_subcommand -a setup -d 'choose a model and a permission mode'
 complete -c yi -n __fish_use_subcommand -a mcp -d 'one-shot MCP client calls, under mcp.enabled'
+complete -c yi -n __fish_use_subcommand -a tool -d 'import a project\'s just recipes as exec tools'
 complete -c yi -n '__fish_seen_subcommand_from sessions' -a 'list show rm'
 complete -c yi -l help -d 'print this table (also -h)'
 complete -c yi -l version -d 'print the version'
