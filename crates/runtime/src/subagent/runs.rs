@@ -440,29 +440,35 @@ impl SubagentHost {
     }
 
     /// Invariant: a derived `stuck` moves no record, so a newly stuck member moves the epoch.
-    pub(crate) fn mark_stuck(&self) {
-        let views = self.wait_states(&Map::new()).1;
-        let stuck: Vec<&str> = views
-            .iter()
-            .filter(|view| view.state == crate::family::MemberState::Stuck)
-            .map(|view| view.name.as_str())
-            .collect();
-        let Ok(mut latched) = self.stuck.lock() else {
-            return;
+    pub(crate) fn mark_stuck(&self) -> bool {
+        let Ok(mut stuck) = self.stuck.lock() else {
+            return false;
         };
-        latched.retain(|name| stuck.contains(&name.as_str()));
-        let fresh: Vec<&str> = stuck
+        let now = std::time::Instant::now();
+        let every = std::time::Duration::from_millis(crate::mailbox::STUCK_CHECK_MS);
+        if stuck
+            .1
+            .is_some_and(|at| now.saturating_duration_since(at) < every)
+        {
+            return false;
+        }
+        stuck.1 = Some(now);
+        let views = self.wait_states(&Map::new()).1;
+        let fresh: Vec<String> = stuck
+            .0
+            .fresh(&views)
             .into_iter()
-            .filter(|name| latched.insert((*name).to_owned()))
+            .map(|view| view.name.clone())
             .collect();
-        drop(latched);
+        drop(stuck);
         if let Ok(mut children) = self.children.lock() {
             for name in fresh {
-                if let Ok(key) = Self::key_of(&children, name) {
+                if let Ok(key) = Self::key_of(&children, &name) {
                     children.touch(&key, Cause::Stuck);
                 }
             }
         }
+        true
     }
 
     fn unseen(&self, key: &str, epoch: u64) -> bool {
@@ -521,12 +527,12 @@ mod tests {
     #[tokio::test]
     async fn lease_ending_refolds_a_final_reply_the_watcher_has_not_charged()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut reply = crate::plan::dispatch::tests::reply("done");
+        let mut reply = crate::plan::rig::reply("done");
         if let AgentMessage::Assistant { usage, .. } = &mut reply {
             usage.input = 1_200;
             usage.total_tokens = 1_200;
         }
-        let rig = crate::plan::dispatch::tests::rig_of(vec![reply], false)?;
+        let rig = crate::plan::rig::rig_of(vec![reply], false)?;
         let kwargs = serde_json::Map::from_iter([
             ("name".to_owned(), serde_json::Value::from("kid")),
             ("tokens".to_owned(), serde_json::Value::from(1_000)),

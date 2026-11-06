@@ -234,7 +234,7 @@ pub struct SubagentHost {
     pub(crate) harvests: Mutex<std::collections::HashSet<String>>,
     pub(crate) waits: std::sync::atomic::AtomicU64,
     pub(crate) told: Mutex<Option<(String, u64)>>,
-    pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
+    pub(crate) stuck: Mutex<(crate::family::StuckLatch, Option<std::time::Instant>)>,
     /// The board a long reply is kept on: the wiring's, set once after construction (D242).
     pub(crate) family: std::sync::OnceLock<PathBuf>,
     pub(crate) resolver: std::sync::OnceLock<Arc<crate::fetch::Resolver>>,
@@ -295,8 +295,6 @@ fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<Stri
 fn child_entry(child_id: &str, record: &ChildRecord) -> Value {
     json!({
         "rlm_child_id": child_id,
-        "active_session_id": Value::Null,
-        "session_id": Value::Null,
         "session_name": record.session_name,
         "session_dir": record.session_dir.to_string_lossy(),
         "status": crate::family::read_exit(record.exit).status.as_str(),

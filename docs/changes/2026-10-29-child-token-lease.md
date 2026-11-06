@@ -1,9 +1,9 @@
 ---
 issue: Closes #1567
 raise: comments +4
-raise: crate runtime +122
+raise: crate runtime +119
 raise: crate types +4
-raise: tests +322
+raise: tests +319
 decision: a child's token lease is enforced at the reply that crosses it, ending the run as `Failed { class: LeaseSpent }` rather than an interruption | the lease was drawn and settled but never held, so a child could spend a cap its parent reserved for it, and the ending had to be a class of its own because an interruption reads as the parent's choice | reversible in `ChildRecord::enforce` and `SubagentHost::lease_ending`, both in `crates/runtime/src/subagent/`
 ledger~: kernel + ipython + rlm() subagents | ; o | ; a child's spend is the fresh fold of its replies, never its cached prefix, and its run ends at the reply that crosses the lease its parent drew (`lease_e2e::a_child_is_stopped_after_the_reply_that_crosses_its_lease`, T1); o
 ---
