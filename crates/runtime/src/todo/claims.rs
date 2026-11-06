@@ -149,14 +149,22 @@ impl History {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(path);
-        let path_char =
-            |c: char| c.is_alphanumeric() || matches!(c, '/' | '\\' | '.' | '_' | '-' | '~');
-        self.asked.split(|c: char| !path_char(c)).any(|token| {
-            token == path
-                || std::path::Path::new(token)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|token_name| token_name == name)
+        let name_char =
+            |c: char| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '@' | '~' | '%');
+        [path, name].into_iter().any(|needle| {
+            self.asked.match_indices(needle).any(|(at, _)| {
+                let before = self
+                    .asked
+                    .get(..at)
+                    .and_then(|head| head.chars().next_back());
+                let tail = self
+                    .asked
+                    .get(at.saturating_add(needle.len())..)
+                    .unwrap_or("");
+                let after = tail.trim_start_matches('.').chars().next();
+                let separated = tail.chars().next().is_some_and(|c| matches!(c, '/' | '\\'));
+                !before.is_some_and(name_char) && !after.is_some_and(name_char) && !separated
+            })
         })
     }
 }

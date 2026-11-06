@@ -1,7 +1,7 @@
 ---
 issue: Closes #1516
-growth: +326 the reason on every end, its five loop exits and the done.rs seam the file cap forced; weighed for deletion: the duplicate end() body, yi ask's second inference of the end, and the blocked-row skip that no reachable list needed
-raise: crate cli +101, crate loop +15, crate runtime +170, crate tui +2, crate types +38, tests +695, comments +8
+growth: +334 the reason on every end, its five loop exits and the done.rs seam the file cap forced; weighed for deletion: the duplicate end() body, yi ask's second inference of the end, and the blocked-row skip that no reachable list needed
+raise: crate cli +101, crate loop +15, crate runtime +178, crate tui +2, crate types +38, tests +680, comments +8
 ledger~: goals + autonomous | p, error-turn blocks | p released after three runs that changed nothing
 ---
 

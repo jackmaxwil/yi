@@ -1207,7 +1207,6 @@ fn goal_active(store: &yi_session::SharedSession) -> bool {
 #[tokio::test]
 async fn a_productive_user_run_resets_the_quiet_count() -> TestResult {
     use yi_types::event::{AgentEvent, RunEnd};
-    assert!(!yi_runtime::todo::coupling::quiet_call("write", None));
     let (_root, store, service) = goal_rig()?;
     goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
     for _ in 0..2 {

@@ -257,7 +257,7 @@ fn bounded(lower: &str, at: usize, word: &str) -> bool {
 const QUIET_TOOLS: [&str; 5] = ["read", "grep", "glob", "todo", "get_context"];
 
 /// A turn is quiet when every call reads: the read tools, or bash the gate proves safe.
-pub fn quiet_call(tool_name: &str, command: Option<&str>) -> bool {
+pub(crate) fn quiet_call(tool_name: &str, command: Option<&str>) -> bool {
     match tool_name {
         "bash" => command.is_some_and(|command| !mutating_command(command)),
         name => QUIET_TOOLS.contains(&name),

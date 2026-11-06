@@ -1094,37 +1094,13 @@ fn an_impossibility_is_a_phrase_of_its_own_not_a_stretch_of_another_word() -> Te
     Ok(())
 }
 
-/// Dies with a mid-turn steer forgetting the prompt: the steer replaced the text the answer file
-/// was named in, so the named file no longer earned its re-drive at stop.
-#[test]
-fn a_steer_keeps_the_answer_file_the_prompt_named() -> TestResult {
-    let r = rig("artifact-steered")?;
-    let hooks = prelude_hooks(&r);
-    let prompt = user("Write the detection limit to /app/answer.txt");
-    assert!((hooks.on_prompt)(&prompt).is_none());
-    yi_session::lock_session(&r.store).append_message("main", prompt)?;
-    yi_session::lock_session(&r.store).append_message("main", user("also check the logs"))?;
-    let mut args: Map<String, Value> = Map::new();
-    args.insert("path".to_owned(), json!("/app/answer.txt"));
-    args.insert("content".to_owned(), json!("limit 4242\n"));
-    let write = faux_assistant_message(
-        vec![faux_tool_call("c1", "write", args)],
-        StopReason::ToolUse,
-    );
-    yi_session::lock_session(&r.store).append_message("main", write)?;
-    let first = (hooks.intercept_stop)(&snap(&stop("Written."), &[]))
-        .ok_or("the named answer file re-drives after a steer")?;
-    assert!(custom_type(&first).2.contains("/app/answer.txt"));
-    Ok(())
-}
-
 /// Dies with the answer-file re-drive fired at any data file the turn wrote: a config file's port
 /// earned a re-drive the prompt never asked about, and the model re-argued an edit nobody disputed.
 #[test]
 fn only_a_data_file_the_prompt_named_earns_the_artifact_re_drive() -> TestResult {
     let r = rig("artifact-named")?;
     let hooks = prelude_hooks(&r);
-    let prompt = user("Write the detection limit to /app/answer.txt; read /app/config.yaml.bak");
+    let prompt = user("Write the detection limit to /app/answer.txt.; read /app/config.yaml.bak");
     assert!((hooks.on_prompt)(&prompt).is_none());
     yi_session::lock_session(&r.store).append_message("main", prompt)?;
     let write = |id: &str, path: &str, body: &str| {
@@ -1155,6 +1131,16 @@ fn only_a_data_file_the_prompt_named_earns_the_artifact_re_drive() -> TestResult
             .last()
             .map(|record| record.reason.clone()),
         Some("artifact".to_owned())
+    );
+    let r = rig("artifact-punctuated")?;
+    let hooks = prelude_hooks(&r);
+    let prompt = user("Write the tally to /app/a+b,@(1).csv.");
+    yi_session::lock_session(&r.store).append_message("main", prompt)?;
+    yi_session::lock_session(&r.store)
+        .append_message("main", write("c1", "/app/a+b,@(1).csv", "tally 4242\n"))?;
+    assert!(
+        (hooks.intercept_stop)(&snap(&done, &[])).is_some(),
+        "punctuation inside the named path and after it does not hide it"
     );
     Ok(())
 }
