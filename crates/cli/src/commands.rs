@@ -98,7 +98,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "continue", value: None, summary: "resume the newest session for this directory" },
     Flag { name: "session", value: Some("id"), summary: "resume this session" },
     Flag { name: "schema", value: Some("schema"), summary: "answer JSON valid against this schema" },
-    Flag { name: "check", value: Some("command"), summary: "ask: probe the command and exit, running nothing" },
+    Flag { name: "check", value: Some("command"), summary: "after ask: probe, then re-prompt until this command exits 0" },
     Flag { name: "since", value: Some("span"), summary: "after stats: fold the sessions of this window" },
     Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day, prices or plan" },
     Flag { name: "top", value: Some("n"), summary: "after stats: list the n costliest sessions" },
