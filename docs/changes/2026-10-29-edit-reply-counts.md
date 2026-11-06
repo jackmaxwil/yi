@@ -1,4 +1,5 @@
 ---
+version: 0.952.0
 issue: Closes #1522
 raise: crate tools +70, tests +299
 ledger~: hashline edit (+ registers, instrumented) | ; w | ; the reply is counts and the rows it dropped (`updated; +A -R at line N`, the removed rows clipped to 120 columns, at most 8 with a loud row naming the read that shows what the file holds now), while the rows the model authored or already saw stay anchors without being reprinted (`tools::a_twelve_row_edit_replies_with_counts_not_the_new_text`, `tools::an_edit_that_drops_a_kept_line_shows_it`); w

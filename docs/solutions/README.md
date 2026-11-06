@@ -524,5 +524,6 @@ edited by hand.
 - [D551](adr/d551.md) - a reply opens with its status
 - [D552](adr/d552.md) - `yi tool import just` writes into `~/.yi/tools` only, never a project's...
 - [D553](adr/d553.md) - the dist binary size gate is removed, reversing D249/D424's measured ratchet...
+- [D554](adr/d554.md) - "Stream tool rows, hold none"
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

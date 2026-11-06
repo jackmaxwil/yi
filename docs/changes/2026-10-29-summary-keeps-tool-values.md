@@ -1,4 +1,5 @@
 ---
+version: 0.953.0
 issue: Refs #1760
 ledger+: context P1–P19; prefix-aligned P7 | a compaction summary lists exact tool-result values under `## Values` and what it left out under `## Dropped`; a later summary missing either section gets that section's newest earlier rows back, capped with a loud notice (`compaction_faux::a_second_compaction_keeps_the_values_the_first_recorded`, T1)
 raise: crate context +115, crate runtime +5, tests +148, comments +2
