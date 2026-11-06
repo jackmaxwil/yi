@@ -1,4 +1,7 @@
 use std::time::{Duration, Instant};
+
+use crate::SHUTDOWN_GRACE;
+
 use yi_runtime::Status;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
@@ -11,7 +14,6 @@ use super::{
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
 const EXIT_DENIED: i32 = 4;
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 pub(super) fn run(args: &Args) -> i32 {
     use std::io::IsTerminal;
@@ -95,6 +97,9 @@ pub(super) fn run(args: &Args) -> i32 {
         headless: !interactive,
     };
     let json = args.json;
+    // Each live child is revoked under its own `parent_close` once the answer is in: an ask
+    // that ends with a worktree child running would otherwise leave its lane held.
+    let closing = std::sync::Arc::clone(&host);
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -125,8 +130,8 @@ pub(super) fn run(args: &Args) -> i32 {
         }
         outcome.code
     });
+    crate::end_host(runtime, &closing, left(deadline));
     release_lane(lane.as_deref());
-    runtime.shutdown_timeout(left(deadline));
     yi_runtime::spend::drain_settled(deadline);
     code
 }
