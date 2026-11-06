@@ -23,12 +23,8 @@ pub struct Facts<'a> {
 pub fn shipped() -> &'static Graph {
     static GRAPH: OnceLock<Graph> = OnceLock::new();
     GRAPH.get_or_init(|| {
-        let raw = miniz_oxide::inflate::decompress_to_vec_zlib(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/graph.zz"
-        )))
-        .unwrap_or_default();
-        serde_json::from_slice(&raw).unwrap_or_default()
+        let raw = crate::packed::inflate(include_bytes!(concat!(env!("OUT_DIR"), "/graph.zz")));
+        serde_json::from_str(&raw).unwrap_or_default()
     })
 }
 

@@ -1,7 +1,18 @@
 //! Incident: 54 KiB of raw prompt text cost the dist binary four 16 KiB `__TEXT` pages of the
 //! measured size ratchet, so `build.rs` deflates every prompt and the binary carries the deflate.
 
+#[cfg(test)]
+use std::{collections::BTreeSet, sync::Mutex};
+
+#[cfg(test)]
+static INFLATED: Mutex<BTreeSet<&'static [u8]>> = Mutex::new(BTreeSet::new());
+
 pub(crate) fn inflate(bytes: &'static [u8]) -> String {
+    #[cfg(test)]
+    INFLATED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(bytes);
     let raw = miniz_oxide::inflate::decompress_to_vec_zlib(bytes).unwrap_or_default();
     String::from_utf8(raw).unwrap_or_default()
 }
@@ -19,10 +30,10 @@ pub(crate) use packed;
 
 #[cfg(test)]
 mod tests {
+    use super::INFLATED;
     use crate::{auto_review, ext::install, goal, subagent::reader};
     use std::sync::LazyLock;
-
-    /// The size ratchet catches a raw prompt; this table catches a static handed another stem.
+    /// Each blob must reach its accessor through [`crate::packed::inflate`]; wrong stems fail too.
     #[test]
     fn every_packed_prompt_reads_as_its_own_file() {
         let rows: [(&str, &LazyLock<String>, &[u8], &str); 14] = [
@@ -111,10 +122,17 @@ mod tests {
                 include_str!("goal/prompts/objective_updated.md"),
             ),
         ];
+        for (_, live, _, _) in &rows {
+            let _ = live.as_str();
+        }
+        let inflated = INFLATED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let wrong: Vec<&str> = rows
             .iter()
             .filter(|(_, live, packed, source)| {
-                packed.len() >= source.len()
+                !inflated.contains(packed)
+                    || packed.len() >= source.len()
                     || packed.first() != Some(&0x78)
                     || miniz_oxide::inflate::decompress_to_vec_zlib(packed)
                         .ok()
@@ -137,6 +155,13 @@ mod tests {
         assert!(packed.len() < source.len() && packed.first() == Some(&0x78));
         let graph: yi_types::graph::Graph = serde_json::from_str(source)?;
         assert_eq!(crate::affordance::shipped(), &graph);
+        assert!(
+            INFLATED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&packed.as_slice()),
+            "shipped graph did not pass through inflate"
+        );
         Ok(())
     }
 }
