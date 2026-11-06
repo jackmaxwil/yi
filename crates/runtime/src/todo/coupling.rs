@@ -425,6 +425,13 @@ pub fn unsourced_text(numbers: &[String]) -> String {
 pub const EMPTY_STOP_TEXT: &str =
     "The turn produced no output. Call `answer` with the final answer, or make the next tool call.";
 
+pub const DONE_BLOCKED_TEXT: &str = "An item is still blocked, so this reply cannot open with Done. Open it with Problem: or Ready: and name what the item waits on.";
+
+fn says_done(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).is_err()
+        && crate::session::StatusLine::of(text) == Some(crate::session::StatusLine::Done)
+}
+
 fn text_of(message: &AgentMessage) -> String {
     let AgentMessage::Assistant { content, .. } = message else {
         return String::new();
@@ -839,6 +846,16 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             }
             let list = todos.list();
             let posture = stop_posture(&list, children_running());
+            let blocked = matches!(posture, StopPosture::Ask | StopPosture::Cadence);
+            if blocked && says_done(&text) {
+                let fingerprint = list.fingerprint();
+                if let Some(rung) = cycle.intercept(&fingerprint) {
+                    record_intercept(&store, rung, "done_blocked", &fingerprint, cycle.intercepts);
+                    let note = DONE_BLOCKED_TEXT.to_owned();
+                    return Some(custom(INTERCEPT_CUSTOM_TYPE, note, false));
+                }
+                record_intercept(&store, cycle.rung, LET_GO, &fingerprint, cycle.intercepts);
+            }
             if posture != StopPosture::Continue {
                 drop(cycle);
                 return inner.as_ref().and_then(|inner| inner(snapshot));
