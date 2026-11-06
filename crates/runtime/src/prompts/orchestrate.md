@@ -192,4 +192,4 @@ Reopen tasks; never narrow the claim.
 Run every task's check and the goal's check yourself. A child's "done" is a
 report, not a measurement. When stakes justify it, spawn one cold reviewer
 whose brief is only the acceptance list and the checks, not your
-implementation history. Report failures verbatim; fix or reopen.
+implementation history. Name failures exactly; fix or reopen.
