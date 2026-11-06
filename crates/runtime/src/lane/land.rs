@@ -24,6 +24,17 @@ const FORGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const PUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// Invariant: a conflict steer names files, bounded, inside a fence; never the whole diff.
 const CONFLICT_FILES_MAX: usize = 20;
+/// Invariant: a landing's refusal reaches the model bounded, its cut row naming the lane's git.
+const LANDING_FAILED_MAX: usize = 2_000;
+
+fn landing_failed(error: &str) -> String {
+    crate::mailbox::clamp(
+        &format!("landing failed: {error}"),
+        LANDING_FAILED_MAX,
+        "LANDING_FAILED_MAX",
+        "run the git command it names in the lane for the rest",
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Forge {
@@ -428,11 +439,9 @@ impl LaneHandle {
         let handle = Arc::clone(self);
         std::thread::spawn(move || {
             if let Err(error) = handle.land_blocking(&title) {
+                let text = landing_failed(&error.to_string());
                 (handle.steer)(
-                    crate::session::host_text(
-                        yi_types::message::HostSource::Landing,
-                        &format!("landing failed: {error}"),
-                    ),
+                    crate::session::host_text(yi_types::message::HostSource::Landing, &text),
                     DeliveryMode::Steer,
                 );
             }
@@ -468,30 +477,44 @@ impl LaneHandle {
             let merge = ["merge", "--no-edit", &format!("origin/{trunk}")].map(str::to_owned);
             let merge: Vec<&str> = merge.iter().map(String::as_str).collect();
             let identity = super::hostgit::identity(lane.path());
-            if git(lane.path(), &[&identity[..], &merge[..]].concat()).is_ok() {
-                return Ok(());
-            }
-            let files: Vec<String> = git(
-                lane.path(),
-                &["diff", "--name-only", "--diff-filter=U"],
-            )
-            .unwrap_or_default()
-            .lines()
-            .take(CONFLICT_FILES_MAX)
-            .map(|line| crate::environment::sanitize(line.trim()))
-            .collect();
-            git(lane.path(), &["merge", "--abort"])?;
-            if !git(lane.path(), &["status", "--porcelain"])?.trim().is_empty() {
+            if let Err(refusal) = git(lane.path(), &[&identity[..], &merge[..]].concat()) {
+                // Incident: git refusing for an overlapping dirty file starts no merge, so
+                // `merge --abort` answered "no merge to abort" and its error hid the real cause.
+                if git(lane.path(), &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_err() {
+                    return Err(LaneError::Forge(format!(
+                        "git refused the merge of origin/{trunk}; nothing pushed and no merge was started:\n```\n{refusal}\n```\nresolve what it names in {}, then /land again",
+                        lane.path().display()
+                    )));
+                }
+                let listed =
+                    git(lane.path(), &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+                let total = listed.lines().filter(|line| !line.trim().is_empty()).count();
+                let mut files: Vec<String> = listed
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .take(CONFLICT_FILES_MAX)
+                    .map(|line| crate::environment::sanitize(line.trim()))
+                    .collect();
+                if total > CONFLICT_FILES_MAX {
+                    files.push(format!(
+                        "[{CONFLICT_FILES_MAX} of {total} conflicted files (CONFLICT_FILES_MAX {CONFLICT_FILES_MAX}); git diff --name-only --diff-filter=U in {}]",
+                        lane.path().display()
+                    ));
+                }
+                git(lane.path(), &["merge", "--abort"])?;
+                if !git(lane.path(), &["status", "--porcelain"])?.trim().is_empty() {
+                    return Err(LaneError::Forge(format!(
+                        "merge of origin/main left the tree dirty in {}; resolve by hand",
+                        lane.path().display()
+                    )));
+                }
                 return Err(LaneError::Forge(format!(
-                    "merge of origin/main left the tree dirty in {}; resolve by hand",
+                    "origin/main conflicts with this branch; nothing pushed. Conflicts:\n```\n{}\n```\nresolve in {}, commit, and /land again",
+                    files.join("\n"),
                     lane.path().display()
                 )));
             }
-            Err(LaneError::Forge(format!(
-                "origin/main conflicts with this branch; nothing pushed. Conflicts:\n```\n{}\n```\nresolve in {}, commit, and /land again",
-                files.join("\n"),
-                lane.path().display()
-            )))
+            Ok(())
         })
     }
 
@@ -828,4 +851,17 @@ pub fn claim_root(pool: &Pool, session: &str) -> Result<(Lane, Option<String>), 
         )
     });
     Ok((lane, notice))
+}
+
+#[cfg(test)]
+mod landing_failed_tests {
+    #[test]
+    fn a_refusal_past_the_bound_ends_in_its_cut_row() {
+        let refusal = "é".repeat(super::LANDING_FAILED_MAX.saturating_mul(2));
+        let steer = super::landing_failed(&refusal);
+        assert!(
+            steer.ends_with("[kept 2000 of 4016 chars · cap LANDING_FAILED_MAX = 2000 · run the git command it names in the lane for the rest]"),
+            "{steer}"
+        );
+    }
 }

@@ -426,7 +426,7 @@ impl RpcState {
 pub fn run_rpc(
     session: AgentSession,
     options: &RpcOptions,
-    runtime: tokio::runtime::Runtime,
+    runtime: &tokio::runtime::Runtime,
 ) -> i32 {
     let mut repo = JsonlRepo::new(
         options.session_dir.clone(),
