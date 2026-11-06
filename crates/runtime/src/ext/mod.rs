@@ -1,5 +1,5 @@
 mod assemble;
-mod install;
+pub(crate) mod install;
 pub(crate) mod orchestrate;
 mod pack;
 mod plugins;

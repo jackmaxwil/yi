@@ -416,7 +416,7 @@ impl SubagentHost {
         hook.is_some_and(|hook| hook(name.to_owned(), exit, error))
     }
 
-    fn held_back(&self, name: &str, verified: bool) -> Option<String> {
+    fn red_check(&self, name: &str, verified: bool) -> Option<String> {
         let check = {
             let children = self.children.lock().ok()?;
             let key = Self::key_of(&children, name).ok()?;
@@ -429,9 +429,10 @@ impl SubagentHost {
         let red = (!verified)
             .then(|| crate::goal::run_check(&check, &cwd, timeout, &self.checker()).err())
             .flatten();
-        if let Some(evidence) = red {
-            return Some(format!("its check is red: {evidence}"));
-        }
+        red.map(|evidence| format!("its check is red: {evidence}"))
+    }
+
+    fn routed(&self, name: &str) -> Option<String> {
         let answer = Self::json_answer(&self.answer_of(name)?)?;
         let result = serde_json::from_value::<ChildResult>(answer).ok()?;
         self.route_discoveries(name, &result.discoveries)
@@ -540,7 +541,10 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
                 return;
             };
             let held = (exit == ChildExit::Completed)
-                .then(|| host.held_back(&agent, held.verified))
+                .then(|| {
+                    host.red_check(&agent, held.verified)
+                        .or_else(|| host.routed(&agent))
+                })
                 .flatten();
             let (exit, error) = match held {
                 Some(reason) => (
@@ -579,11 +583,9 @@ fn holds(view: &crate::family::MemberView, in_tool: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::dispatch::tests::{
-        delegated, hooked, owner, reply, settled, stirred_until, texts,
-    };
     use super::super::ops::Op;
     use super::super::ops::PlanEngine;
+    use super::super::rig::{delegated, hooked, owner, reply, settled, stirred_until, texts};
     use super::install;
     use yi_types::plan::doc::{Check, GoalText, PlanState, TodoState};
 

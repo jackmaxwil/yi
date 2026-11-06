@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use yi_session::{EntryOrder, EntryQuery};
 use yi_types::channel::{MESSAGE_MAX_BYTES, Retention};
 use yi_types::entry::Entry;
-use yi_types::mail::{Delivery, Envelope, Hops, MailId};
+use yi_types::mail::{Delivery, Envelope, Hops, Kind, MailId};
 use yi_types::message::{AgentMessage, Attribution, UserContent};
 use yi_types::url::Url;
 
@@ -36,6 +36,125 @@ static LIMIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
 pub fn configure(hop_limit: Option<u32>) {
     let _first_wins = LIMIT.set(hop_limit.unwrap_or(HOP_LIMIT));
+}
+
+/// Incident: a session held by another process reads its mail within a channel cadence, so a
+/// request unread for longer than that belongs to a session no process holds.
+const HELD_READS_WITHIN_MS: u64 = crate::schedule::channel::DEFAULT_CADENCE_MS + 15_000;
+
+/// Mailbox scans cached by the modification times of their letters and acks. The optional time
+/// is when a young request becomes old enough to return, so an unchanged mailbox is read again.
+pub type Quiet = std::collections::HashMap<
+    PathBuf,
+    (
+        (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
+        Vec<Waiting>,
+        Option<u64>,
+    ),
+>;
+
+/// A request still unread in the mailbox of `session`, with its repository when one exists.
+#[derive(Debug, Clone)]
+pub struct Waiting {
+    pub session: String,
+    pub request: Envelope,
+    pub root: Option<PathBuf>,
+}
+
+fn eligible(request: &Envelope, now: u64) -> bool {
+    request.kind == Kind::Request
+        && request.sent_at.saturating_add(HELD_READS_WITHIN_MS) <= now
+        && request.deadline_ms.is_none_or(|deadline| deadline > now)
+}
+
+fn resolve_roots(channels: &Path, session: &str, waiting: &mut [Waiting]) {
+    let root =
+        (channels.parent()).and_then(|sessions| crate::history::session_cwd(sessions, session));
+    for item in waiting {
+        item.root = root.clone();
+    }
+}
+
+/// Requests no subscription has read, older than a held session would leave them and not past
+/// their deadline; unchanged mailboxes replay their cached result until a young request ages.
+pub fn waiting_requests(channels: &Path, now: u64, quiet: &mut Quiet) -> Vec<Waiting> {
+    let Ok(files) = std::fs::read_dir(channels) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for file in files.flatten() {
+        let name = file.file_name().to_string_lossy().into_owned();
+        let Some(session) = (name.strip_prefix("mail-")).and_then(|n| n.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        let channel = Channel::at(file.path());
+        let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let stamp = (
+            modified(channel.path()),
+            modified(&channel.path().with_extension("json")),
+        );
+        if let Some((cached, waiting, next)) = quiet.get(channel.path())
+            && cached == &stamp
+            && next.is_none_or(|due| now < due)
+        {
+            let waiting = waiting.clone();
+            found.extend(
+                waiting
+                    .into_iter()
+                    .filter(|item| eligible(&item.request, now)),
+            );
+            continue;
+        }
+        let Ok(meta) = channel.meta() else { continue };
+        let read = meta.acks.values().max().copied().unwrap_or(0);
+        let letters = (channel.entries().into_iter()).filter(|entry| entry.offset > read);
+        let mut waiting = Vec::new();
+        let mut next = None;
+        for letter in
+            letters.filter_map(|entry| serde_json::from_value::<Envelope>(entry.data).ok())
+        {
+            if letter.kind != Kind::Request {
+                continue;
+            }
+            let due = letter.sent_at.saturating_add(HELD_READS_WITHIN_MS);
+            if eligible(&letter, now) {
+                waiting.push(Waiting {
+                    session: session.to_owned(),
+                    request: letter,
+                    root: None,
+                });
+            } else if due > now && letter.deadline_ms.is_none_or(|deadline| deadline > due) {
+                next = Some(next.map_or(due, |known: u64| known.min(due)));
+            }
+        }
+        resolve_roots(channels, session, &mut waiting);
+        quiet.insert(channel.path().to_path_buf(), (stamp, waiting.clone(), next));
+        found.extend(waiting);
+    }
+    found
+}
+
+/// Answers `request` with a `failure` letter in its sender's mailbox, so the sender is told
+/// instead of waiting on a session that could not do it.
+pub fn refuse(channels: &Path, request: &Envelope, why: &str) -> Result<(), String> {
+    let address = |url: &str| url.strip_prefix("history://").map(str::to_owned);
+    let sender = address(&request.from).ok_or("the request names no sender")?;
+    let own = address(&request.to).unwrap_or_else(|| request.to.clone());
+    let channel = open(channels, &sender)?;
+    let mut draft = Draft::of(Kind::Failure, why);
+    draft.reply_to = Some(request.id.clone());
+    draft.conversation = Some(request.conversation.clone());
+    let hops = Hops(request.hops.0.saturating_add(1));
+    let failure = seal(&draft, &own, &sender, &[], hops, request.intent.clone())?;
+    let (id, sent_at) = (failure.id.clone(), failure.sent_at);
+    let data = serde_json::to_value(&failure).map_err(|error| error.to_string())?;
+    match channel.append(&id.0, sent_at, data)? {
+        Appended::Kept(_) | Appended::Duplicate => {}
+        Appended::Refused(why) => return Err(why),
+    }
+    crate::schedule::shared::poke_now(channel.path());
+    Ok(())
 }
 
 /// A root's own mail channel, which every letter to it is appended to.
@@ -369,6 +488,147 @@ mod tests {
             "<channel job=\"sub-1\" address=\"{address}\">messages arrived</channel>\n```jsonl\n{line}\n```"
         );
         message(id, AgentMessage::host_note("heartbeat_prompt", text, 0))
+    }
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn request_in(
+        channels: &Path,
+        kind: Kind,
+        sent_at: u64,
+        deadline_ms: Option<u64>,
+    ) -> Result<Waiting, Box<dyn std::error::Error>> {
+        let id = MailId(format!("req-{sent_at}-{}", kind.as_str()));
+        let request = Envelope {
+            id: id.clone(),
+            from: "history://asker".to_owned(),
+            from_incarnation: None,
+            to: "history://sleeper".to_owned(),
+            to_incarnation: None,
+            kind,
+            conversation: id.clone(),
+            in_reply_to: None,
+            seq: sent_at,
+            sent_at,
+            deadline_ms,
+            body: "is the gate green?".to_owned(),
+            reference: None,
+            answered_by: None,
+            origin: None,
+            intent: Vec::new(),
+            hops: Hops(0),
+        };
+        let data = serde_json::to_value(&request)?;
+        open(channels, "sleeper")?.append(&id.0, sent_at, data)?;
+        Ok(Waiting {
+            session: "sleeper".to_owned(),
+            request,
+            root: None,
+        })
+    }
+
+    fn scratch(name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-post-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    /// Dies with an unread mailbox parsed on every poll, a quiet mailbox hiding a new letter,
+    /// or a fresh, held, inform, expired, or acked letter being treated as waiting.
+    #[test]
+    fn only_an_old_unread_open_request_is_waiting() -> TestResult {
+        let dir = scratch("waiting")?;
+        let old = request_in(&dir, Kind::Request, 1_000, None)?;
+        request_in(&dir, Kind::Inform, 1_001, None)?;
+        request_in(&dir, Kind::Request, 1_002, Some(50_000))?;
+        let now = 1_000 + 75_000;
+        let mut quiet = Quiet::new();
+        let found = waiting_requests(&dir, now, &mut quiet);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].request.id, old.request.id);
+        assert!(!quiet.is_empty(), "the unread mailbox was not cached");
+        let cached = waiting_requests(&dir, now, &mut quiet);
+        assert_eq!(cached.len(), 1, "{cached:?}");
+        assert_eq!(cached[0].request.id, old.request.id);
+        assert!(
+            waiting_requests(&dir, now - 1, &mut Quiet::new()).is_empty(),
+            "a held session reads it first"
+        );
+        let channel = open(&dir, "sleeper")?;
+        let mut meta = channel.meta()?;
+        meta.acks.insert("job".to_owned(), 3);
+        std::fs::write(
+            channel.path().with_extension("json"),
+            serde_json::to_string(&meta)?,
+        )?;
+        assert!(
+            waiting_requests(&dir, now, &mut quiet).is_empty(),
+            "an acked letter is read"
+        );
+        let newer = request_in(&dir, Kind::Request, 999, None)?;
+        let appended = waiting_requests(&dir, now, &mut quiet);
+        assert_eq!(appended.len(), 1, "{appended:?}");
+        assert_eq!(appended[0].request.id, newer.request.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Dies with an already-expired request arming a past due time and forcing a rescan each poll.
+    #[test]
+    fn an_expired_request_does_not_arm_a_rescan() -> TestResult {
+        let dir = scratch("expired")?;
+        request_in(&dir, Kind::Request, 1_000, Some(76_500))?;
+        let now = 1_000 + 76_000;
+        let mut quiet = Quiet::new();
+        assert!(waiting_requests(&dir, now, &mut quiet).is_empty());
+        let next = quiet.values().next().ok_or("the mailbox was not cached")?.2;
+        assert_eq!(next, None, "an expired request armed a rescan at {next:?}");
+        assert!(waiting_requests(&dir, now, &mut quiet).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Dies with a cache hit walking session history again for a root already resolved as absent.
+    #[test]
+    fn a_cached_missing_root_is_not_resolved_again() -> TestResult {
+        let sessions = scratch("cached-root")?;
+        let channels = sessions.join("channels");
+        std::fs::create_dir_all(&channels)?;
+        request_in(&channels, Kind::Request, 1_000, None)?;
+        let now = 1_000 + 75_000;
+        let mut quiet = Quiet::new();
+        let found = waiting_requests(&channels, now, &mut quiet);
+        assert_eq!(found.first().and_then(|item| item.root.clone()), None);
+        std::fs::create_dir_all(sessions.join("repo"))?;
+        let header = r#"{"kind":"header","version":4,"id":"sleeper","createdAt":1,"cwd":"/repo"}"#;
+        std::fs::write(sessions.join("repo/1_sleeper.jsonl"), format!("{header}\n"))?;
+        let cached = waiting_requests(&channels, now, &mut quiet);
+        let first = cached.first().ok_or("the cached request disappeared")?;
+        assert_eq!(first.root, None, "the absent root was resolved again");
+        let _ = std::fs::remove_dir_all(&sessions);
+        Ok(())
+    }
+
+    /// Dies with a refused request leaving its sender waiting: the failure must land in the
+    /// sender's own mailbox and name the request it answers.
+    #[test]
+    fn a_refusal_reaches_the_sender_as_a_failure_naming_the_request() -> TestResult {
+        let dir = scratch("refuse")?;
+        let mut asked = request_in(&dir, Kind::Request, 1_000, None)?;
+        asked.request.to = "sleeper".to_owned();
+        refuse(&dir, &asked.request, "refused: nobody to approve")?;
+        let entries = open(&dir, "asker")?.entries();
+        let first = entries.first().ok_or("no letter in the sender's mailbox")?;
+        let letter: Envelope = serde_json::from_value(first.data.clone())?;
+        assert_eq!(letter.kind, Kind::Failure);
+        assert_eq!(letter.in_reply_to, Some(asked.request.id.clone()));
+        assert_eq!(
+            (letter.from.as_str(), letter.to.as_str()),
+            ("history://sleeper", "history://asker")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     /// Dies with a clock-woken turn inheriting the last letter's hop after the chain went quiet,
