@@ -1024,6 +1024,20 @@ mod tests {
 mod checker_tests {
     use super::*;
 
+    #[test]
+    fn a_probe_refusal_stays_typed_through_the_shared_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let failure = run_check_typed(
+            "yi-missing-check-2009f3389",
+            &std::env::current_dir()?,
+            30_000,
+        )
+        .err()
+        .ok_or("a missing check program passed")?;
+        assert!(matches!(failure, CheckFailure::Refused(_)), "{failure:?}");
+        Ok(())
+    }
+
     /// Dies with a container child's check running on the host, which that child's wall forbids.
     #[test]
     fn a_container_childs_check_runs_in_its_container() {
