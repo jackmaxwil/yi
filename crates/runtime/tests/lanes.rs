@@ -3657,6 +3657,38 @@ async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestRes
     Ok(())
 }
 
+/// #1571: git refusing the merge for an overlapping dirty file starts no merge at all, so the
+/// steer carries git's own reason; `merge --abort`'s "no merge to abort" used to replace it.
+#[test]
+fn a_dirty_lane_refused_the_merge_of_main_names_gits_reason() -> TestResult {
+    let rig = Rig::new("mergemain-dirty")?;
+    std::fs::write(rig.repo.join("a.txt"), "base\n")?;
+    git(&rig.repo, &["add", "a.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "base"])?;
+    git(
+        &rig.repo,
+        &["remote", "add", "origin", "file:///nonexistent"],
+    )?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-dirty", ClaimBase::Main)?;
+    std::fs::write(rig.repo.join("a.txt"), "moved on main\n")?;
+    git(&rig.repo, &["commit", "-qam", "main moved"])?;
+    let head = git(&rig.repo, &["rev-parse", "HEAD"])?;
+    git(
+        &rig.repo,
+        &["update-ref", "refs/remotes/origin/main", &head],
+    )?;
+    std::fs::write(lane.path().join("a.txt"), "kept here\n")?;
+    let (handle, steers) = handle_for(Some(lane), None);
+    handle.land("Land the dirty lane")?;
+    let told = steers.recv_timeout(std::time::Duration::from_secs(60))?;
+    assert!(
+        told.contains("a.txt") && told.contains("would be overwritten"),
+        "the steer names the file and git's words: {told}"
+    );
+    Ok(())
+}
+
 /// Every fresh slot's `worktree add` takes `seconds`.
 fn sleeping_checkout(rig: &Rig, seconds: u32) -> TestResult {
     shim_git(
@@ -3704,6 +3736,103 @@ fn parallel_claims_check_out_side_by_side() -> TestResult {
     Ok(())
 }
 
+/// #1571: the conflict steer cut its list at twenty files and said nothing about the cut; a
+/// model reading it believed it had every conflict.
+#[test]
+fn a_conflict_steer_names_the_cap_it_was_cut_at() -> TestResult {
+    let rig = Rig::new("mergemain-many")?;
+    let names: Vec<String> = (0..21).map(|n| format!("f{n}.txt")).collect();
+    for name in &names {
+        std::fs::write(rig.repo.join(name), "base\n")?;
+    }
+    let mut added: Vec<&str> = vec!["add"];
+    added.extend(names.iter().map(String::as_str));
+    git(&rig.repo, &added)?;
+    git(&rig.repo, &["commit", "-qm", "base"])?;
+    git(
+        &rig.repo,
+        &["remote", "add", "origin", "file:///nonexistent"],
+    )?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-many", ClaimBase::Main)?;
+    for name in &names {
+        std::fs::write(lane.path().join(name), "the lane moved\n")?;
+    }
+    git(lane.path(), &["commit", "-qam", "the lane moved"])?;
+    for name in &names {
+        std::fs::write(rig.repo.join(name), "main moved\n")?;
+    }
+    git(&rig.repo, &["commit", "-qam", "main moved"])?;
+    let head = git(&rig.repo, &["rev-parse", "HEAD"])?;
+    git(
+        &rig.repo,
+        &["update-ref", "refs/remotes/origin/main", &head],
+    )?;
+    let (handle, steers) = handle_for(Some(lane), None);
+    handle.land("Land the many")?;
+    let told = steers.recv_timeout(std::time::Duration::from_secs(60))?;
+    assert!(
+        told.contains(
+            "[20 of 21 conflicted files (CONFLICT_FILES_MAX 20); git diff --name-only --diff-filter=U in"
+        ),
+        "the steer carries the cut's row: {told}"
+    );
+    Ok(())
+}
+
+/// Dies with a sequential repossession in `end`: each settle's commit sleeps three seconds, so
+/// two children one after the other take six of the grace.
+#[tokio::test]
+async fn an_ending_host_repossesses_its_children_side_by_side() -> TestResult {
+    let rig = Rig::new("close-two")?;
+    let store = support::memory_store("lanes-two");
+    let hold = "echo unsaved > draft.txt; sleep 30";
+    let (dir, repo) = (rig.root.to_path_buf(), rig.repo.clone());
+    let family = support::family_with_slots(dir, repo, store, Some(hold), 3);
+    spawn_writer(&family, "first").await?;
+    spawn_writer(&family, "second").await?;
+    let trees = ["first", "second"].map(|name| family.host.cwd_of(name));
+    shim_git(&rig, "case \" $* \" in *\" commit \"*) sleep 3;; esac")?;
+    let started = std::time::Instant::now();
+    let mut ended = family.host.end().await;
+    let took = started.elapsed();
+    ended.sort();
+    assert_eq!(ended, ["first", "second"]);
+    assert!(
+        took < std::time::Duration::from_millis(5_500),
+        "both came back inside one hook's sleep, not two: {took:?}"
+    );
+    assert!(
+        trees.iter().all(|tree| tree
+            .as_deref()
+            .is_some_and(|tree| !yi_runtime::lane::fork::is_held(tree))),
+        "both forks are released: {trees:?}"
+    );
+    Ok(())
+}
+
+/// #1571: the exits that are not the ACP handle now close their host, so a live worktree
+/// child is revoked and its fork released instead of staying held by a session that ended.
+#[tokio::test]
+async fn an_ending_host_repossesses_a_live_worktree_child_inside_its_grace() -> TestResult {
+    let rig = Rig::new("close-slot")?;
+    let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
+    let tree = family
+        .host
+        .cwd_of("writer")
+        .ok_or("the child holds no fork")?;
+    assert!(
+        yi_runtime::lane::fork::is_held(&tree),
+        "the child holds its fork"
+    );
+    assert_eq!(family.host.end().await, ["writer"]);
+    assert!(
+        !yi_runtime::lane::fork::is_held(&tree),
+        "the closed session's child released its fork: {}",
+        tree.display()
+    );
+    Ok(())
+}
 /// Dies with `judge` or `remove` deleted: a dry run removes nothing, `--fix` takes only the
 /// merged clean tree and its `target/`, and each kept tree says why.
 #[test]
