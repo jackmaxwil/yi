@@ -9,9 +9,8 @@ use super::format::{
 };
 use super::input::{Patch, PatchSection};
 use super::messages::{
-    HEADTAIL_DRIFT_WARNING, RefusalRows, anchored_lines, missing_snapshot_tag_message,
-    path_recovered_from_tag_message, rebased_warning, refusal_footer, refusal_rows,
-    unseen_lines_message,
+    RefusalRows, anchored_lines, missing_snapshot_tag_message, path_candidate_message,
+    rebased_warning, refusal_footer, refusal_rows, stale_ends_warning, unseen_lines_message,
 };
 use super::mismatch::mismatch_message;
 use super::normalize::{Endings, split};
@@ -113,9 +112,9 @@ impl<'a> Patcher<'a> {
         patcher
     }
 
-    fn write(&self, path: &Path, content: &str) -> std::io::Result<()> {
-        let mut file = self.gate.open_write(path, &self.walls)?;
-        crate::tool::overwrite(&mut file, content.as_bytes())
+    fn write(&self, path: &Path, content: &str) -> std::io::Result<Option<&'static str>> {
+        let file = self.gate.open_write(path, &self.walls)?;
+        crate::tool::overwrite(&file, path, content.as_bytes())
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
@@ -157,16 +156,6 @@ impl<'a> Patcher<'a> {
                 ));
             }
             seen_canonical.push((&entry.canonical_path, &entry.section.path));
-        }
-        if prepared.len() > 1 || patch.sections.len() > 1 {
-            for entry in &prepared {
-                if entry.is_noop() {
-                    return Err(format!(
-                        "Edits to {} resulted in no changes being made.",
-                        entry.section.path
-                    ));
-                }
-            }
         }
 
         let mut results: Vec<PatchSectionResult> = Vec::new();
@@ -211,12 +200,18 @@ impl<'a> Patcher<'a> {
         clipboard: &mut Clipboard,
     ) -> Result<PreparedSection, String> {
         let parsed = section.parse()?;
-        let mut parse_warnings = parsed.warnings.clone();
+        let parse_warnings = parsed.warnings.clone();
         let file_op = parsed.file_op.clone();
 
-        let mut target = section.clone();
-        let mut canonical_path = self.canonical_path(&target.path);
-        let mut read = self.try_read(&target.path);
+        let target = section.clone();
+        let canonical_path = self.canonical_path(&target.path);
+        let removed = matches!(file_op, Some(FileOp::Rem));
+        let read = match self.try_read(&target.path) {
+            Err(_) if removed && self.resolve_path(&target.path).is_file() => None,
+            read => Some(read?),
+        };
+        let unread = read.is_none();
+        let read = read.unwrap_or_else(|| Some(String::new()));
         // No tag names the version this session last showed for the path.
         let expected = match section.file_hash.as_deref() {
             Some(text) => FileTag::parse(text).ok_or_else(|| {
@@ -233,8 +228,8 @@ impl<'a> Patcher<'a> {
             },
         };
 
-        // Path recovery: the authored path doesn't exist, but its filename plus snapshot tag
-        // may name a file read this session — a bare filename or wrong dir. Rebind and warn.
+        // The authored path does not exist, but a file read this session may share its name
+        // and tag; naming it lets the resend meet the broker's rules, never a silent rebind.
         if read.is_none() {
             let authored_name = Path::new(&target.path)
                 .file_name()
@@ -254,7 +249,7 @@ impl<'a> Patcher<'a> {
             candidates.sort();
             candidates.dedup();
             candidates.retain(|candidate| self.canonical_path(candidate) != canonical_path);
-            // The broker judged the authored path only; a rebound one meets its gates here (D323).
+            // A refusal never names a path the gates refuse to open (D323).
             let gate = yi_permission::CatastrophicContext::detect(&self.cwd);
             candidates.retain(|candidate| {
                 let path = self.resolve_path(candidate);
@@ -264,16 +259,13 @@ impl<'a> Patcher<'a> {
                         &gate,
                     )
             });
-            if candidates.len() == 1 {
-                let resolved = candidates.remove(0);
-                parse_warnings.push(path_recovered_from_tag_message(
-                    &target.path,
-                    &resolved,
-                    expected,
-                ));
-                target = target.with_path(resolved);
-                canonical_path = self.canonical_path(&target.path);
-                read = self.try_read(&target.path);
+            if let [candidate] = candidates.as_slice() {
+                let root = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
+                let shown = Path::new(candidate).strip_prefix(&root).map_or_else(
+                    |_| candidate.clone(),
+                    |relative| relative.to_string_lossy().into_owned(),
+                );
+                return Err(path_candidate_message(&target.path, &shown, expected));
             }
         }
 
@@ -297,14 +289,23 @@ impl<'a> Patcher<'a> {
         } else {
             parsed.edits
         };
-        let apply_result = self.apply_with_validation(
-            &target,
-            &canonical_path,
-            &normalized,
-            edits,
-            clipboard,
-            expected,
-        )?;
+        let apply_result = if unread {
+            ApplyResult {
+                text: String::new(),
+                origins: Vec::new(),
+                first_changed_line: None,
+                warnings: Vec::new(),
+            }
+        } else {
+            self.apply_with_validation(
+                &target,
+                &canonical_path,
+                &normalized,
+                edits,
+                clipboard,
+                (expected, file_op.as_ref()),
+            )?
+        };
 
         Ok(PreparedSection {
             section: target,
@@ -384,8 +385,10 @@ impl<'a> Patcher<'a> {
             if let Some(parent) = dest_resolved.parent() {
                 let _best_effort = std::fs::create_dir_all(parent);
             }
-            self.write(&dest_resolved, &persisted)
+            let note = self
+                .write(&dest_resolved, &persisted)
                 .map_err(|error| format!("failed to write {dest}: {error}"))?;
+            warnings.extend(note.map(str::to_owned));
             (self
                 .gate
                 .remove(&self.resolve_path(&section.path), &self.walls))
@@ -406,8 +409,10 @@ impl<'a> Patcher<'a> {
         }
 
         self.refuse_symlink(&section.path)?;
-        self.write(&self.resolve_path(&section.path), &persisted)
+        let note = self
+            .write(&self.resolve_path(&section.path), &persisted)
             .map_err(|error| format!("failed to write {}: {error}", section.path))?;
+        warnings.extend(note.map(str::to_owned));
         let file_hash = self
             .snapshots
             .record(&prepared.canonical_path, &after, None);
@@ -444,10 +449,20 @@ impl<'a> Patcher<'a> {
         ))
     }
 
-    fn try_read(&self, path: &str) -> Option<String> {
-        (self.gate.open(&self.resolve_path(path), &self.walls))
-            .and_then(std::io::read_to_string)
-            .ok()
+    /// The file's text, `None` when it cannot be opened or is not UTF-8; a file past the read
+    /// cap is refused, never taken whole.
+    fn try_read(&self, path: &str) -> Result<Option<String>, String> {
+        let resolved = self.resolve_path(path);
+        let opened = self.gate.open(&resolved, &self.walls);
+        match opened
+            .and_then(|file| crate::tool::read_capped(file, &resolved, crate::tool::Cap::Text))
+        {
+            Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                Err(format!("{path} is too large to edit: {error}"))
+            }
+            Err(_) => Ok(None),
+        }
     }
 
     fn assert_seen_lines(
@@ -457,11 +472,7 @@ impl<'a> Patcher<'a> {
         normalized: &str,
     ) -> Result<(), String> {
         // A live-hash tag with no snapshot behind it (evicted, prior session, collision): closed.
-        let Some(snapshot) = self
-            .snapshots
-            .by_content(canonical_path, normalized)
-            .cloned()
-        else {
+        let Some(snapshot) = self.snapshots.by_lines(canonical_path, normalized).cloned() else {
             return Err(self.missing_snapshot(section, canonical_path, normalized)?);
         };
         self.assert_seen_lines_in(section, canonical_path, &snapshot)
@@ -539,7 +550,7 @@ impl<'a> Patcher<'a> {
         normalized: &str,
         edits: Vec<Edit>,
         clipboard: &mut Clipboard,
-        expected: FileTag,
+        (expected, file_op): (FileTag, Option<&FileOp>),
     ) -> Result<ApplyResult, String> {
         let live_hash = compute_file_hash(normalized);
         let mut warnings: Vec<String> = Vec::new();
@@ -563,8 +574,8 @@ impl<'a> Patcher<'a> {
                 warnings.push(rebased_warning(old.hash, live_hash));
                 edits
             } else {
-                // Head/tail-only inserts are position-stable: a stale tag is non-fatal for them.
-                warnings.push(HEADTAIL_DRIFT_WARNING.to_owned());
+                // Head/tail-only inserts, REM and MV are position-stable: a stale tag is non-fatal.
+                warnings.push(stale_ends_warning(file_op, old.hash, live_hash));
                 edits
             }
         };
