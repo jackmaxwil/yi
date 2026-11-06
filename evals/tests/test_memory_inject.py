@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -53,6 +54,7 @@ class LabelTest(unittest.TestCase):
         self.patches = [
             mock.patch.object(memory_inject, "FIXTURE", self.fixture),
             mock.patch.object(memory_inject, "LABELS", self.labels),
+            mock.patch.object(memory_inject, "BEFORE", self.fixture / "before" / "block.txt"),
             mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "test"}),
         ]
         for patch in self.patches:
@@ -80,6 +82,28 @@ class LabelTest(unittest.TestCase):
             self.assertEqual(memory_inject.label(self.args), 1)
         self.assertEqual(self.labels.read_bytes(), self.original)
         self.assertFalse((self.fixture / "labels-judge.json").exists())
+
+    def test_replay_and_check_consume_the_selected_judged_labels(self):
+        judged = self.fixture / "labels-judge.json"
+        judged.write_text(json.dumps({
+            "suite": "judge arm",
+            "labeling": {"by": "judge openrouter/test-judge"},
+            "cases": [
+                {"id": "one", "prompt": "lane", "relevant": {"lane-pool": "matching rule"}},
+            ],
+        }))
+        before = self.fixture / "before"
+        before.mkdir()
+        block = "- [lane-pool](lane-pool.md) — lane rule\n## lane-pool — lane rule\nbody\n"
+        (before / "block.txt").write_text(block)
+        blocks = self.fixture / "after.jsonl"
+        blocks.write_text(json.dumps({"id": "one", "block": block}) + "\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            replayed = memory_inject.main([
+                "replay", "--labels", str(judged), "--blocks", str(blocks),
+            ])
+            checked = memory_inject.main(["check", "--labels", str(judged)])
+        self.assertEqual((replayed, checked), (0, 0))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 ---
 issue: Closes #1860
-raise: comments +9, crate runtime +562, tests +480
-growth: +562 the ranking reuses `memory::rank`'s BM25, `store::loaded`'s rows and `listed::cut_row`; a fourth module (`memory/focus.rs`) was weighed and its 40 lines stayed in `ext.rs` instead, while the shared gather and assembly paths replace the duplicate renderer and note indexes replace body clones
+raise: comments +9, crate runtime +581, tests +500
+growth: +581 the ranking reuses `memory::rank`'s BM25, `store::loaded`'s rows and `listed::cut_row`; a fourth module (`memory/focus.rs`) was weighed and its 40 lines stayed in `ext.rs` instead, while the shared gather and assembly paths replace the duplicate renderer and note indexes replace body clones
 decision: the memory block is rendered once, at the first typed prompt, ranked by that prompt's words with type weights and near-duplicate hooks dropped, its bodies inside the byte budget the unranked index would have spent | every session carried the whole index, so the model paid 335 tokens of a stored-note map for a request no note addressed, and no body ever reached it | restore the `SessionStart` arm's index render and attach and delete the `PromptSubmitted` arm
 ledger+: host-written memory (one file per fact, hook index) | the first typed prompt renders the only block, ranked by its own words (`memory::rank`'s BM25), with `feedback` and `project` weighted over `reference`, a note that restates another's hook keeping its row but earning no body, the bodies of at most three notes inside the index's byte budget (never under two body caps), and every cut named; a blank first prompt spends nothing and a resumed session keeps its restored block (`memory::ext::tests::the_prompt_earns_the_body_of_the_note_that_shares_its_rare_word`)
 ---
@@ -48,3 +48,5 @@ Near-duplicate hooks are tokenized once per candidate, body cuts use `yi_context
 eval stages through the shared `Scratch` cleanup harness. The paid judge writes its completed
 cases to `labels-judge.json`, leaves `labels.json` byte-identical, omits unjudged cases at the cap,
 and refuses any reply without a numeric `usage.cost`.
+The gate runs the judge tests from `evals/tests/test_memory_inject.py`; `replay` and `check` both
+accept `--labels`, so the judged arm is scored without copying it over the hand-labelled fixture.

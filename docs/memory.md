@@ -132,6 +132,8 @@ against `before/block.txt`, what the pre-change build rendered). The paid judge 
 `label --model openrouter/… --cap-usd 10`; it writes only the cases it judged to
 `labels-judge.json`, leaves the hand-labelled fixture untouched, refuses uncountable costs, and
 writes its ledger row separately.
+Score that arm with `replay --labels evals/fixtures/memory-inject/labels-judge.json --blocks …`,
+or validate its note names with `check --labels evals/fixtures/memory-inject/labels-judge.json`.
 The TUI commits the start summary and one line per save or forget as footer cells; the HUD shows
 `saved N`.
 

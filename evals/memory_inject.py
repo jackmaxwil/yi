@@ -2,9 +2,9 @@
 """Which stored memories a session's first message earns, and what it costs (#1860).
 
     python3 evals/memory_inject.py measure [--sessions ~/.yi/sessions] [--json]
-    python3 evals/memory_inject.py replay --blocks target/memory-inject/after.jsonl
+    python3 evals/memory_inject.py replay --blocks target/memory-inject/after.jsonl [--labels LABELS]
     python3 evals/memory_inject.py label --model openrouter/deepseek/deepseek-v4.1 --cap-usd 10
-    python3 evals/memory_inject.py check
+    python3 evals/memory_inject.py check [--labels LABELS]
 
 `measure` is the census: it reads the memory fence each recorded session carries into its
 first request and prints counts only, never a note's text.
@@ -131,7 +131,7 @@ def load_blocks(path):
 
 
 def replay(args):
-    labels = json.loads(LABELS.read_text())
+    labels = json.loads(args.labels.read_text())
     before_text = BEFORE.read_text()
     after = load_blocks(args.blocks)
     missing = [case["id"] for case in labels["cases"] if case["id"] not in after]
@@ -186,8 +186,8 @@ def replay(args):
     return 0
 
 
-def check(_args):
-    labels = json.loads(LABELS.read_text())
+def check(args):
+    labels = json.loads(args.labels.read_text())
     notes = {path.stem for path in (FIXTURE / "home" / ".yi" / "memory").glob("*.md")}
     problems = []
     for case in labels["cases"]:
@@ -323,12 +323,14 @@ def main(argv):
     census_.set_defaults(run=measure)
     play = subs.add_parser("replay", help="score both arms against the saved labels, spending nothing")
     play.add_argument("--blocks", required=True, help="JSONL of {id, block} this build rendered")
+    play.add_argument("--labels", type=Path, default=LABELS, help="hand or judged labels to score")
     play.set_defaults(run=replay)
     paid = subs.add_parser("label", help="the paid judge run: one call a case, capped")
     paid.add_argument("--model", required=True)
     paid.add_argument("--cap-usd", type=float, default=10.0)
     paid.set_defaults(run=label)
     check_ = subs.add_parser("check", help="the labels name notes the store has")
+    check_.add_argument("--labels", type=Path, default=LABELS, help="hand or judged labels to validate")
     check_.set_defaults(run=check)
     args = parser.parse_args(argv)
     return args.run(args)

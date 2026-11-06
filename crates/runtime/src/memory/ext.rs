@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::Activity;
 use super::doc::{MemoryType, Note};
-use super::rank::{Bm25, tokens};
+use super::rank::tokens;
 use super::store::{
     IndexLine, LOAD_BYTES, LOAD_LINES, Store, StoreError, global_dir, loaded, repo_dir,
 };
@@ -260,12 +260,8 @@ fn twins(left: &BTreeSet<String>, right: &BTreeSet<String>) -> bool {
 /// The order a prompt earns: scored notes first (type-weighted), then the rest by weight and
 /// name, and a note whose hook restates a kept one's listed as a row but never given a body.
 fn earned(candidates: &[(&Note, &str)], prompt: &str) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
-    let texts: Vec<String> = candidates
-        .iter()
-        .map(|(note, _)| format!("{} {} {}", note.name, note.hook, note.body))
-        .collect();
-    let mut scored: Vec<(usize, f64)> = Bm25::new(texts.iter().map(String::as_str))
-        .rank(prompt)
+    let notes: Vec<&Note> = candidates.iter().map(|(note, _)| *note).collect();
+    let mut scored: Vec<(usize, f64)> = super::scored(&notes, prompt)
         .into_iter()
         .map(|(at, score)| {
             (
