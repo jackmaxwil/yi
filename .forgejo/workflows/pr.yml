@@ -56,7 +56,7 @@ jobs:
       matrix:
         lane: [lint, guardrails, test]
     # Incident: on `ubuntu-latest` the queue candidate's 12-minute gate waited 60 minutes behind
-    # 37 PR runs in one FIFO line; the `queue` runner takes nothing else, so a candidate never waits.
+    # 37 PR runs in one FIFO line; the `queue` runner takes nothing else, so a candidate waits only on its own lanes.
     runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || github.ref == 'refs/heads/queue/candidate' && 'queue' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
@@ -79,9 +79,8 @@ jobs:
         with:
           shared-key: ${{ matrix.lane }}
           cache-on-failure: true
-          # main saves (postmerge `warm`); a PR's own multi-GB save is readable
-          # only by later runs of that PR and costs the shared disk every push.
-          # The candidate saves too: no main run reaches the `queue` runner's cache.
+          # main (postmerge `warm`) and the candidate, whose `queue` runner no main run reaches, save;
+          # a PR's own multi-GB save is readable only by later runs of that PR and costs the disk every push.
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/queue/candidate' }}
       # scripts/intake's selfcheck rewrites a scratch repo with the mirror's own filter, which
       # the gate image does not ship; the pin is scripts/mirror/filter-repo.version.
