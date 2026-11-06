@@ -32,6 +32,7 @@ _yi() {
         'logout:remove a provider credential'
         'setup:choose a model and a permission mode'
         'mcp:one-shot MCP client calls, under mcp.enabled'
+        'tool:import a project'\''s just recipes as exec tools'
     )
     flags=(
         '--help[print this table (also -h)]'
@@ -66,7 +67,7 @@ _yi() {
         '--continue[resume the newest session for this directory]'
         '--session[resume this session]:id:'
         '--schema[answer JSON valid against this schema]:schema:_files'
-        '--check[ask: probe the command and exit, running nothing]:command:'
+        '--check[after ask: probe, then re-prompt until this command exits 0]:command:_command_names -e'
         '--since[after stats: fold the sessions of this window]:span:'
         '--by[after stats: group by model, upstream, day, prices or plan]:axis:'
         '--top[after stats: list the n costliest sessions]:n:'
