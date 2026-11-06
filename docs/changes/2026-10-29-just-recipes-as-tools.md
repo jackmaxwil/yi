@@ -1,4 +1,6 @@
 ---
+version: 0.950.0
+decisions: D552
 issue: Closes #1877
 growth: +504 cli src lines, all of them `crates/cli/src/tool_import.rs`: the dump parser, the schema and wrapper builders, and the sync are most of it, plus the ~16-line argv program and ~20-line shell template each wrapper is generated from; weighed: a hand-rolled shell JSON reader instead of the argv program (rejected — it would silently mangle a quote or a backslash in an argument the model passed), a wrapper that execs `yi` for the conversion (rejected — the embedded binary path rots on `yi update`), a second executable-file writer (rejected — `update::write_exec` is reused), and a `jq` dependency (rejected — absent from a stock macOS)
 raise: crate cli +504, tests +702, comments +2
