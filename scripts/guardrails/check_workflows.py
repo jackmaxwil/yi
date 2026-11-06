@@ -141,6 +141,11 @@ def same_gate(gate, candidate, off=""):
     return [name for name, part in parts if not part(candidate) or part(candidate) != part(gate)]
 
 
+def off_queue(candidate, off=""):
+    """Whether candidate.yml's gate asks for anything but the `queue` runner, the one change it exists for."""
+    return off != "candidate" and lanes(candidate)[0].get("gate") != ["queue"]
+
+
 def no_skills(text, off=""):
     return off != "skills" and not re.search(r"^\s*(- )?run: just install-skills$", text, re.M)
 
@@ -197,6 +202,8 @@ def selfcheck(off=""):
         bad.append("a candidate gate whose env and steps are pr.yml's is refused")
     if any(not same_gate(two, two.replace(a, b), off) for a, b in (("run: three", "run: two"), ("A: 1", "A: 2"), ("[a, b]", "[a]"))):
         bad.append("a candidate gate whose env, lanes or a step past a comment differ from pr.yml's is not refused")
+    if not off_queue(two, off) or off_queue(two.replace("runs-on: a", "runs-on: queue"), off):
+        bad.append("a candidate gate on any runner but `queue` is not refused, or the `queue` one is")
     if not unread_lane("jobs:\n  review:\n    runs-on: ${{ contains(a) || contains(b) && 'x' || 'y' }}\n", off):
         bad.append("a `runs-on` that can yield a condition rather than a lane is read as lanes")
     if not unread_lane(expr, off):
@@ -233,7 +240,8 @@ if __name__ == "__main__":
     files = sorted((ROOT / ".forgejo/workflows").glob("*.y*ml"))
     gate = (ROOT / ".forgejo/workflows/pr.yml").read_text()
     review = (ROOT / ".forgejo/workflows/review.yml").read_text()
-    candidate = (ROOT / ".forgejo/workflows/candidate.yml").read_text()
+    candidate_path = ROOT / ".forgejo/workflows/candidate.yml"
+    candidate = candidate_path.read_text() if candidate_path.is_file() else ""
     errs = [f"{f.relative_to(ROOT)}:{n}: `{v}` is a plain YAML value holding `: `, which starts a mapping; "
             f"quote it or fold it with `>-`" for f in files for n, v in problems(f.read_text())]
     errs += [f"{f.relative_to(ROOT)}:{n}: `{v}` starts no workflow for the push that carries it, the mirror's "
@@ -244,7 +252,10 @@ if __name__ == "__main__":
              "it for up to four hours (#1310): give the round a lane of its own"
              for job, lane in shared_lane(gate + candidate, review)]
     errs += [f".forgejo/workflows/candidate.yml: {part}: not pr.yml's; the queue lands what this gate passed, "
-             "so copy pr.yml's" for part in same_gate(gate, candidate)]
+             "so copy pr.yml's" for part in same_gate(gate, candidate)] if candidate else [
+        ".forgejo/workflows/candidate.yml is missing: the queue candidate's gate then runs nowhere"]
+    errs += [".forgejo/workflows/candidate.yml: the gate's `runs-on` is not `queue`, so the candidate waits behind "
+             "PR runs again (#2042)"] if candidate and off_queue(candidate) else []
     errs += [f".forgejo/workflows/{name}: job {job}'s `runs-on` `{value}` is not a lane this check reads; "
              "an expression there is a review lane nobody compared, so name the label"
              for name, text in (("pr.yml", gate), ("candidate.yml", candidate), ("review.yml", review))
