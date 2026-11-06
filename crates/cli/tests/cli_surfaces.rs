@@ -2240,17 +2240,8 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
 #[test]
 fn doctor_reports_the_claude_memory_row_and_its_off_state() -> TestResult {
     let workspace = Workspace::new("doctor-claude-memory")?;
-    let key: String = workspace
-        .project()
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let dir = workspace
-        .0
-        .join("home/.claude/projects")
-        .join(key)
-        .join("memory");
+    let dir =
+        yi_runtime::memory::claude::project_dir(&workspace.0.join("home"), &workspace.project());
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
         dir.join("alpha.md"),
@@ -2968,17 +2959,8 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
 #[test]
 fn yi_memory_import_claude_takes_the_working_directorys_notes() -> TestResult {
     let workspace = Workspace::new("memory-claude")?;
-    let key: String = workspace
-        .project()
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let dir = workspace
-        .0
-        .join("home/.claude/projects")
-        .join(&key)
-        .join("memory");
+    let dir =
+        yi_runtime::memory::claude::project_dir(&workspace.0.join("home"), &workspace.project());
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
         dir.join("alpha.md"),

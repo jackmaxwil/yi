@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::Activity;
 use super::claude::{self, Sources};
 use super::store::{
-    IndexLine, LOAD_BYTES, LOAD_LINES, Snapshot, Store, StoreError, global_dir, loaded, repo_dir,
+    IndexLine, Snapshot, Store, StoreError, global_dir, load_cap_notice, loaded, repo_dir,
 };
 use crate::ext::{Effect, Event, EventMask, Extension, StartReason, Trust};
 
@@ -183,16 +183,7 @@ fn render(
                     body.push("global:".to_owned());
                 }
                 body.extend(scoped.lines.iter().cloned());
-                if scoped.not_loaded > 0 {
-                    let shown = scoped.lines.len();
-                    let (cap, limit) = if shown >= LOAD_LINES {
-                        ("LOAD_LINES", LOAD_LINES)
-                    } else {
-                        ("LOAD_BYTES", LOAD_BYTES)
-                    };
-                    let all = shown.saturating_add(scoped.not_loaded);
-                    let next = "await memory.search(\"words\")";
-                    let row = crate::listed::cut_row(shown, all, "notes loaded", cap, limit, next);
+                if let Some(row) = load_cap_notice(scoped.lines.len(), scoped.not_loaded) {
                     body.push(row);
                 }
             }

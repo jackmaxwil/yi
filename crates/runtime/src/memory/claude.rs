@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::doc::{MemoryName, Note, source_of};
+use super::doc::{Note, source_of};
 use super::store::{
-    Imported, LOAD_BYTES, LOAD_LINES, Snapshot, Store, StoreError, global_dir, loaded, repo_dir,
+    Imported, Snapshot, Store, StoreError, global_dir, load_cap_notice, loaded, repo_dir,
 };
 
 /// The frontmatter key every imported note carries, so a note Claude Code wrote is told from one
@@ -43,7 +43,7 @@ pub fn user_dir(home: &Path) -> PathBuf {
 
 /// `memory.importClaude`: on unless the config says false, and an unreadable config imports.
 pub fn enabled(home: &Path) -> bool {
-    let Ok(raw) = std::fs::read_to_string(home.join(".yi/config.json")) else {
+    let Ok(raw) = std::fs::read_to_string(crate::settings::config_path(home)) else {
         return true;
     };
     let Ok((config, _)) = yi_types::config::parse(&raw) else {
@@ -53,20 +53,6 @@ pub fn enabled(home: &Path) -> bool {
         .memory
         .and_then(|memory| memory.import_claude)
         .unwrap_or(true)
-}
-
-fn names_in(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let file = entry.file_name();
-            let stem = file.to_str()?.strip_suffix(".md")?;
-            MemoryName::from_stem(stem).map(|name| name.as_str().to_owned())
-        })
-        .collect()
 }
 
 fn short(home: &Path, path: &Path) -> String {
@@ -88,9 +74,11 @@ impl Sources {
     pub fn discover(home: &Path, cwd: &Path) -> Self {
         let project = project_dir(home, cwd);
         let user = user_dir(home);
-        let names = names_in(&project)
+        let names = Store::new(project.clone())
+            .names()
             .into_iter()
-            .chain(names_in(&user))
+            .chain(Store::new(user.clone()).names())
+            .map(|name| name.as_str().to_owned())
             .collect();
         Self {
             project,
@@ -159,7 +147,7 @@ fn one(
     dir: &Path,
     adopt_forgotten: bool,
 ) -> Result<(Report, Snapshot), StoreError> {
-    let found = names_in(dir).len();
+    let found = Store::new(dir.to_path_buf()).names().len();
     let (
         Imported {
             imported,
@@ -170,7 +158,7 @@ fn one(
             ..
         },
         snapshot,
-    ) = store.import_snapshot(dir, Some(SOURCE), adopt_forgotten)?;
+    ) = store.import_report(dir, Some(SOURCE), adopt_forgotten)?;
     let (shown, dropped) = loaded(&snapshot.index, &store.usage());
     let stale = snapshot
         .notes
@@ -178,21 +166,11 @@ fn one(
         .filter(|note| sources.stale(note))
         .count();
     let shown = shown.len();
-    let notice = (dropped > 0 && imported.saturating_add(updated) > 0).then(|| {
-        let (cap, limit) = if shown >= LOAD_LINES {
-            ("LOAD_LINES", LOAD_LINES)
-        } else {
-            ("LOAD_BYTES", LOAD_BYTES)
-        };
-        crate::listed::cut_row(
-            shown,
-            shown.saturating_add(dropped),
-            "notes loaded",
-            cap,
-            limit,
-            "await memory.search(\"words\")",
-        )
-    });
+    let notice = if imported.saturating_add(updated) > 0 {
+        load_cap_notice(shown, dropped)
+    } else {
+        None
+    };
     Ok((
         Report {
             source: short(home, dir),
@@ -231,7 +209,7 @@ fn run_with(home: &Path, cwd: &Path, sources: &Sources, adopt_forgotten: bool) -
             false,
         ),
     ] {
-        if !dir.is_dir() || names_in(&dir).is_empty() {
+        if !dir.is_dir() || Store::new(dir.to_path_buf()).names().is_empty() {
             continue;
         }
         match one(sources, home, &store, &dir, adopt_forgotten) {
@@ -265,10 +243,6 @@ pub(crate) fn run_at_start(home: &Path, cwd: &Path, sources: &Sources) -> Outcom
     } else {
         Outcome::default()
     }
-}
-
-pub fn run_if_enabled(home: &Path, cwd: &Path, sources: &Sources) -> Vec<Report> {
-    run_at_start(home, cwd, sources).reports
 }
 
 /// What `yi doctor` reports: the working directory's directory found, imported and stale, read
@@ -306,7 +280,7 @@ pub fn tally(home: &Path, cwd: &Path) -> Tally {
     let notes = Store::new(repo_dir(home, cwd)).notes();
     Tally {
         source: Some(short(home, dir)),
-        found: names_in(dir).len(),
+        found: Store::new(dir.to_path_buf()).names().len(),
         imported: notes
             .iter()
             .filter(|note| source_of(note) == Some(SOURCE))
@@ -319,6 +293,8 @@ pub fn tally(home: &Path, cwd: &Path) -> Tally {
 mod tests {
     use super::*;
     use crate::memory::block as block_with;
+    use crate::memory::doc::MemoryName;
+    use crate::memory::store::LOAD_LINES;
     use crate::scratch::Scratch;
     use std::fs;
 
@@ -441,6 +417,21 @@ mod tests {
     }
 
     #[test]
+    fn a_note_without_frontmatter_keeps_its_body_and_gains_a_source() {
+        let (_scratch, home, cwd) = site("no-frontmatter").expect("scratch");
+        let dir = project_dir(&home, &cwd);
+        fs::write(dir.join("plain.md"), "A body without frontmatter.\n").expect("note");
+        assert_eq!(run(&home, &cwd)[0].imported, 1);
+        let note = repo(&home, &cwd).resolve("plain").expect("imported note");
+        assert_eq!(source_of(&note), Some("claude"));
+        assert!(
+            note.body.contains("A body without frontmatter."),
+            "{:?}",
+            note.body
+        );
+    }
+
+    #[test]
     fn a_forgotten_claude_note_stays_forgotten_until_an_explicit_import() {
         let (_scratch, home, cwd) = site("forget").expect("scratch");
         let dir = project_dir(&home, &cwd);
@@ -450,7 +441,7 @@ mod tests {
         store
             .forget(&MemoryName::from_stem("alpha").expect("name"))
             .expect("forget");
-        let automatic = run_if_enabled(&home, &cwd, &Sources::discover(&home, &cwd));
+        let automatic = run_at_start(&home, &cwd, &Sources::discover(&home, &cwd)).reports;
         assert_eq!(
             (automatic[0].imported, automatic[0].kept),
             (0, 1),
@@ -643,7 +634,11 @@ mod tests {
         .expect("config");
         write_note(&project_dir(&home, &cwd), "alpha", "a hook", "body").expect("note");
         assert!(!enabled(&home));
-        assert!(run_if_enabled(&home, &cwd, &Sources::discover(&home, &cwd)).is_empty());
+        assert!(
+            run_at_start(&home, &cwd, &Sources::discover(&home, &cwd))
+                .reports
+                .is_empty()
+        );
         assert_eq!(repo(&home, &cwd).notes().len(), 0);
         assert_eq!(run(&home, &cwd)[0].imported, 1);
         assert!(enabled(
