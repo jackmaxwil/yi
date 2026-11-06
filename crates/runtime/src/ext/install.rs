@@ -35,6 +35,14 @@ fn rust_pack() -> Pack {
 }
 
 pub fn install(options: ExtOptions) -> Host {
+    install_with(options, None)
+}
+
+pub fn install_child(options: ExtOptions, pointer: String) -> Host {
+    install_with(options, Some(pointer))
+}
+
+fn install_with(options: ExtOptions, pointer: Option<String>) -> Host {
     let ExtOptions {
         cwd,
         home,
@@ -70,11 +78,13 @@ pub fn install(options: ExtOptions) -> Host {
     if let Some(schema) = schema_instruction {
         host.attach(Slot::new(Rank::Schema, "schema"), schema);
     }
-    host.register(Box::new(
-        ProjectResources::new(cwd.clone(), home.clone())
-            .with_context_window(context_window)
-            .with_global_skills(global_skills),
-    ));
+    let resources = ProjectResources::new(cwd.clone(), home.clone())
+        .with_context_window(context_window)
+        .with_global_skills(global_skills);
+    host.register(Box::new(match pointer {
+        Some(pointer) => resources.with_pointer(pointer),
+        None => resources,
+    }));
     register_packs(&mut host, &cwd, &home);
     if can_delegate {
         host.register(Box::new(Orchestrate::new(ORCHESTRATE)));
@@ -84,11 +94,11 @@ pub fn install(options: ExtOptions) -> Host {
     host
 }
 
-pub fn narrow(cwd: &Path, home: &Path, identity: &str) -> Host {
+pub fn narrow(cwd: &Path, home: &Path, identity: &str, pointer: String) -> Host {
     let mut host = Host::new(cwd.to_path_buf());
     host.attach(Slot::new(Rank::Identity, "identity"), identity.to_owned());
     host.register(Box::new(
-        ProjectResources::new(cwd.to_path_buf(), home.to_path_buf()).without_catalogs(),
+        ProjectResources::new(cwd.to_path_buf(), home.to_path_buf()).with_pointer(pointer),
     ));
     register_packs(&mut host, cwd, home);
     host

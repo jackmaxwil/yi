@@ -472,8 +472,11 @@ preview) or `yi gc --fix`, one `kept of found, removed, trimmed` line per store.
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
 `<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
-`~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
-child's lists none of those. Frontmatter at discovery; the catalog clips each description at 60 chars and the
+`~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it.
+A child is sent no catalog: one line points it at `read("yi://skills")`, and a second names each
+skill its parent read through `yi://skills/<name>`; a reader with no `read` is sent neither.
+Frontmatter at discovery; the catalog clips each description at 60 chars, `read("yi://skills")`
+serves every listed skill with its whole description (32 KiB, then names past a cut row), and the
 whole skill is `read("yi://skills/<name>")`; `$name` or a `trigger:` needle in a message the
 user typed points at it as `Relevant: yi://skills/<name>`. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.

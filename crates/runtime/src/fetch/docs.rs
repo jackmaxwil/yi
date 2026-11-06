@@ -25,13 +25,17 @@ fn plan_guide() -> String {
 }
 
 impl Resolver {
-    /// `yi://tools/<name>` serves a deferred tool guide, `yi://skills/<name>` a skill's SKILL.md
-    /// and `yi://skills/<name>/<file>` a file beside it: what the prefix names but does not carry.
+    /// `yi://tools/<name>` serves a deferred tool guide, `yi://skills` every skill in full,
+    /// `yi://skills/<name>` its SKILL.md and `yi://skills/<name>/<file>` a file beside it.
     pub(super) fn resolve_docs(&self, url: &Url) -> Result<(String, String), FetchError> {
         let not_found = |what: String| FetchError::NotFound {
             url: url.to_string(),
             what,
         };
+        if url.path() == "skills" {
+            let index = crate::skills::index_text(self.workspace(), self.home());
+            return Ok((index, "skill-index".to_owned()));
+        }
         match url.path().split_once('/') {
             Some(("tools", name)) => TOOL_GUIDES
                 .iter()
@@ -66,7 +70,7 @@ impl Resolver {
             }
             _ => Err(FetchError::BadAddress {
                 url: url.to_string(),
-                detail: "a yi address is yi://tools/<name>, yi://skills/<name> or yi://skills/<name>/<file>".to_owned(),
+                detail: "a yi address is yi://tools/<name>, yi://skills, yi://skills/<name> or yi://skills/<name>/<file>".to_owned(),
             }),
         }
     }

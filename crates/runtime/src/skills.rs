@@ -84,15 +84,68 @@ fn scan_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
 /// Each description is clipped to [`DESCRIPTION_CLIP`] chars and the whole skill is one
 /// `yi://skills/<name>` read away; the block as a whole is fitted to the `skills_meta` budget.
 pub fn skills_catalog(cwd: &Path, home: &Path, budget: Bytes) -> Option<Truncated> {
+    catalog_text(&listing(cwd, home), budget)
+}
+
+pub fn index_text(cwd: &Path, home: &Path) -> String {
+    let skills = listing(cwd, home);
+    match fitted(&skills, CATALOG_CEILING, View::Index) {
+        Some(index) => index.text,
+        None => "No skills found: a skill is <root>/<name>/SKILL.md under .yi, .agents, .pi or .claude/skills, in the repository or the home directory.".to_owned(),
+    }
+}
+
+#[must_use]
+pub(crate) fn child_pointer(inherited: &[String]) -> String {
+    let address = crate::rules::SKILL_ADDRESS;
+    let mut text = format!(
+        "Skills: read(\"{INDEX_ADDRESS}\") lists them; read(\"{address}<name>\") loads one."
+    );
+    if !inherited.is_empty() {
+        let named: Vec<String> = (inherited.iter())
+            .map(|name| format!("{address}{name}"))
+            .collect();
+        text.push_str(&format!("\nYour parent loaded: {}", named.join(", ")));
+    }
+    text
+}
+
+/// A read of a file beside a skill, or of a line range, counts for the skill.
+#[must_use]
+pub(crate) fn inherited(link: &crate::mailbox::ParentLink) -> Vec<String> {
+    let Some(host) = link.host.upgrade() else {
+        return Vec::new();
+    };
+    let Some(resolver) = host.resolver.get() else {
+        return Vec::new();
+    };
+    let names: std::collections::BTreeSet<String> = (resolver.log().records().iter())
+        .filter_map(|record| record.url.strip_prefix(crate::rules::SKILL_ADDRESS))
+        .map(|rest| rest.split_once('#').map_or(rest, |(path, _)| path))
+        .map(|path| path.split_once('/').map_or(path, |(name, _)| name))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    names.into_iter().collect()
+}
+
+fn listing(cwd: &Path, home: &Path) -> Vec<Skill> {
     let (mut listed, project) = discover_split(cwd, home);
     listed.extend(project);
     listed.sort_by(|a, b| a.name.cmp(&b.name));
-    catalog_text(&listed, budget)
+    listed
+}
+
+#[derive(Clone, Copy)]
+enum View {
+    Catalog,
+    Index,
 }
 
 pub const CATALOG_FLOOR: Bytes = Bytes(8_192);
 pub const CATALOG_CEILING: Bytes = Bytes(32_768);
 const DESCRIPTION_CLIP: usize = 60;
+pub(crate) const INDEX_ADDRESS: &str = "yi://skills";
 
 pub fn catalog_budget(context_window: u64) -> Bytes {
     let bytes = usize::try_from(context_window.saturating_mul(4) / 50).unwrap_or(usize::MAX);
@@ -108,16 +161,24 @@ fn clip(text: &str, limit: usize) -> String {
     out
 }
 
-fn render_catalog(skills: &[Skill], described: usize) -> String {
-    let mut body = format!(
-        "<skills>\nSkills you can follow. Descriptions are clipped at {DESCRIPTION_CLIP} chars (…); read(\"{}<name>\") returns the whole skill, and you read it before acting on one. `$name` in a message asks for one by name.\n",
-        crate::rules::SKILL_ADDRESS
-    );
+fn render_catalog(skills: &[Skill], described: usize, view: View) -> String {
+    let address = crate::rules::SKILL_ADDRESS;
+    let mut body = match view {
+        View::Catalog => format!(
+            "<skills>\nSkills you can follow. Descriptions are clipped at {DESCRIPTION_CLIP} chars (…); read(\"{address}<name>\") returns the whole skill, and you read it before acting on one; read(\"{INDEX_ADDRESS}\") lists every skill with its whole description. `$name` in a message asks for one by name.\n"
+        ),
+        View::Index => format!(
+            "Every skill you can follow, with its whole description; read(\"{address}<name>\") returns one, and you read it before acting on it.\n"
+        ),
+    };
     for skill in skills.iter().take(described) {
         body.push_str("- ");
         body.push_str(&skill.name);
         body.push_str(": ");
-        body.push_str(&clip(&skill.description, DESCRIPTION_CLIP));
+        match view {
+            View::Catalog => body.push_str(&clip(&skill.description, DESCRIPTION_CLIP)),
+            View::Index => body.push_str(&skill.description),
+        }
         body.push('\n');
     }
     let rest: Vec<&str> = skills
@@ -126,19 +187,40 @@ fn render_catalog(skills: &[Skill], described: usize) -> String {
         .map(|skill| skill.name.as_str())
         .collect();
     if !rest.is_empty() {
-        body.push_str(&format!("+{} more: {}\n", rest.len(), rest.join(", ")));
+        match view {
+            View::Catalog => body.push_str(&format!("+{} more: {}\n", rest.len(), rest.join(", "))),
+            View::Index => {
+                let next = format!("read(\"{address}<name>\") for each name below");
+                let cap = format!("{INDEX_ADDRESS} cap");
+                let row = yi_tools::cut_row(
+                    described,
+                    skills.len(),
+                    "skills described",
+                    &cap,
+                    CATALOG_CEILING.0,
+                    &next,
+                );
+                body.push_str(&format!("{row}\n{}\n", rest.join(", ")));
+            }
+        }
     }
-    body.push_str("</skills>");
+    if let View::Catalog = view {
+        body.push_str("</skills>");
+    }
     body
 }
 
 pub fn catalog_text(skills: &[Skill], budget: Bytes) -> Option<Truncated> {
+    fitted(skills, budget, View::Catalog)
+}
+
+fn fitted(skills: &[Skill], budget: Bytes, view: View) -> Option<Truncated> {
     if skills.is_empty() {
         return None;
     }
     let mut described = skills.len();
     loop {
-        let body = render_catalog(skills, described);
+        let body = render_catalog(skills, described, view);
         if body.len() <= budget.0 {
             return Some(Truncated {
                 text: body,

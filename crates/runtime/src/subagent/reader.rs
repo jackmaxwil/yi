@@ -176,10 +176,15 @@ pub fn session(
     broker: Option<Arc<crate::permission::PermissionBroker>>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
 ) -> AgentSession {
+    // A pointer the child has no `read` to follow would be a lie about its tools.
+    let reads = reader.turns > 1 && reader.tools.iter().any(|name| name == "read");
+    let pointer = crate::skills::child_pointer(&crate::skills::inherited(&build.link));
     let mut child = AgentSession::new(
         SessionConfig {
             system_prompt: match reader.role {
+                Role::Reader if reader.fenced && reads => format!("{FENCED_READER}\n\n{pointer}"),
                 Role::Reader if reader.fenced => FENCED_READER.to_owned(),
+                Role::Reader if reads => format!("{UNFENCED_READER}\n\n{pointer}"),
                 Role::Reader => UNFENCED_READER.to_owned(),
                 Role::Worker => String::new(),
             },
@@ -190,7 +195,7 @@ pub fn session(
         provider,
     );
     if reader.role == Role::Worker {
-        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT));
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT, pointer));
         child.enable_compaction();
     }
     child.set_turn_cap(reader.turns);

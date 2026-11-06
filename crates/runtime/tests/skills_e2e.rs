@@ -928,3 +928,106 @@ async fn the_checker_snippet_walls_history_and_the_workspace_but_not_checks_dir(
     );
     Ok(())
 }
+
+fn index(cwd: &std::path::Path, home: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let resolver = yi_runtime::fetch::Resolver::new(cwd.to_path_buf(), yi_runtime::Wall::default())
+        .with_home(home.to_path_buf());
+    Ok(resolver.fetch(&"yi://skills".parse()?)?.text)
+}
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> TestResult {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_index_serves_every_bundled_skill_whole_and_only_where_it_applies() -> TestResult {
+    let root = Scratch::new("yi-skills-index")?;
+    let (home, project) = (root.join("home"), root.join("project"));
+    std::fs::create_dir_all(&project)?;
+    let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi");
+    copy_tree(&shipped, &home.join(".yi/skills/yi"))?;
+    let wide = "Prüfe jede Änderung gegen den Plan, bevor du etwas für erledigt erklärst — immer, ohne Ausnahme.";
+    skill_dir(
+        &project.join(".yi/skills"),
+        "prüfen",
+        &format!("---\nname: prüfen\ndescription: {wide}\n---\nbody\n"),
+    )?;
+    let served = index(&project, &home)?;
+    assert!(served.contains(&format!("- prüfen: {wide}\n")), "{served}");
+    let read = std::fs::read_to_string(shipped.join("read/SKILL.md"))?;
+    let tail = "or when an edit";
+    assert!(
+        read.contains(tail),
+        "the read skill's description changed: {read}"
+    );
+    let line = (served.lines())
+        .find(|line| line.starts_with("- read: "))
+        .ok_or("the index lacks the read skill")?;
+    assert!(
+        line.contains(tail),
+        "the description is whole, not clipped: {line}"
+    );
+    assert!(
+        !served.contains("- gate: "),
+        "gate is within the yi repository only: {served}"
+    );
+    std::fs::create_dir_all(project.join("scripts/guardrails"))?;
+    std::fs::write(project.join("scripts/guardrails/check_guardrails.sh"), "")?;
+    assert!(
+        index(&project, &home)?.contains("- gate: "),
+        "gate applies once its path exists"
+    );
+    assert!(!served.contains("skills described ("), "{served}");
+    Ok(())
+}
+
+#[test]
+fn an_empty_home_serves_an_index_that_says_where_skills_live() -> TestResult {
+    let root = Scratch::new("yi-skills-index-empty")?;
+    let served = index(&root.join("project"), &root.join("home"))?;
+    assert!(served.starts_with("No skills found"), "{served}");
+    Ok(())
+}
+
+#[test]
+fn the_index_cut_names_its_cap_and_keeps_every_name() -> TestResult {
+    let root = Scratch::new("yi-skills-index-cap")?;
+    let home = root.join("home");
+    let skills = home.join(".yi/skills");
+    let write = |name: &str, description: &str| {
+        skill_dir(
+            &skills,
+            name,
+            &format!("---\nname: {name}\ndescription: {description}\n---\nbody\n"),
+        )
+    };
+    for index in 0..30 {
+        write(&format!("skill-{index:02}"), &"d".repeat(1_000))?;
+    }
+    let cap = yi_runtime::skills::CATALOG_CEILING.0;
+    let short = index(&home, &home)?;
+    assert!(short.len() < cap, "the fixture must start under the cap");
+    write("skill-29", &"d".repeat(1_000 + cap - short.len()))?;
+    let at = index(&home, &home)?;
+    assert_eq!(at.len(), cap, "{}", at.len());
+    assert!(
+        !at.contains("skills described ("),
+        "exactly at the cap nothing is cut"
+    );
+    write("skill-29", &"d".repeat(1_001 + cap - short.len()))?;
+    let over = index(&home, &home)?;
+    let row = r#"[… 29 of 30 skills described (yi://skills cap 32768); the rest: read("yi://skills/<name>") for each name below]"#;
+    assert!(over.contains(&format!("{row}\nskill-29\n")), "{over}");
+    assert!(over.len() <= cap, "{}", over.len());
+    Ok(())
+}

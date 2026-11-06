@@ -969,6 +969,19 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
             "{role} reads the doctrine"
         );
     }
+    let pointer =
+        r#"Skills: read("yi://skills") lists them; read("yi://skills/<name>") loads one."#;
+    for role in ["leaf", "leaf_orchestrate", "worker"] {
+        let prefix = text(role)?;
+        assert!(
+            prefix.contains(pointer),
+            "{role} is told where the catalog is: {prefix}"
+        );
+        assert!(
+            !prefix.contains("<skills>"),
+            "{role} is sent no catalog: {prefix}"
+        );
+    }
     let delegation = yi_runtime::delegation_fragment();
     assert!(
         lines_of(delegation, &text("root")?, true),
