@@ -448,7 +448,7 @@ fn a_file_past_the_ceiling_is_refused_before_the_converter_runs() -> TestResult 
     std::fs::File::options()
         .write(true)
         .open(&path)?
-        .set_len(yi_tools::document_ceiling() + 1)?;
+        .set_len(yi_tools::INPUT_CEILING + 1)?;
     let output = call(
         &tool(&tools, "read")?,
         &scratch.cwd,
@@ -456,7 +456,7 @@ fn a_file_past_the_ceiling_is_refused_before_the_converter_runs() -> TestResult 
     )?;
     assert!(output.is_error);
     assert!(
-        text(&output).contains("past the 256 MiB ceiling"),
+        text(&output).contains("INPUT_CEILING 268435456"),
         "{}",
         text(&output)
     );

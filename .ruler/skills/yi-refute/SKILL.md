@@ -24,4 +24,5 @@ description: Prove a test or gate red for its own reason before claiming it: fix
 8. Optional, for a renderer or parser fix: `cargo mutants --in-diff <(git diff main) -p <crate>`
    (user-run, minutes; never in a gate until its wall clock is measured); quote survivors in
    `Seen red`, or kill them.
-9. Report failures verbatim; a paraphrase is a claim.
+9. Report failures verbatim in saved work (`Seen red`, a commit, an issue, a report to another
+   agent); a paraphrase there is a claim.
