@@ -7,6 +7,8 @@ use std::io::Write;
 use serde_json::Value;
 use syntect::parsing::{SyntaxDefinition, SyntaxSetBuilder};
 
+include!("../runtime/pack.rs");
+
 /// The languages fences and edited files name, by bat's grammar name. The rest of bat's 213 were
 /// 590 KB of the binary, Julia, Sass, Less, MATLAB, Lisp and CFML the largest of them.
 const GRAMMARS: [&str; 44] = [
@@ -58,6 +60,7 @@ const GRAMMARS: [&str; 44] = [
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR unset")?);
+    println!("cargo::rerun-if-changed=../runtime/pack.rs");
     println!("cargo::rerun-if-changed=data/logos");
     let mut names: Vec<String> = std::fs::read_dir("data/logos")?
         .filter_map(|entry| entry.ok())
@@ -71,8 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for name in &names {
         masks.extend(std::fs::read(format!("data/logos/{name}.a8"))?);
     }
-    let packed = miniz_oxide::deflate::compress_to_vec_zlib(&masks, 9);
-    std::fs::File::create(out.join("logos.zz"))?.write_all(&packed)?;
+    pack_bytes(&masks, &out, "logos")?;
     let quoted: Vec<String> = names.iter().map(|name| format!("{name:?}")).collect();
     let table = format!(
         "pub const KEYS: [&str; {}] = [{}];\n",
