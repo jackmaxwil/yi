@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Usage};
+use yi_types::message::{AgentMessage, Content, Usage, UserContent};
 use yi_types::plan::canonical::sorted;
 use yi_types::plan::doc::OWNER_AGENT;
 use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
@@ -92,6 +92,7 @@ pub struct Scan {
     /// Applied plan ops by (op, who applied it); an op the table rejected reads `<op> (rejected)`.
     pub plan_ops: BTreeMap<(String, ActorClass), u64>,
     pub journals: usize,
+    pub skills: SkillUptake,
     plan_seen: HashSet<String>,
 }
 
@@ -114,6 +115,118 @@ impl Scan {
             .entry((op, ActorClass::of(&record.actor)))
             .or_insert(0);
         *count = count.saturating_add(1);
+    }
+}
+
+/// Assistant turns after a skill pointer within which a read of that skill counts as following it.
+pub const FOLLOW_WINDOW: u64 = 3;
+
+/// Skill catalog reads, skill reads, start-step notes and the `Relevant:` pointers a read followed,
+/// over sessions' messages in order; [`SkillUptake::next_session`] starts each one's turn count.
+#[derive(Default)]
+pub struct SkillUptake {
+    catalog_reads: u64,
+    skill_reads: u64,
+    pointers: u64,
+    followed: u64,
+    notes: u64,
+    nudges: u64,
+    pending: Vec<(String, u64)>,
+    turn: u64,
+}
+
+impl SkillUptake {
+    pub fn observe(&mut self, entry: &Entry) {
+        let Entry::Message { message, .. } = entry else {
+            return;
+        };
+        match message {
+            AgentMessage::Assistant { content, .. } => {
+                self.turn = self.turn.saturating_add(1);
+                let turn = self.turn;
+                self.pending.retain(|(_, deadline)| *deadline >= turn);
+                for block in content {
+                    if let Content::ToolCall {
+                        name, arguments, ..
+                    } = block
+                        && name == "read"
+                        && let Some(path) =
+                            arguments.get("path").and_then(serde_json::Value::as_str)
+                    {
+                        self.read(path);
+                    }
+                }
+            }
+            AgentMessage::Custom {
+                custom_type,
+                content,
+                ..
+            } => match (custom_type.as_str(), content) {
+                ("reminder", UserContent::Text(text)) => {
+                    let Some(rest) = text
+                        .strip_prefix("Relevant: ")
+                        .and_then(|rest| rest.strip_prefix(crate::rules::SKILL_ADDRESS))
+                    else {
+                        return;
+                    };
+                    let name = rest.split([' ', '#', '/']).next().unwrap_or_default();
+                    self.pointers = self.pointers.saturating_add(1);
+                    let deadline = self.turn.saturating_add(FOLLOW_WINDOW);
+                    self.pending.push((name.to_owned(), deadline));
+                }
+                ("skills_prelude", _) => self.notes = self.notes.saturating_add(1),
+                ("skills_nudge", _) => self.nudges = self.nudges.saturating_add(1),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// A read of a file beside a skill, or of `<name>/SKILL.md` by path, counts for the skill.
+    fn read(&mut self, path: &str) {
+        let name = match path.strip_prefix(crate::rules::SKILL_ADDRESS) {
+            Some(rest) => rest.split(['#', '/']).next(),
+            None if path.trim_end_matches('/') == "yi://skills" => {
+                self.catalog_reads = self.catalog_reads.saturating_add(1);
+                return;
+            }
+            None => path
+                .strip_suffix("/SKILL.md")
+                .and_then(|dir| dir.rsplit('/').next()),
+        };
+        let Some(name) = name.filter(|name| !name.is_empty()) else {
+            return;
+        };
+        self.skill_reads = self.skill_reads.saturating_add(1);
+        let before = self.pending.len();
+        self.pending.retain(|(pointed, _)| pointed != name);
+        let followed = u64::try_from(before.saturating_sub(self.pending.len())).unwrap_or(0);
+        self.followed = self.followed.saturating_add(followed);
+    }
+
+    pub fn next_session(&mut self) {
+        self.pending.clear();
+        self.turn = 0;
+    }
+
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "catalogReads": self.catalog_reads, "skillReads": self.skill_reads,
+            "pointers": self.pointers, "followed": self.followed, "followWindow": FOLLOW_WINDOW,
+            "notes": self.notes, "nudges": self.nudges,
+        })
+    }
+
+    pub fn line(&self) -> String {
+        format!(
+            "skills  catalog reads {}, skill reads {}, pointers {} ({} followed by a read within {FOLLOW_WINDOW} turns), start notes {}, nudges {}",
+            self.catalog_reads,
+            self.skill_reads,
+            self.pointers,
+            self.followed,
+            self.notes,
+            self.nudges
+        )
     }
 }
 
@@ -189,10 +302,12 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                 part == "children" || part.starts_with("sub-")
             })
         });
+        scan.skills.next_session();
         for line in lines.filter(|line| {
             line.contains("\"assistant\"")
                 || line.contains(crate::spend::TOOL_USAGE_PREFIX)
                 || line.contains(&plan_op)
+                || line.contains("\"role\":\"custom\"")
         }) {
             if entry_stamp(line).is_some_and(|stamp| stamp > 0 && stamp < since_ms) {
                 continue;
@@ -262,6 +377,9 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                     }
                 }
                 continue;
+            }
+            if let Mutation::Entry { entry, .. } = &parsed {
+                scan.skills.observe(entry);
             }
             let Mutation::Entry {
                 entry:

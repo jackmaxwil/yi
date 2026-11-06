@@ -100,7 +100,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "schema", value: Some("schema"), summary: "answer JSON valid against this schema" },
     Flag { name: "check", value: Some("command"), summary: "ask: probe the command and exit, running nothing" },
     Flag { name: "since", value: Some("span"), summary: "after stats: fold the sessions of this window" },
-    Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day, prices or plan" },
+    Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day, prices, plan or skills" },
     Flag { name: "top", value: Some("n"), summary: "after stats: list the n costliest sessions" },
     Flag { name: "role", value: Some("role"), summary: "after models recommend: only this role" },
 ];

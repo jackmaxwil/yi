@@ -5,7 +5,9 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
 
-use yi_runtime::rollup::scan;
+use serde_json::{Value, json};
+use yi_runtime::rollup::{FOLLOW_WINDOW, SkillUptake, scan};
+use yi_types::entry::Entry;
 
 use crate::scratch::Scratch;
 
@@ -13,6 +15,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const ROOT: &str = include_str!("fixtures/rollup/root_glm_with_child_usage.jsonl");
 const CHILD: &str = include_str!("fixtures/rollup/child_bedrock.jsonl");
+const POINTED: &str = include_str!("../../tui/tests/fixtures/sessions/01a14278.jsonl");
 const CHILD_REPLY: f64 = 0.010216;
 /// The root fixture's two replies, summed by hand from its file: 0.0004671 + 0.000159415.
 const ROOT_REPLIES: f64 = 0.000626515;
@@ -370,5 +373,135 @@ fn a_tool_usage_record_is_one_request_inside_its_window() -> TestResult {
     assert_eq!(request.model, "deepseek/deepseek-v4-flash");
     assert!((request.usage.cost.total.as_f64().unwrap_or(0.0) - 0.003).abs() < 1e-12);
     assert!(scan(&dir, 1_790_000_001_000).requests.is_empty());
+    Ok(())
+}
+
+fn skill_counts(skills: &Value) -> Value {
+    json!([
+        skills["catalogReads"],
+        skills["skillReads"],
+        skills["pointers"],
+        skills["followed"],
+        skills["notes"],
+        skills["nudges"],
+    ])
+}
+
+/// Dies when the scan drops a `Relevant:` pointer or the read that followed it: the recorded
+/// session reads `yi://skills/debug` one turn after the pointer; the root fixture has neither.
+#[test]
+fn a_recorded_pointer_and_its_read_count_as_followed_and_a_plain_session_counts_zeros() -> TestResult
+{
+    let dir = Scratch::new("rollup-skills")?;
+    put(&dir, "--proj--/1_pointed.jsonl", POINTED)?;
+    let skills = scan(&dir, 0).skills.json();
+    assert_eq!(skill_counts(&skills), json!([0, 1, 1, 1, 0, 0]), "{skills}");
+    let plain = Scratch::new("rollup-skills-none")?;
+    put(&plain, "--proj--/1_plain.jsonl", ROOT)?;
+    let skills = scan(&plain, 0).skills.json();
+    assert_eq!(skill_counts(&skills), json!([0, 0, 0, 0, 0, 0]), "{skills}");
+    Ok(())
+}
+
+fn message(value: Value) -> Result<Entry, Box<dyn Error>> {
+    Ok(serde_json::from_value(json!({
+        "type": "message", "id": "m", "message": value, "parentId": null, "seq": 1,
+        "timestamp": 1_790_000_000_000_u64,
+    }))?)
+}
+
+fn pointer(name: &str) -> Result<Entry, Box<dyn Error>> {
+    message(json!({
+        "role": "custom", "customType": "reminder", "display": true, "timestamp": 0,
+        "content": format!("Relevant: yi://skills/{name} (matched \"{name}\")"),
+    }))
+}
+
+fn turn(paths: &[&str]) -> Result<Entry, Box<dyn Error>> {
+    let calls: Vec<Value> = paths
+        .iter()
+        .map(|path| json!({"type": "toolCall", "id": "c", "name": "read", "arguments": {"path": path}}))
+        .collect();
+    message(json!({
+        "role": "assistant", "content": calls, "api": "faux", "provider": "faux",
+        "model": "faux-1", "stopReason": "toolUse", "timestamp": 0,
+        "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+    }))
+}
+
+/// Dies when the follow window is off by one either way, or a read of a skill's own file, or of
+/// its `SKILL.md` by path, is not the skill's read: `a` is read on the window's last turn, `b` one
+/// turn past it.
+#[test]
+fn a_read_on_the_windows_last_turn_follows_and_one_past_it_does_not() -> TestResult {
+    let mut uptake = SkillUptake::default();
+    for name in ["a", "b", "c"] {
+        uptake.observe(&pointer(name)?);
+    }
+    assert_eq!(FOLLOW_WINDOW, 3);
+    uptake.observe(&turn(&["crates/a/SKILL.rs"])?);
+    uptake.observe(&turn(&[])?);
+    uptake.observe(&turn(&["yi://skills/a/references/x.md"])?);
+    uptake.observe(&turn(&[
+        "/home/me/.claude/skills/b/SKILL.md",
+        "yi://skills",
+    ])?);
+    let skills = uptake.json();
+    assert_eq!(skill_counts(&skills), json!([1, 2, 3, 1, 0, 0]), "{skills}");
+    Ok(())
+}
+
+/// Dies when the scan drops a start-step note or nudge line, or counts another model-only note as
+/// one; the recorded sessions above predate the note and count zero.
+#[test]
+fn start_notes_and_nudges_count_and_other_notes_do_not() -> TestResult {
+    let dir = Scratch::new("rollup-skills-notes")?;
+    let header = ROOT.lines().next().ok_or("empty fixture")?;
+    let mut lines = vec![header.to_owned()];
+    for (seq, custom) in ["skills_prelude", "skills_nudge", "todo_prelude"]
+        .iter()
+        .enumerate()
+    {
+        let message = json!({
+            "role": "custom", "customType": custom, "display": false, "timestamp": 0,
+            "content": "Before anything else: read yi://skills.",
+        });
+        lines.push(
+            json!({"kind": "entry", "lane": "main", "type": "message", "id": format!("n{seq}"),
+                "message": message, "seq": seq, "timestamp": 1_790_000_000_000_u64})
+            .to_string(),
+        );
+    }
+    put(&dir, "--proj--/1_notes.jsonl", &(lines.join("\n") + "\n"))?;
+    let found = scan(&dir, 0);
+    assert_eq!(found.bad_lines, 0);
+    assert_eq!(
+        skill_counts(&found.skills.json()),
+        json!([0, 0, 0, 0, 1, 1])
+    );
+    Ok(())
+}
+
+/// Dies when one session's pending pointer is followed by the next session's read: the scan
+/// starts each file's turn count afresh.
+#[test]
+fn a_pointer_is_not_followed_by_a_read_in_another_session() -> TestResult {
+    let dir = Scratch::new("rollup-skills-two")?;
+    let header = ROOT.lines().next().ok_or("empty fixture")?;
+    let file = |entry: Entry| -> Result<String, Box<dyn Error>> {
+        let mut line = serde_json::to_value(entry)?;
+        line["kind"] = json!("entry");
+        line["lane"] = json!("main");
+        Ok(format!("{header}\n{line}\n"))
+    };
+    put(&dir, "--proj--/1_pointed.jsonl", &file(pointer("debug")?)?)?;
+    put(
+        &dir,
+        "--proj--/2_read.jsonl",
+        &file(turn(&["yi://skills/debug"])?)?,
+    )?;
+    let skills = scan(&dir, 0).skills.json();
+    assert_eq!(skill_counts(&skills), json!([0, 1, 1, 0, 0, 0]), "{skills}");
     Ok(())
 }

@@ -1,5 +1,5 @@
-//! `yi stats --since 7d --by model|upstream|day|prices|plan [--top N]`: the sessions directory
-//! folded into one table, the per-route prices it implies, or the plan engine's ops.
+//! `yi stats --since 7d --by model|upstream|day|prices|plan|skills [--top N]`: the sessions directory
+//! folded into one table, the per-route prices it implies, the plan engine's ops, or skill uptake.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -26,6 +26,7 @@ enum By {
     Day,
     Prices,
     Plan,
+    Skills,
 }
 
 /// What `--since`, `--by` and `--top` asked for; all unset means `yi stats` is the one-session view.
@@ -61,10 +62,11 @@ impl Flags {
             "day" => Ok(By::Day),
             "prices" => Ok(By::Prices),
             "plan" => Ok(By::Plan),
+            "skills" => Ok(By::Skills),
             _ => Err(bad(
                 "by",
                 &raw,
-                "wants model, upstream, day, prices or plan",
+                "wants model, upstream, day, prices, plan or skills",
             )),
         });
         let top = self.top.map(|raw| {
@@ -175,7 +177,7 @@ fn grouped(scan: &Scan, by: By, zone: &Zone) -> Vec<(String, Group)> {
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     for request in &scan.requests {
         let key = match by {
-            By::Model | By::Prices | By::Plan => route(request).0,
+            By::Model | By::Prices | By::Plan | By::Skills => route(request).0,
             By::Upstream => route(request).1,
             By::Day => day_label(zone, request.at_ms),
         };
@@ -530,6 +532,25 @@ fn plan_view(
     0
 }
 
+fn skills_view(scanned: &Scan, window: &str, skipped: Option<String>, json_out: bool) -> i32 {
+    if json_out {
+        println!(
+            "{}",
+            json!({
+                "since": window, "files": scanned.files, "skills": scanned.skills.json(),
+                "unreadable": scanned.unreadable, "badLines": scanned.bad_lines,
+            })
+        );
+        return 0;
+    }
+    println!("{window}: {} session file(s)", scanned.files);
+    println!("{}", scanned.skills.line());
+    if let Some(note) = skipped {
+        println!("{note}");
+    }
+    0
+}
+
 pub fn run(query: &Query, dir: &Path, plans: &Path, json_out: bool) -> i32 {
     let by = query.by.unwrap_or(By::Model);
     let since = query
@@ -553,6 +574,9 @@ pub fn run(query: &Query, dir: &Path, plans: &Path, json_out: bool) -> i32 {
     }
     if by == By::Plan {
         return plan_view(&scanned, window, plans, skipped, json_out);
+    }
+    if by == By::Skills {
+        return skills_view(&scanned, window, skipped, json_out);
     }
     let zone = Zone::local();
     let rows = grouped(&scanned, by, &zone);

@@ -68,7 +68,7 @@ _yi() {
         '--schema[answer JSON valid against this schema]:schema:_files'
         '--check[ask: probe the command and exit, running nothing]:command:'
         '--since[after stats: fold the sessions of this window]:span:'
-        '--by[after stats: group by model, upstream, day, prices or plan]:axis:'
+        '--by[after stats: group by model, upstream, day, prices, plan or skills]:axis:'
         '--top[after stats: list the n costliest sessions]:n:'
         '--role[after models recommend: only this role]:role:'
     )
