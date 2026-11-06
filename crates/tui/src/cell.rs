@@ -459,15 +459,6 @@ impl ToolCell {
                 )));
             }
         }
-        let running = matches!(self.status, ToolStatus::Running | ToolStatus::Awaiting);
-        if mode == TranscriptMode::Thinking
-            && (running || (self.patch().is_none() && !body.is_empty()))
-        {
-            body.resize_with(
-                PREVIEW_ROWS.saturating_add(1).max(body.len()),
-                Line::default,
-            );
-        }
         crate::card::card(Line::from(spans), &chips, body, width, theme, self.status)
     }
 

@@ -69,12 +69,12 @@ fn ended_with(
 }
 
 #[test]
-fn a_running_tool_reserves_its_three_row_result_and_elision_space() -> TestResult {
+fn a_running_tool_holds_no_rows_for_a_result_that_has_not_come() -> TestResult {
     let mut cell = ToolCell {
-        name: "bash".to_owned(),
+        name: "get_context".to_owned(),
         call_id: "c1".to_owned(),
         status: ToolStatus::Running,
-        summary: ToolCell::summary_of("bash", "printf 'one\\ntwo\\nthree\\n'"),
+        summary: ToolCell::summary_of("get_context", ""),
         digest: None,
         preview: Vec::new(),
         elapsed_ms: 0,
@@ -83,13 +83,13 @@ fn a_running_tool_reserves_its_three_row_result_and_elision_space() -> TestResul
     };
     let running = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
     cell.status = ToolStatus::Done;
-    cell.preview = ["one", "two", "three"].map(str::to_owned).to_vec();
-    cell.digest = Some("one".to_owned());
-    let done = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
-    assert_eq!(running, done, "the card moved when its result landed");
     cell.preview = vec!["one".to_owned()];
-    let short = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
-    assert_eq!(running, short, "a one-row result collapsed the card");
+    let done = cell.lines(80, &theme(), TranscriptMode::Thinking, 0).len();
+    assert_eq!(
+        done,
+        running + 1,
+        "the card reserved or padded rows around its result"
+    );
     Ok(())
 }
 
