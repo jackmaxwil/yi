@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use yi_runtime::rollup::{FOLLOW_WINDOW, SkillUptake, scan};
+use yi_runtime::rollup::{SkillUptake, scan};
 use yi_types::entry::Entry;
 
 use crate::scratch::Scratch;
@@ -423,11 +423,23 @@ fn turn(paths: &[&str]) -> Result<Entry, Box<dyn Error>> {
     }))
 }
 fn fetched(path: &str) -> Result<Entry, Box<dyn Error>> {
+    let served_by = if path.starts_with("local://") {
+        "workspace-file"
+    } else {
+        "skill"
+    };
     Ok(serde_json::from_value(json!({
         "type": "custom", "id": "f", "customType": "fetch",
-        "data": {"url": path, "hash": "deadbeef", "servedBy": "skill"},
+        "data": {"url": path, "hash": "deadbeef", "servedBy": served_by},
         "parentId": null, "seq": 1, "timestamp": 1_790_000_000_000_u64,
     }))?)
+}
+
+fn session_file(header: &str, entry: Entry) -> Result<String, Box<dyn Error>> {
+    let mut line = serde_json::to_value(entry)?;
+    line["kind"] = json!("entry");
+    line["lane"] = json!("main");
+    Ok(format!("{header}\n{line}\n"))
 }
 
 /// Dies when an attempted read counts before the resolver served it, or a bare catalog address
@@ -449,14 +461,14 @@ fn a_skill_read_counts_only_when_its_fetch_record_arrives() -> TestResult {
 }
 
 /// Dies when the follow window is off by one either way, a served skill file does not clear its
-/// pointer, or a local `SKILL.md` fallback stops counting: `a` is served on the last turn, `b` late.
+/// pointer, or a local `SKILL.md` fetch stops counting: `a` is served on the last turn, `b` late.
 #[test]
 fn a_read_on_the_windows_last_turn_follows_and_one_past_it_does_not() -> TestResult {
     let mut uptake = SkillUptake::default();
     for name in ["a", "b", "c"] {
         uptake.observe(&pointer(name)?);
     }
-    assert_eq!(FOLLOW_WINDOW, 3);
+    assert_eq!(uptake.json()["followWindow"], 3);
     uptake.observe(&turn(&["crates/a/SKILL.rs"])?);
     uptake.observe(&turn(&[])?);
     uptake.observe(&turn(&["yi://skills/a/references/x.md"])?);
@@ -465,8 +477,36 @@ fn a_read_on_the_windows_last_turn_follows_and_one_past_it_does_not() -> TestRes
         "/home/me/.claude/skills/b/SKILL.md",
         "yi://skills/c",
     ])?);
+    uptake.observe(&fetched("local:///home/me/.claude/skills/b/SKILL.md")?);
     let skills = uptake.json();
     assert_eq!(skill_counts(&skills), json!([2, 3, 1]), "{skills}");
+    Ok(())
+}
+
+/// Dies when a capped pointer is dropped from the denominator or its later read is not followed.
+#[test]
+fn every_address_in_a_capped_reminder_counts_and_can_be_followed() -> TestResult {
+    let reminder = message(json!({
+        "role": "custom", "customType": "reminder", "display": true, "timestamp": 0,
+        "content": "Relevant: yi://skills/beta (matched \"E0502\") [+1 past the cap of 2: yi://skills/gamma]",
+    }))?;
+    let mut uptake = SkillUptake::default();
+    uptake.observe(&reminder);
+    uptake.observe(&fetched("yi://skills/gamma")?);
+    let skills = uptake.json();
+    assert_eq!(skill_counts(&skills), json!([1, 2, 1]), "{skills}");
+    Ok(())
+}
+
+/// Dies when an attempted filesystem read counts before its local fetch record proves it served.
+#[test]
+fn a_filesystem_skill_read_counts_only_when_its_local_fetch_arrives() -> TestResult {
+    let mut uptake = SkillUptake::default();
+    uptake.observe(&pointer("debug")?);
+    uptake.observe(&turn(&["/home/me/.claude/skills/debug/SKILL.md"])?);
+    assert_eq!(skill_counts(&uptake.json()), json!([0, 1, 0]));
+    uptake.observe(&fetched("local:///home/me/.claude/skills/debug/SKILL.md")?);
+    assert_eq!(skill_counts(&uptake.json()), json!([1, 1, 1]));
     Ok(())
 }
 
@@ -476,19 +516,34 @@ fn a_read_on_the_windows_last_turn_follows_and_one_past_it_does_not() -> TestRes
 fn a_pointer_is_not_followed_by_a_read_in_another_session() -> TestResult {
     let dir = Scratch::new("rollup-skills-two")?;
     let header = ROOT.lines().next().ok_or("empty fixture")?;
-    let file = |entry: Entry| -> Result<String, Box<dyn Error>> {
-        let mut line = serde_json::to_value(entry)?;
-        line["kind"] = json!("entry");
-        line["lane"] = json!("main");
-        Ok(format!("{header}\n{line}\n"))
-    };
-    put(&dir, "--proj--/1_pointed.jsonl", &file(pointer("debug")?)?)?;
+    put(
+        &dir,
+        "--proj--/1_pointed.jsonl",
+        &session_file(header, pointer("debug")?)?,
+    )?;
     put(
         &dir,
         "--proj--/2_read.jsonl",
-        &file(fetched("yi://skills/debug")?)?,
+        &session_file(header, fetched("yi://skills/debug")?)?,
     )?;
     let skills = scan(&dir, 0).skills.json();
     assert_eq!(skill_counts(&skills), json!([1, 1, 0]), "{skills}");
+    Ok(())
+}
+
+/// Dies when a fork-seeded copy of a parent's reminder inflates the pointer denominator.
+#[test]
+fn a_reminder_copied_into_a_fork_counts_once() -> TestResult {
+    let dir = Scratch::new("rollup-skills-copied")?;
+    let header = ROOT.lines().next().ok_or("empty fixture")?;
+    let copied = session_file(header, pointer("debug")?)?;
+    put(&dir, "--proj--/1_parent.jsonl", &copied)?;
+    put(
+        &dir,
+        "--proj--/1_parent/children/sub-a/2_child.jsonl",
+        &copied,
+    )?;
+    let skills = scan(&dir, 0).skills.json();
+    assert_eq!(skill_counts(&skills), json!([0, 1, 0]), "{skills}");
     Ok(())
 }

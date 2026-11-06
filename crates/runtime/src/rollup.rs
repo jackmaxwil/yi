@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Content, Usage, UserContent};
+use yi_types::message::{AgentMessage, Usage, UserContent};
 use yi_types::plan::canonical::sorted;
 use yi_types::plan::doc::OWNER_AGENT;
 use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
@@ -121,7 +121,7 @@ impl Scan {
 }
 
 /// Assistant turns after a skill pointer within which a read of that skill counts as following it.
-pub const FOLLOW_WINDOW: u64 = 3;
+pub(crate) const FOLLOW_WINDOW: u64 = 3;
 
 /// Served skill reads and the `Relevant:` pointers a read followed, over sessions' messages in
 /// order; [`SkillUptake::next_session`] starts each one's turn count.
@@ -132,12 +132,16 @@ pub struct SkillUptake {
     followed: u64,
     pending: Vec<(String, u64)>,
     turn: u64,
+    seen: HashSet<String>,
 }
 
 impl SkillUptake {
     pub fn observe(&mut self, entry: &Entry) {
         if let Entry::Custom {
-            custom_type, data, ..
+            id,
+            custom_type,
+            data,
+            ..
         } = entry
             && custom_type == FETCH_ENTRY_TYPE
         {
@@ -145,6 +149,7 @@ impl SkillUptake {
                 .as_ref()
                 .and_then(|data| data.get("url"))
                 .and_then(serde_json::Value::as_str)
+                && self.seen.insert(format!("fetch:{id}:{url}"))
             {
                 self.served(url);
             }
@@ -154,21 +159,10 @@ impl SkillUptake {
             return;
         };
         match message {
-            AgentMessage::Assistant { content, .. } => {
+            AgentMessage::Assistant { .. } => {
                 self.turn = self.turn.saturating_add(1);
                 let turn = self.turn;
                 self.pending.retain(|(_, deadline)| *deadline >= turn);
-                for block in content {
-                    if let Content::ToolCall {
-                        name, arguments, ..
-                    } = block
-                        && name == "read"
-                        && let Some(path) =
-                            arguments.get("path").and_then(serde_json::Value::as_str)
-                    {
-                        self.read(path);
-                    }
-                }
             }
             AgentMessage::Custom {
                 custom_type,
@@ -181,35 +175,36 @@ impl SkillUptake {
                 let UserContent::Text(text) = content else {
                     return;
                 };
-                let Some(rest) = text
-                    .strip_prefix("Relevant: ")
-                    .and_then(|rest| rest.strip_prefix(SKILL_ADDRESS))
-                else {
+                let Some(rest) = text.strip_prefix("Relevant: ") else {
                     return;
                 };
-                let name = rest.split([' ', '#', '/']).next().unwrap_or_default();
-                self.pointers = self.pointers.saturating_add(1);
-                let deadline = self.turn.saturating_add(FOLLOW_WINDOW);
-                self.pending.push((name.to_owned(), deadline));
+                if !rest.starts_with(SKILL_ADDRESS) {
+                    return;
+                }
+                let Ok(serialized) = serde_json::to_string(message) else {
+                    return;
+                };
+                if !self.seen.insert(format!("reminder:{serialized}")) {
+                    return;
+                }
+                for name in skill_names(text) {
+                    self.pointers = self.pointers.saturating_add(1);
+                    let deadline = self.turn.saturating_add(FOLLOW_WINDOW);
+                    self.pending.push((name.to_owned(), deadline));
+                }
             }
             _ => {}
         }
     }
 
     fn served(&mut self, url: &str) {
-        let Some(address) = url.strip_prefix(SKILL_ADDRESS) else {
-            return;
-        };
-        self.skill_read(address);
-    }
-
-    /// A filesystem `SKILL.md` read is the fallback where no skill fetch row can attribute it.
-    fn read(&mut self, path: &str) {
-        if path.starts_with(SKILL_ADDRESS) {
+        if let Some(address) = url.strip_prefix(SKILL_ADDRESS) {
+            self.skill_read(address);
             return;
         }
-        let Some(name) = path
-            .strip_suffix("/SKILL.md")
+        let Some(name) = url
+            .strip_prefix("local://")
+            .and_then(|path| path.strip_suffix("/SKILL.md"))
             .and_then(|dir| dir.rsplit('/').next())
         else {
             return;
@@ -232,7 +227,7 @@ impl SkillUptake {
         self.followed = self.followed.saturating_add(followed);
     }
 
-    pub fn next_session(&mut self) {
+    pub(crate) fn next_session(&mut self) {
         self.pending.clear();
         self.turn = 0;
     }
@@ -250,6 +245,14 @@ impl SkillUptake {
             self.skill_reads, self.pointers, self.followed
         )
     }
+}
+
+fn skill_names(text: &str) -> impl Iterator<Item = &str> {
+    text.split(SKILL_ADDRESS).skip(1).filter_map(|rest| {
+        rest.split(|c: char| c.is_whitespace() || matches!(c, '#' | '/' | ',' | ']' | ')' | '"'))
+            .next()
+            .filter(|name| !name.is_empty())
+    })
 }
 
 fn jsonl_files(dir: &Path, since_ms: u64, out: &mut Vec<PathBuf>) {
