@@ -1,7 +1,6 @@
 //! `read` on a file that is not text: the converter's copy, decoded text, or a refusal.
-use std::path::Path;
-
 use serde_json::{Map, Value, json};
+use std::path::Path;
 
 use super::tool::{HashlineReadTool, SKELETON_ROWS, View, documents};
 
@@ -35,7 +34,7 @@ impl Listed {
         }
     }
 }
-use crate::tool::{ToolContext, ToolOutput, error_output};
+use crate::tool::{Cap, ToolContext, ToolOutput, error_output};
 
 impl HashlineReadTool {
     pub(super) fn read_file(
@@ -45,13 +44,33 @@ impl HashlineReadTool {
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
+        let pages = match input.get("pages").and_then(Value::as_str) {
+            Some(spec) => match crate::document::parse_pages(spec) {
+                Ok(_) => Some(spec),
+                Err(reason) => {
+                    return crate::tool::error_output_kind(
+                        reason,
+                        yi_types::event::ToolErrorKind::InvalidArgs,
+                    );
+                }
+            },
+            None => None,
+        };
         let bytes = match context.read(path) {
             Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                let Some(document) = self.document_bytes(path, pages, context) else {
+                    return error_output(format!("failed to read {}: {error}", path.display()));
+                };
+                match document {
+                    Ok(bytes) => bytes,
+                    Err(output) => return output,
+                }
+            }
             Err(error) => {
                 return error_output(format!("failed to read {}: {error}", path.display()));
             }
         };
-        let pages = input.get("pages").and_then(Value::as_str);
         let mut hint: Option<String> = None;
         if pages.is_some() && !crate::document::is_pdf(&bytes) {
             return crate::tool::error_output_kind(
@@ -143,6 +162,33 @@ impl HashlineReadTool {
                 )
             }
         }
+    }
+
+    /// The bytes of a file past the text cap that is a document, under the converter's own
+    /// ceiling; `None` when it is no document, so the text cap's row stands.
+    fn document_bytes(
+        &self,
+        path: &Path,
+        pages: Option<&str>,
+        context: &ToolContext,
+    ) -> Option<Result<Vec<u8>, ToolOutput>> {
+        let file = context.read_gate().open(path, &context.deny_read).ok()?;
+        let window = u64::try_from(crate::document::MARKER_WINDOW).unwrap_or(u64::MAX);
+        let mut head = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, window), &mut head).ok()?;
+        if !crate::document::could_be_document(&head) {
+            return None;
+        }
+        let pdf = crate::document::is_pdf(&head);
+        let cap = match pages.is_some() && pdf {
+            true => Cap::Paged,
+            false => Cap::Document { pages: pdf },
+        };
+        Some(
+            context.read_document(path, cap).map_err(|error| {
+                error_output(format!("failed to read {}: {error}", path.display()))
+            }),
+        )
     }
 
     fn convert(
