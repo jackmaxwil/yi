@@ -44,8 +44,9 @@ pub(crate) struct Args {
     pub(crate) deadline: Option<u64>,
     pub(crate) resume: Resume,
     pub(crate) schema: Option<String>,
-    /// `yi ask --check CMD`: probe the command and exit, running neither it nor a turn.
-    pub(crate) check: Option<String>,
+    /// `yi ask --check CMD`, repeatable: probed at startup, then re-prompted until each exits 0;
+    /// with no prompt the probe is the whole run.
+    pub(crate) check: Vec<String>,
     pub(crate) stats: stats::Query,
     /// `--role` after `yi models recommend`.
     pub(crate) role: Option<String>,
@@ -99,7 +100,7 @@ pub(super) fn parse_from(
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
-    let mut check = None;
+    let mut check = Vec::new();
     let mut stats_flags = stats::Flags::default();
     let mut role = None;
     let mut prompt_parts: Vec<String> = Vec::new();
@@ -145,7 +146,7 @@ pub(super) fn parse_from(
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
-            Long("check") => check = Some(parser.value()?.string()?),
+            Long("check") => check.push(parser.value()?.string()?),
             Long("since") if command == "stats" => {
                 stats_flags.since = Some(parser.value()?.string()?)
             }
@@ -216,7 +217,7 @@ pub(super) fn parse_from(
 }
 
 fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
-    if args.check.is_some() && args.command != "ask" {
+    if !args.check.is_empty() && args.command != "ask" {
         return Err(lexopt::Error::Custom(
             "--check is `yi ask --check <command>`".into(),
         ));
