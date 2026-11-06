@@ -38,6 +38,7 @@ sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import forge_tracking  # noqa: E402
 import merge_baseline  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
+from _common import base_commit  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
 BINARY = {"binary_size_budget": "dist binary", "binary_size_budget_linux": "Linux dist binary"}
@@ -319,28 +320,45 @@ def changed_crates(text):
     return sorted({f"yi-{parts[1]}" for parts in paths if len(parts) > 2 and parts[0] == "crates" and parts[1]})
 
 
-def linux_clippy_command(crates):
+def linux_clippy_command(crates, no_tui=False):
     command = ["cargo", "clippy"]
-    for crate in crates:
-        command += ["-p", crate]
-    return command + ["--target", LINUX_TARGET, "--tests", "--", "-D", "warnings"]
+    if no_tui:
+        command += ["-p", "yi-cli", "--no-default-features"]
+    else:
+        for crate in crates:
+            command += ["-p", crate]
+        command += ["--all-targets"] if crates else ["--workspace", "--all-targets"]
+    return command + ["--target", LINUX_TARGET, "--", "-D", "warnings"]
 
 
 def linux_clippy():
-    targets = subprocess.run(("rustup", "target", "list", "--installed"), capture_output=True, text=True, check=False)
-    if targets.returncode:
-        print((targets.stdout + targets.stderr).strip())
-        return targets.returncode
-    if LINUX_TARGET not in targets.stdout.splitlines():
-        print(f"skip linux-clippy (target {LINUX_TARGET} not installed: rustup target add {LINUX_TARGET})")
+    try:
+        targets = subprocess.run(("rustup", "target", "list", "--installed"), capture_output=True, text=True, check=False)
+        if targets.returncode:
+            print((targets.stdout + targets.stderr).strip())
+            return targets.returncode
+        if LINUX_TARGET not in targets.stdout.splitlines():
+            added = subprocess.run(("rustup", "target", "add", LINUX_TARGET), check=False)
+            if added.returncode:
+                return added.returncode
+        _, base = base_commit()
+        if base is None:
+            print("linux-clippy: no origin/main or main to diff against")
+            return 1
+        diff = git("diff", "--name-only", base, check=True)
+        if not diff:
+            print("skip linux-clippy (no changes relative to main)")
+            return 0
+        crates = changed_crates(diff)
+        print(f"linux-clippy: {', '.join(crates) if crates else 'workspace'}")
+        for command in (linux_clippy_command(crates), linux_clippy_command(crates, no_tui=True)):
+            result = subprocess.run(command, cwd=ROOT, check=False)
+            if result.returncode:
+                return result.returncode
         return 0
-    base = git("merge-base", "origin/main", "HEAD", check=True)
-    crates = changed_crates(git("diff", "--name-only", base, "--", "crates", check=True))
-    if not crates:
-        print("skip linux-clippy (no crates changed relative to origin/main)")
+    except OSError as error:
+        print(f"skip linux-clippy ({error})")
         return 0
-    print(f"linux-clippy: {', '.join(crates)}")
-    return subprocess.run(linux_clippy_command(crates), cwd=ROOT, check=False).returncode
 
 
 def cmd_push(args):
@@ -806,8 +824,10 @@ def selfcheck():
     assert ratchet_subject([], "x") == "Ratchet: baselines"
     assert changed_crates("crates/tools/src/document.rs\ncrates/cli/build.rs\ncrates/tools/tests/read.rs\ndocs/FORGE.md\ncrates/README.md\n") == ["yi-cli", "yi-tools"]
     assert linux_clippy_command(["yi-cli", "yi-tools"]) == [
-        "cargo", "clippy", "-p", "yi-cli", "-p", "yi-tools", "--target", LINUX_TARGET, "--tests", "--", "-D", "warnings",
+        "cargo", "clippy", "-p", "yi-cli", "-p", "yi-tools", "--all-targets", "--target", LINUX_TARGET, "--", "-D", "warnings",
     ]
+    assert linux_clippy_command([])[:4] == ["cargo", "clippy", "--workspace", "--all-targets"]
+    assert linux_clippy_command([], no_tui=True)[:5] == ["cargo", "clippy", "-p", "yi-cli", "--no-default-features"]
     assert binary_subject("binary_size_budget_linux", 100, 200, forge_measured=True) == "Ratchet: linux dist 100 -> 200, as the forge measured it"
     counted = "<!-- prefilled -->\n\n## Summary\n\nprefill\n\n## Files edited\n\nprefill files\n"
     kept = dedupe_counted("## Summary\n\nmine\n", counted)
@@ -1086,8 +1106,101 @@ def selfcheck():
         pass
     assert flags.get("closes") == ["1"] and flags.get("refs") == ["2"], ("pr check takes the flags pr open takes", flags)
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green.
+    recorder_selfcheck()
+    linux_clippy_selfcheck()
     commit_selfcheck()
     print("ok   forge_pr selfcheck")
+
+
+def linux_clippy_selfcheck():
+    import contextlib, io
+
+    saved = {name: globals().get(name) for name in ("base_commit", "binary_ratchet", "branch", "git")}
+    missing = {name for name in saved if saved[name] is None}
+    real_run = subprocess.run
+
+    def drive(diff, installed=LINUX_TARGET, add=0, cargo=0, absent="", base=("main", "base"), push=False):
+        calls = []
+        globals()["base_commit"] = lambda: base
+
+        def fake_git(*args, check=False):
+            if args[0] == "merge-base":
+                return "base"
+            if args[0] == "status":
+                return ""
+            assert args[0] == "diff", args
+            return diff
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if command[:3] == ("rustup", "target", "list"):
+                if absent == "rustup":
+                    raise FileNotFoundError("rustup")
+                return subprocess.CompletedProcess(command, 0, installed + "\n" if installed else "", "")
+            if command[:3] == ("rustup", "target", "add"):
+                return subprocess.CompletedProcess(command, add, "", "")
+            assert command[0] == "cargo", command
+            if absent == "cargo":
+                raise FileNotFoundError("cargo")
+            return subprocess.CompletedProcess(command, cargo, "", "")
+
+        globals()["git"] = fake_git
+        globals()["branch"] = lambda: "topic"
+        globals()["binary_ratchet"] = lambda topic: (_ for _ in ()).throw(AssertionError("a red Linux gate reached the dist build"))
+        subprocess.run = fake_run
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                code = cmd_push(argparse.Namespace(topic="")) if push else linux_clippy()
+            return code, calls, said.getvalue()
+        finally:
+            subprocess.run = real_run
+
+    try:
+        code, calls, _ = drive("crates/tools/src/document.rs\n", cargo=1, push=True)
+        assert code == 1 and tuple(calls[-1][:4]) == ("cargo", "clippy", "-p", "yi-tools"), "a Linux clippy failure must stop the push"
+        assert "--all-targets" in calls[-1] and "--tests" not in calls[-1], calls[-1]
+        code, calls, _ = drive("crates/cli/src/main.rs\n")
+        cargo = [call for call in calls if call[0] == "cargo"]
+        assert code == 0 and len(cargo) == 2, cargo
+        assert "--no-default-features" in cargo[1] and "--all-targets" in cargo[0], cargo
+        code, calls, _ = drive("Cargo.lock\n")
+        cargo = [call for call in calls if call[0] == "cargo"]
+        assert code == 0 and cargo and "--workspace" in cargo[0], cargo
+        code, calls, _ = drive("")
+        assert code == 0 and not [call for call in calls if call[0] == "cargo"], calls
+        code, calls, _ = drive("crates/cli/src/main.rs\n", installed="")
+        assert code == 0 and any(call[:3] == ("rustup", "target", "add") for call in calls), calls
+        assert any(call[0] == "cargo" for call in calls), "the installed target was not used"
+        code, calls, _ = drive("crates/cli/src/main.rs\n", installed="", add=1)
+        assert code == 1 and not [call for call in calls if call[0] == "cargo"], calls
+        code, _, said = drive("crates/cli/src/main.rs\n", absent="rustup")
+        assert code == 0 and "skip linux-clippy" in said and "rustup" in said, said
+        code, _, said = drive("crates/cli/src/main.rs\n", absent="cargo")
+        assert code == 0 and "skip linux-clippy" in said and "cargo" in said, said
+        code, calls, said = drive("crates/cli/src/main.rs\n", base=(None, None))
+        assert code == 1 and "no origin/main or main" in said, (code, said)
+        assert not [call for call in calls if call[0] == "cargo"], calls
+    finally:
+        subprocess.run = real_run
+        for name, value in saved.items():
+            if name in missing:
+                globals().pop(name, None)
+            else:
+                globals()[name] = value
+
+
+def recorder_selfcheck():
+    record = (ROOT / ".forgejo/workflows/postmerge.yml").read_text().split("\n  record:\n", 1)[1]
+    assert "timeout-minutes: 20" in record, "the recorder's cold dist build needs the PR lane's time budget"
+    assert "persist-credentials: false" in record, "the recorder token must not remain in .git/config during the build"
+    recording, rest = record.split("persist-credentials: false", 1)[1].split("- name: measure the Linux dist size", 1)
+    ratchet, push = rest.split("- name: push the recording and ratchet commits", 1)
+    assert "RECORDER_TOKEN" not in recording + ratchet, "no recorder build step may receive the main-writing token"
+    assert "rustup show" in recording and "Swatinem/rust-cache@v2" in recording, "the dist build needs its toolchain and cache"
+    assert "continue-on-error: true" in ratchet, "a ratchet failure must not skip the recording push"
+    assert "steps.ratchet.outcome != 'skipped'" in push, "an earlier recorder failure must still skip the push"
+    assert "http.extraheader" in push and "RECORDER_TOKEN" in push, "only the push command receives the token"
+    assert 'test "$RATCHET_OUTCOME" = "success"' in push, "a pushed ratchet failure still fails the job"
 
 
 def commit_selfcheck():

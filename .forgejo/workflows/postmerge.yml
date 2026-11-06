@@ -143,14 +143,20 @@ jobs:
       group: record-changes
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Forgejo mirror SHA is unverified offline; the recorder pushes with its scoped token.
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.RECORDER_TOKEN }}
-      - name: record the change files and Linux dist size main landed
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        with:
+          shared-key: guardrails
+          cache-on-failure: true
+      - name: record the change files main landed
         env:
           GIT_AUTHOR_NAME: yi-ci
           GIT_AUTHOR_EMAIL: ci@yi
@@ -166,5 +172,16 @@ jobs:
             git -c user.name=yi-ci -c user.email=ci@yi \
               commit -q -m "Record the change files main landed"
           fi
-          python3 scripts/forge_pr.py ratchet --forge-measured
-          git push origin HEAD:main
+      - name: measure the Linux dist size
+        id: ratchet
+        continue-on-error: true
+        run: python3 scripts/forge_pr.py ratchet --forge-measured
+      - name: push the recording and ratchet commits
+        if: always() && steps.ratchet.outcome != 'skipped'
+        env:
+          RECORDER_TOKEN: ${{ secrets.RECORDER_TOKEN }}
+          RATCHET_OUTCOME: ${{ steps.ratchet.outcome }}
+        run: |
+          set -euo pipefail
+          git -c http.extraheader="Authorization: Bearer ${RECORDER_TOKEN}" push origin HEAD:main
+          test "$RATCHET_OUTCOME" = "success"
