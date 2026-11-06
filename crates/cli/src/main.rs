@@ -3,6 +3,7 @@
 
 mod args;
 mod ask;
+mod ask_check;
 mod catalog;
 mod commands;
 mod contain;
@@ -65,6 +66,10 @@ fn effective_cwd(args: &Args) -> std::path::PathBuf {
         || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         std::path::PathBuf::from,
     )
+}
+
+fn work_dir(lane: Option<std::path::PathBuf>, args: &Args) -> std::path::PathBuf {
+    lane.unwrap_or_else(|| effective_cwd(args))
 }
 
 fn env_either(upper: &str, lower: &str) -> Option<String> {
@@ -211,9 +216,7 @@ fn build_session(
             });
         }
     };
-    let work = lane
-        .as_ref()
-        .map_or_else(|| cwd.clone(), |lane| lane.path().to_path_buf());
+    let work = work_dir(lane.as_ref().map(|lane| lane.path().to_path_buf()), args);
     let settings = config();
     let rules = (settings
         .permissions
@@ -876,14 +879,8 @@ fn run_version(_: &Args) -> i32 {
 }
 
 fn run_ask(args: &Args) -> i32 {
-    if let Some(check) = args.check.as_deref() {
-        return match yi_runtime::goal::probe(check, &effective_cwd(args)) {
-            None => 0,
-            Some(refusal) => {
-                eprintln!("{refusal}");
-                2
-            }
-        };
+    if !args.check.is_empty() && args.prompt.is_empty() {
+        return ask_check::probe_only(args);
     }
     if args.prompt.is_empty() {
         eprintln!("usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->");

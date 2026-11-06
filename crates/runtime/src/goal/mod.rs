@@ -92,6 +92,28 @@ pub(crate) fn evidence_once(first: bool, evidence: String) -> String {
     }
 }
 
+/// Why a check did not pass, typed so a caller can release instead of re-prompting when the
+/// failure is not the model's to fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckFailure {
+    /// A Claude Code shell hook refused the command.
+    Refused(String),
+    Spawn(String),
+    TimedOut(u64),
+    /// The command ran and its exit was not 0; the evidence is the viewed capture.
+    Red(String),
+}
+
+impl CheckFailure {
+    pub fn evidence(&self) -> String {
+        match self {
+            Self::Refused(why) => why.clone(),
+            Self::Spawn(error) => format!("goal check failed to run: {error}"),
+            Self::TimedOut(ms) => format!("goal check timed out after {ms} ms"),
+            Self::Red(evidence) => evidence.clone(),
+        }
+    }
+}
 /// What a check runs under: the project's Claude Code hooks and the session's sandbox.
 #[derive(Clone, Default)]
 pub struct Checker {
@@ -209,23 +231,44 @@ pub(crate) fn run_check(
     timeout_ms: u64,
     checker: &Checker,
 ) -> Result<(), String> {
-    checker.guard(check, cwd)?;
+    run_check_typed_under(check, cwd, timeout_ms, checker).map_err(|failed| failed.evidence())
+}
+
+/// [`run_check`] without a session's hooks, its failure still typed: `yi ask --check` releases
+/// on a spawn or a timeout and only re-prompts a check that ran and was red.
+///
+/// # Errors
+/// Any check that is not exit 0, with the reason it did not run.
+pub fn run_check_typed(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+) -> Result<(), CheckFailure> {
+    run_check_typed_under(check, cwd, timeout_ms, &Checker::from_hooks(None))
+}
+
+fn run_check_typed_under(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+    checker: &Checker,
+) -> Result<(), CheckFailure> {
+    checker.guard(check, cwd).map_err(CheckFailure::Refused)?;
     // Invariant: a check placed in a container is judged there, so its first word is not on the
     // host's PATH and the host probe would refuse a program the image has.
     if checker.wall.container.is_none()
         && let Some(refusal) = probe(check, cwd)
     {
-        return Err(refusal);
+        return Err(CheckFailure::Refused(refusal));
     }
     let command = checker.shell("sh", check, cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = captured(command, None, &cancelled)
-        .map_err(|error| format!("goal check failed to run: {error}"))?;
+    let capture = captured(command, None, &cancelled).map_err(CheckFailure::Spawn)?;
     if capture.cancelled {
-        return Err(format!("goal check timed out after {timeout_ms} ms"));
+        return Err(CheckFailure::TimedOut(timeout_ms));
     }
     match capture.exit_code {
         Some(0) => Ok(()),
@@ -234,10 +277,10 @@ pub(crate) fn run_check(
             let contained = checker
                 .refusal(cwd, check, &capture)
                 .map_or_else(String::new, |why| format!("[contained: {why}]\n"));
-            Err(format!(
+            Err(CheckFailure::Red(format!(
                 "{contained}goal check `{check}` exited {exit}:\n{}",
                 check_view(check, cwd, None, &capture)
-            ))
+            )))
         }
     }
 }
