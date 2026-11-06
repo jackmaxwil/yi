@@ -102,7 +102,7 @@ pub(in crate::plan) fn rig_of(
         max_children: 8,
         parent_session_dir: root.join("children"),
         cwd: root.to_path_buf(),
-        home: std::env::temp_dir(),
+        home: root.join("home"),
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: ChildBuild<'_>| {
