@@ -1201,6 +1201,15 @@ def recorder_selfcheck():
     assert "steps.ratchet.outcome != 'skipped'" in push, "an earlier recorder failure must still skip the push"
     assert "http.extraheader" in push and "RECORDER_TOKEN" in push, "only the push command receives the token"
     assert 'test "$RATCHET_OUTCOME" = "success"' in push, "a pushed ratchet failure still fails the job"
+    for name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        assert name in ratchet, f"the ratchet commit needs {name} on a runner with no git identity"
+    assert 'git bundle create "$RUNNER_TEMP/recorder.bundle" HEAD' in record, "the build workspace hands commits to a clean clone as data"
+    assert 'mktemp -d "$RUNNER_TEMP/recorder-push' in push, "the push clone cannot be planted by the build"
+    assert "clone --template= --branch main --single-branch" in push, "the push starts from canonical main with no checkout template"
+    assert 'git -C "$push_workspace"' in push, "the token-bearing push runs in the clean clone"
+    assert "GIT_CONFIG_GLOBAL=/dev/null" in push and "GIT_CONFIG_NOSYSTEM=1" in push, "the build cannot plant runner-wide git config"
+    assert push.count("core.hooksPath=/dev/null") >= 3, "clone, fetch and push disable planted hooks"
+    assert push.count("core.fsmonitor=false") >= 3, "clone, fetch and push disable planted filesystem monitors"
 
 
 def commit_selfcheck():

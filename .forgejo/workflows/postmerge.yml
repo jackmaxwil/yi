@@ -175,7 +175,15 @@ jobs:
       - name: measure the Linux dist size
         id: ratchet
         continue-on-error: true
+        env:
+          GIT_AUTHOR_NAME: yi-ci
+          GIT_AUTHOR_EMAIL: ci@yi
+          GIT_COMMITTER_NAME: yi-ci
+          GIT_COMMITTER_EMAIL: ci@yi
         run: python3 scripts/forge_pr.py ratchet --forge-measured
+      - name: bundle the recording for a clean push
+        if: always() && steps.ratchet.outcome != 'skipped'
+        run: git bundle create "$RUNNER_TEMP/recorder.bundle" HEAD
       - name: push the recording and ratchet commits
         if: always() && steps.ratchet.outcome != 'skipped'
         env:
@@ -183,5 +191,14 @@ jobs:
           RATCHET_OUTCOME: ${{ steps.ratchet.outcome }}
         run: |
           set -euo pipefail
-          git -c http.extraheader="Authorization: Bearer ${RECORDER_TOKEN}" push origin HEAD:main
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+          push_workspace=$(mktemp -d "$RUNNER_TEMP/recorder-push.XXXXXX")
+          git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            -c http.extraheader="Authorization: Bearer ${RECORDER_TOKEN}" \
+            clone --template= --branch main --single-branch \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$push_workspace"
+          git -C "$push_workspace" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            fetch "$RUNNER_TEMP/recorder.bundle" HEAD:refs/heads/recording
+          git -C "$push_workspace" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            -c http.extraheader="Authorization: Bearer ${RECORDER_TOKEN}" push origin recording:main
           test "$RATCHET_OUTCOME" = "success"
