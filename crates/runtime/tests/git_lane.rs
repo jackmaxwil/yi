@@ -190,7 +190,7 @@ fn the_no_lane_assign_forks_once_for_a_tree_however_many_ask() -> TestResult {
         .find(|candidate| candidate.is_file())
         .ok_or("no git on PATH")?;
     let body = format!(
-        "#!/bin/sh\ncase \"$*\" in *remote.origin.url*) echo x >> '{}'; sleep 0.2;; esac\nexec '{}' \"$@\"\n",
+        "#!/bin/sh\ncase \"$*\" in remote) echo x >> '{}'; sleep 0.2;; esac\nexec '{}' \"$@\"\n",
         log.display(),
         real.display()
     );
