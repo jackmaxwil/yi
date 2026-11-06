@@ -725,6 +725,137 @@ async fn a_fork_budget_never_opens_on_a_tool_result() -> TestResult {
     Ok(())
 }
 
+/// Dies with the control: budget the seed at the window less compaction's reserve (111,616) and a
+/// 106,667-token result (bytes/3) under it but over 80% (102,400) rides into the first request.
+#[tokio::test]
+async fn a_fork_all_seed_stops_at_its_share_of_the_childs_window() -> TestResult {
+    let forked = harness(0, 1, "forked")?;
+    let mut args = Map::new();
+    args.insert("text".to_owned(), Value::String("x".to_owned()));
+    {
+        let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
+        parent.push(AgentMessage::user_input(
+            yi_types::message::UserContent::Text("load it".to_owned()),
+            0,
+        ));
+        parent.push(faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("call-wide", "ipython", args)],
+            StopReason::ToolUse,
+        ));
+        parent.push(serde_json::from_value(json!({
+            "role": "toolResult", "toolCallId": "call-wide", "toolName": "ipython",
+            "content": [{"type": "text", "text": "x".repeat(320_000)}],
+            "isError": false, "timestamp": 0
+        }))?);
+        parent.push(child_reply("loaded the frame"));
+    }
+    forked
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "ceiling"), ("fork", "all")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let messages = first_child_messages(&forked).await;
+    let notice = user_texts(&messages).into_iter().next().unwrap_or_default();
+    assert!(
+        notice.contains("[… fork kept 1 of 4 messages")
+            && notice.contains("80% of the child's 128000-token window is 102400 tokens"),
+        "the seed stops at 80% of the child's own window and says so: {notice}"
+    );
+    assert!(
+        !messages.iter().any(|message| matches!(
+            message,
+            AgentMessage::ToolResult { content, .. }
+                if content.iter().any(|block| matches!(block, yi_types::message::Content::Text { text, .. } if text.len() > 1_000))
+        )),
+        "the result past the ceiling never reaches the child"
+    );
+    Ok(())
+}
+
+/// Dies with the control: seed the fork from the raw history and the child re-reads a result the
+/// parent's own requests had stopped carrying, or follows a pointer into its own empty store.
+#[tokio::test]
+async fn a_fork_all_seed_carries_the_parents_cuts_not_the_bytes_behind_them() -> TestResult {
+    let cut_text = "the whole 4000-byte build log".repeat(100);
+    let store = support::memory_store("fork-view");
+    {
+        let mut session = yi_session::lock_session(&store);
+        session.append_message(
+            "main",
+            AgentMessage::user_input(
+                yi_types::message::UserContent::Text("load it".to_owned()),
+                0,
+            ),
+        )?;
+        session.append_message(
+            "main",
+            faux_assistant_message(
+                vec![yi_ai::faux::faux_tool_call("call-log", "bash", Map::new())],
+                StopReason::ToolUse,
+            ),
+        )?;
+        session.append_message(
+            "main",
+            serde_json::from_value(json!({
+                "role": "toolResult", "toolCallId": "call-log", "toolName": "bash",
+                "content": [{"type": "text", "text": cut_text.clone()}],
+                "isError": false, "timestamp": 0
+            }))?,
+        )?;
+        session.append_custom_record(&yi_types::reclaim::ReclaimRecord {
+            items: vec![yi_types::reclaim::Reclaimed {
+                tool_call_id: "call-log".to_owned(),
+                hash: yi_runtime::ext::content_hash(&cut_text)
+                    .chars()
+                    .take(16)
+                    .collect(),
+                entry_id: Some("e-log".to_owned()),
+            }],
+            reason: "breakeven".to_owned(),
+            turn: 9,
+            extra: Map::new(),
+        })?;
+    }
+    let parent = parent_session(&[]);
+    parent.attach_store(store)?;
+    let view = (parent.history_handle())();
+    assert!(
+        matches!(
+            view.get(2),
+            Some(AgentMessage::ToolResult { content, .. })
+                if yi_types::message::join_text(content.as_slice(), "\n").starts_with("[reclaimed: bash")
+        ),
+        "the parent's view is the placeholder its own requests send: {:?}",
+        view.get(2)
+    );
+    let forked = harness(0, 1, "forked")?;
+    {
+        let mut source = forked.parent.lock().map_err(|_| "poisoned")?;
+        *source = view;
+    }
+    forked
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "view"), ("fork", "all")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let messages = first_child_messages(&forked).await;
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            AgentMessage::ToolResult { content, .. }
+                if yi_types::message::join_text(content.as_slice(), "\n").starts_with("[reclaimed: bash")
+                    && !yi_types::message::join_text(content.as_slice(), "\n").contains("the whole 4000-byte build log")
+                    && yi_types::message::join_text(content.as_slice(), "\n").contains("read(\"history://parent/e-log\")")
+        )),
+        "the child is seeded with the cut, not the bytes: {messages:?}"
+    );
+    Ok(())
+}
+
 /// Dies with the control: set the seed in memory only and the respawn reloads a transcript
 /// that never held it, so incarnation 2 runs cold.
 #[tokio::test]
@@ -3624,9 +3755,27 @@ fn wired_root(
     wall: yi_runtime::Wall,
     sandbox: Option<yi_tools::Sandbox>,
 ) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
-    let provider = Arc::new(ProviderStream::new(None));
     // Every turn of the family, the parent's woken one too, answers the result object.
-    provider.queue_faux(vec![child_reply(PROTOCOL_ANSWER); 8]);
+    wired_scripted(
+        root,
+        wall,
+        sandbox,
+        0,
+        1,
+        vec![child_reply(PROTOCOL_ANSWER); 8],
+    )
+}
+
+fn wired_scripted(
+    root: &std::path::Path,
+    wall: yi_runtime::Wall,
+    sandbox: Option<yi_tools::Sandbox>,
+    depth: u8,
+    max_depth: u8,
+    script: Vec<AgentMessage>,
+) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(script);
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
@@ -3659,8 +3808,8 @@ fn wired_root(
             lane_slots: 1,
             broker: Some(Arc::new(broker)),
             tools: Arc::new(yi_tools::builtin_tools),
-            depth: 0,
-            max_depth: 1,
+            depth,
+            max_depth,
             rlm_dir: root.join("rlm"),
             family_dir: None,
             summarizer: None,
@@ -5485,5 +5634,96 @@ async fn a_failure_from_a_child_reads_failed_in_wait() -> TestResult {
     let waited = harness.host.wait(1_000, None).await?;
     assert_eq!(waited["states"]["sorry"], json!("failed"), "{waited:?}");
     assert_eq!(waited["notes"]["sorry"], json!("the fixture is missing"));
+    Ok(())
+}
+
+/// #1571: a spawn refused after its directory was made (here a worktree child of a directory
+/// that is no git repository) left a `sub-*` behind, so the family named a child that never ran.
+#[tokio::test]
+async fn a_refused_spawn_leaves_no_directory() -> TestResult {
+    let cwd = Scratch::new("yi-spawn-dir")?;
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "never runs",
+        tool_command: None,
+        cwd: Some(cwd.to_path_buf()),
+        wake_parent: None,
+    })?;
+    let refused = harness.host.spawn(
+        "take a tree".to_owned(),
+        protocol_kwargs("refused", &[("isolation", json!("worktree"))]),
+    );
+    assert!(
+        refused.is_err(),
+        "a worktree child of no repository is refused"
+    );
+    let left: Vec<String> = std::fs::read_dir(&harness.root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("sub-"))
+        .collect();
+    assert!(
+        left.is_empty(),
+        "the refused spawn left no sub-* behind: {left:?}"
+    );
+    Ok(())
+}
+
+/// #1571: expiry ran only on a depth-0 session's plan timer, so a grandchild below depth 0
+/// had its grace served by nobody. The host's own loop serves it, with no `expire` call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_childs_host_expires_its_grandchilds_lease() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let root = Scratch::new("yi-lease-depth")?;
+    std::fs::create_dir_all(root.join("project"))?;
+    let mut holding = Map::new();
+    holding.insert("command".to_owned(), json!("sleep 30"));
+    let script = vec![faux_assistant_message(
+        vec![yi_ai::faux::faux_tool_call("call-1", "bash", holding)],
+        StopReason::ToolUse,
+    )];
+    let (session, _provider, host) =
+        wired_scripted(&root, yi_runtime::Wall::default(), None, 1, 3, script);
+    let store = support::memory_store("yi-lease-depth");
+    session.attach_store(Arc::clone(&store))?;
+    host.spawn("hold the lane".to_owned(), protocol_kwargs("held", &[]))?;
+    for _ in 0..POLL_ATTEMPTS {
+        let running = host
+            .children_view()
+            .first()
+            .is_some_and(|view| view.update.activity == ChildActivity::Executing);
+        if running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    host.revoke("held", 0, "scope changed")?;
+    let mut repossessed = false;
+    for _ in 0..POLL_ATTEMPTS {
+        let entries = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+            custom_type: Some("lease".to_owned()),
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        })?;
+        repossessed = entries.iter().any(|entry| match entry {
+            yi_types::entry::Entry::Custom {
+                data: Some(data), ..
+            } => matches!(
+                serde_json::from_value::<LeaseRecord>(data.clone()),
+                Ok(LeaseRecord::Repossessed(_))
+            ),
+            _ => false,
+        });
+        if repossessed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    assert!(
+        repossessed,
+        "the host's own expiry loop served the grace, so its journal holds the repossession"
+    );
     Ok(())
 }
