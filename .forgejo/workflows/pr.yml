@@ -78,7 +78,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: ${{ matrix.lane }}
-          cache-on-failure: true
+          # Invariant: on the `queue` runner only a candidate lane that passed writes the cache, so a lane
+          # that failed never hands its artifacts to the next batch's landing gate.
+          cache-on-failure: ${{ github.ref != 'refs/heads/queue/candidate' }}
           # main (postmerge `warm`) and the candidate, whose `queue` runner no main run reaches, save;
           # a PR's own multi-GB save is readable only by later runs of that PR and costs the disk every push.
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/queue/candidate' }}
