@@ -744,12 +744,19 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
         # Under a tenth of the budget is no attempt: it could only time out.
         if left < (deadline + 120) / 10:
             return subprocess.CompletedProcess(command, 124, "", spent)
-        try:
-            return subprocess.run(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], input=text,
-                                  capture_output=True, text=True, timeout=left, check=False,
-                                  env=env if env is not None else token_free_env)
-        except subprocess.TimeoutExpired as err:
-            return subprocess.CompletedProcess(command, 124, "", f"timed out after {err.timeout:.0f}s")
+        # Incident: #1779's clone kept a git the model's timed-out turn left running; killing only `yi ask`
+        # orphaned its children, so the child leads its own session and the whole group dies on timeout.
+        with subprocess.Popen(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                              env=env if env is not None else token_free_env) as proc:
+            try:
+                out, err = proc.communicate(text, timeout=left)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, 9)
+                proc.communicate()
+                return subprocess.CompletedProcess(command, 124, "", f"timed out after {left:.0f}s")
+            return subprocess.CompletedProcess(command, proc.returncode, out, err)
 
     def is_json(text):
         try:

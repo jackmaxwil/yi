@@ -746,3 +746,219 @@ async fn an_aborted_turn_is_settled_from_the_record() -> TestResult {
     assert_eq!((usage.input, usage.output), (5200, 900));
     Ok(())
 }
+
+/// OpenRouter's documented reasoning stream: one detail per index, its text sent in pieces, and
+/// the tool call beside it carrying Gemini's thought signature under `extra_content`.
+fn reasoning_chunks() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "id": "gen-1525",
+            "provider": "Google",
+            "choices": [{"index": 0, "delta": {
+                "reasoning": "I should list",
+                "reasoning_details": [{
+                    "type": "reasoning.text",
+                    "text": "I should list",
+                    "signature": "c2lnbmF0dXJl",
+                    "format": "google-gemini-v1",
+                    "index": 0,
+                }],
+            }}],
+        }),
+        json!({
+            "choices": [{"index": 0, "delta": {
+                "reasoning": " the files",
+                "reasoning_details": [{
+                    "type": "reasoning.text",
+                    "text": " the files",
+                    "index": 0,
+                }],
+            }}],
+        }),
+        json!({
+            "choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"},
+                "extra_content": {"google": {"thought_signature": "dGhvdWdodA=="}},
+            }]}, "finish_reason": "tool_calls"}],
+        }),
+    ]
+}
+
+fn reasoning_details() -> serde_json::Value {
+    json!([{
+        "type": "reasoning.text",
+        "text": "I should list the files",
+        "signature": "c2lnbmF0dXJl",
+        "format": "google-gemini-v1",
+        "index": 0,
+    }])
+}
+
+/// Locates the assistant tool-call message after appending a reply and optional follow-up.
+fn second_request_for(
+    model: &Model,
+    message: &AgentMessage,
+    follow_up: Option<AgentMessage>,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let mut context = history_context();
+    context.messages.push(message.clone());
+    if let Some(follow_up) = follow_up {
+        context.messages.push(follow_up);
+    }
+    let params = build_params(model, &context, &OpenAiOptions::default());
+    params["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find(|message| message.get("tool_calls").is_some())
+        })
+        .cloned()
+        .ok_or_else(|| format!("no assistant tool-call message in {params}").into())
+}
+
+/// The reply the loop gets, mapped, then handed back as history for the turn after the tool.
+fn reply_and_second_request() -> Result<serde_json::Value, Box<dyn Error>> {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    for chunk in reasoning_chunks() {
+        mapper.push_chunk(&chunk);
+    }
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected a done turn: {events:?}").into());
+    };
+    second_request_for(
+        &model,
+        message,
+        Some(AgentMessage::ToolResult {
+            tool_call_id: "call_1".to_owned(),
+            tool_name: "bash".to_owned(),
+            content: vec![Content::Text {
+                text: "Cargo.toml".to_owned(),
+                text_signature: None,
+            }],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 1,
+        }),
+    )
+}
+
+#[test]
+fn the_second_request_carries_the_reply_reasoning_details_byte_for_byte() -> TestResult {
+    let assistant = reply_and_second_request()?;
+    assert_eq!(
+        assistant["reasoning_details"].to_string(),
+        reasoning_details().to_string()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_tool_call_keeps_geminis_thought_signature_on_the_next_request() -> TestResult {
+    let assistant = reply_and_second_request()?;
+    assert_eq!(
+        assistant["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+        "dGhvdWdodA=="
+    );
+    Ok(())
+}
+
+#[test]
+fn a_stored_reasoning_turn_keeps_one_copy_and_still_carries_its_details() -> TestResult {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    for chunk in reasoning_chunks() {
+        mapper.push_chunk(&chunk);
+    }
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected a done turn: {events:?}").into());
+    };
+    let stored = serde_json::to_string(message)?;
+    assert_eq!(
+        stored.matches("I should list the files").count(),
+        2,
+        "{stored}"
+    );
+    let loaded: AgentMessage = serde_json::from_str(&stored)?;
+    let assistant = second_request_for(&model, &loaded, None)?;
+    assert_eq!(
+        assistant["reasoning_details"].to_string(),
+        reasoning_details().to_string()
+    );
+    Ok(())
+}
+
+/// A turn whose reasoning arrived only as an encrypted detail: no prose field ever opens the
+/// thinking block, so the sealed details have to place it.
+#[test]
+fn an_encrypted_detail_with_no_reasoning_text_still_opens_the_thinking_block() -> TestResult {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    mapper.push_chunk(&json!({
+        "id": "gen-1526",
+        "choices": [{"index": 0, "delta": {
+            "reasoning_details": [{
+                "type": "reasoning.encrypted",
+                "data": "ZW5jcnlwdGVk",
+                "index": 0,
+            }],
+        }}],
+    }));
+    mapper.push_chunk(&json!({
+        "choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"},
+        }]}, "finish_reason": "tool_calls"}],
+    }));
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected a done turn: {events:?}").into());
+    };
+    let AgentMessage::Assistant { content, .. } = message else {
+        return Err(format!("expected an assistant turn: {message:?}").into());
+    };
+    let sealed = content.iter().find_map(|block| match block {
+        Content::Thinking {
+            thinking,
+            thinking_signature,
+            ..
+        } => Some((thinking, thinking_signature)),
+        _ => None,
+    });
+    let Some((thinking, Some(signature))) = sealed else {
+        return Err(format!("expected a sealed thinking block: {message:?}").into());
+    };
+    assert!(thinking.is_empty());
+    let carry: serde_json::Value = serde_json::from_str(signature)?;
+    assert_eq!(
+        carry["details"],
+        json!([{"type": "reasoning.encrypted", "data": "ZW5jcnlwdGVk", "index": 0}])
+    );
+    let mut carried = message.clone();
+    if let AgentMessage::Assistant { content, .. } = &mut carried
+        && let Some(Content::Thinking {
+            thinking_signature, ..
+        }) = content
+            .iter_mut()
+            .find(|block| matches!(block, Content::Thinking { .. }))
+    {
+        *thinking_signature = Some("not-json".to_owned());
+    }
+    let assistant = second_request_for(&model, &carried, None)?;
+    assert_eq!(
+        assistant["reasoning_details"],
+        json!([{"type": "reasoning.encrypted", "data": "ZW5jcnlwdGVk", "index": 0}]),
+        "{assistant}"
+    );
+    Ok(())
+}
