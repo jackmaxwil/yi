@@ -632,6 +632,7 @@ lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an e
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_worktree_spawn_names_the_edits_its_child_starts_without`
 web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
 web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
+`yi tool import just` | `tool_import::a_space_and_a_quote_survive_as_one_argv_element`
 console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_names`
 `agent-desktop` plugin | `cli_surfaces::the_gate_says_what_a_desktop_command_would_do`
 `agent-desktop` plugin | `permission_scope::a_yes_for_one_desktop_app_covers_that_app_alone_and_runs_outside`
