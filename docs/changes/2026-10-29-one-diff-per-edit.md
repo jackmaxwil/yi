@@ -1,8 +1,7 @@
 ---
 issue: Closes #1532
 growth: +427 one line-diff builder replaces four copies per edit; four runtime helpers and two hashline unquoters fold into one each, and the rest is the tests that hold them.
-raise: tests +463
-raise: crate ai +6
+raise: tests +436
 raise: crate runtime +179
 raise: crate tools +242
 raise: comments +14

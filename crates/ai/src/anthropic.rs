@@ -248,7 +248,7 @@ fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
                     }
                     fits
             });
-            let mut converted = match closed {
+            match closed {
                 Some(closed) => json!({
                     "name": tool.name,
                     "description": tool.description,
@@ -264,13 +264,7 @@ fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
                         "required": schema.get("required").cloned().unwrap_or_else(|| json!([])),
                     },
                 }),
-            };
-            if converted["input_schema"]["required"].as_array().is_some_and(Vec::is_empty)
-                && let Some(schema) = converted["input_schema"].as_object_mut()
-            {
-                schema.remove("required");
             }
-            converted
         })
         .collect()
 }

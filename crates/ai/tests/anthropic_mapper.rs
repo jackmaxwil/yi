@@ -79,33 +79,6 @@ fn build_params_places_cache_control_and_tools() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[test]
-fn loose_tool_schemas_omit_only_empty_required() -> Result<(), Box<dyn Error>> {
-    let mut context = context();
-    let tool = context
-        .tools
-        .as_mut()
-        .ok_or("tools")?
-        .get_mut(0)
-        .ok_or("tool")?;
-    tool.parameters = json!({"type":"object","properties":{"cmd":{"type":"string"}},"required":[]});
-    let params = build_params(&model(), &context, &AnthropicOptions::default());
-    assert!(params["tools"][0]["input_schema"].get("required").is_none());
-    let tool = context
-        .tools
-        .as_mut()
-        .ok_or("tools")?
-        .get_mut(0)
-        .ok_or("tool")?;
-    tool.parameters["required"] = json!(["cmd"]);
-    let params = build_params(&model(), &context, &AnthropicOptions::default());
-    assert_eq!(
-        params["tools"][0]["input_schema"]["required"],
-        json!(["cmd"])
-    );
-    Ok(())
-}
-
 /// The assembled prompt carries its own block separators; the one stable mark sits on the
 /// last block, so tools and the whole system prompt are one entry (D295), and it is the
 /// mark that carries the interactive session's hour.
