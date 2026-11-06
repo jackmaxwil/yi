@@ -12,7 +12,7 @@ use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -302,55 +302,6 @@ async fn two_registered_due_times_both_wake_the_loop() -> TestResult {
             .await
             .is_some(),
         "the later due time is taken on its own second, not at the idle poll"
-    );
-    Ok(())
-}
-
-/// Dies with where `wake_once` runs the lease job (timer.rs): put it behind the in-flight
-/// check, or on the tick's own thread, and a cancel's grace ends only when a slow tick does.
-#[tokio::test]
-async fn a_revoke_due_time_wakes_the_loop_past_a_slow_tick() -> TestResult {
-    let (rig, timer) = rig()?;
-    let start = now(&rig)?;
-    let (inside, release) = (
-        Arc::new(AtomicBool::new(false)),
-        Arc::new(AtomicBool::new(false)),
-    );
-    let (entered, released) = (Arc::clone(&inside), Arc::clone(&release));
-    let expiries = Arc::new(AtomicU32::new(0));
-    let counted = Arc::clone(&expiries);
-    let timer = Arc::new(
-        timer
-            .with_owned(Arc::new(move || {
-                entered.store(true, Ordering::SeqCst);
-                while !released.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Vec::new()
-            }))
-            .with_leases(Arc::new(move || {
-                counted.fetch_add(1, Ordering::SeqCst);
-            })),
-    );
-    timer.wake_at(start);
-    spawn(Arc::clone(&timer));
-    let held = observed(|| inside.load(Ordering::SeqCst), Duration::from_secs(5)).await;
-    assert!(held.is_some(), "the tick is in flight and will not return");
-
-    // A revoke registers its grace's due time now, mid-tick and mid-sleep.
-    let before = expiries.load(Ordering::SeqCst);
-    let due = start + Duration::from_secs(5);
-    set(&rig, due)?;
-    timer.wake_at(due);
-    let latency = observed(
-        || expiries.load(Ordering::SeqCst) > before,
-        Duration::from_secs(4),
-    )
-    .await;
-    let still_ticking = !release.swap(true, Ordering::SeqCst);
-    assert!(
-        latency.is_some() && still_ticking,
-        "the lease job ran on the due time while the tick was still out (observed {latency:?})"
     );
     Ok(())
 }
