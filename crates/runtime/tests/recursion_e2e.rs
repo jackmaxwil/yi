@@ -2204,7 +2204,7 @@ async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
     );
 
     let woken = harness.host.wait(60_000, cursor).await?;
-    assert_eq!(woken["updated"], serde_json::json!(["scout"]));
+    assert_eq!(woken["changed"], serde_json::json!(["scout"]));
     let quiet = harness.host.wait(0, woken["cursor"].as_u64()).await;
     assert!(
         quiet.is_err_and(|said| said.contains("settled")),
@@ -2433,8 +2433,8 @@ async fn a_service_respawns_under_its_name_and_keeps_its_inbox() -> TestResult {
     let history = resolver.fetch(&"history://index".parse()?)?.text;
     assert_eq!(
         history.matches("serve the index").count(),
-        2,
-        "one chain, both runs: {history}"
+        1,
+        "one chain, both runs, the brief's bytes once: {history}"
     );
     assert!(history.contains("[incarnation 2 of service"), "{history}");
     let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
@@ -4311,7 +4311,7 @@ async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> Te
 }
 
 #[tokio::test]
-async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> TestResult {
+async fn a_high_discovery_with_no_goal_is_delivered_as_a_note() -> TestResult {
     let cwd = Scratch::new("yi-adjudication-no-ledger")?;
     write_canonical_plan(&cwd, &[("t1", "exit 4")])?;
     let harness = harness_with(HarnessOptions {
@@ -4332,14 +4332,15 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
         )
         .map_err(|error| error.to_string())?;
     assert!(wait_for_status_named(&harness, "finder").await);
-    let error = harness
-        .host
-        .result("finder", None)
-        .err()
-        .ok_or("a HIGH row the ledger never took must not pass as a delivered result")?;
+    let result = harness.host.result("finder", None)?;
+    assert!(result.contains_key("value"), "{result:?}");
+    let texts = discovery_texts(&harness);
     assert!(
-        error.contains("could not be recorded") && error.contains("No goal exists"),
-        "the refusal names the ledger failure, so the completion gate is never armed silently: {error}"
+        texts
+            .iter()
+            .any(|text| text.starts_with("HIGH discovery from finder")
+                && text.contains("No goal exists, so no completion gate holds on it")),
+        "with no goal the HIGH row reaches the parent and holds nothing back: {texts:?}"
     );
     Ok(())
 }
@@ -4771,7 +4772,7 @@ async fn two_waiters_observe_their_own_child_completion() -> TestResult {
     let (first, second) = (first?, second?);
     for reply in [&first, &second] {
         assert_eq!(reply["changed"], json!(["solo"]), "{reply:?}");
-        assert_eq!(reply["updated"], reply["changed"]);
+        assert!(reply.get("updated").is_none(), "{reply:?}");
         assert_eq!(reply["states"]["solo"], json!("finished"), "{reply:?}");
         assert!(reply["cursor"].as_u64().is_some_and(|cursor| cursor > 0));
     }

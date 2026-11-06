@@ -459,7 +459,15 @@ impl HashlineReadTool {
                 .to_string_lossy()
                 .into_owned();
             let opened = gate.open(path, &context.deny_read);
-            let bytes = opened.and_then(crate::tool::read_all).unwrap_or_default();
+            let cap = crate::tool::Cap::Text;
+            let bytes = match opened.and_then(|file| crate::tool::read_capped(file, path, cap)) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                    sections.push(format!("{display}  (not read: {error})"));
+                    continue;
+                }
+                Err(_) => Vec::new(),
+            };
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
             let size = match &document {
                 Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
@@ -471,7 +479,7 @@ impl HashlineReadTool {
                 let output = self.read_file(&display, path, &Map::new(), context);
                 spent = spent.saturating_add(size);
                 whole = whole.saturating_add(1);
-                sections.push(output_text_of(&output));
+                sections.push(yi_types::message::join_text(&output.result.content, ""));
                 continue;
             }
             if !budget_named {
@@ -568,7 +576,6 @@ impl HashlineReadTool {
                 .max(limit.saturating_mul(256))
                 .min(READ_BYTE_CEIL)
         });
-
         let mut rows: Vec<String> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
         let mut spent = 0_usize;
@@ -740,19 +747,6 @@ impl HashlineReadTool {
     }
 }
 
-fn output_text_of(output: &ToolOutput) -> String {
-    output
-        .result
-        .content
-        .iter()
-        .map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => text.as_str(),
-            _ => "",
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 /// The requested line windows, 1-based inclusive, merged and clamped. `ranges` and
 /// `offset`/`limit` are two spellings of the same thing and never combine.
 fn read_windows(
@@ -850,18 +844,17 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         // Invariant: an unchanged line the model saw is still a line it saw, so the prior
         // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
-        let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
-            Some(prior) => {
-                let map = super::rebase::LineMap::from_script(&result.script);
-                prior
-                    .seen_lines
-                    .iter()
-                    .flatten()
-                    .filter_map(|line| map.line(*line))
-                    .collect()
-            }
-            None => Vec::new(),
-        };
+        let prior = snapshots.by_lines(&result.canonical_path, &result.before);
+        let (carried, program) = prior.map_or_else(Default::default, |prior| {
+            let map = super::rebase::LineMap::from_script(&result.script);
+            let rebased = |lines: &mut dyn Iterator<Item = &u64>| -> Vec<u64> {
+                lines.filter_map(|line| map.line(*line)).collect()
+            };
+            (
+                rebased(&mut prior.seen_lines.iter().flatten()),
+                rebased(&mut prior.program_lines.iter()),
+            )
+        });
         let mut seen: Vec<u64> = Vec::new();
         // Every hunk gets a window, not just the first: a window the model cannot see is a
         // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
@@ -881,6 +874,7 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         }
         seen.extend(carried);
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
+        snapshots.record_program_lines(&result.canonical_path, result.file_hash, &program);
     }
     for warning in &result.warnings {
         out.push(format!("warning: {warning}"));
@@ -1015,7 +1009,6 @@ impl Tool for HashlineEditTool {
                 return crate::tool::error_output_kind(format!("{message}{pointer}"), kind);
             }
         };
-
         let hash = input_hash(&patch_text);
         let mut rendered: Vec<String> = Vec::new();
         let mut diff = String::new();
@@ -1147,11 +1140,7 @@ fn post_edit_checks(
     })
 }
 
-pub fn record_write_snapshot(
-    state: &SharedHashline,
-    path: &Path,
-    content: &str,
-) -> super::format::FileTag {
+pub fn record_write_snapshot(state: &SharedHashline, path: &Path, content: &str) -> FileTag {
     let line_count = u64::try_from(content.split('\n').count()).unwrap_or(u64::MAX);
     let seen: Vec<u64> = (1..=line_count).collect();
     record_view_snapshot(state, path, content, &seen)

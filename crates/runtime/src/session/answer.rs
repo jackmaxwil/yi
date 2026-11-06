@@ -7,7 +7,7 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 
 use super::{InterceptStopFn, Shared};
 
-const FINISH: &str = "Finish with `answer`: only `summary` keeps the reply above as the answer once the work is fixed; `text` replaces it.";
+pub(crate) const FINISH: &str = "Finish with `answer` once the work is fixed: `summary` alone keeps the reply above as written and shows no status line; a `text` replaces it under the summary.";
 
 /// A refused answer: its text, the file `edit` patches it in, and whether it is a plain-text
 /// reply already on screen.
@@ -135,19 +135,71 @@ fn answer_of(turn: &AgentMessage, text: String) -> AgentMessage {
     }
 }
 
-/// The `text` of an `answer` call the turn made, `Some(None)` for a call without one.
-fn answer_call(message: &AgentMessage) -> Option<Option<String>> {
+/// Invariant: the line never changes the JSON a structured reader parses out of the reply.
+pub(crate) fn headed(summary: &str, text: &str) -> String {
+    let (line, body) = (summary.trim(), text.trim_start());
+    if line.is_empty() || body.starts_with(line) || serde_json::from_str::<Value>(body).is_ok() {
+        return text.to_owned();
+    }
+    if body.is_empty() {
+        return line.to_owned();
+    }
+    let reply = format!("{line}\n\n{text}");
+    let same = crate::schema::extract(&reply).ok() == crate::schema::extract(text).ok();
+    if same { reply } else { text.to_owned() }
+}
+
+/// The words the prompt teaches a reply's first line to open with, each in one place so the todo
+/// gate and the answer tool cannot disagree on what a status line is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusLine {
+    Problem,
+    Ready,
+    Done,
+}
+
+impl StatusLine {
+    pub(crate) const ALL: [StatusLine; 3] =
+        [StatusLine::Problem, StatusLine::Ready, StatusLine::Done];
+
+    pub(crate) fn of(text: &str) -> Option<Self> {
+        let first = (text.split(|c: char| !c.is_alphanumeric())).find(|word| !word.is_empty())?;
+        Self::ALL
+            .into_iter()
+            .find(|line| first.eq_ignore_ascii_case(line.word()))
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            StatusLine::Problem => "problem",
+            StatusLine::Ready => "ready",
+            StatusLine::Done => "done",
+        }
+    }
+
+    /// Invariant: a `Problem:` or `Ready:` line over a reply already on screen would replace the
+    /// body a parent reads or print the reply twice; a `Done:` line is the one that stands.
+    pub(crate) fn hides_a_standing_reply(self) -> bool {
+        matches!(self, StatusLine::Problem | StatusLine::Ready)
+    }
+}
+
+/// The `summary` and `text` of an `answer` call the turn made, the text None for a call without one.
+fn answer_call(message: &AgentMessage) -> Option<(String, Option<String>)> {
     let AgentMessage::Assistant { content, .. } = message else {
         return None;
     };
     content.iter().find_map(|block| match block {
         Content::ToolCall {
             name, arguments, ..
-        } if name == "answer" => Some(
+        } if name == "answer" => Some((
+            (arguments.get("summary").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_owned(),
             (arguments.get("text").and_then(Value::as_str))
                 .filter(|text| !text.trim().is_empty())
                 .map(str::to_owned),
-        ),
+        )),
         _ => None,
     })
 }
@@ -232,8 +284,12 @@ pub(super) fn wire(
         let text = match (&*state, answer_call(snapshot.message)) {
             (Answering::Accepted(text), _) => Some(text.clone()),
             (Answering::Stood, _) => None,
-            (Answering::LastWord(_), Some(Some(text))) if !cut => Some(text),
-            (Answering::LastWord(Some(held)), Some(None)) if !cut => held.submitted(),
+            (Answering::LastWord(_), Some((summary, Some(text)))) if !cut => {
+                Some(headed(&summary, &text))
+            }
+            (Answering::LastWord(Some(held)), Some((summary, None))) if !cut => {
+                held.submitted().map(|text| headed(&summary, &text))
+            }
             _ => return None,
         };
         *state = Answering::Answered;

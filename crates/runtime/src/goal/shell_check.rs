@@ -73,6 +73,11 @@ impl<'a> ShellCheck<'a> {
     /// # Errors
     /// A hook or probe refused it, or the shell did not spawn.
     pub(crate) fn run(self) -> Result<yi_tools::CommandCapture, String> {
+        self.guard()?;
+        self.capture()
+    }
+
+    pub(crate) fn guard(&self) -> Result<(), String> {
         self.checker.guard(self.command, self.cwd)?;
         // Invariant: a check placed in a container is judged there, so its first word is not on the
         // host's PATH and the host probe would refuse a program the image has.
@@ -82,6 +87,10 @@ impl<'a> ShellCheck<'a> {
         {
             return Err(refusal);
         }
+        Ok(())
+    }
+
+    pub(crate) fn capture(self) -> Result<yi_tools::CommandCapture, String> {
         let program = match &self.env {
             Env::Keyless => "sh",
             Env::Allowlist(_) => "/bin/sh",
