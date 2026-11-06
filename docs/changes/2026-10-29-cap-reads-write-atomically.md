@@ -1,4 +1,5 @@
 ---
+version: 0.941.0
 issue: Closes #1511
 ledger+: hashline edit (+ registers, instrumented) | `read` and `edit` take at most 16 MiB of one file (`READ_FILE_CAP`, past it a cut row naming grep), and `write` and `edit` replace a file by a sibling temp renamed over the name the gate judged (a hard-linked file, or one whose owner or group a new file would not keep, is written in place); an edit whose header names a missing path is refused with the one same-named file this session read, as `[path#TAG]`, never rebound
 growth: +296 the read cap, the atomic replace and its swap-test seam inside tool.rs; deleting the public replace_after entry point was weighed and done
