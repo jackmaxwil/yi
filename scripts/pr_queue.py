@@ -20,8 +20,8 @@ LABEL, CANDIDATE = "queue", "queue/candidate"
 # Sessions sign in as `jack` too, so an enqueue only when the owner asked stays a rule of conduct.
 MERGERS = {"jack"}
 K = 4
-# Invariant: the slowest green gate lane is about an hour on a loaded runner, and a run that has not
-# reported by then is lost, because a candidate whose pr.yml runs no lanes has no statuses at all.
+# Invariant: the candidate's three lanes run back to back on one runner, at most 3 x 20 minutes, and a run that
+# has not reported by then is lost, because a candidate whose candidate.yml runs no lanes has no statuses at all.
 STALE_MINUTES = 80
 # Invariant: past the lanes' 80 minutes, and longer than the 100-minute `database is locked` fault of 2026-11-02.
 CLOSE_PATIENCE = 240
