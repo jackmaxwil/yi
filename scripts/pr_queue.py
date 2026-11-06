@@ -21,7 +21,7 @@ LABEL, CANDIDATE = "queue", "queue/candidate"
 MERGERS = {"jack"}
 K = 4
 # Invariant: the slowest green gate lane is about an hour on a loaded runner, and a run that has not
-# reported by then is lost, because a candidate whose pr.yml runs no lanes has no statuses at all.
+# reported by then is lost, because a candidate whose candidate.yml runs no lanes has no statuses at all.
 STALE_MINUTES = 80
 # Invariant: past the lanes' 80 minutes, and longer than the 100-minute `database is locked` fault of 2026-11-02.
 CLOSE_PATIENCE = 240

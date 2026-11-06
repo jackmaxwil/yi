@@ -17,8 +17,7 @@ SKIP = re.compile(r"\[\s*(?:skip[ _-]?ci|ci[ _-]?skip|no[ _-]?ci|skip[ _-]?actio
 JOBS = re.compile(r"^  ([\w-]+):\s*$")
 RUNNER = re.compile(r"^    runs-on:(?:\s+(.*?))?\s*$")
 ITEM = re.compile(r"^\s+-\s+(.*?)\s*$")
-CHOICE = r"(?:contains\([^{}()&|]*\)|github\.ref == '[\w/.-]+') && '[\w-]+'"
-CHOSEN = re.compile(r"\$\{\{ " + CHOICE + r"(?: \|\| " + CHOICE + r")* \|\| '[\w-]+' \}\}")
+CHOSEN = re.compile(r"\$\{\{ contains\([^{}()&|]*\) && '([\w-]+)' \|\| '([\w-]+)' \}\}")
 
 
 def problems(text, off=""):
@@ -52,8 +51,8 @@ def silenced(text, off=""):
 
 def label(value):
     """Lanes named by one `runs-on` value: bare, quoted, or a `[a, b]` flow list; none for an expression."""
-    if CHOSEN.fullmatch(value):
-        return re.findall(r"(?:&&|\|\|) '([\w-]+)'", value)
+    if chosen := CHOSEN.fullmatch(value):
+        return list(chosen.groups())
     parts = value[1:-1].split(",") if value.startswith("[") and value.endswith("]") else [value]
     out = []
     for part in parts:
@@ -111,6 +110,36 @@ def unread_lane(text, off=""):
     return [] if off == "lane" else lanes(text)[1]
 
 
+def block(text, head):
+    """The lines under `head` (an exact line) up to the next line indented no deeper; empty if absent."""
+    lines = text.splitlines()
+    if head not in lines:
+        return []
+    start, out = lines.index(head) + 1, []
+    depth = len(head) - len(head.lstrip())
+    for line in lines[start:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= depth:
+            break
+        out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def gate_steps(text):
+    jobs = text.splitlines()
+    return block("\n".join(jobs[jobs.index("  gate:"):]), "    steps:") if "  gate:" in jobs else []
+
+
+def same_gate(gate, candidate, off=""):
+    """Which of env and the gate's steps candidate.yml does not share with pr.yml: the queue lands what
+    its gate passed, so a lane it runs differently is a check main never had."""
+    if off == "candidate":
+        return []
+    return [name for name, part in (("env", lambda t: block(t, "env:")), ("gate steps", gate_steps))
+            if not part(candidate) or part(candidate) != part(gate)]
+
+
 def no_skills(text, off=""):
     return off != "skills" and not re.search(r"^\s*(- )?run: just install-skills$", text, re.M)
 
@@ -161,9 +190,11 @@ def selfcheck(off=""):
     chosen = "jobs:\n  review:\n    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'x') && 'x' || 'ubuntu-latest' }}\n"
     if shared_lane(gate, chosen, off) != [("review", "ubuntu-latest")]:
         bad.append("a `runs-on` choosing between two named lanes is not read as both")
-    branch = "${{ contains(x) && 'x' || github.ref == 'refs/heads/queue/candidate' && 'queue' || 'ubuntu-latest' }}"
-    if shared_lane(f"jobs:\n  gate:\n    runs-on: {branch}\n", "jobs:\n  review:\n    runs-on: queue\n", off) != [("review", "queue")]:
-        bad.append("a `runs-on` choosing a lane by branch is not read as every lane it names")
+    two = "env:\n  A: 1\njobs:\n  gate:\n    runs-on: a\n    steps:\n      - run: one\n  title:\n    steps:\n      - run: x\n"
+    if same_gate(two, two.replace("runs-on: a", "runs-on: queue").replace("  title:\n    steps:\n      - run: x\n", ""), off):
+        bad.append("a candidate gate whose env and steps are pr.yml's is refused")
+    if not same_gate(two, two.replace("run: one", "run: two"), off) or not same_gate(two, two.replace("A: 1", "A: 2"), off):
+        bad.append("a candidate gate whose steps or env differ from pr.yml's is not refused")
     if not unread_lane("jobs:\n  review:\n    runs-on: ${{ contains(a) || contains(b) && 'x' || 'y' }}\n", off):
         bad.append("a `runs-on` that can yield a condition rather than a lane is read as lanes")
     if not unread_lane(expr, off):
@@ -192,7 +223,7 @@ def selfcheck(off=""):
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("plain", "blocks", "comments", "silenced", "lane", "skills", "install"):
+        for off in ("plain", "blocks", "comments", "silenced", "lane", "candidate", "skills", "install"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} check disabled, so it refutes nothing")
         fail(errs, "workflows selfcheck")
@@ -200,6 +231,7 @@ if __name__ == "__main__":
     files = sorted((ROOT / ".forgejo/workflows").glob("*.y*ml"))
     gate = (ROOT / ".forgejo/workflows/pr.yml").read_text()
     review = (ROOT / ".forgejo/workflows/review.yml").read_text()
+    candidate = (ROOT / ".forgejo/workflows/candidate.yml").read_text()
     errs = [f"{f.relative_to(ROOT)}:{n}: `{v}` is a plain YAML value holding `: `, which starts a mapping; "
             f"quote it or fold it with `>-`" for f in files for n, v in problems(f.read_text())]
     errs += [f"{f.relative_to(ROOT)}:{n}: `{v}` starts no workflow for the push that carries it, the mirror's "
@@ -208,10 +240,13 @@ if __name__ == "__main__":
     errs += [f".forgejo/workflows/review.yml: job {job} runs on {lane}, the lane a pr.yml gate job runs on; "
              "a round waits an hour or two on the model at a few percent of one CPU, so the gates queued behind "
              "it for up to four hours (#1310): give the round a lane of its own"
-             for job, lane in shared_lane(gate, review)]
+             for job, lane in shared_lane(gate + candidate, review)]
+    errs += [f".forgejo/workflows/candidate.yml: {part}: not pr.yml's; the queue lands what this gate passed, "
+             "so copy pr.yml's" for part in same_gate(gate, candidate)]
     errs += [f".forgejo/workflows/{name}: job {job}'s `runs-on` `{value}` is not a lane this check reads; "
              "an expression there is a review lane nobody compared, so name the label"
-             for name, text in (("pr.yml", gate), ("review.yml", review)) for job, value in unread_lane(text)]
+             for name, text in (("pr.yml", gate), ("candidate.yml", candidate), ("review.yml", review))
+             for job, value in unread_lane(text)]
     errs += [f".forgejo/workflows/{name}: no `run: just install-skills` step; the job's HOME then holds no skills and its "
              "footer says `skills read none`"
              for name in ("review.yml", "autofix.yml") if no_skills((ROOT / ".forgejo/workflows" / name).read_text())]
