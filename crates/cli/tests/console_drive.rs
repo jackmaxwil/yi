@@ -241,13 +241,14 @@ fn a_hidden_sidebar_is_still_hidden_in_the_console_opened_next() -> TestResult {
     std::fs::create_dir_all(&root)?;
     let (mut daemon, socket) = spawn_daemon(&dir)?;
     let outcome = (|| -> TestResult {
-        // The default start is the rail; two presses walk it to hidden.
+        // The default start is the rail; two presses walk it to hidden. 120 columns keep the
+        // hint row's sidebar key, which the 80-column default drops whole.
         run_console(
             &dir,
             &socket,
             &root,
-            "wait-frame 8000 !connecting…\nkey alt-b\nkey alt-b\nwait-frame 8000 ⌥b sidebar\nquit\n",
-            &[],
+            "wait-frame 8000 !connecting…\nkey alt-b\nkey alt-b\nwait-frame 8000 ⌥b  sidebar\nquit\n",
+            &["--size", "120x34"],
         )?;
         let config = home.join(".yi/config.json");
         // Invariant: the daemon writes the press, and the console that sent it may already be gone.
@@ -271,13 +272,28 @@ fn a_hidden_sidebar_is_still_hidden_in_the_console_opened_next() -> TestResult {
             &dir,
             &socket,
             &root,
-            "wait-frame 8000 ⌥b sidebar\nquit\n",
-            &["--frames", &frames.display().to_string()],
+            "wait-frame 8000 ⌥b  sidebar\nquit\n",
+            &[
+                "--size",
+                "120x34",
+                "--frames",
+                &frames.display().to_string(),
+            ],
         )?;
         let drawn = frames_text(&frames)?;
         assert!(
-            drawn.contains("⌥b sidebar"),
+            drawn.contains("⌥b  sidebar"),
             "the next console started without the way back:\n{drawn}"
+        );
+        let railed = drawn.lines().find(|line| {
+            line.trim_start_matches('"')
+                .chars()
+                .nth(7)
+                .is_some_and(|cell| cell == '│' || cell == '┃')
+        });
+        assert!(
+            railed.is_none(),
+            "the next console drew the rail's edge: {railed:?}"
         );
         Ok(())
     })();
