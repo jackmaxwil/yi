@@ -31,7 +31,7 @@ report to another agent) and to a user who asks, and never soften one in a reply
 - Every baseline has a reader (check_orphans.py). A new baseline seeds with its gate in one
   commit — the carve-out check_commit_style already grants — and goes when its gate goes.
 - A new YI_* env var is a row in scripts/guardrails/baselines/env_vars.json first (hard cap 40).
-- The dist profile is what binary-size and startup budgets measure — never release.
+- The dist profile is what the startup budget measures — never release.
 - No tracking check runs offline. A green `just check` says nothing about whether the work is
   registered, sized or dated — it cannot reach the forge and never tries. The PR job
   (check_pr_metadata.py) and the weekly hygiene job are where that is enforced.
