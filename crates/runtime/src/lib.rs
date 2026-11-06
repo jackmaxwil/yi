@@ -37,6 +37,7 @@ mod mail;
 pub mod mailbox;
 pub mod memory;
 pub mod node;
+mod packed;
 pub mod permission;
 pub mod plan;
 pub mod plugin;
@@ -128,23 +129,28 @@ pub fn workspace_sandbox(
 
 pub use yi_tools::set_wrapper as set_sandbox_wrapper;
 
+static IDENTITY: std::sync::LazyLock<String> = crate::packed::packed!("identity");
+static DOCTRINE: std::sync::LazyLock<String> = crate::packed::packed!("doctrine");
+static DELEGATION: std::sync::LazyLock<String> = crate::packed::packed!("delegation");
+static UNATTENDED: std::sync::LazyLock<String> = crate::packed::packed!("unattended");
+
 pub fn identity_fragment() -> &'static str {
-    include_str!("prompts/identity.md")
+    IDENTITY.as_str()
 }
 
 /// Stable text: it rides the cached prefix, so every byte is paid per turn.
 pub fn doctrine_fragment() -> &'static str {
-    include_str!("prompts/doctrine.md")
+    DOCTRINE.as_str()
 }
 
 /// Attached only where [`ext::ExtOptions::can_delegate`]: a leaf never reads it.
 pub fn delegation_fragment() -> &'static str {
-    include_str!("prompts/delegation.md")
+    DELEGATION.as_str()
 }
 
 /// Rides the system prompt only when no asker is wired, so no person can answer.
 pub fn unattended_fragment() -> &'static str {
-    include_str!("prompts/unattended.md")
+    UNATTENDED.as_str()
 }
 pub use yi_ai::faux;
 pub use yi_context::{Bytes, SourceBudgets, Truncated, reply_tokens};

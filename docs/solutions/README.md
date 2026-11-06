@@ -521,5 +521,7 @@ edited by hand.
 - [D548](adr/d548.md) - A release goes out every night from CI, on the forge and on GitHub, and yi...
 - [D549](adr/d549.md) - A contained member's kernel writes no family board, and its `kernel
 - [D550](adr/d550.md) - `annotate` and `get_context` join the deferred-guide set
+- [D551](adr/d551.md) - a reply opens with its status
+- [D552](adr/d552.md) - `yi tool import just` writes into `~/.yi/tools` only, never a project's...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -3,13 +3,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::AcpState;
-use crate::daemon::{ClientId, Input, Supervisor, error_frame, result_frame};
+use crate::daemon::{ClientId, Input, Supervisor, Worker, error_frame, result_frame};
 
 pub(crate) const BUSY: i64 = -32000;
 const INVALID_PARAMS: i64 = -32602;
@@ -69,7 +70,72 @@ fn executable(path: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// Worker stderr lands here, owner-only beside the socket; /dev/null kept a worker's dying words.
+fn worker_log(socket: &std::path::Path) -> Stdio {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = socket.with_extension("worker.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path);
+    log.map_or_else(|_| Stdio::null(), Stdio::from)
+}
 impl Supervisor {
+    /// Invariant: the binary a root was last replaced with outranks `current_exe`, which is
+    /// the daemon's own build and would bring the superseded worker back.
+    pub(crate) fn spawn_worker(&mut self, root: &str) -> Result<(), String> {
+        let _span = yi_types::trace::span("daemon.spawn_worker").arg("root", root);
+        let exe = match self.swap.binaries.get(root) {
+            Some(binary) => binary.clone(),
+            None => std::env::current_exe().map_err(|error| error.to_string())?,
+        };
+        let mut command = tokio::process::Command::new(exe);
+        command
+            .arg("acp")
+            .arg("--cwd")
+            .arg(root)
+            .args(&self.options.worker_args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(worker_log(&self.options.socket));
+        let mut child = command.spawn().map_err(|error| error.to_string())?;
+        let stdin = child.stdin.take().ok_or("worker has no stdin")?;
+        let stdout = child.stdout.take().ok_or("worker has no stdout")?;
+        let input = self.input.clone();
+        let worker_root = root.to_owned();
+        self.swap.next_generation = self.swap.next_generation.wrapping_add(1);
+        let generation = self.swap.next_generation;
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let parsing =
+                    yi_types::trace::span("daemon.parse_worker_line").arg("bytes", line.len());
+                let parsed = serde_json::from_str::<Value>(&line);
+                drop(parsing);
+                if let Ok(value) = parsed
+                    && input
+                        .send(Input::WorkerLine(
+                            worker_root.clone(),
+                            generation,
+                            value,
+                            line,
+                        ))
+                        .is_err()
+                {
+                    break;
+                }
+            }
+            let _ = input.send(Input::WorkerClosed(worker_root.clone(), generation));
+        });
+        let worker = Worker {
+            child,
+            stdin,
+            generation,
+        };
+        self.workers.insert(root.to_owned(), worker);
+        Ok(())
+    }
     pub(crate) async fn write_worker(&mut self, root: &str, line: String) -> bool {
         let Some(worker) = self.workers.get_mut(root) else {
             return false;

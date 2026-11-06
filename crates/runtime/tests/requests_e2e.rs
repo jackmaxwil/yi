@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
+use yi_runtime::mailbox::CUT_ROW;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::message::{AgentMessage, StopReason};
 
@@ -163,6 +164,28 @@ async fn a_request_left_open_is_chased_once_then_taken_from_the_final_text() -> 
         })
         .count();
     assert_eq!(steers, 1, "one steer came before the final text was taken");
+    let answered = host.result("tally", None)?;
+    assert_ne!(
+        answered["text"], "Still nothing to add.",
+        "a chase turn's reply is never taken as the answer: {answered:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a chase reply read as the product: a child whose brief and request turns said
+/// nothing was reaped as having produced an answer, from the text the chase forced out of it.
+#[tokio::test]
+async fn a_reap_does_not_count_a_chase_reply_as_the_childs_product() -> TestResult {
+    let parent = Arc::new(session((0..6).map(|_| said("noted")).collect()));
+    let lines: &'static [&'static str] = &["", "", "Still nothing to add.", "Nothing more."];
+    let (_root, host, _store) = family(&parent, Child::Says(lines))?;
+    spawn(&host, "tally")?;
+    assert!(reaches(&host, "finished").await, "the brief's turn ends");
+    let reply = host.request("parent", "tally", "5", 20_000).await?;
+    assert_eq!(reply["envelope"]["answeredBy"], "final_text", "{reply:?}");
+    assert!(reaches(&host, "finished").await, "the chase turn ends");
+    let harvest = host.reap("tally")?;
+    assert!(!harvest.produced, "only the chase turn said anything");
     Ok(())
 }
 
@@ -195,7 +218,10 @@ async fn a_final_text_over_the_body_cap_is_kept_whole_and_sent_by_ref() -> TestR
     );
     let body = envelope["body"].as_str().unwrap_or_default();
     assert!(
-        body.starts_with("tally tally") && body.contains("24000 bytes in all"),
+        body.starts_with("tally tally")
+            && body.contains(&format!(
+                "{CUT_ROW}4096 of 24000 bytes · cap HEAD_BYTES = 4096 · "
+            )),
         "{body}"
     );
     let kept = std::fs::read_to_string(root.join(format!("family/reply-{id}.json")))?;

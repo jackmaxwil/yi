@@ -43,7 +43,8 @@ necessary, not sufficient.
    `./target/debug/yi ask --model faux/faux-1 "<prompt>"` (add `--json` for
    the event stream). Size or startup claims use the dist profile
    (`cargo build --profile dist -p yi-cli`), never debug.
-4. Report failures verbatim; never paraphrase an error you have not fixed.
+4. Name each failure exactly; never soften an error you have not fixed. Its exact text goes in
+   saved work (a PR, commit, issue or report to another agent) and to a user who asks for it.
 
 Misdiagnosis defaults: a gate that turns red after your change was broken by
 your change — fix the code, never the baseline. That holds for the wall-clock
@@ -162,7 +163,8 @@ Wire-type drift corrections (these override instinct):
 # Guardrails
 
 Run `just check` (fmt-check + clippy -D warnings + scripts/guardrails/check_guardrails.sh)
-before claiming any task done; quote failures verbatim, do not paraphrase them.
+before claiming any task done; quote failures verbatim in saved work (a PR, commit, issue or
+report to another agent) and to a user who asks, and never soften one in a reply.
 
 - The size ceilings — net src growth, per-crate src lines, test LOC, comment volume and
   over-cap count — are measured at the fork point (`git merge-base origin/main HEAD`), not stored:
@@ -191,7 +193,7 @@ before claiming any task done; quote failures verbatim, do not paraphrase them.
 - Every baseline has a reader (check_orphans.py). A new baseline seeds with its gate in one
   commit — the carve-out check_commit_style already grants — and goes when its gate goes.
 - A new YI_* env var is a row in scripts/guardrails/baselines/env_vars.json first (hard cap 40).
-- The dist profile is what binary-size and startup budgets measure — never release.
+- The dist profile is what the startup budget measures — never release.
 - No tracking check runs offline. A green `just check` says nothing about whether the work is
   registered, sized or dated — it cannot reach the forge and never tries. The PR job
   (check_pr_metadata.py) and the weekly hygiene job are where that is enforced.
@@ -305,8 +307,7 @@ enforced by deny.toml. default-features = false everywhere; enable the minimum. 
 inside a wrapped dependency's own tree (rmcp→chrono, zeromq→rand) get a scoped deny.toml
 wrapper exception, never a repo-wide unban. `regex` left the banned list for grep v2 and is a
 direct dependency; `syntect` left it for the highlighter, on `regex-fancy` only. Budgets are
-whatever baselines/deps_budget.json currently reads; dist binary ≤ 9 MiB, a hard cap independent
-of the baseline (D249), `yi --version` ≤ 5 ms.
+whatever baselines/deps_budget.json currently reads; `yi --version` ≤ 5 ms.
 
 
 
