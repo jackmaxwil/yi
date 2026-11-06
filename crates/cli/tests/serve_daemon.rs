@@ -1152,7 +1152,7 @@ fn replacing_a_worker_keeps_the_session_and_the_daemon_serving_it() -> TestResul
         let replaced = client.request(
             "w1",
             "_yi/worker_replace",
-            json!({"cwd": root.display().to_string(), "binary": binary.get_program()}),
+            json!({"cwd": root.display().to_string(), "binary": Path::new(binary.get_program())}),
         )?;
         assert!(
             replaced.get("error").is_none(),
