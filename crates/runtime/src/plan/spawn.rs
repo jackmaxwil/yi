@@ -197,7 +197,7 @@ pub(super) fn kwargs_of(
 
 #[cfg(test)]
 mod tests {
-    use super::super::dispatch::tests::delegated;
+    use super::super::rig::delegated;
     use super::*;
     use yi_types::plan::doc::{OutputSchema, PlanId, TodoLabel};
 

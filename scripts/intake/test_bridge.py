@@ -247,9 +247,19 @@ def staged_patch(repo: pathlib.Path) -> bytes:
     return git_in(repo, "diff", "--cached", "--no-renames", "--binary", "--full-index")
 
 
-def check_filter_repo() -> None:
+def keygen_trouble() -> str:
+    """Why ssh-keygen cannot make or verify a key on this host, or "" when it can."""
+    with tempfile.TemporaryDirectory(prefix="intake-keygen-") as temp:
+        made = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(pathlib.Path(temp) / "probe")], capture_output=True, text=True)
+    return "" if made.returncode == 0 else (made.stderr.strip() or "ssh-keygen is not installed")
+
+
+def filter_repo_missing() -> str:
+    """The install line for a selfcheck that needs git filter-repo this host does not have, or ""."""
+    if shutil.which("git-filter-repo"):
+        return ""
     pin = (ROOT / "scripts/mirror/filter-repo.version").read_text().strip()
-    assert shutil.which("git-filter-repo"), f"the intake selfcheck rewrites a scratch repo with git filter-repo: uv tool install git-filter-repo=={pin}"
+    return f"skip intake rewrite (git-filter-repo is not installed here: uv tool install git-filter-repo=={pin})"
 
 
 def check_rewrite_helper() -> None:
@@ -645,10 +655,15 @@ EXPECTED = {
 
 
 def selfcheck() -> int:
+    if trouble := keygen_trouble():
+        print(f"skip intake selfcheck (no host ssh-keygen can verify a commit signature: {trouble})")
+        return 0
     assert len(bridge.CHECKS) == 25
     check_real_fixture()
-    check_filter_repo()
-    check_rewrite_helper()
+    if missing := filter_repo_missing():
+        print(missing)
+    else:
+        check_rewrite_helper()
     check_real_patch_edges()
     check_forged_headers()
     check_signed_object()

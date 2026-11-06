@@ -20,8 +20,8 @@ LABEL, CANDIDATE = "queue", "queue/candidate"
 # Sessions sign in as `jack` too, so an enqueue only when the owner asked stays a rule of conduct.
 MERGERS = {"jack"}
 K = 4
-# Invariant: the slowest green gate lane is about an hour on a loaded runner, and a run that has not
-# reported by then is lost, because a candidate whose pr.yml runs no lanes has no statuses at all.
+# Invariant: the candidate's three lanes run back to back on one runner, at most 3 x 20 minutes, and a run that
+# has not reported by then is lost, because a candidate whose candidate.yml runs no lanes has no statuses at all.
 STALE_MINUTES = 80
 # Invariant: past the lanes' 80 minutes, and longer than the 100-minute `database is locked` fault of 2026-11-02.
 CLOSE_PATIENCE = 240
@@ -896,16 +896,15 @@ def record_cases():
             bad.append(f"a recorder's refusal stopped the tick: {kept}, {out.getvalue()!r}")
         script.write_text(RECORDER)
 
-        # The race itself: another pusher wins between the recorder's commit and its push.
+        # Incident: the race hung on a pre-push hook whose own push could fail unfelt, so the check read a moved main
+        # only when that push happened to win; the recorder now moves main itself, every run.
         sh("pull", "-q", "origin", "main", where=other)
         (other / "moved.txt").write_text("moved\n")
         sh("add", ".", where=other), sh("commit", "-qm", "moved", where=other)
-        race = root / ".git/hooks/pre-push"
-        race.write_text(f"#!/bin/sh\nenv -u GIT_DIR git -C '{other}' push -q origin HEAD:main\n")
-        race.chmod(0o755)
+        script.write_text(f"{RECORDER}import subprocess\nsubprocess.run(('git', '-C', {str(other)!r}, 'push', '-q', 'origin', 'HEAD:main'), check=True)\n")
         if record_main(root) is not False:
             bad.append("main moved under the push and the tick read it as recorded")
-        race.unlink()
+        script.write_text(RECORDER)
     return bad
 
 def landing_cases():

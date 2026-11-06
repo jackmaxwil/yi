@@ -7,15 +7,21 @@ use yi_types::url::{Scheme, Url};
 
 use crate::session::{AgentSession, SessionConfig};
 
-const FENCED_READER: &str = concat!(
-    include_str!("../prompts/reader.md"),
-    include_str!("../prompts/reader_fenced.md")
-);
-const UNFENCED_READER: &str = concat!(
-    include_str!("../prompts/reader.md"),
-    include_str!("../prompts/reader_unfenced.md")
-);
-pub const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
+pub(crate) static READER: std::sync::LazyLock<String> = crate::packed::packed!("reader");
+pub(crate) static READER_FENCED: std::sync::LazyLock<String> =
+    crate::packed::packed!("reader_fenced");
+pub(crate) static READER_UNFENCED: std::sync::LazyLock<String> =
+    crate::packed::packed!("reader_unfenced");
+pub(crate) static WORKER: std::sync::LazyLock<String> = crate::packed::packed!("worker");
+
+fn reader_prompt(fenced: bool) -> String {
+    let tail = if fenced {
+        READER_FENCED.as_str()
+    } else {
+        READER_UNFENCED.as_str()
+    };
+    format!("{}{tail}", READER.as_str())
+}
 pub(crate) const PARTITION_CAP: usize = 65_536;
 
 pub(crate) fn full_child(refusal: &str) -> String {
@@ -178,14 +184,14 @@ pub fn session(
 ) -> AgentSession {
     // A pointer the child has no `read` to follow would be a lie about its tools.
     let reads = reader.turns > 1 && reader.tools.iter().any(|name| name == "read");
-    let pointer = crate::skills::child_pointer(&crate::skills::inherited(&build.link));
+    let pointer = || crate::skills::child_pointer(&crate::skills::inherited(&build.link));
     let mut child = AgentSession::new(
         SessionConfig {
             system_prompt: match reader.role {
-                Role::Reader if reader.fenced && reads => format!("{FENCED_READER}\n\n{pointer}"),
-                Role::Reader if reader.fenced => FENCED_READER.to_owned(),
-                Role::Reader if reads => format!("{UNFENCED_READER}\n\n{pointer}"),
-                Role::Reader => UNFENCED_READER.to_owned(),
+                Role::Reader if reads => {
+                    format!("{}\n\n{}", reader_prompt(reader.fenced), pointer())
+                }
+                Role::Reader => reader_prompt(reader.fenced),
                 Role::Worker => String::new(),
             },
             model: build.model,
@@ -195,10 +201,9 @@ pub fn session(
         provider,
     );
     if reader.role == Role::Worker {
-        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT, pointer));
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER.as_str(), pointer()));
         child.enable_compaction();
     }
-    child.set_turn_cap(reader.turns);
     child.set_request_shape(crate::session::RequestShape {
         schema: reader.schema.clone(),
         shared_through: reader.shared_through,

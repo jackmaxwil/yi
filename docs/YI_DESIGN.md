@@ -379,6 +379,13 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   `check_request_budget.py` prices system block plus tool table against a shrink-only baseline
   and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
+- `yi tool import just [recipe ...]` writes one exec tool per recipe of the project's justfile
+  into `~/.yi/tools`, from just's own `--dump --dump-format json`: the schema is the recipe's
+  parameters (a default makes one optional, `*` and `+` a variadic array) and its doc comment the
+  description. Every recipe stays `exec`; `yi: skip` and a `[private]` recipe are left out, and a
+  built-in's name is refused by name. Each wrapper's marker line names its justfile and recipe, so
+  a rerun rewrites only what changed and removes the wrappers it wrote for recipes the justfile
+  dropped, never a hand-written tool. A name another justfile's wrapper holds refuses the import.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `annotate`, `answer`, `get_context`, `plan`, `todo` and `ask_user`
   carry a summary, their full schema (`plan` without field prose below the top level) and
@@ -1159,6 +1166,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `models [recommend [--role R]\|refresh]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); model suggestions per role (§5); session invariants checked, safe ones repaired |
 | `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member, or with an empty member the download itself, published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree, and the `agent-browser` plugin's daemon is the other thing that starts it. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model. A `Host` is a program the model runs that drives this machine: `add --all` and the eval containers skip it, so `agent-desktop` arrives only by name. The sandbox refuses it, and `yi_permission`'s desktop table lets only its plain name out: one yes per app per session, read from `--app` or from the app a ref's snapshot record names; a terminal, an editor, settings or a password app, and any verb or flag the table does not name, ask every time and keep nothing; a browser is refused in every mode; what it prints returns in a `yi-external` fence `agent-browser` is the second `Host`: its daemon cannot run in the sandbox, which bans unix sockets, and a Chrome outside it would read every file while any contained program drives it over its loopback debug port, so `add` also installs `chrome` and writes a script that runs it inside a sandbox with its own sandbox off (the two cannot nest), reading what a contained command reads, writing only temp. Unlike the others it has no route through a program on PATH: the gate refuses the plain name in every mode until the pinned program, its config and that script all stand, so a copy on PATH or an interrupted `add` starts no Chrome outside the box. The default session's Chrome has loopback alone and needs no question; `--session web` adds the internet by address, and one yes covers it for the session. `yi_permission`'s browser table lets only the plain name out, asks every time for what the daemon itself would do, and refuses real logins and a visible window in every mode. |
+| `tool import just [recipe ...]` | One exec tool per recipe of the project's justfile, under `~/.yi/tools`, its schema the recipe's parameters (§7.1) |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills`, each top-level directory the release ships (`yi/`) replaced whole so a skill it dropped goes (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
@@ -1387,7 +1395,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools, runtime | the `grep` tool and Claude Code hook matchers; the Age and break-property tables stay out | — |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime, ai | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
-| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
+| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui, runtime | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime, logos and the runtime's prompts, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
@@ -1398,7 +1406,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
 Dev: `vt100`, `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
-`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
+`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui, runtime) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
 
 ### 18.4 Features
 Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep:yi-console"]`.

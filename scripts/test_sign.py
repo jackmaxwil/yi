@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """scripts/sign.sh signs with the release key by default, names the fix when it cannot, and allowed_signers is well formed."""
+import base64
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -11,6 +13,25 @@ SIGN = ROOT / "scripts/sign.sh"
 PASSPHRASE = "correct horse"
 # The public fingerprint of the owner's release key (~/.ssh/yi-release): the one signer yi update trusts.
 OWNER_RELEASE_KEY = "SHA256:Tb4DlV9Kzm6hIEEnTNTjGNPv4msLyf4zlFPIZZlpsOE"
+
+
+def keygen_probe():
+    """Whether this host can make a key at all: a uid with no passwd entry makes ssh-keygen exit 255."""
+    with tempfile.TemporaryDirectory() as tmp:
+        made = subprocess.run(("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "probe", "-f", str(pathlib.Path(tmp) / "k")),
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    return made.returncode == 0, made.stderr.strip() or "no key was written"
+
+
+def fingerprint(signers_line):
+    """The SHA256 fingerprint ssh-keygen prints for an allowed_signers line, computed without ssh-keygen."""
+    key = signers_line.split()[-1]
+    blob = base64.b64decode(key + "=" * (-len(key) % 4))
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+
+
+CAN_KEYGEN, KEYGEN_TROUBLE = keygen_probe()
+needs_keygen = unittest.skipUnless(CAN_KEYGEN, f"this host cannot make the key fixtures, because ssh-keygen fails: {KEYGEN_TROUBLE}")
 
 
 def run(*args, env=None, check=True, stdin_text=None):
@@ -26,6 +47,7 @@ def fixture(directory, key, passphrase):
     (directory / "a.tar.gz").write_text("release bytes")
 
 
+@needs_keygen
 class SignWithAKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -50,10 +72,9 @@ class TrustList(unittest.TestCase):
     def test_allowed_signers_is_the_owners_release_key_alone(self):
         lines = [line for line in (ROOT / "allowed_signers").read_text().splitlines() if line.strip() and not line.startswith("#")]
         self.assertEqual(len(lines), 1, "the owner is the only signer")
-        keyed = run("ssh-keygen", "-l", "-f", "-", check=False, stdin_text=lines[0].split(None, 1)[1])
-        self.assertEqual(keyed.returncode, 0, keyed.stderr)
-        self.assertIn(OWNER_RELEASE_KEY, keyed.stdout, "changing the trusted key is a deliberate edit of this line")
+        self.assertIn(OWNER_RELEASE_KEY, fingerprint(lines[0]), "changing the trusted key is a deliberate edit of this line")
 
+    @needs_keygen
     def test_the_default_key_is_the_release_key(self):
         with tempfile.TemporaryDirectory() as home:
             home = pathlib.Path(home)
