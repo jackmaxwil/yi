@@ -95,7 +95,8 @@ resumed, it reconciles each store's `MEMORY.md`: drops lines whose note is gone 
 appends a line per unindexed note, keeps every other line and the order, and journals hand edits.
 It emits the summary to the activity feed, and a fresh start increments the repo store's
 `sessions`. It does not attach a memory block: the first typed prompt renders the only block a
-request carries. A resumed session keeps the ranked block restored from its snapshot.
+request carries. A resumed session keeps a ranked block restored from its snapshot; one whose
+snapshot has no memory block earns it at the first prompt, as a fresh session does.
 
 
 ## The first prompt
@@ -120,15 +121,17 @@ had:
    also counts as one not-loaded entry in the focused cut's total.
 
 A blank first prompt (a host or custom message carries no typed words) spends nothing and leaves
-the first real prompt free to rank the block. A resumed session never re-ranks, so "continue"
-cannot replace the block the original task earned. A subagent's brief is its first prompt and
-ranks the block like any other.
+the first real prompt free to rank the block. A resumed session with a restored block never
+re-ranks, so "continue" cannot replace the block the original task earned. A subagent's brief is
+its first prompt and ranks the block like any other.
 
 The eval that holds it is `evals/memory_inject.py` over `evals/fixtures/memory-inject`: eleven
 real first messages, hand-labelled against a sixteen-note fixture store, scored on both arms
 (`crates/runtime/tests/memory_inject.rs` renders this build's blocks and `replay` scores them
 against `before/block.txt`, what the pre-change build rendered). The paid judge run is
-`label --model openrouter/… --cap-usd 10` and its row is the owner's to write.
+`label --model openrouter/… --cap-usd 10`; it writes only the cases it judged to
+`labels-judge.json`, leaves the hand-labelled fixture untouched, refuses uncountable costs, and
+writes its ledger row separately.
 The TUI commits the start summary and one line per save or forget as footer cells; the HUD shows
 `saved N`.
 

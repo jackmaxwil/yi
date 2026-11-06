@@ -16,7 +16,8 @@ case (dumped by `crates/runtime/tests/memory_inject.rs`). It prints both arms an
 the focused block costs more tokens than the index it replaces, or earns fewer relevant bodies.
 
 `label` is the paid half and is the owner's to run: one judge call per case naming the relevant
-notes and a reason for each, refused past `--cap-usd`. Its run is a row in docs/eval-ledger.md.
+notes and a reason for each, refused past `--cap-usd` or when a reply has no countable cost. It
+writes only judged cases to labels-judge.json, never over the hand labels. Its run is a ledger row.
 """
 
 import argparse
@@ -271,9 +272,10 @@ def label(args):
             f"- {path.stem} ({fields.get('type', '?').strip()}): {fields.get('description', '').strip()}"
         )
     spent = 0.0
+    judged = []
     for case in labels["cases"]:
         if spent >= args.cap_usd:
-            print(f"stopped at the ${args.cap_usd} ceiling after {case['id']}; the rest keep theirs")
+            print(f"stopped at the ${args.cap_usd} ceiling before {case['id']}; unjudged cases are omitted")
             break
         body = {
             "model": args.model.split("/", 1)[1],
@@ -282,6 +284,7 @@ def label(args):
                 {"role": "user", "content": "\n".join(catalogue) + "\n\nFirst message:\n" + case["prompt"]},
             ],
             "response_format": {"type": "json_object"},
+            "usage": {"include": True},
         }
         request = urllib.request.Request(
             ENDPOINT,
@@ -290,17 +293,24 @@ def label(args):
         )
         with urllib.request.urlopen(request, timeout=120) as reply:
             answer = json.loads(reply.read())
-        spent += float(answer.get("usage", {}).get("cost", 0) or 0)
+        cost = answer.get("usage", {}).get("cost")
+        if not isinstance(cost, (int, float)):
+            print("FAIL label: refused: the reply carried no usage.cost, so --cap-usd cannot count it", file=sys.stderr)
+            return 1
+        spent += float(cost)
         said = json.loads(answer["choices"][0]["message"]["content"])
+        case = dict(case)
         case["relevant"] = {row["name"]: row["why"] for row in said.get("relevant", [])}
         case["judge"] = args.model
+        judged.append(case)
+    labels["cases"] = judged
     labels["labeling"] = {
         "by": f"judge {args.model}",
         "date": __import__("datetime").date.today().isoformat(),
         "spent_usd": round(spent, 4),
     }
-    LABELS.write_text(json.dumps(labels, indent=2) + "\n")
-    print(f"labelled {len(labels['cases'])} cases for ${spent:.4f}; hand-check a sample before citing it")
+    (FIXTURE / "labels-judge.json").write_text(json.dumps(labels, indent=2) + "\n")
+    print(f"labelled {len(judged)} cases for ${spent:.4f}; hand-check a sample before citing it")
     return 0
 
 

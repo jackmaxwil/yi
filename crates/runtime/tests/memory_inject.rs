@@ -1,6 +1,7 @@
 //! The memory-injection eval replays the real injector over every labelled case and lets
 //! `evals/memory_inject.py` score it against the committed pre-change block.
 
+use crate::scratch::Scratch;
 use std::path::{Path, PathBuf};
 
 fn fixture() -> PathBuf {
@@ -20,15 +21,13 @@ fn copy(from: &Path, to: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A store to read and an empty repository: the fixture's notes are all global.
-fn staged() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
-    let scratch = std::env::temp_dir().join("yi-memory-inject");
-    let _ = std::fs::remove_dir_all(&scratch);
-    std::fs::create_dir_all(&scratch)?;
+/// A unique store to read and an empty repository, removed when the test drops its scratch.
+fn staged() -> Result<(Scratch, PathBuf, PathBuf), Box<dyn std::error::Error>> {
+    let scratch = Scratch::new("yi-memory-inject")?;
     let (home, cwd) = (scratch.join("home"), scratch.join("cwd"));
     copy(&fixture().join("home"), &home)?;
     std::fs::create_dir_all(&cwd)?;
-    Ok((home, cwd))
+    Ok((scratch, home, cwd))
 }
 
 /// The blocks this build renders for every labelled case, handed to the eval script to score.
@@ -36,7 +35,7 @@ fn staged() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
 fn the_focused_block_scores_against_the_saved_labels() -> Result<(), Box<dyn std::error::Error>> {
     let labels: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture().join("labels.json"))?)?;
-    let (home, cwd) = staged()?;
+    let (scratch, home, cwd) = staged()?;
     let mut dump = String::new();
     for case in labels["cases"].as_array().into_iter().flatten() {
         let (Some(id), Some(prompt)) = (case["id"].as_str(), case["prompt"].as_str()) else {
@@ -46,7 +45,7 @@ fn the_focused_block_scores_against_the_saved_labels() -> Result<(), Box<dyn std
         dump.push_str(&serde_json::json!({"id": id, "block": block}).to_string());
         dump.push('\n');
     }
-    let path = std::env::temp_dir().join("yi-memory-inject-after.jsonl");
+    let path = scratch.join("after.jsonl");
     std::fs::write(&path, dump)?;
     #[expect(
         clippy::disallowed_methods,

@@ -1325,6 +1325,45 @@ fn a_resume_keeps_the_block_the_first_prompt_earned() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_resume_without_a_snapshot_earns_memory_at_its_first_prompt() -> TestResult {
+    let cwd = Scratch::new("yi-ext-resume-empty-memory-cwd")?;
+    let home = Scratch::new("yi-ext-resume-empty-memory-home")?;
+    let store_dir = home.join(".yi/memory");
+    std::fs::create_dir_all(&store_dir)?;
+    std::fs::write(
+        store_dir.join("lane-pool.md"),
+        "---\nname: lane-pool\ndescription: orphaned worktrees hold the lane pool\ntype: project\n---\nlane-pool body\n",
+    )?;
+    let mut sessions = yi_session::JsonlRepo::new(home.join("sessions"), cwd.display().to_string());
+    let store = {
+        use yi_session::SessionRepo;
+        sessions.create(yi_session::CreateOptions::default())?
+    };
+    let mut resumed = install(ExtOptions {
+        cwd: cwd.to_path_buf(),
+        home: home.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+        can_delegate: true,
+    });
+    resumed.register(Box::new(yi_runtime::memory::MemoryExt::new(
+        home.to_path_buf(),
+        std::sync::Arc::new(yi_runtime::memory::Activity::default()),
+    )));
+    resumed.start(Some(&store), true);
+    assert!(!resumed.peek_prompt().contains("source=\"memory\""));
+    let event = resumed.prompt_event("orphaned worktrees hold the lane pool");
+    resumed.dispatch(&event, Some(&store));
+    let prompt = resumed.system_prompt();
+    assert!(prompt.contains("source=\"memory\""), "{prompt}");
+    assert!(prompt.contains("lane-pool body"), "{prompt}");
+    Ok(())
+}
+
 /// D310: a compaction drops every internal message, so each slot attached after the first
 /// request goes out again with its current text, in rank order; a slot whose text the frozen
 /// prompt already carries (a mode that flipped back) is not repeated.

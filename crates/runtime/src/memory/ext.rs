@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -97,7 +98,6 @@ struct Row {
 struct Scoped {
     notes: Vec<Note>,
     rows: Vec<Row>,
-    count: usize,
     stale: usize,
     unparsed: usize,
     not_loaded: usize,
@@ -131,7 +131,6 @@ fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError
         })
         .collect();
     Ok(Scoped {
-        count: notes.len(),
         unparsed: notes.iter().filter(|note| note.trouble.is_some()).count(),
         notes,
         rows,
@@ -201,8 +200,8 @@ fn gather(
             Err(_) => summary.not_loaded = summary.not_loaded.saturating_add(1),
         }
     }
-    summary.repo = repo.as_ref().map_or(0, |scoped| scoped.count);
-    summary.global = global.as_ref().map_or(0, |scoped| scoped.count);
+    summary.repo = repo.as_ref().map_or(0, |scoped| scoped.notes.len());
+    summary.global = global.as_ref().map_or(0, |scoped| scoped.notes.len());
     (repo, global, summary)
 }
 
@@ -246,28 +245,16 @@ fn weigh(kind: Option<MemoryType>) -> f64 {
     }
 }
 
-fn twins(a: &str, b: &str) -> bool {
-    let (left, right): (Vec<String>, Vec<String>) = (tokens(a), tokens(b));
+fn twins(left: &BTreeSet<String>, right: &BTreeSet<String>) -> bool {
     if left.is_empty() || right.is_empty() {
         return false;
     }
-    let shared = left.iter().filter(|token| right.contains(token)).count();
+    let shared = left.intersection(right).count();
     let all = left
         .len()
         .saturating_add(right.len())
         .saturating_sub(shared);
     2.0 * shared as f64 / all as f64 >= TWIN
-}
-
-fn capped(body: &str, cap: usize) -> (String, bool) {
-    if body.len() <= cap {
-        return (body.to_owned(), false);
-    }
-    let mut cut = cap;
-    while cut > 0 && !body.is_char_boundary(cut) {
-        cut = cut.saturating_sub(1);
-    }
-    (body.get(..cut).unwrap_or_default().to_owned(), true)
 }
 
 /// The order a prompt earns: scored notes first (type-weighted), then the rest by weight and
@@ -302,16 +289,20 @@ fn earned(candidates: &[(&Note, &str)], prompt: &str) -> (Vec<usize>, Vec<usize>
         key(*b).cmp(&key(*a))
     });
     ranked.append(&mut rest);
+    let hook_tokens: Vec<BTreeSet<String>> = candidates
+        .iter()
+        .map(|(note, _)| tokens(&note.hook).into_iter().collect())
+        .collect();
     let mut kept: Vec<usize> = Vec::new();
     let mut deduped: Vec<usize> = Vec::new();
     for at in &ranked {
-        let Some((note, _)) = candidates.get(*at) else {
+        let Some(left) = hook_tokens.get(*at) else {
             continue;
         };
         let twin = kept.iter().any(|kept| {
-            candidates
+            hook_tokens
                 .get(*kept)
-                .is_some_and(|(other, _)| twins(&note.hook, &other.hook))
+                .is_some_and(|right| twins(left, right))
         });
         if twin {
             deduped.push(*at);
@@ -344,7 +335,7 @@ fn focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summar
     budget = budget.max(BODY_CAP.saturating_mul(2)).min(FOCUS_BYTES);
     let (order, scored_at, deduped) = earned(&candidates, prompt);
     let mut spent = 0usize;
-    let mut bodies: Vec<(usize, String, Option<String>)> = Vec::new();
+    let mut bodies: Vec<(usize, String)> = Vec::new();
     let mut body_notes: Vec<usize> = Vec::new();
     for at in &order {
         let Some((note, _)) = candidates.get(*at) else {
@@ -356,20 +347,14 @@ fn focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summar
         if !scored_at.contains(at) || deduped.contains(at) {
             continue;
         }
-        let (text, truncated) = capped(note.body.trim_end(), BODY_CAP);
-        let block = format!("## {} — {}\n{text}\n", note.name, note.hook);
+        let next = format!("await memory.read(\"{}\")", note.name);
+        let fitted = yi_context::fit(note.body.trim_end(), yi_context::Bytes(BODY_CAP), &next);
+        let block = format!("## {} — {}\n{}\n", note.name, note.hook, fitted.text);
         if spent.saturating_add(block.len()) > budget {
             continue;
         }
-        let cut = truncated.then(|| {
-            format!(
-                "[… body cut at {BODY_CAP} B of {} · the rest: await memory.read(\"{}\")]",
-                note.body.trim_end().len(),
-                note.name
-            )
-        });
         spent = spent.saturating_add(block.len());
-        bodies.push((*at, block, cut));
+        bodies.push((*at, block));
         body_notes.push(*at);
     }
     let mut rows: Vec<&str> = Vec::new();
@@ -399,9 +384,8 @@ fn focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summar
         let shown = rows.len().saturating_add(bodies.len());
         let total = candidates.len().saturating_add(summary.not_loaded);
         let mut body: Vec<String> = rows.iter().map(|text| (*text).to_owned()).collect();
-        for (_, block, cut) in &bodies {
+        for (_, block) in &bodies {
             body.push(block.clone());
-            body.extend(cut.clone());
         }
         body.extend(extras.iter().cloned());
         if shown < total {
@@ -430,7 +414,7 @@ fn focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summar
         if !rows.is_empty() {
             rows.pop();
         } else if bodies.len() > 1 {
-            if let Some((at, _, _)) = bodies.pop()
+            if let Some((at, _)) = bodies.pop()
                 && let Some((_, row)) = candidates.get(at)
             {
                 rows.push(row);
@@ -496,9 +480,13 @@ impl Extension for MemoryExt {
                 let (text, _) = focused(&self.home, &cwd, prompt);
                 self.attach(text, out);
             }
-            Event::SessionStart { cwd, reason } => {
+            Event::SessionStart {
+                cwd,
+                reason,
+                restored,
+            } => {
                 self.cwd = Some(cwd.clone());
-                self.focused = *reason == StartReason::Resume;
+                self.focused = *reason == StartReason::Resume && restored.contains(SOURCE);
                 let (_, _, summary) = gather(&self.home, cwd, Store::reconcile);
                 if *reason == StartReason::Fresh {
                     let counted = Store::new(repo_dir(&self.home, cwd))
@@ -631,6 +619,25 @@ mod tests {
     }
 
     #[test]
+    fn a_repo_note_earns_its_body_and_its_count() {
+        let home = temp("focus-repo-home");
+        let cwd = temp("focus-repo-cwd");
+        let dir = repo_dir(&home, &cwd);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("lane-pool.md"),
+            "---\nname: lane-pool\ndescription: orphaned worktrees hold the lane pool\ntype: project\n---\nrepo lane body\n",
+        )
+        .unwrap();
+        let (text, summary) = focused(&home, &cwd, "orphaned worktrees hold the lane pool");
+        assert!(text.contains("## lane-pool —"), "{text}");
+        assert!(text.contains("repo lane body"), "{text}");
+        assert!(text.contains("1 repo · 0 global"), "{text}");
+        assert_eq!(summary.repo, 1);
+        assert_eq!(summary.global, 0);
+    }
+
+    #[test]
     fn a_feedback_note_earns_its_body_before_a_reference_that_matches_as_well() {
         let rows = [
             (
@@ -744,11 +751,17 @@ mod tests {
             focused(&home, &cwd, "orphaned worktrees lane pool").0
         };
         let exact = at("a".repeat(BODY_CAP));
-        assert!(!exact.contains("body cut"), "{exact}");
+        assert!(!exact.contains("bytes kept"), "{exact}");
         let over = at(format!("{}é", "a".repeat(BODY_CAP - 1)));
-        assert!(over.contains("[… body cut at 1200 B of 1201"), "{over}");
+        assert!(
+            over.contains("[… 1199 of 1201 bytes kept (source budget 1200); the rest: await memory.read(\"lane-pool\")]"),
+            "{over}"
+        );
         let plus = at("a".repeat(BODY_CAP + 1));
-        assert!(plus.contains("[… body cut at 1200 B of 1201"), "{plus}");
+        assert!(
+            plus.contains("[… 1200 of 1201 bytes kept (source budget 1200); the rest: await memory.read(\"lane-pool\")]"),
+            "{plus}"
+        );
     }
 
     #[test]
@@ -793,13 +806,14 @@ mod tests {
             repo_dirty: false,
             named_paths: 0,
         };
-        let start = |reason| Event::SessionStart {
+        let start = |reason, restored: &[&str]| Event::SessionStart {
             cwd: cwd.clone(),
             reason,
+            restored: restored.iter().map(|source| (*source).to_owned()).collect(),
         };
         let mut fresh = MemoryExt::new(home.to_path_buf(), Arc::new(Activity::default()));
         let mut out = Vec::new();
-        fresh.on(&start(StartReason::Fresh), &mut out);
+        fresh.on(&start(StartReason::Fresh, &[]), &mut out);
         assert!(out.is_empty(), "start reconciles without attaching");
         out.clear();
         fresh.on(&ask("  "), &mut out);
@@ -808,7 +822,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         let mut resumed = MemoryExt::new(home.to_path_buf(), Arc::new(Activity::default()));
         out.clear();
-        resumed.on(&start(StartReason::Resume), &mut out);
+        resumed.on(&start(StartReason::Resume, &[SOURCE]), &mut out);
         assert!(out.is_empty(), "resume leaves the restored yard alone");
         out.clear();
         resumed.on(&ask("continue"), &mut out);
