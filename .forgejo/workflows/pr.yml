@@ -13,11 +13,9 @@
 # run reads this head's copy, but intake denies `.forgejo/`, so an imported head is main's copy.
 name: pr
 
+# The merge queue's candidate runs this gate from candidate.yml, on a runner of its own.
 on:
   pull_request:
-  # The merge queue's candidate (scripts/pr_queue.py): the three lanes run on it, and no token does.
-  push:
-    branches: [queue/candidate]
 
 # A newer push to the same PR supersedes the old run; the old one would only
 # hold runners the queue needs (59 of 451 runs kept going after a newer push).
@@ -55,9 +53,7 @@ jobs:
       fail-fast: false
       matrix:
         lane: [lint, guardrails, test]
-    # Incident: on `ubuntu-latest` the queue candidate's 12-minute gate waited 60 minutes behind
-    # 37 PR runs in one FIFO line; the `queue` runner takes nothing else, so a candidate waits only on its own lanes.
-    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || github.ref == 'refs/heads/queue/candidate' && 'queue' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
