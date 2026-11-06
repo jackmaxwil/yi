@@ -1,4 +1,5 @@
 ---
+version: 0.949.0
 issue: Closes #1246
 ledger+: mail between sessions | a running `yi serve` polls `<sessions>/channels/` every two seconds and, for a request unread longer than a held session would leave it and not past its deadline, resumes the stopped session through the worker for its repository with no replay and no turn, which binds its mailbox; an ask that session raises with no client attached is refused, and the requester receives a `failure` letter with `inReplyTo` set, while without a daemon the letter waits as before
 growth: +638 for the mailbox scan and wake, its failure refusals and the scan cache (post::waiting_requests, post::refuse, history::session_cwd), the daemon's poll, resume and headless refusal in daemon/mail.rs, and the supervisor fields they need; deletion was weighed and nothing existing does the job, since the daemon never read channels and a worker's ask had no refusal path
