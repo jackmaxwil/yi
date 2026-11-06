@@ -111,33 +111,34 @@ def unread_lane(text, off=""):
 
 
 def block(text, head):
-    """The lines under `head` (an exact line) up to the next line indented no deeper; empty if absent."""
+    """The lines under `head` (an exact line) up to the next key indented no deeper; empty if absent."""
     lines = text.splitlines()
     if head not in lines:
         return []
     start, out = lines.index(head) + 1, []
     depth = len(head) - len(head.lstrip())
     for line in lines[start:]:
-        if line.strip() and len(line) - len(line.lstrip()) <= depth:
+        if line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip()) <= depth:
             break
         out.append(line)
-    while out and not out[-1].strip():
+    while out and (not out[-1].strip() or out[-1].lstrip().startswith("#")):
         out.pop()
     return out
 
 
-def gate_steps(text):
+def gate_part(text, head):
     jobs = text.splitlines()
-    return block("\n".join(jobs[jobs.index("  gate:"):]), "    steps:") if "  gate:" in jobs else []
+    return block("\n".join(jobs[jobs.index("  gate:"):]), head) if "  gate:" in jobs else []
 
 
 def same_gate(gate, candidate, off=""):
-    """Which of env and the gate's steps candidate.yml does not share with pr.yml: the queue lands what
-    its gate passed, so a lane it runs differently is a check main never had."""
+    """Which of env and the gate's lanes and steps candidate.yml does not share with pr.yml: the queue lands
+    what its gate passed, so a lane it runs differently is a check main never had."""
     if off == "candidate":
         return []
-    return [name for name, part in (("env", lambda t: block(t, "env:")), ("gate steps", gate_steps))
-            if not part(candidate) or part(candidate) != part(gate)]
+    parts = (("env", lambda t: block(t, "env:")), ("gate lanes", lambda t: gate_part(t, "    strategy:")),
+             ("gate steps", lambda t: gate_part(t, "    steps:")))
+    return [name for name, part in parts if not part(candidate) or part(candidate) != part(gate)]
 
 
 def no_skills(text, off=""):
@@ -190,11 +191,12 @@ def selfcheck(off=""):
     chosen = "jobs:\n  review:\n    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'x') && 'x' || 'ubuntu-latest' }}\n"
     if shared_lane(gate, chosen, off) != [("review", "ubuntu-latest")]:
         bad.append("a `runs-on` choosing between two named lanes is not read as both")
-    two = "env:\n  A: 1\njobs:\n  gate:\n    runs-on: a\n    steps:\n      - run: one\n  title:\n    steps:\n      - run: x\n"
+    two = ("env:\n  A: 1\njobs:\n  gate:\n    strategy:\n      matrix:\n        lane: [a, b]\n    runs-on: a\n"
+           "    steps:\n# a note\n      - run: one\n      - run: three\n\n  # the next job\n  title:\n    steps:\n      - run: x\n")
     if same_gate(two, two.replace("runs-on: a", "runs-on: queue").replace("  title:\n    steps:\n      - run: x\n", ""), off):
         bad.append("a candidate gate whose env and steps are pr.yml's is refused")
-    if not same_gate(two, two.replace("run: one", "run: two"), off) or not same_gate(two, two.replace("A: 1", "A: 2"), off):
-        bad.append("a candidate gate whose steps or env differ from pr.yml's is not refused")
+    if any(not same_gate(two, two.replace(a, b), off) for a, b in (("run: three", "run: two"), ("A: 1", "A: 2"), ("[a, b]", "[a]"))):
+        bad.append("a candidate gate whose env, lanes or a step past a comment differ from pr.yml's is not refused")
     if not unread_lane("jobs:\n  review:\n    runs-on: ${{ contains(a) || contains(b) && 'x' || 'y' }}\n", off):
         bad.append("a `runs-on` that can yield a condition rather than a lane is read as lanes")
     if not unread_lane(expr, off):
