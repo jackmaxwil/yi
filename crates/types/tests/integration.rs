@@ -24,3 +24,10 @@ mod todo;
 mod todo_record;
 mod url;
 mod wire_roundtrip;
+
+#[test]
+fn the_suite_wrapper_can_observe_tmpdir() {
+    let tmp = std::env::temp_dir();
+    assert!(tmp.is_dir());
+    println!("TEST_TMPDIR={}", tmp.display());
+}
