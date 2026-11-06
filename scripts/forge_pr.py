@@ -36,11 +36,9 @@ def job_secs(workflow):
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import forge_tracking  # noqa: E402
-import merge_baseline  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
-BINARY = {"binary_size_budget": "dist binary", "binary_size_budget_linux": "Linux dist binary"}
 SUBJECT_LIMIT = 72
 POLL = 20
 WEB = "https://git.example.invalid"
@@ -210,14 +208,12 @@ def cmd_ratchet(args):
     changed = dirty(baseline_paths())
     if not changed:
         print("ratchet: every baseline already matches")
-        return binary_ratchet(args.topic) if not args.no_binary else 0
+        return 0
     parts = []
     for path in changed:
         was, now = before.get(path, {}), read_json(path)
         stem = pathlib.Path(path).stem
-        if stem in BINARY:
-            parts.append(binary_part(stem, was.get("max_bytes", "?"), now.get("max_bytes", "?")))
-        elif stem == "request_budget":
+        if stem == "request_budget":
             for key in ("system", "tools", "total"):
                 if was.get(key) != now.get(key):
                     parts.append(f"request budget {key} {was.get(key, '?')} -> {now.get(key, '?')}")
@@ -226,7 +222,7 @@ def cmd_ratchet(args):
     subject = ratchet_subject(parts, args.topic)
     git("commit", "-q", "-m", subject, "--", *changed, check=True)
     print(f"ratchet: {subject}")
-    return binary_ratchet(args.topic) if not args.no_binary else 0
+    return 0
 
 
 def cmd_commit(args):
@@ -239,7 +235,7 @@ def cmd_commit(args):
         return 1
     if dirty(baseline_paths()):
         print("commit: baselines moved — ratcheting them into their own commit first")
-        cmd_ratchet(argparse.Namespace(topic=args.topic or "", no_binary=True))
+        cmd_ratchet(argparse.Namespace(topic=args.topic or ""))
     if args.paths:
         git("add", "--", *args.paths, check=True)
     if not git("diff", "--cached", "--name-only"):
@@ -254,56 +250,6 @@ def cmd_commit(args):
     if out.returncode != 0:
         return out.returncode
     print(f"committed {git('rev-parse', '--short', 'HEAD')} {args.subject.strip()}")
-    return binary_ratchet(args.topic)
-
-
-def overrun(text):
-    """(baseline stem, budget, size) of a lone budget overrun; the hard cap, a missing binary or a
-    crash is None and stops the lane."""
-    failures = [line.strip() for line in text.splitlines() if line.startswith("  ")]
-    grown = re.fullmatch(r"dist binary (\d+) > (\d+) \+ \d+ bytes \((\w+)\.json\)", failures[0]) if len(failures) == 1 else None
-    return (grown.group(3), int(grown.group(2)), int(grown.group(1))) if grown and grown.group(3) in BINARY else None
-
-
-def binary_part(stem, was, now):
-    """A size ceiling's half of a `Ratchet:` subject."""
-    return f"{BINARY[stem]} {was} -> {now}"
-
-
-def write_ceiling(path, size):
-    path.write_text(merge_baseline.layout({"max_bytes": size}))
-
-
-def binary_ratchet(topic):
-    """Built here, after the code commit: check_binary_size.py only stats target/dist/yi,
-    so without a build it measures the previous landing (said ok while the lane grew)."""
-    build = subprocess.run(
-        (str(ROOT / "scripts/build_dist.sh"),),
-        cwd=ROOT, capture_output=True, text=True, check=False,
-    )
-    if build.returncode != 0:
-        print("binary: dist build failed")
-        print(build.stderr.strip().splitlines()[-1] if build.stderr.strip() else "")
-        return 1
-    out = subprocess.run(
-        (sys.executable, str(ROOT / "scripts/guardrails/check_binary_size.py")),
-        capture_output=True, text=True, check=False,
-    )
-    text = out.stdout + out.stderr
-    verdict = next((line for line in text.splitlines() if "binary_size" in line), "")
-    print(f"binary: {verdict.strip() or 'no measurement'}")
-    if out.returncode == 0:
-        return 0
-    grown = overrun(text)
-    if not grown:
-        print(text.strip())
-        return 1
-    stem, was, size = grown
-    path = BASELINES / f"{stem}.json"
-    write_ceiling(path, size)
-    subject = ratchet_subject([binary_part(stem, was, size)], topic)
-    git("commit", "-q", "-m", subject, "--", str(path.relative_to(ROOT)), check=True)
-    print(f"ratchet: {subject}")
     return 0
 
 
@@ -311,9 +257,6 @@ def cmd_push(args):
     name = branch()
     if git("status", "--porcelain"):
         print("push: the tree is dirty — just commit first")
-        return 1
-    # The lane refuses a grown binary; measuring here is the last chance before it.
-    if binary_ratchet(getattr(args, "topic", "") or ""):
         return 1
     print(f"push: {name}; the forge gate runs the lanes — `just pr status N` reads the verdict")
     out = subprocess.run(("git", "-C", str(ROOT), "push", "-u", "origin", name), check=False)
@@ -681,7 +624,7 @@ def refresh_from_main():
 def cmd_land(args):
     if refresh_from_main():
         return 1
-    cmd_ratchet(argparse.Namespace(topic=args.title, no_binary=False))
+    cmd_ratchet(argparse.Namespace(topic=args.title))
     code = cmd_open(args)
     if code:
         return code
@@ -763,7 +706,7 @@ def selfcheck():
     assert decide(dict(open_pr, title="Keep the WIP: marker out"), jobs, need, False) == "green"
     short = ratchet_subject(["test LOC 1 -> 2"], "the rail")
     assert short == "Ratchet: test LOC 1 -> 2 for the rail", short
-    long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
+    long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "request budget total 100 -> 120"], "the console pane and its avatars")
     assert len(long) <= SUBJECT_LIMIT and long.startswith("Ratchet: test LOC"), long
     assert ratchet_subject([], "x") == "Ratchet: baselines"
     counted = "<!-- prefilled -->\n\n## Summary\n\nprefill\n\n## Files edited\n\nprefill files\n"
@@ -795,24 +738,7 @@ def selfcheck():
     assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:bash" in errs[0], errs
     assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
     assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
-    # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
-    import contextlib, io, types, check_binary_size
-
-    over = check_binary_size.problems(9_500_000, check_binary_size.HARD_CAP_BYTES)[0]
-    assert over == "dist binary 9500000 > hard cap 9437184 bytes", over
-    capped = f"FAIL binary_size\n  {over}\n"
-    real_run = subprocess.run
-    subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, int("check_binary" in cmd[-1]), capped, "")
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            stopped = binary_ratchet("")
-    finally:
-        subprocess.run = real_run
-    assert stopped == 1, "a hard-cap breach stops the push lane"
-    # One byte past the jitter allowance is a lone overrun, so the push ratchets the measured size.
-    jitter = check_binary_size.JITTER
-    assert overrun(f"FAIL binary_size\n  {check_binary_size.problems(800_001 + jitter, 800_000, name='binary_size_budget_linux.json')[0]}\n") == (
-        "binary_size_budget_linux", 800_000, 800_001 + jitter)
+    import contextlib, io, types
     import pr_review
 
     real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
@@ -1052,11 +978,11 @@ def commit_selfcheck():
     import contextlib, io, os
 
     names = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
-    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths", "binary_ratchet")}
+    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths")}
     with tempfile.TemporaryDirectory() as scratch:
         os.environ.update(names)
         subprocess.run(("git", "-C", scratch, "init", "-q"), check=True)
-        globals().update(ROOT=pathlib.Path(scratch), baseline_paths=lambda: [], binary_ratchet=lambda topic: 0)
+        globals().update(ROOT=pathlib.Path(scratch), baseline_paths=lambda: [])
         parse = build_parser().parse_args
         try:
             (pathlib.Path(scratch) / "a.txt").write_text("a\n")
@@ -1088,7 +1014,6 @@ def build_parser():
     verbs = parser.add_subparsers(dest="verb", required=True)
     ratchet = verbs.add_parser("ratchet")
     ratchet.add_argument("topic", nargs="?", default="")
-    ratchet.add_argument("--no-binary", action="store_true", help="skip the dist build")
     ratchet.set_defaults(run=cmd_ratchet)
     commit = verbs.add_parser("commit")
     commit.add_argument("subject")
