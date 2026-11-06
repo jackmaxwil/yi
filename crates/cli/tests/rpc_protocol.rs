@@ -637,15 +637,15 @@ fn a_compact_in_flight_reports_compacting() -> TestResult {
         );
     }
     live.send(json!({"id": "c", "type": "compact"}))?;
-    // The runtime raises its own flag when the summarizer starts, which is after this line, so a
-    // single query races the compact's first poll: keep asking while the summary is paced.
-    let mut in_flight = None;
+    // Dispatch the polls without waiting on the first: before the runtime raises its flag, that reply
+    // is ordered behind the compact and would otherwise stop any later poll reaching the runtime.
     for attempt in 0..400_u32 {
         let id = format!("s{attempt}");
         live.send(json!({"id": id, "type": "get_state"}))?;
-        let Some(state) =
-            live.until(|frame| frame["type"] == "response" && frame["id"] == id.as_str())?
-        else {
+    }
+    let mut in_flight = None;
+    for _ in 0..400_u32 {
+        let Some(state) = live.until(|frame| frame["command"] == "get_state")? else {
             break;
         };
         if state["data"]["isCompacting"] == true {
