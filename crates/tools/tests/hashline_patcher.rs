@@ -70,9 +70,12 @@ impl Fixture {
     }
 
     fn tag_of(&self, path: &str) -> Result<String, Box<dyn Error>> {
-        let read = self.read_tool(path);
-        let text = output_text(&read);
-        let header = text.lines().next().ok_or("empty read output")?;
+        self.tag_of_edit(&self.read_tool(path))
+    }
+
+    fn tag_of_edit(&self, output: &ToolOutput) -> Result<String, Box<dyn Error>> {
+        let text = output_text(output);
+        let header = text.lines().next().ok_or("empty output")?;
         let tag = header
             .rsplit_once('#')
             .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
@@ -498,21 +501,116 @@ fn write_tool_records_a_snapshot_so_edit_follows_immediately() -> TestResult {
     Ok(())
 }
 
+/// The broker judged only the authored path, so a rebound edit landed unjudged; the match is
+/// named for a resend the broker judges, and nothing is written.
 #[test]
-fn wrong_directory_path_recovers_via_filename_and_tag() -> TestResult {
+fn a_missing_path_names_the_read_file_with_its_tag_and_writes_nothing() -> TestResult {
     let fixture = Fixture::new("path-recovery")?;
-    fs::create_dir_all(fixture.context.cwd.join("src"))?;
-    fixture.write("src/util.rs", "pub fn one() {}\n")?;
-    let tag = fixture.tag_of("src/util.rs")?;
+    fs::create_dir_all(fixture.context.cwd.join("crates/x/src"))?;
+    fixture.write("crates/x/src/lib.rs", "pub fn one() {}\n")?;
+    let tag = fixture.tag_of("crates/x/src/lib.rs")?;
 
-    let edit = fixture.edit(&format!("[util.rs#{tag}]\nPUT 1.=1:\n+pub fn two() {{}}\n"));
-    assert!(!edit.is_error, "{}", output_text(&edit));
+    let edit = fixture.edit(&format!("[lib.rs#{tag}]\nPUT 1.=1:\n+pub fn two() {{}}\n"));
     let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
     assert!(
-        text.contains("does not exist; matched its filename and snapshot tag"),
+        text.contains(&format!("[crates/x/src/lib.rs#{tag}]")),
         "{text}"
     );
-    assert_eq!(fixture.content("src/util.rs")?, "pub fn two() {}\n");
+    assert_eq!(fixture.content("crates/x/src/lib.rs")?, "pub fn one() {}\n");
+    let resend = fixture.edit(&format!(
+        "[crates/x/src/lib.rs#{tag}]\nPUT 1.=1:\n+pub fn two() {{}}\n"
+    ));
+    assert!(!resend.is_error, "{}", output_text(&resend));
+    Ok(())
+}
+
+#[test]
+fn a_no_op_section_is_noted_while_the_other_sections_land() -> TestResult {
+    let fixture = Fixture::new("noop-section")?;
+    fixture.write("a.txt", "one\n")?;
+    fixture.write("b.txt", "same\n")?;
+    let (a, b) = (fixture.tag_of("a.txt")?, fixture.tag_of("b.txt")?);
+    let edit = fixture.edit(&format!(
+        "[a.txt#{a}]\nPUT 1.=1:\n+ONE\n[b.txt#{b}]\nPUT 1.=1:\n+same\n"
+    ));
+    let text = output_text(&edit);
+    assert!(!edit.is_error, "{text}");
+    assert_eq!(fixture.content("a.txt")?, "ONE\n");
+    assert!(text.contains(&format!("[b.txt#{b}]\nno changes")), "{text}");
+    Ok(())
+}
+
+/// A formatter that strips a trailing space keeps the tag, which ignores it, and moves no line.
+#[test]
+fn a_file_a_formatter_stripped_of_trailing_space_still_edits() -> TestResult {
+    let fixture = Fixture::new("trailing-space")?;
+    fixture.write("a.rs", "fn a() {}  \nfn b() {}\n")?;
+    let tag = fixture.tag_of("a.rs")?;
+    fixture.write("a.rs", "fn a() {}\nfn b() {}\n")?;
+    let edit = fixture.edit(&format!("[a.rs#{tag}]\nPUT 2.=2:\n+fn c() {{}}\n"));
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_eq!(fixture.content("a.rs")?, "fn a() {}\nfn c() {}\n");
+    Ok(())
+}
+
+#[test]
+fn a_rem_under_a_stale_tag_warns_about_the_delete() -> TestResult {
+    let fixture = Fixture::new("rem-stale")?;
+    fixture.write("a.txt", "one\n")?;
+    let tag = fixture.tag_of("a.txt")?;
+    fixture.write("a.txt", "one\ntwo\n")?;
+    let edit = fixture.edit(&format!("[a.txt#{tag}]\nREM\n"));
+    let text = output_text(&edit);
+    assert!(!edit.is_error, "{text}");
+    assert!(
+        text.contains("Deleted the file despite a stale tag"),
+        "{text}"
+    );
+    assert!(!text.contains("`PUT <1:`"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_stale_refusal_points_at_its_footer_header_not_a_re_read() -> TestResult {
+    let fixture = Fixture::new("stale-footer")?;
+    fixture.write("a.txt", "one\ntwo\n")?;
+    let tag = fixture.tag_of("a.txt")?;
+    fixture.write("a.txt", "one\nTWO\n")?;
+    let edit = fixture.edit(&format!("[a.txt#{tag}]\nPUT 2.=2:\n+2\n"));
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(!text.contains("re-read the file"), "{text}");
+    assert!(
+        text.contains("the last line says how to re-issue"),
+        "{text}"
+    );
+    let live = fixture.tag_of("a.txt")?;
+    assert!(
+        text.contains(&format!("re-issue with this header: [a.txt#{live}]")),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// A program anchors to lines its own read returned; a second edit lost them with the first.
+#[test]
+fn a_programs_read_anchors_two_edits_in_a_row() -> TestResult {
+    let mut fixture = Fixture::new("program-two-edits")?;
+    fixture.context.program = true;
+    let body: String = (1..=3000).map(|n| format!("line {n}\n")).collect();
+    fixture.write("big.txt", &body)?;
+    let tag = fixture.tag_of("big.txt")?;
+    let first = fixture.edit(&format!("[big.txt#{tag}]\nPUT 2500.=2500:\n+first\n"));
+    assert!(!first.is_error, "{}", output_text(&first));
+    let tag = fixture.tag_of_edit(&first)?;
+    let second = fixture.edit(&format!("[big.txt#{tag}]\nPUT 2900.=2900:\n+second\n"));
+    assert!(!second.is_error, "{}", output_text(&second));
+    let written = fixture.content("big.txt")?;
+    assert!(
+        written.contains("first\n") && written.contains("second\n"),
+        "{written}"
+    );
     Ok(())
 }
 

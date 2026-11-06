@@ -3070,6 +3070,32 @@ fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
     Ok(())
 }
 
+/// A grep apply into a name that leaves no room for a sibling falls back to the in-place write,
+/// and the row says so beside the verdict instead of being folded into it.
+#[cfg(unix)]
+#[test]
+fn a_grep_apply_that_cannot_stage_a_sibling_says_it_wrote_in_place() -> TestResult {
+    let dir = temp_dir("grep-apply-in-place")?;
+    let name = format!("{}.txt", "a".repeat(250));
+    fs::write(dir.join(&name), "old_name\n")?;
+    let applied = GrepTool::default().execute(
+        args(&[
+            ("pattern", json!("old_name")),
+            ("replace", json!("new_name")),
+            ("apply", json!(true)),
+        ]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = output_text(&applied);
+    assert!(
+        text.contains(&format!("{name}: warning: the file was written in place")),
+        "{text}"
+    );
+    assert_eq!(fs::read_to_string(dir.join(&name))?, "new_name\n");
+    assert_eq!(applied.result.details["syntax"], Value::Null, "{text}");
+    Ok(())
+}
+
 /// Approval of a write is approval of the named path; through a symlink the bytes land at its
 /// target, a file nobody reviewed.
 #[cfg(unix)]

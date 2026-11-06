@@ -35,7 +35,7 @@ use std::sync::Arc;
 pub use builtins::{BashTool, WriteTool, list_files, wall_refusal, walled};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
-pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
+pub use document::{Converter, DEFAULT_TIMEOUT, Documents, INPUT_CEILING};
 pub use exec::discover_exec_tools;
 pub use grep::{GrepTool, line_matcher};
 pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
@@ -59,8 +59,8 @@ pub const SPILLS: &str = "spills";
 /// The dir beside it every session shared before spills were per session (D316).
 pub const FLAT_SPILLS: &str = "tool-output";
 pub use tool::{
-    CancelFlag, DETAIL_CAP, FileChange, Fuse, Tool, ToolContext, ToolKind, ToolOutput, cut_row,
-    error_output, error_output_kind, glob_head, require_str, text_output,
+    CancelFlag, DETAIL_CAP, FileChange, Fuse, READ_FILE_CAP, Tool, ToolContext, ToolKind,
+    ToolOutput, cut_row, error_output, error_output_kind, glob_head, require_str, text_output,
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {

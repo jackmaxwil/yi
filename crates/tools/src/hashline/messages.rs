@@ -2,7 +2,7 @@ use super::format::{
     FileTag, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_RANGE_SEP, format_numbered_line,
 };
 use super::patcher::{SEEN_LINE_REVEAL_CAP, SEEN_LINE_REVEAL_MAX_COLUMNS};
-use super::types::BlockSpan;
+use super::types::{BlockSpan, FileOp};
 
 pub const MISMATCH_CONTEXT: u64 = 2;
 
@@ -397,7 +397,17 @@ pub const CLIPBOARD_INTERLEAVED_SECTIONS: &str = "`CUT`/register-`PUT` ops canno
 
 pub const EMPTY_INSERT: &str = "`PUT <N:` / `PUT >N:` promises body rows and got none. Write `+TEXT` rows, or drop the `:` to paste a register (`PUT >N` = anonymous, `PUT >N @name` = named).";
 
-pub const HEADTAIL_DRIFT_WARNING: &str = "Applied the `PUT <1:`/`PUT >$:` edit despite a stale snapshot tag (file changed since your read) — head/tail position is content-independent. Re-read if the drift was unexpected.";
+/// Why a stale tag did not refuse this section: nothing it does depends on the lines that moved.
+pub fn stale_ends_warning(file_op: Option<&FileOp>, from: FileTag, to: FileTag) -> String {
+    let what = match file_op {
+        Some(FileOp::Rem) => "Deleted the file",
+        Some(FileOp::Move { .. }) => "Moved the whole file",
+        None => "Applied the `PUT <1:`/`PUT >$:` edit",
+    };
+    format!(
+        "{what} despite a stale tag ({HL_FILE_HASH_SEP}{from}; the file is now {HL_FILE_HASH_SEP}{to}): no op in this section depends on line content. Check the result if the change was unexpected."
+    )
+}
 
 pub fn missing_snapshot_tag_message(
     section_path: &str,
@@ -421,15 +431,12 @@ pub fn rebased_warning(from: FileTag, to: FileTag) -> String {
     )
 }
 
-pub fn path_recovered_from_tag_message(
-    authored_path: &str,
-    resolved_path: &str,
-    tag: FileTag,
-) -> String {
+/// The authored path is missing and one file read this session shares its name and tag: named
+/// for a resend the permission gate judges, never edited in its place.
+pub fn path_candidate_message(authored_path: &str, candidate: &str, tag: FileTag) -> String {
     format!(
-        "Path \"{authored_path}\" does not exist; matched its filename and snapshot tag \
-{HL_FILE_HASH_SEP}{tag} to {resolved_path} (read earlier this session). Anchor future edits on \
-{HL_FILE_PREFIX}{resolved_path}{HL_FILE_HASH_SEP}TAG{HL_FILE_SUFFIX}."
+        "File not found: {authored_path}; nothing was written. A file read this session has its name and tag: \
+{HL_FILE_PREFIX}{candidate}{HL_FILE_HASH_SEP}{tag}{HL_FILE_SUFFIX}. If that is the file you meant, re-send the edit under that header."
     )
 }
 
