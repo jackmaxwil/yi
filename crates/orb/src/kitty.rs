@@ -4,13 +4,43 @@ use yi_types::encoding::base64;
 
 use crate::core::OrbFrame;
 
-/// Kitty graphics protocol support: Ghostty and kitty advertise via TERM or
-/// KITTY_WINDOW_ID. Everything else falls back to the plain spinner line.
+/// Invariant: tmux and screen fall back to text because transmit writes raw APC, not DCS
+/// passthrough; otherwise Ghostty and kitty advertise via TERM, TERM_PROGRAM or KITTY_WINDOW_ID.
+pub fn supported_in(
+    term: Option<&str>,
+    term_program: Option<&str>,
+    kitty_window_id: Option<&str>,
+    multiplexed: bool,
+) -> bool {
+    if multiplexed || term.is_some_and(|term| term.contains("tmux") || term.contains("screen")) {
+        return false;
+    }
+    kitty_named_terminal(term, term_program) || kitty_window_id.is_some()
+}
+
+/// The terminal's own name, without the KITTY_WINDOW_ID fallback: a terminal that answers the
+/// graphics protocol is also the one whose command chords the user's keyboard sends.
+pub fn kitty_named_terminal(term: Option<&str>, term_program: Option<&str>) -> bool {
+    term.is_some_and(|term| term.contains("kitty") || term.contains("ghostty"))
+        || term_program.is_some_and(|program| program == "ghostty")
+}
+
+/// Invariant: kitty's FAQ has tmux users set `default-terminal "xterm-kitty"`, so TERM can
+/// name no multiplexer; TMUX and STY are the variables tmux and screen set themselves.
 pub fn supported() -> bool {
-    let term = std::env::var("TERM").unwrap_or_default();
-    term.contains("kitty")
-        || term.contains("ghostty")
-        || std::env::var_os("KITTY_WINDOW_ID").is_some()
+    supported_with(|name| std::env::var_os(name))
+}
+
+/// Invariant: TMUX is a socket path and TMUX_TMPDIR is the user's, so presence is the question
+/// for a multiplexer and only TERM, TERM_PROGRAM and KITTY_WINDOW_ID need their text.
+pub fn supported_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    let text = |name: &str| var(name).and_then(|value| value.into_string().ok());
+    supported_in(
+        text("TERM").as_deref(),
+        text("TERM_PROGRAM").as_deref(),
+        text("KITTY_WINDOW_ID").as_deref(),
+        var("TMUX").is_some() || var("STY").is_some(),
+    )
 }
 
 /// TokyoNight-leaning light ink on a light-dots-on-dark contract; alpha carries
@@ -140,21 +170,30 @@ pub fn transmit(
     let payload = base64(&miniz_oxide::deflate::compress_to_vec_zlib(
         rgba, ZLIB_LEVEL,
     ));
-    let chunks: Vec<&str> = payload
-        .as_bytes()
-        .chunks(4096)
-        .map(|c| std::str::from_utf8(c).unwrap_or(""))
-        .collect();
-    for (index, chunk) in chunks.iter().enumerate() {
-        let more = u8::from(index + 1 < chunks.len());
-        if index == 0 {
-            write!(
-                out,
-                "\x1b_Gf=32,o=z,s={width},v={height},a=t,i={id},q=2,m={more};{chunk}\x1b\\"
-            )?;
+    let opening = format!("f=32,o=z,s={width},v={height}");
+    transmit_base64(out, id, &payload, &opening)
+}
+
+pub fn transmit_base64(
+    out: &mut impl Write,
+    id: u32,
+    payload: &str,
+    opening: &str,
+) -> std::io::Result<()> {
+    let bytes = payload.as_bytes();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let end = offset.saturating_add(4096).min(bytes.len());
+        let chunk = bytes.get(offset..end).unwrap_or_default();
+        let more = u8::from(end < bytes.len());
+        if offset == 0 {
+            write!(out, "\x1b_G{opening},a=t,i={id},q=2,m={more};")?;
         } else {
-            write!(out, "\x1b_Gm={more};{chunk}\x1b\\")?;
+            write!(out, "\x1b_Gm={more};")?;
         }
+        out.write_all(chunk)?;
+        write!(out, "\x1b\\")?;
+        offset = end;
     }
     Ok(())
 }

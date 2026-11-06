@@ -70,3 +70,86 @@ fn the_header_buttons_and_terminal_keep_chords_the_terminal_leaves_alone() {
         assert_eq!(direct(&key), Some(want), "{modifiers:?} {c}");
     }
 }
+
+#[test]
+fn terminal_environments_share_graphics_support_but_not_chord_support() {
+    let environments = [
+        (
+            "Ghostty TERM",
+            "xterm-ghostty",
+            None,
+            None,
+            None,
+            true,
+            true,
+        ),
+        (
+            "Ghostty TERM_PROGRAM",
+            "xterm-256color",
+            Some("ghostty"),
+            None,
+            None,
+            true,
+            true,
+        ),
+        ("kitty", "xterm-kitty", None, Some("1"), None, true, true),
+        (
+            "kitty by window id",
+            "xterm-256color",
+            None,
+            Some("1"),
+            None,
+            true,
+            false,
+        ),
+        (
+            "tmux in kitty",
+            "tmux-256color",
+            Some("tmux"),
+            Some("1"),
+            Some("TMUX"),
+            false,
+            false,
+        ),
+        (
+            "xterm-kitty in tmux",
+            "xterm-kitty",
+            None,
+            Some("1"),
+            Some("TMUX"),
+            false,
+            true,
+        ),
+        (
+            "xterm-kitty in screen",
+            "xterm-kitty",
+            None,
+            Some("1"),
+            Some("STY"),
+            false,
+            true,
+        ),
+        ("xterm", "xterm-256color", None, None, None, false, false),
+    ];
+    for (name, term, program, window_id, multiplexer, graphics, chords) in environments {
+        let var = |key: &str| -> Option<std::ffi::OsString> {
+            let value = match key {
+                "TERM" => Some(term),
+                "TERM_PROGRAM" => program,
+                "KITTY_WINDOW_ID" => window_id,
+                _ => (multiplexer == Some(key)).then_some("1"),
+            };
+            value.map(std::ffi::OsString::from)
+        };
+        assert_eq!(
+            yi_tui::orb::kitty::supported_with(var),
+            graphics,
+            "{name} graphics"
+        );
+        assert_eq!(
+            yi_tui::orb::kitty::kitty_named_terminal(Some(term), program),
+            chords,
+            "{name} chords"
+        );
+    }
+}
