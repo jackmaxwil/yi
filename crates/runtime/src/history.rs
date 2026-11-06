@@ -130,12 +130,21 @@ pub fn find_session(sessions_dir: &Path, cwd: &Path, id: &str) -> Option<PathBuf
         return None;
     }
     let mine = (repo_sessions(sessions_dir, cwd).files.into_iter()).find(|file| carries(file, id));
-    let anywhere = || {
-        (session_dirs(sessions_dir).iter())
-            .flat_map(|dir| jsonl_files(dir))
-            .find(|file| carries(file, id))
-    };
-    mine.or_else(anywhere)
+    mine.or_else(|| in_any_repo(sessions_dir, id))
+}
+
+fn in_any_repo(sessions_dir: &Path, id: &str) -> Option<PathBuf> {
+    (session_dirs(sessions_dir).iter())
+        .flat_map(|dir| jsonl_files(dir))
+        .find(|file| carries(file, id))
+}
+
+/// The repository directory session `id` was started in, from its file's header.
+pub fn session_cwd(sessions_dir: &Path, id: &str) -> Option<PathBuf> {
+    if id.is_empty() || id.contains(['/', '\\']) {
+        return None;
+    }
+    header_cwd(in_any_repo(sessions_dir, id)?.parent()?)
 }
 
 /// A name as an address spells it: case aside, its spaces as dashes, since a URL holds none.
