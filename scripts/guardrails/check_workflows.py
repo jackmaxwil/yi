@@ -17,6 +17,8 @@ SKIP = re.compile(r"\[\s*(?:skip[ _-]?ci|ci[ _-]?skip|no[ _-]?ci|skip[ _-]?actio
 JOBS = re.compile(r"^  ([\w-]+):\s*$")
 RUNNER = re.compile(r"^    runs-on:(?:\s+(.*?))?\s*$")
 ITEM = re.compile(r"^\s+-\s+(.*?)\s*$")
+CHOICE = r"(?:contains\([^{}()&|]*\)|github\.ref == '[\w/.-]+') && '[\w-]+'"
+CHOSEN = re.compile(r"\$\{\{ " + CHOICE + r"(?: \|\| " + CHOICE + r")* \|\| '[\w-]+' \}\}")
 
 
 def problems(text, off=""):
@@ -50,8 +52,8 @@ def silenced(text, off=""):
 
 def label(value):
     """Lanes named by one `runs-on` value: bare, quoted, or a `[a, b]` flow list; none for an expression."""
-    if chosen := re.fullmatch(r"\$\{\{ contains\([^{}]*\) && '([\w-]+)' \|\| '([\w-]+)' \}\}", value):
-        return list(chosen.groups())
+    if CHOSEN.fullmatch(value):
+        return re.findall(r"(?:&&|\|\|) '([\w-]+)'", value)
     parts = value[1:-1].split(",") if value.startswith("[") and value.endswith("]") else [value]
     out = []
     for part in parts:
@@ -159,6 +161,11 @@ def selfcheck(off=""):
     chosen = "jobs:\n  review:\n    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'x') && 'x' || 'ubuntu-latest' }}\n"
     if shared_lane(gate, chosen, off) != [("review", "ubuntu-latest")]:
         bad.append("a `runs-on` choosing between two named lanes is not read as both")
+    branch = "${{ contains(x) && 'x' || github.ref == 'refs/heads/queue/candidate' && 'queue' || 'ubuntu-latest' }}"
+    if shared_lane(f"jobs:\n  gate:\n    runs-on: {branch}\n", "jobs:\n  review:\n    runs-on: queue\n", off) != [("review", "queue")]:
+        bad.append("a `runs-on` choosing a lane by branch is not read as every lane it names")
+    if not unread_lane("jobs:\n  review:\n    runs-on: ${{ contains(a) || contains(b) && 'x' || 'y' }}\n", off):
+        bad.append("a `runs-on` that can yield a condition rather than a lane is read as lanes")
     if not unread_lane(expr, off):
         bad.append("a `runs-on` that is an expression is dropped instead of refused")
     if not no_skills("steps:\n  - run: rustup show\n", off):
