@@ -17,7 +17,7 @@ pub(crate) struct ShellCheck<'a> {
     checker: &'a Checker,
     env: Env<'a>,
     stdin: Option<Vec<u8>>,
-    deadline: Instant,
+    deadline: Option<Instant>,
     stop: Option<&'a yi_tools::CancelFlag>,
     probe: bool,
 }
@@ -30,7 +30,7 @@ impl<'a> ShellCheck<'a> {
             checker,
             env: Env::Keyless,
             stdin: None,
-            deadline: Instant::now(),
+            deadline: None,
             stop: None,
             probe: false,
         }
@@ -47,14 +47,16 @@ impl<'a> ShellCheck<'a> {
     }
 
     pub(crate) fn within(mut self, timeout_ms: u64) -> Self {
-        self.deadline = Instant::now()
-            .checked_add(std::time::Duration::from_millis(timeout_ms))
-            .unwrap_or_else(Instant::now);
+        self.deadline = Some(
+            Instant::now()
+                .checked_add(std::time::Duration::from_millis(timeout_ms))
+                .unwrap_or_else(Instant::now),
+        );
         self
     }
 
     pub(crate) fn until(mut self, deadline: Instant) -> Self {
-        self.deadline = deadline;
+        self.deadline = Some(deadline);
         self
     }
 
@@ -102,7 +104,8 @@ impl<'a> ShellCheck<'a> {
         let deadline = self.deadline;
         let stop = self.stop.cloned();
         let cancelled: yi_tools::CancelFlag = Arc::new(move || {
-            Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop())
+            deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                || stop.as_ref().is_some_and(|stop| stop())
         });
         captured(shell, self.stdin, &cancelled)
     }
@@ -125,4 +128,18 @@ pub(crate) fn run_check_in(
         .until(deadline)
         .stop(stop)
         .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_check_without_a_deadline_is_not_cancelled() -> Result<(), Box<dyn std::error::Error>> {
+        let cwd = std::env::current_dir()?;
+        let capture = ShellCheck::new("sleep 0.1", &cwd, &Checker::default()).run()?;
+        assert!(!capture.cancelled, "{capture:?}");
+        assert_eq!(capture.exit_code, Some(0), "{capture:?}");
+        Ok(())
+    }
 }
