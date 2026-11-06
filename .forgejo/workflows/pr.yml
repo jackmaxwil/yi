@@ -55,7 +55,9 @@ jobs:
       fail-fast: false
       matrix:
         lane: [lint, guardrails, test]
-    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || 'ubuntu-latest' }}
+    # Incident: on `ubuntu-latest` the queue candidate's 12-minute gate waited 60 minutes behind
+    # 37 PR runs in one FIFO line; the `queue` runner takes nothing else, so a candidate never waits.
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'external') && 'external' || github.ref == 'refs/heads/queue/candidate' && 'queue' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
@@ -79,7 +81,8 @@ jobs:
           cache-on-failure: true
           # main saves (postmerge `warm`); a PR's own multi-GB save is readable
           # only by later runs of that PR and costs the shared disk every push.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # The candidate saves too: no main run reaches the `queue` runner's cache.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/queue/candidate' }}
       # scripts/intake's selfcheck rewrites a scratch repo with the mirror's own filter, which
       # the gate image does not ship; the pin is scripts/mirror/filter-repo.version.
       - if: matrix.lane == 'guardrails'
