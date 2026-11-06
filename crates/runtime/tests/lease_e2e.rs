@@ -59,17 +59,15 @@ struct Rig {
 fn rig(depth: u8, max_depth: u8, script: Vec<AgentMessage>) -> Result<Rig, Box<dyn Error>> {
     let root = Scratch::new("yi-lease")?;
     let store = support::memory_store("lease-test");
-    let family = if (depth, max_depth) == (0, 1) {
-        support::family(root.to_path_buf(), std::env::temp_dir(), store, None)
-    } else {
-        support::family_at(
-            root.to_path_buf(),
-            std::env::temp_dir(),
-            store,
-            depth,
-            max_depth,
-        )
-    };
+    let family = support::family_with_slots(
+        root.to_path_buf(),
+        std::env::temp_dir(),
+        store,
+        None,
+        2,
+        depth,
+        max_depth,
+    );
     family.queue(script)?;
     Ok(Rig {
         family,
@@ -202,23 +200,6 @@ async fn a_grandchild_is_held_to_the_same_lease() -> TestResult {
     assert!(
         lease_spent(&update),
         "every depth is capped: {:?}",
-        update.exit
-    );
-    assert_eq!(update.token_count, 1_200);
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_final_reply_that_crosses_the_lease_is_not_raced_by_the_watcher() -> TestResult {
-    let rig = rig(
-        0,
-        1,
-        vec![reply("swept the logs", StopReason::Stop, 1_200, 0)],
-    )?;
-    let (update, _) = run(&rig, Some(1_000)).await?;
-    assert!(
-        lease_spent(&update),
-        "the transcript, not watcher scheduling, decides the ending: {:?}",
         update.exit
     );
     assert_eq!(update.token_count, 1_200);

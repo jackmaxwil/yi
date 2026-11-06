@@ -228,7 +228,8 @@ impl SubagentHost {
         exit: ChildExit,
         error: Option<String>,
     ) {
-        let (exit, error) = self.lease_ending(child_id, exit, error);
+        let messages = session.messages();
+        let (exit, error) = self.lease_ending(child_id, &messages, exit, error);
         let Some((exit, error)) = self.respawn(child_id, exit, error) else {
             return;
         };
@@ -236,7 +237,6 @@ impl SubagentHost {
         let _settling = crate::plan::finish::Settling::hold(self);
         // A retired child has no record left: `retire` already published its terminal update,
         // so a second one, a notice or a bill would only echo a closed slot.
-        let messages = session.messages();
         let mut ended = None;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(child_id)
@@ -331,10 +331,21 @@ impl SubagentHost {
     fn lease_ending(
         &self,
         child_id: &str,
+        messages: &[AgentMessage],
         exit: ChildExit,
         error: Option<String>,
     ) -> (ChildExit, Option<String>) {
-        self.refold(child_id);
+        let state = self.children.lock().ok().and_then(|children| {
+            children
+                .get(child_id)
+                .map(|record| (record.spent.crossed, record.lease.tokens))
+        });
+        let Some((crossed, Some(_))) = state else {
+            return (exit, error);
+        };
+        if !crossed {
+            self.refold_messages(child_id, messages);
+        }
         let spent = self.children.lock().ok().and_then(|children| {
             children
                 .get(child_id)
@@ -532,13 +543,16 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let key = {
+        let (key, session) = {
             let mut children = rig.host.children.lock().map_err(|_| "poisoned")?;
             let (key, record) = children.iter_mut().next().ok_or("no child")?;
             record.spent = crate::subagent::record::Billing::default();
-            key.clone()
+            (key.clone(), std::sync::Arc::clone(&record.session))
         };
-        let (exit, _) = rig.host.lease_ending(&key, ChildExit::Completed, None);
+        let messages = session.messages();
+        let (exit, _) = rig
+            .host
+            .lease_ending(&key, &messages, ChildExit::Completed, None);
         assert_eq!(
             exit,
             ChildExit::Failed {

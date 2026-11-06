@@ -155,7 +155,7 @@ pub fn family(
     store: yi_session::SharedSession,
     hold: Option<&'static str>,
 ) -> Family {
-    family_with_slots(dir, cwd, store, hold, 2)
+    family_with_slots(dir, cwd, store, hold, 2, 0, 1)
 }
 
 pub fn family_with_slots(
@@ -164,18 +164,10 @@ pub fn family_with_slots(
     store: yi_session::SharedSession,
     hold: Option<&'static str>,
     lane_slots: u8,
-) -> Family {
-    family_build(dir, cwd, store, hold, lane_slots, 0, 1)
-}
-
-pub fn family_at(
-    dir: PathBuf,
-    cwd: PathBuf,
-    store: yi_session::SharedSession,
     depth: u8,
     max_depth: u8,
 ) -> Family {
-    family_build(dir, cwd, store, None, 2, depth, max_depth)
+    family_build(dir, cwd, store, hold, lane_slots, depth, max_depth)
 }
 
 fn family_build(
