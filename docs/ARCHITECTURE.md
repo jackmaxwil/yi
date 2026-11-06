@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.944.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.947.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -338,6 +338,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | GitHub-to-forge intake | 22 | gated manual | H | H | stages 0–4: real fixtures, signed ordered checks, read-only dry-run, deterministic draft import and a no-tools lens; an imported PR carries `external` and waits for the owner's `run-ci`, which asks for the disposable `external` runner (unregistered, so an admitted job queues and never runs); landing comments `landed as <sha>` and closes the GitHub PR; the poll workflow is inert (cron commented) |
 | read-only shell reads steer to `read` and `grep` | 7.3 | core | M | L | a bash command whose every segment is a file print or a search (`cat`, `head`, `tail`, `sed -n`, `grep`, `rg`, with `wc`/`sort`/`uniq`/`cut` allowed after one) answers with a single `[read answers this: …]` or `[grep answers this: …]` row above its output, naming the call that does the job with hashline anchors and, for a search, per-file counts; a redirect, a `$(` or backtick substitution, a vcs, build or test segment, or an unlisted verb keeps the bare output (`tools::a_shell_read_names_the_dedicated_tool_first`, `tools::a_write_a_vcs_or_build_call_gets_no_dedicated_tool_row`) |
 | spec (harness-run requirements check) | 13.3 | core | H | M | the `spec` tool's `freeze` quotes the request's requirements as `R1`..`Rn`, takes the artifact paths the task names and one check printing a TAP line per id, runs it on the untouched tree and types each id `f2p` or `p2p`, refusing with every failing fact at once (`spec_e2e::freeze_refuses_every_failing_fact_at_once`); a run is the harness's, so a `bash` call naming the checker never clears a red id; the stop rule refuses a clean stop when an enumerated request froze no spec, when the last run is older than the last write, when an id is red (naming each with the check's own diagnostic) and when the refute — baseline, emptied and restored artifacts — shows the check cannot tell the trees apart, repeating under `--deadline` and waiving after three without one (`todo_coupling::a_red_spec_refuses_the_stop_and_names_the_requirement`) |
+| kitty terminal capabilities | 17.3, 17.4 | core | M | S | solo and console graphics support reads TERM, TERM_PROGRAM and KITTY_WINDOW_ID through one predicate, excluding tmux and screen, while console command-chord hints use a separate terminal-name predicate; PNG and orb payloads share the 4,096-byte transmit loop |
 
 ## Decision log
 

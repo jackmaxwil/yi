@@ -1,4 +1,5 @@
 ---
+version: 0.947.0
 issue: Closes #1401
 growth: +182 the packed! static items, inflate and the one fourteen-row table, plus the test-only inflate registry and shared graph inflation; the error arm and the integration test were deleted
 raise: crate runtime +182, tests +146, comments +4
