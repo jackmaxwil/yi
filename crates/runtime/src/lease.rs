@@ -14,6 +14,7 @@ use yi_types::subagent::ChildExit;
 
 use crate::args::Args;
 use crate::mail::Draft;
+use crate::plan::timer::Due;
 use crate::subagent::{ChildRecord, Children, PARENT_NAME, Step, SubagentHost};
 
 pub(crate) const LEASE_ENTRY: &str = "lease";
@@ -21,6 +22,8 @@ pub(crate) const LEASE_ENTRY: &str = "lease";
 pub const CLEANUP_GRACE_MS: u64 = 30_000;
 /// How long a stopped run may take to go idle before its repossession is left pending.
 const JOIN_MS: u64 = 10_000;
+/// Invariant: an exiting shell outwaits a full join plus its settle, or the repossession drops.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_millis(JOIN_MS + 5_000);
 
 pub(crate) async fn off_executor<T: Send + 'static>(
     method: &str,
@@ -320,6 +323,18 @@ impl SubagentHost {
     /// The timer's job, run on every wake of the probe loop: each revoked child whose grace is
     /// over and whose run has not ended is repossessed. A pending one is tried again.
     pub async fn expire(self: &Arc<Self>) -> Vec<String> {
+        let now = self.lease_now();
+        self.expire_by(now, false).await
+    }
+
+    /// The process is exiting: every live child is revoked and repossessed now, side by side,
+    /// since a grace that outlives the process is served by no one and its lane would stay held.
+    pub async fn end(self: &Arc<Self>) -> Vec<String> {
+        let _revoked = self.close();
+        self.expire_by(u64::MAX, true).await
+    }
+
+    async fn expire_by(self: &Arc<Self>, now: u64, together: bool) -> Vec<String> {
         let first = self
             .grant
             .lock()
@@ -327,7 +342,6 @@ impl SubagentHost {
         if first && let Err(reason) = self.resume_revocations() {
             (self.options.notice)(&format!("[lease resume refused: {reason}]"), None);
         }
-        let now = self.lease_now();
         let due: Vec<String> = self
             .children
             .lock()
@@ -342,9 +356,28 @@ impl SubagentHost {
                     .collect()
             })
             .unwrap_or_default();
+        let mut outcomes = Vec::new();
+        if together {
+            let mut joins = tokio::task::JoinSet::new();
+            for key in due {
+                let host = Arc::clone(self);
+                joins.spawn(async move {
+                    let outcome = host.repossess(&key).await;
+                    (key, outcome)
+                });
+            }
+            while let Some(joined) = joins.join_next().await {
+                outcomes.extend(joined.ok());
+            }
+        } else {
+            for key in due {
+                let outcome = self.repossess(&key).await;
+                outcomes.push((key, outcome));
+            }
+        }
         let mut repossessed = Vec::new();
-        for key in due {
-            match self.repossess(&key).await {
+        for (key, outcome) in outcomes {
+            match outcome {
                 Ok(Some(name)) => repossessed.push(name),
                 Ok(None) => {}
                 Err(reason) => self.leave_pending(&key, &reason),
@@ -485,4 +518,26 @@ impl SubagentHost {
         }
         Ok(open.into_iter().map(|lease| lease.holder).collect())
     }
+}
+
+/// Invariant: expiry runs off the wall clock on its own task at every session depth, so a slow
+/// repossession never holds the next grace back; the pump ends once its host is gone.
+pub fn spawn_expiry(host: &Arc<SubagentHost>) {
+    let due = Arc::new(Due::default());
+    let (taken, weak) = (Arc::clone(&due), Arc::downgrade(host));
+    tokio::spawn(Arc::clone(&due).pump(Arc::new(Instant::now), move || {
+        taken.take_due(Instant::now());
+        let Some(host) = weak.upgrade() else {
+            return false;
+        };
+        tokio::spawn(async move { host.expire().await });
+        true
+    }));
+    host.set_lease_clock(
+        None,
+        Some(Arc::new(move |grace| {
+            let now = Instant::now();
+            due.wake_at(now.checked_add(grace).unwrap_or(now));
+        })),
+    );
 }
