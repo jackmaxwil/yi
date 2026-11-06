@@ -149,6 +149,10 @@ impl SkillUptake {
                 .as_ref()
                 .and_then(|data| data.get("url"))
                 .and_then(serde_json::Value::as_str)
+                && (url.starts_with(SKILL_ADDRESS)
+                    || url
+                        .strip_prefix("local://")
+                        .is_some_and(|path| path.ends_with("/SKILL.md")))
                 && self.seen.insert(format!("fetch:{id}:{url}"))
             {
                 self.served(url);
@@ -493,4 +497,32 @@ pub fn spent_today(dir: &Path, now_ms: u64) -> (f64, bool) {
     let scan = scan(dir, local_midnight_ms(now_ms));
     let unknown = scan.requests.iter().any(|request| request.usage.unknown);
     (scan.requests.iter().map(Request::billed).sum(), unknown)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Entry, SkillUptake};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Dies when an ordinary source-file fetch grows the skill-attribution dedupe set: stats
+    /// scans otherwise retain one key per resolved file until the whole scan returns.
+    #[test]
+    fn only_skill_fetches_are_retained_for_dedupe() -> TestResult {
+        for (url, retained) in [
+            ("local://src/lib.rs", false),
+            ("local:///home/me/.claude/skills/debug/SKILL.md", true),
+            ("yi://skills/debug", true),
+        ] {
+            let entry = serde_json::from_value::<Entry>(serde_json::json!({
+                "type": "custom", "id": "f", "customType": "fetch",
+                "data": {"url": url, "hash": "deadbeef", "servedBy": "workspace-file"},
+                "parentId": null, "seq": 1, "timestamp": 1_790_000_000_000_u64,
+            }))?;
+            let mut uptake = SkillUptake::default();
+            uptake.observe(&entry);
+            assert_eq!(!uptake.seen.is_empty(), retained, "{url}");
+        }
+        Ok(())
+    }
 }
