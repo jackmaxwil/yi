@@ -19,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, ROOT, fail, test_mask
-from check_public_surface import rule_lines, unscanned
+from check_public_surface import base_has_mirror_rules, rule_lines, unscanned
 
 BASELINE = BASE / "scan.json"
 # A scanner that ran and found nothing keeps this row, which is what tells the next --update the
@@ -348,6 +348,7 @@ def selfcheck(off="", fixtures=None):
                 errors.append(f"{tool} fixture {path} produced no {rule} finding")
             if any(pathlib.Path(path).name in clean_names for _, _, path, _ in findings):
                 errors.append(f"{tool} clean fixture produced a finding")
+    mirror_base = base_has_mirror_rules() is False
     origin_jobs = {
         ("autofix.yml", "autofix"),
         ("mirror.yml", "mirror"),
@@ -358,10 +359,21 @@ def selfcheck(off="", fixtures=None):
     if off == "credentials":
         origin_jobs = {("probe.yml", "probe")}
     for workflow, job in sorted(origin_jobs):
-        text = (ROOT / ".forgejo/workflows" / workflow).read_text() if off != "credentials" else (
-            "jobs:\n  probe:\n    steps:\n      - uses: actions/checkout@v4\n"
-            "        with:\n          persist-credentials: false\n"
-        )
+        if off == "credentials":
+            text = (
+                "jobs:\n  probe:\n    steps:\n      - uses: actions/checkout@v4\n"
+                "        with:\n          persist-credentials: false\n"
+            )
+        else:
+            path = ROOT / ".forgejo/workflows" / workflow
+            if not path.is_file():
+                if mirror_base and workflow == "mirror.yml":
+                    if not off:
+                        print("skip scan selfcheck (.forgejo/workflows/mirror.yml is absent from mirror)")
+                else:
+                    errors.append(f"scan selfcheck is missing workflow {path.relative_to(ROOT)}")
+                continue
+            text = path.read_text()
         parts = text.split(f"\n  {job}:\n", 1)
         if len(parts) != 2:
             errors.append(f"workflow audit could not find {workflow}:{job}")
@@ -392,10 +404,17 @@ def selfcheck(off="", fixtures=None):
     for real in ("crates/runtime/src/memory/doc.rs", "skills/yi/session-mining/extract.py"):
         if any(fnmatch.fnmatch(real, pattern) for pattern in gitleaks_ignores()):
             errors.append(f"gitleaks skips real source: {real}")
-    deny = set(rule_lines(ROOT / "scripts/mirror/deny.txt"))
-    for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
-        if regex not in deny:
-            errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
+    deny_path = ROOT / "scripts/mirror/deny.txt"
+    if deny_path.is_file():
+        deny = set(rule_lines(deny_path))
+        for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
+            if regex not in deny:
+                errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
+    elif mirror_base:
+        if not off:
+            print("skip scan selfcheck (mirror base has no scripts/mirror/deny.txt)")
+    else:
+        errors.append("scan selfcheck is missing source file scripts/mirror/deny.txt")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
     argv = semgrep_args(["scripts"])
@@ -582,11 +601,15 @@ def normal_tasks(history=False):
 
 def fixture_tasks():
     config = gitleaks_config(False, "gitleaks-fixtures.toml")
-    return {
-        "zizmor": lambda: zizmor(sorted((FIXTURES / "zizmor").glob("*.yml"))),
-        "gitleaks": lambda: gitleaks("dir", config, repo=FIXTURES / "gitleaks"),
-        "semgrep": lambda: semgrep([FIXTURES / "semgrep"], True),
-    }
+    tasks = {"zizmor": lambda: zizmor(sorted((FIXTURES / "zizmor").glob("*.yml")))}
+    gitleaks_fixtures = FIXTURES / "gitleaks"
+    if not gitleaks_fixtures.is_dir():
+        if base_has_mirror_rules() is not False:
+            fail([f"scan selfcheck is missing source fixture directory {gitleaks_fixtures}"], "scan selfcheck")
+    else:
+        tasks["gitleaks"] = lambda: gitleaks("dir", config, repo=gitleaks_fixtures)
+    tasks["semgrep"] = lambda: semgrep([FIXTURES / "semgrep"], True)
+    return tasks
 
 
 def main(argv):

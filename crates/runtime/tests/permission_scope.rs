@@ -7,6 +7,7 @@ use yi_runtime::permission::{Containment, PermissionBroker};
 use yi_runtime::{AskOutcome, Asker, PermissionMode};
 use yi_tools::ToolKind;
 
+use crate::env::EnvGuard;
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -730,7 +731,8 @@ fn a_url_that_serves_a_host_file_meets_the_read_gate() -> TestResult {
     std::fs::write(workspace.join(".git/config"), "GIT CONFIG MARKER\n")?;
     std::fs::write(workspace.join("notes.md"), "ordinary\n")?;
     std::os::unix::fs::symlink(home.join(".ssh"), workspace.join("keys"))?;
-    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    let _home = EnvGuard::new("HOME");
+    // SAFETY: nextest isolates test processes; Cargo's fallback runs this binary serially.
     unsafe { std::env::set_var("HOME", &home) };
     let resolver = Resolver::new(workspace.clone(), yi_runtime::wall::Wall::default())
         .with_member_trees(Arc::new(MainTree(workspace.clone())));

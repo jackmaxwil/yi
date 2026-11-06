@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 version=$(cat "$(dirname "$0")/gitleaks.version")
-dest=/usr/local/bin
+dest="$HOME/.local/bin"
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) asset=linux_x64
     hash=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -11,6 +11,7 @@ case "$(uname -s)-$(uname -m)" in
     binary=ba52fb1bfabbcde42f032afad3d6e0b19dff8ed105229a16e7caa338bbc0e84f ;;
   *) echo "gitleaks: unsupported platform $(uname -s)-$(uname -m)"; exit 1 ;;
 esac
+mkdir -p "$dest"
 eval "$(sed -n '/^sha256() {$/,/^}$/p' "$(dirname "$0")/../install.sh")"
 declare -F sha256 >/dev/null || { echo "gitleaks: scripts/install.sh defines no sha256()"; exit 1; }
 # The installed file is trusted by content alone, and the last line printed is the path check_scan.py runs.

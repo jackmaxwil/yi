@@ -4,6 +4,8 @@
 //! `autotests = false`, so a new file here runs only once it has a line below.
 #[path = "support/checker.rs"]
 mod checker;
+#[path = "support/env.rs"]
+mod env;
 #[path = "support/own.rs"]
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]

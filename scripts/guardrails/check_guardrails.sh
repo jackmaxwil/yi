@@ -12,18 +12,45 @@ for arg in "$@"; do
 done
 PY=$(scripts/py.sh) || exit 1
 FAILED=0
+MIRROR_BASE=0
 # Every gate reads the tree and none writes it, so they all run at once; `drain` prints each
 # one's output in launch order, so the report still reads most-legible-failure-first.
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 N=0
-run() { N=$((N + 1)); { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
+run() {
+  N=$((N + 1))
+  printf '%s\n' "$*" > "$OUT/$N.cmd"
+  { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 &
+}
+base_has_mirror_rules() {
+  local repo="$1" ref base paths
+  for ref in origin/main main; do
+    if git -C "$repo" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
+      base=$(git -C "$repo" merge-base "$ref" HEAD 2>/dev/null) || continue
+      [ -n "$base" ] || continue
+      paths=$(git -C "$repo" ls-tree -r --name-only "$base" -- scripts/mirror/deny.txt 2>/dev/null) || continue
+      [ "$paths" = scripts/mirror/deny.txt ] && return 0
+      return 1
+    fi
+  done
+  return 2
+}
+run_source_selfcheck() {
+  local label="$1"; shift
+  if [ "$MIRROR_BASE" -eq 1 ]; then
+    run echo "skip $label (mirror base lacks private mirror assets/history)"
+  else
+    run "$@"
+  fi
+}
 drain() {
   wait
   for i in $(seq 1 "$N"); do
     if [ "$(cat "$OUT/$i.rc")" = 0 ]; then
       if [ "$QUIET" = 1 ]; then grep '^skip ' "$OUT/$i.out"; else cat "$OUT/$i.out"; fi
     else
+      printf 'FAIL gate %s (exit %s)\n' "$(cat "$OUT/$i.cmd")" "$(cat "$OUT/$i.rc")"
       cat "$OUT/$i.out"
       FAILED=$((FAILED + 1))
     fi
@@ -39,15 +66,52 @@ after() {
   return "$rc"
 }
 
-# Only this flag proves --quiet keeps a green gate's skip row while dropping the rest of its output.
+# Only this flag proves quiet output handling and base-tree routing for source-only selfchecks.
 if [ "${1:-}" = --selfcheck ]; then
   N=3 QUIET=1
   printf 'skip deny (advisory database unreachable)\nnoise\n' > "$OUT/1.out"; echo 0 > "$OUT/1.rc"
   printf 'only noise\n' > "$OUT/2.out"; echo 0 > "$OUT/2.rc"
+  printf 'test failing command\n' > "$OUT/3.cmd"
   printf 'FAIL x\nwhy\n' > "$OUT/3.out"; echo 1 > "$OUT/3.rc"
-  [ "$(drain)" = "$(printf 'skip deny (advisory database unreachable)\nFAIL x\nwhy')" ] || { echo "FAIL quiet drain keeps skip rows and failures only"; exit 1; }
-  echo "ok guardrails quiet selfcheck"; exit 0
+  [ "$(drain)" = "$(printf 'skip deny (advisory database unreachable)\nFAIL gate test failing command (exit 1)\nFAIL x\nwhy')" ] || { echo "FAIL quiet drain keeps skip rows and failures only"; exit 1; }
+  local_repo="$OUT/base-source"
+  mkdir -p "$local_repo/scripts/mirror"
+  git -C "$local_repo" init -q -b main || exit 1
+  : > "$local_repo/scripts/mirror/deny.txt"
+  git -C "$local_repo" add scripts/mirror/deny.txt || exit 1
+  git -C "$local_repo" -c user.name=t -c user.email=t@t commit -q -m base || exit 1
+  git -C "$local_repo" checkout -q -b topic || exit 1
+  rm "$local_repo/scripts/mirror/deny.txt"
+  base_has_mirror_rules "$local_repo"; [ "$?" -eq 0 ] || { echo "FAIL source base stays strict when working tree deletes rules"; exit 1; }
+  local_repo="$OUT/base-mirror"
+  mkdir -p "$local_repo"
+  git -C "$local_repo" init -q -b main || exit 1
+  git -C "$local_repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base || exit 1
+  git -C "$local_repo" checkout -q -b topic || exit 1
+  mkdir -p "$local_repo/scripts/mirror"
+  : > "$local_repo/scripts/mirror/deny.txt"
+  base_has_mirror_rules "$local_repo"; [ "$?" -eq 1 ] || { echo "FAIL mirror base ignores working-tree rules"; exit 1; }
+  local_repo="$OUT/base-unknown"
+  mkdir -p "$local_repo"
+  git -C "$local_repo" init -q -b topic || exit 1
+  git -C "$local_repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base || exit 1
+  base_has_mirror_rules "$local_repo"; [ "$?" -eq 2 ] || { echo "FAIL missing base ref is not classified as a mirror"; exit 1; }
+  MIRROR_BASE=1; N=0; FAILED=0; rm -f "$OUT"/[0-9]*.out "$OUT"/[0-9]*.rc
+  run_source_selfcheck "scripts/record_changes.py --selfcheck" "$PY" scripts/record_changes.py --selfcheck
+  run_source_selfcheck "scripts/intake/bridge.py --selfcheck" "$PY" scripts/intake/bridge.py --selfcheck
+  run_source_selfcheck "scripts/mirror/scan.py --selfcheck" "$PY" -I scripts/mirror/scan.py --selfcheck
+  [ "$(drain)" = "$(printf 'skip scripts/record_changes.py --selfcheck (mirror base lacks private mirror assets/history)\nskip scripts/intake/bridge.py --selfcheck (mirror base lacks private mirror assets/history)\nskip scripts/mirror/scan.py --selfcheck (mirror base lacks private mirror assets/history)')" ] || { echo "FAIL mirror base skips exactly the private source selfchecks"; exit 1; }
+  MIRROR_BASE=0; PY=echo; QUIET=0; N=0; FAILED=0; rm -f "$OUT"/[0-9]*.out "$OUT"/[0-9]*.rc
+  run_source_selfcheck "scripts/record_changes.py --selfcheck" "$PY" scripts/record_changes.py --selfcheck
+  run_source_selfcheck "scripts/intake/bridge.py --selfcheck" "$PY" scripts/intake/bridge.py --selfcheck
+  run_source_selfcheck "scripts/mirror/scan.py --selfcheck" "$PY" -I scripts/mirror/scan.py --selfcheck
+  [ "$(drain)" = "$(printf 'scripts/record_changes.py --selfcheck\nscripts/intake/bridge.py --selfcheck\n-I scripts/mirror/scan.py --selfcheck')" ] || { echo "FAIL source base runs the private source selfchecks"; exit 1; }
+  echo "ok guardrails quiet/base-routing selfcheck"; exit 0
 fi
+
+base_has_mirror_rules "$PWD"
+base_status=$?
+if [ "$base_status" -eq 1 ]; then MIRROR_BASE=1; fi
 
 run "$PY" scripts/guardrails/check_manifests.py
 run "$PY" scripts/guardrails/check_boundaries.py
@@ -148,10 +212,10 @@ run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 run "$PY" scripts/guardrails/check_changes.py --selfcheck
 # The recorder numbers versions and decisions on main, where a wrong order is a renumbering
 # nobody can undo; only this flag runs it over real change files in their real landing order.
-if [ "$FAST" -eq 1 ]; then
+if [ "$FAST" -eq 1 ] && [ "$MIRROR_BASE" -eq 0 ]; then
   run echo "skip record selfcheck (--fast: replays two record branches and ten gate runs)"
 else
-  run "$PY" scripts/record_changes.py --selfcheck
+  run_source_selfcheck "scripts/record_changes.py --selfcheck" "$PY" scripts/record_changes.py --selfcheck
 fi
 # A baseline edit that rides beside code is how growth hid before the ratchets had their own
 # commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
@@ -164,10 +228,11 @@ run "$PY" scripts/forge_pr.py --selfcheck
 # decisions are the gate: the quote check, the refute tally, the marker's author, the
 # delta range and the fixer's wall; only this flag walks them without a forge or a model.
 run "$PY" scripts/pr_review.py --selfcheck
-run "$PY" scripts/intake/bridge.py --selfcheck
+run_source_selfcheck "scripts/intake/bridge.py --selfcheck" "$PY" scripts/intake/bridge.py --selfcheck
 # The autofixer pushes to people's branches, so its table, its wall and its marker check are
 # proved here on a scratch merge with a stand-in model, never a forge.
-run "$PY" scripts/pr_autofix.py --selfcheck
+# Invariant: the selfcheck sets CI for its refusal case; inherited CI blocks its local worker fixture.
+run env -u CI "$PY" scripts/pr_autofix.py --selfcheck
 # Every bot comment's spend is read back from its meta line, so the parse and the totals are proved here.
 run "$PY" scripts/bot_meter.py --selfcheck
 # The orphan scans are heuristics over text, so the flag is where they are proved to
@@ -179,7 +244,7 @@ run "$PY" scripts/guardrails/check_host_git.py --selfcheck
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
 # The GitHub release's scan (scripts/mirror/publish.sh), refuted with each check off.
-run "$PY" -I scripts/mirror/scan.py --selfcheck
+run_source_selfcheck "scripts/mirror/scan.py --selfcheck" "$PY" -I scripts/mirror/scan.py --selfcheck
 # Prose is not exempt: check_comments.py ratchets the comment volume and prints the count, and
 # the design docs set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi

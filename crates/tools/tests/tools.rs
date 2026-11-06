@@ -285,7 +285,10 @@ fn a_second_time_limit_in_four_bash_calls_asks_for_a_new_method() -> TestResult 
     let first = run("sleep 5", 1);
     assert!(!first.contains("hit their time limit"), "{first}");
     assert_eq!(run("true", 1), "(no output)");
-    let own = run("timeout 1 sleep 5", 30);
+    let own = run(
+        "timeout() { sleep \"$1\"; return 124; }; timeout 1 sleep 5",
+        30,
+    );
     assert!(
         own.contains("[2 of the last 4 bash calls hit their time limit;"),
         "an exit 124 from the command's own timeout counts: {own}"

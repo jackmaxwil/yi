@@ -84,6 +84,7 @@ fn draw_frame<B>(
 ) where
     B: ratatui::backend::Backend + std::io::Write,
 {
+    app.refresh_title();
     if let Some(title) = app.take_title() {
         let osc = crate::term::window_title_osc(&title);
         let _ = terminal.backend_mut().write_all(osc.as_bytes());

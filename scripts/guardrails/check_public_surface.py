@@ -14,14 +14,23 @@ Incident: two messages quoting a planted address stopped the mirror for days, be
 post-merge run read messages. Identities go through mailmap.txt, which this does not model.
 
 The paths .gitguardian.yaml ignores are the planted fakes and vendored upstream samples and are
-not scanned. filter-repo substitutes nothing in a binary blob, so neither does this. The mirror
-itself carries no rules, and there the gate announces a skip.
+not scanned. filter-repo substitutes nothing in a binary blob, so neither does this. The base
+tree has no rules in the mirror, so there the gate announces a skip.
 """
 import fnmatch, re, subprocess, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, base_commit, fail, git, scratch_repo
 
 RULES = ROOT / "scripts/mirror"
+
+def base_has_mirror_rules():
+    base = base_commit()[1]
+    if base is None:
+        return None
+    paths = git("ls-tree", "-r", "--name-only", base, "--", "scripts/mirror/deny.txt")
+    if paths.returncode != 0:
+        return None
+    return "scripts/mirror/deny.txt" in paths.stdout.splitlines()
 
 def rule_lines(path, comments=True):
     return [l for l in path.read_text().splitlines() if l and not (comments and l.startswith("#"))]
@@ -95,7 +104,7 @@ def wired():
     seed = {"scripts/mirror/deny.txt": "(?i)estate\\.lan\n", "scripts/mirror/exclude.txt": "scripts/\n",
             "scripts/mirror/replace.txt": "git.estate.lan==>git.example.invalid\n", ".gitguardian.yaml": "paths-ignore: []\n"}
     gate = ("python3", "scripts/guardrails/check_public_surface.py")
-    with scratch_repo("public-surface-", seed) as (_, run):
+    with scratch_repo("public-surface-", seed) as (root, run):
         commit = lambda m: run("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", m)
         commit("Name the host\n\nserved from git.estate.lan")
         passed = run(*gate)
@@ -103,6 +112,21 @@ def wired():
         commit("Name the host\n\nserved from ESTATE.LAN")
         refused = run(*gate)
         assert refused.returncode == 1 and "ESTATE.LAN" in refused.stdout, f"a denied message passed: {refused.stdout}"
+        (root / "scripts/mirror/deny.txt").unlink()
+        missing = run(*gate)
+        assert missing.returncode == 1 and "checkout is missing scripts/mirror/deny.txt" in missing.stdout, (
+            f"source-base rule deletion was skipped: {missing.stdout}")
+    mirror_seed = {".gitguardian.yaml": "paths-ignore: []\n"}
+    with scratch_repo("public-surface-mirror-", mirror_seed) as (root, run):
+        for name, body in seed.items():
+            if name == ".gitguardian.yaml":
+                continue
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+        skipped = run(*gate)
+        assert skipped.returncode == 0 and "skip public_surface (base tree has no scripts/mirror/deny.txt)" in skipped.stdout, (
+            f"mirror-base rules in the working tree were scanned: {skipped.stdout}")
 
 def selfcheck():
     deny = [re.compile(r"(?i)estate\.lan")]
@@ -151,8 +175,11 @@ def selfcheck():
 def main():
     if "--selfcheck" in sys.argv:
         return selfcheck()
-    if not (RULES / "deny.txt").is_file():
-        return print("skip public_surface (no scripts/mirror: this tree is the mirror)")
+    if base_has_mirror_rules() is False:
+        return print("skip public_surface (base tree has no scripts/mirror/deny.txt)")
+    missing = [name for name in ("deny.txt", "exclude.txt", "replace.txt") if not (RULES / name).is_file()]
+    if missing:
+        return fail([f"base has mirror rules but checkout is missing scripts/mirror/{name}" for name in missing], "public_surface")
     deny = [re.compile(p) for p in rule_lines(RULES / "deny.txt")]
     if "--stdin" in sys.argv:
         return fail(history(sys.stdin, deny, unscanned()), "public_surface --stdin")

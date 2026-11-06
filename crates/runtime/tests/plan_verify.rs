@@ -40,8 +40,8 @@
 //! started one; both are driven from `plan_ops.rs`, through the engine.
 
 use crate::RED_PYTEST;
-use crate::scratch;
-use scratch::Scratch;
+use crate::env::EnvGuard;
+use crate::scratch::Scratch;
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -219,7 +219,9 @@ fn a_plan_check_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
         &settings,
         r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo 'plan hook denied' >&2; exit 2"}]}]}}"#,
     )?;
-    // SAFETY: nextest isolates each test in its own process.
+    let _home = EnvGuard::new("HOME");
+    let _hooks = EnvGuard::new("YI_CLAUDE_HOOKS");
+    // SAFETY: nextest isolates test processes; Cargo's fallback runs this binary serially.
     unsafe {
         std::env::set_var("HOME", &home);
         std::env::set_var("YI_CLAUDE_HOOKS", "1");

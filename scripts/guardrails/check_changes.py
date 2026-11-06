@@ -375,8 +375,13 @@ def ledger_cases():
     if not text.startswith("ledger-: one\nledger=: one"):
         bad.append(f"a cell spelled twice in its row read {text!r}, which applies to the wrong cell")
     arch = "docs/ARCHITECTURE.md"
+    base = fork()
+    mirror = base is not None and at(base, "scripts/mirror/deny.txt") is None
     history = [(at(f"{m}^", arch), at(tip, arch)) for m, tip in (("aa93a221b^{commit}^0", "398b811c7"), ("c42e30f01^{commit}^0", "3e410a078"))]
     if any(None in pair for pair in history):
+        if mirror:
+            print("skip changes selfcheck (mirror base lacks private history for #1890 and #1870)")
+            return bad
         return bad + ["the #1890 and #1870 commits are missing; fetch main's full history"]
     return bad + real_row_cases(history)
 
