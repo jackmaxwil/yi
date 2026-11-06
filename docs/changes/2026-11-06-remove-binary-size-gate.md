@@ -1,4 +1,6 @@
 ---
+version: 0.951.0
+decisions: D553
 issue: Closes #2050
 decision: the dist binary size gate is removed, reversing D249/D424's measured ratchet and hard cap | the measured Linux ratchet failed merge-queue candidates whenever a batch grew the binary past 16 KiB jitter (#1891 alone: 14,334,344 against 14,290,184, three candidates in a row) and every growing PR needed its own baseline-only commit | restore scripts/guardrails/check_binary_size.py and its baselines from git history
 ---
