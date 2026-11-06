@@ -94,6 +94,7 @@ mail between sessions | `session_mail::a_child_a_request_call_and_an_oversized_l
 mail between sessions | `session_mail::an_open_todo_does_not_hold_the_next_request`
 mail between sessions | `session_mail::an_inform_makes_a_todo_and_waits_for_the_next_turn`
 mail between sessions | `session_mail::a_letter_waits_for_a_session_no_process_holds_and_outlives_a_heartbeat_clear`
+mail between sessions | `serve_daemon::a_request_in_a_stopped_sessions_mailbox_starts_it_and_is_read`
 loud caps on runtime lists and echoes | `caps_runtime::find_models_says_how_many_matches_the_limit_left_out` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_children_row_names_the_members_it_left_out` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::todo_error_lists_stop_at_the_cap_and_name_the_view_call` (T0)
