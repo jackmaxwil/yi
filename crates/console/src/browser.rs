@@ -638,7 +638,7 @@ pub fn place(app: &mut App, out: &mut impl Write) {
         },
         &mut |_: PaneId, rect: Rect, png: &&str, id: u32| {
             let mut out = out.borrow_mut();
-            crate::kitty::transmit_base64(&mut *out, id, png).is_ok()
+            yi_tui::orb::kitty::transmit_base64(&mut *out, id, png, "f=100").is_ok()
                 && yi_tui::orb::kitty::place(&mut *out, id, rect.x, rect.y, rect.width, rect.height)
                     .is_ok()
         },
