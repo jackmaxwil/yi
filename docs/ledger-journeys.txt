@@ -186,6 +186,8 @@ final answer (`answer`) | `answer_turn::a_host_note_queued_on_the_answer_turn_is
 identity + doctrine: the comprehensive prompt | `prompt_drift::identity_names_every_tool_the_session_registers`
 identity + doctrine: the comprehensive prompt | `prompt_drift::doctrine_names_only_ops_the_todo_tool_accepts`
 identity + doctrine: the comprehensive prompt | `evals/prose.py --gate` (run by `check_guardrails.sh`)
+identity + doctrine: the comprehensive prompt | `answer_turn::the_summary_heads_the_reply_the_user_reads`
+identity + doctrine: the comprehensive prompt | `answer_turn::done_is_refused_while_an_item_is_blocked`
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::a_skill_within_a_repository_is_listed_only_there`
 skills: catalog ladder, `$name`, Yi's triggered skills | `cli_surfaces::a_run_with_nobody_attached_is_told_it_is_alone`
 skills: catalog ladder, `$name`, Yi's triggered skills | `rpc_protocol::an_rpc_session_is_not_told_it_is_alone`
