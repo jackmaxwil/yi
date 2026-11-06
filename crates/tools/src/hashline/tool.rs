@@ -458,7 +458,15 @@ impl HashlineReadTool {
                 .to_string_lossy()
                 .into_owned();
             let opened = gate.open(path, &context.deny_read);
-            let bytes = opened.and_then(crate::tool::read_all).unwrap_or_default();
+            let cap = crate::tool::Cap::Text;
+            let bytes = match opened.and_then(|file| crate::tool::read_capped(file, path, cap)) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                    sections.push(format!("{display}  (not read: {error})"));
+                    continue;
+                }
+                Err(_) => Vec::new(),
+            };
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
             let size = match &document {
                 Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
@@ -470,7 +478,7 @@ impl HashlineReadTool {
                 let output = self.read_file(&display, path, &Map::new(), context);
                 spent = spent.saturating_add(size);
                 whole = whole.saturating_add(1);
-                sections.push(output_text_of(&output));
+                sections.push(yi_types::message::join_text(&output.result.content, ""));
                 continue;
             }
             if !budget_named {
@@ -567,7 +575,6 @@ impl HashlineReadTool {
                 .max(limit.saturating_mul(256))
                 .min(READ_BYTE_CEIL)
         });
-
         let mut rows: Vec<String> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
         let mut spent = 0_usize;
@@ -737,19 +744,6 @@ impl HashlineReadTool {
         });
         output
     }
-}
-
-fn output_text_of(output: &ToolOutput) -> String {
-    output
-        .result
-        .content
-        .iter()
-        .map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => text.as_str(),
-            _ => "",
-        })
-        .collect::<Vec<_>>()
-        .join("")
 }
 
 /// The requested line windows, 1-based inclusive, merged and clamped. `ranges` and
@@ -959,7 +953,6 @@ impl Tool for HashlineEditTool {
                 return crate::tool::error_output_kind(format!("{message}{pointer}"), kind);
             }
         };
-
         let hash = input_hash(&patch_text);
         let mut rendered: Vec<String> = Vec::new();
         let mut diff = String::new();
@@ -1089,11 +1082,7 @@ fn post_edit_checks(
     })
 }
 
-pub fn record_write_snapshot(
-    state: &SharedHashline,
-    path: &Path,
-    content: &str,
-) -> super::format::FileTag {
+pub fn record_write_snapshot(state: &SharedHashline, path: &Path, content: &str) -> FileTag {
     let line_count = u64::try_from(content.split('\n').count()).unwrap_or(u64::MAX);
     let seen: Vec<u64> = (1..=line_count).collect();
     record_view_snapshot(state, path, content, &seen)

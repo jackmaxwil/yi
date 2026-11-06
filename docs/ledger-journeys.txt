@@ -30,6 +30,8 @@ hashline edit (+ registers, instrumented) | `tools::a_twelve_row_edit_replies_wi
 hashline edit (+ registers, instrumented) | `tools::an_edit_that_drops_a_kept_line_shows_it`
 hashline edit (+ registers, instrumented) | `tools::nine_removed_rows_report_the_cap_and_the_read_that_shows_the_rest`
 hashline edit (+ registers, instrumented) | `tools::a_follow_up_edit_anchors_on_an_authored_unprinted_row`
+hashline edit (+ registers, instrumented) | `hashline_patcher::a_missing_path_names_the_read_file_with_its_tag_and_writes_nothing`
+hashline edit (+ registers, instrumented) | `write_atomic::readers_polling_during_rewrites_never_read_a_short_file`
 first-run setup (`yi setup`) | `journeys::setup_saves_the_answered_steps_and_keeps_every_other_key`
 first-run setup (`yi setup`) | `journeys::setup_saves_jev_as_the_classifier_only_with_an_openrouter_key` (T2)
 Claude Code tool hooks | `claude_hooks::a_hook_allow_never_lifts_a_configured_deny_rule`
@@ -188,6 +190,8 @@ final answer (`answer`) | `answer_turn::a_host_note_queued_on_the_answer_turn_is
 identity + doctrine: the comprehensive prompt | `prompt_drift::identity_names_every_tool_the_session_registers`
 identity + doctrine: the comprehensive prompt | `prompt_drift::doctrine_names_only_ops_the_todo_tool_accepts`
 identity + doctrine: the comprehensive prompt | `evals/prose.py --gate` (run by `check_guardrails.sh`)
+identity + doctrine: the comprehensive prompt | `answer_turn::the_summary_heads_the_reply_the_user_reads`
+identity + doctrine: the comprehensive prompt | `answer_turn::done_is_refused_while_an_item_is_blocked`
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::a_skill_within_a_repository_is_listed_only_there`
 skills: catalog ladder, `$name`, Yi's triggered skills | `cli_surfaces::a_run_with_nobody_attached_is_told_it_is_alone`
 skills: catalog ladder, `$name`, Yi's triggered skills | `rpc_protocol::an_rpc_session_is_not_told_it_is_alone`
@@ -357,6 +361,8 @@ console notebook pane | `app::notebook::tests::only_the_newest_figure_keeps_its_
 console notebook pane | `app::notebook::tests::the_newest_image_of_the_newest_cell_is_the_one_placed`
 console notebook pane | `tests::v_on_the_notebook_shows_the_code_rows_its_cap_cut` (T0)
 console notebook pane | `drive::notebook_pane_shows_cells_and_image_placeholder` (T2)
+kitty terminal capabilities | `keys::terminal_environments_share_graphics_support_but_not_chord_support` (T0)
+kitty terminal capabilities | `kitty::base64_payloads_leave_in_bounded_chunks` (T0)
 console notebook pane | `app::notebook::tests::a_recorded_traceback_dims_its_frames_and_lexes_what_each_ran`
 console notebook pane | `pycell::a_tracebacks_frames_dim_and_the_rows_they_ran_keep_their_colour`
 console sidebar | `sessions::a_quiet_session_draws_one_row` (T0)
@@ -594,6 +600,8 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+kernel + ipython + rlm() subagents | `requests_e2e::a_final_text_over_the_body_cap_points_at_the_childs_transcript`
+kernel + ipython + rlm() subagents | `recursion_e2e::a_high_discovery_with_no_goal_is_delivered_as_a_note`
 kernel + ipython + rlm() subagents | `tools::tests::a_large_cell_result_names_the_file_write_one_liner` (T0)
 fetch: one addressable read path | `kernel_sandbox::a_parent_kernel_loads_no_pickle_a_contained_child_wrote`
 fetch: one addressable read path | `kernel_sandbox::a_contained_childs_kernel_creates_no_board_file`

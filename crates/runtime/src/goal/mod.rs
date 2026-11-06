@@ -11,9 +11,12 @@ use yi_types::subagent::Discovery;
 
 use crate::args::Args;
 
-pub const CONTINUATION_TEMPLATE: &str = include_str!("prompts/continuation.md");
-pub const BUDGET_LIMIT_TEMPLATE: &str = include_str!("prompts/budget_limit.md");
-pub const OBJECTIVE_UPDATED_TEMPLATE: &str = include_str!("prompts/objective_updated.md");
+pub(crate) static CONTINUATION: std::sync::LazyLock<String> =
+    crate::packed::packed!("continuation");
+pub(crate) static BUDGET_LIMIT: std::sync::LazyLock<String> =
+    crate::packed::packed!("budget_limit");
+pub(crate) static OBJECTIVE_UPDATED: std::sync::LazyLock<String> =
+    crate::packed::packed!("objective_updated");
 
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
@@ -362,22 +365,25 @@ pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 /// and per completion attempt, so it gets a per-row budget, not [`DEFAULT_CHECK_TIMEOUT_MS`].
 pub(crate) const DISCOVERY_CHECK_TIMEOUT_MS: u64 = 60_000;
 
-/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it
-/// survives compaction and resume and is still there to block completion.
-pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<(), String> {
+/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it survives compaction
+/// and resume to block completion. `false` means no goal exists, so no completion gate holds.
+pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<bool, String> {
     let handle = store().ok_or("no session store is attached")?;
     let mut session = yi_session::lock_session(&handle);
-    let mut goal = session.goal().ok_or(NO_GOAL_ERROR)?;
+    let Some(mut goal) = session.goal() else {
+        return Ok(false);
+    };
     if goal
         .discoveries
         .iter()
         .any(|kept| kept.fingerprint == row.fingerprint)
     {
-        return Ok(());
+        return Ok(true);
     }
     goal.discoveries.push(row.clone());
     goal.updated = yi_session::now_ms();
-    session.set_goal(goal).map_err(|error| error.to_string())
+    session.set_goal(goal).map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 fn drained_message(row: &Discovery, mut details: Value) -> AgentMessage {
@@ -457,15 +463,15 @@ pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) 
         ("check_status", check_status),
         ("plan_frontier", plan_frontier),
     ];
-    fill(CONTINUATION_TEMPLATE, goal, extra)
+    fill(CONTINUATION.as_str(), goal, extra)
 }
 
 pub fn budget_limit_text(goal: &Goal) -> String {
-    fill(BUDGET_LIMIT_TEMPLATE, goal, Vec::new())
+    fill(BUDGET_LIMIT.as_str(), goal, Vec::new())
 }
 
 pub fn objective_updated_text(goal: &Goal) -> String {
-    fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
+    fill(OBJECTIVE_UPDATED.as_str(), goal, Vec::new())
 }
 
 /// The objective-edit and budget notices ride the continuation kind but are never superseded.

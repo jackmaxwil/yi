@@ -23,7 +23,6 @@ BAN_SECTION = "## Machine writing, all banned"
 RULES = {
     "short-sentences": r"short sentences",
     "list-first": r"numbered or bulleted list",
-    "two-paragraphs": r"at most two\s+short paragraphs",
     "answer-first": r"the answer first",
     "detail-on-request": r"when it is asked for",
     "no-restating": r"never restate the question",
@@ -34,9 +33,10 @@ RULES = {
 
 # Stems of the words the prompt's ban list names: a word scored here and banned nowhere would
 # fault an answer for a rule the model was never given, and `prompt_problems` holds the two equal.
-AI_VOCABULARY = ("additionally", "boast", "crucial", "delv", "enhanc", "foster", "intricate",
-                 "landscape", "leverag", "pivotal", "robust", "seamless", "showcas", "tapestry",
-                 "testament", "underscor", "vibrant")
+AI_VOCABULARY = ("additionally", "boast", "crucial", "delv", "elevat", "empower", "enhanc",
+                 "foster", "holistic", "intricate", "landscape", "leverag", "pivotal", "quietly",
+                 "realm", "refram", "robust", "seamless", "showcas", "spearhead", "synerg",
+                 "tapestry", "testament", "underscor", "vibrant")
 
 TELLS = {
     "ai-vocabulary": rf"\b(?:{'|'.join(AI_VOCABULARY)})\w*\b",

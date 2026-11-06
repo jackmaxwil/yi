@@ -672,13 +672,13 @@ pub fn denied_file(ids: &[FileId], meta: Option<&fs::Metadata>) -> bool {
 }
 
 #[cfg(unix)]
-fn file_id(meta: &fs::Metadata) -> Option<FileId> {
+pub fn file_id(meta: &fs::Metadata) -> Option<FileId> {
     use std::os::unix::fs::MetadataExt;
     Some((meta.dev(), meta.ino()))
 }
 
 #[cfg(not(unix))]
-fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
+pub fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
     None
 }
 
