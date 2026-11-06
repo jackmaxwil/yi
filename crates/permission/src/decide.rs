@@ -141,7 +141,9 @@ pub fn decide(
         };
     }
 
-    if let Some(reason) = crate::scope::outside(session_rules, call, catastrophic_context) {
+    if !session_rules.state().rules.is_empty()
+        && let Some(reason) = crate::scope::outside(session_rules, call, catastrophic_context)
+    {
         return Decision::Deny { reason };
     }
 
