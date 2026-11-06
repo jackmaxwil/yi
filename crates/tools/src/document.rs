@@ -9,12 +9,11 @@ use crate::tool::CancelFlag;
 /// A document is attacker-shaped parser input; past this size it is refused, never parsed. A
 /// page selection parses only those pages, so it is allowed further.
 pub const INPUT_CEILING: u64 = 256 * 1024 * 1024;
-const PAGED_CEILING: u64 = 1024 * 1024 * 1024;
+pub(crate) const PAGED_CEILING: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn document_ceiling() -> u64 {
-    INPUT_CEILING
-}
+/// The window a format marker is looked for in; a read probe takes the same window.
+pub(crate) const MARKER_WINDOW: usize = 1024;
 const STEM_CHARS: usize = 64;
 const HEAD: usize = 8 * 1024;
 const CACHE_CAP: u64 = 256 * 1024 * 1024;
@@ -102,11 +101,15 @@ pub(crate) fn could_be_document(bytes: &[u8]) -> bool {
         || is_pdf(bytes)
 }
 
-/// Only a PDF has pages the converter can pick; every other format converts whole.
+/// Only a PDF has pages the converter can pick; every other format converts whole. A marker
+/// past the first byte counts only in bytes that are not UTF-8: a text file may quote it.
 pub(crate) fn is_pdf(bytes: &[u8]) -> bool {
-    bytes
-        .get(..1024.min(bytes.len()))
-        .is_some_and(|window| window.windows(5).any(|w| w == b"%PDF-"))
+    let window = bytes
+        .get(..MARKER_WINDOW.min(bytes.len()))
+        .unwrap_or_default();
+    let text =
+        std::str::from_utf8(window).map_or_else(|error| error.error_len().is_none(), |_| true);
+    after_bom(bytes).starts_with(b"%PDF-") || (!text && window.windows(5).any(|w| w == b"%PDF-"))
 }
 
 fn is_rtf(bytes: &[u8]) -> bool {
@@ -339,7 +342,7 @@ fn sweep(dir: &Path) {
     }
 }
 
-fn parse_pages(spec: &str) -> Result<Vec<u64>, String> {
+pub(crate) fn parse_pages(spec: &str) -> Result<Vec<u64>, String> {
     let mut pages = Vec::new();
     for part in spec
         .split(',')
@@ -407,18 +410,6 @@ pub(crate) fn convert(
         Some(Err(message)) => return Converted::Refused(message),
         None => Vec::new(),
     };
-    let ceiling = if pages.is_empty() {
-        INPUT_CEILING
-    } else {
-        PAGED_CEILING
-    };
-    let size = source.bytes.len() as u64;
-    if size > ceiling {
-        return Converted::Refused(format!(
-            "{size} bytes is past the {} MiB ceiling for converting a document",
-            ceiling / (1024 * 1024)
-        ));
-    }
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return Converted::Refused(format!("cannot create {}: {error}", dir.display()));
     }
