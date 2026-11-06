@@ -30,7 +30,7 @@ use std::sync::Arc;
 use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};
 
 use args::{Args, Resume, parse_args};
-use lanes::{claim_lane, configured_lanes, release_lane};
+use lanes::{SHUTDOWN_GRACE, claim_lane, configured_lanes, end_host, release_lane};
 use user_config::{
     config, configured_auto_background, configured_roles, home, load_config, refreshed,
     reload_config,
@@ -914,10 +914,10 @@ fn run_rpc(args: &Args) -> i32 {
         Ok(runtime) => runtime,
         Err(code) => return code,
     };
-    let session = {
+    let (session, host) = {
         let _guard = runtime.enter();
         match build_session(args, None, None, false, [false; 2]) {
-            Ok((session, _host)) => session,
+            Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
     };
@@ -926,7 +926,9 @@ fn run_rpc(args: &Args) -> i32 {
         cwd: effective_cwd(args),
     };
     let lane = session.lane();
-    let code = rpc::run_rpc(session, &options, runtime);
+    let code = rpc::run_rpc(session, &options, &runtime);
+    // A client that hung up ends its children first, so none of their lanes outlives it.
+    end_host(runtime, &host, SHUTDOWN_GRACE);
     release_lane(lane.as_deref());
     code
 }
