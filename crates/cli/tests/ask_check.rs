@@ -156,8 +156,8 @@ fn every_re_prompt_re_runs_the_check() -> TestResult {
     Ok(())
 }
 
-/// Dies with a red check that never releases: the run re-prompts past its cap, exits 0 on a
-/// check that never passed, or skips the rerun after a turn that called no writing tool.
+/// Dies with a red check that never releases: the run re-prompts past its cap or exits 0 on a
+/// check that never passed.
 #[test]
 fn a_check_that_stays_red_releases_at_the_cap() -> TestResult {
     let workspace = Workspace::new("cap")?;
