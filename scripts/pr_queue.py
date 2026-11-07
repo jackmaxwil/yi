@@ -901,9 +901,17 @@ def record_cases():
         sh("pull", "-q", "origin", "main", where=other)
         (other / "moved.txt").write_text("moved\n")
         sh("add", ".", where=other), sh("commit", "-qm", "moved", where=other)
-        script.write_text(f"{RECORDER}import subprocess\nsubprocess.run(('git', '-C', {str(other)!r}, 'push', '-q', 'origin', 'HEAD:main'), check=True)\n")
-        if record_main(root) is not False:
+        race = root / ".git/hooks/pre-push"
+        race.write_text(f"#!/bin/sh\nenv -u GIT_DIR git -C '{other}' push -q origin HEAD:main\n")
+        race.chmod(0o755)
+        real_git = git
+        def race_git(*args, **kwargs):
+            return real_git("-c", "core.hooksPath=.git/hooks", *args, **kwargs)
+        with mock.patch.object(sys.modules[__name__], "git", race_git):
+            moved = record_main(root)
+        if moved is not False:
             bad.append("main moved under the push and the tick read it as recorded")
+        race.unlink()
         script.write_text(RECORDER)
     return bad
 

@@ -6,7 +6,6 @@ import io
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,7 +18,30 @@ FIXTURES = ROOT / "scripts/intake/fixtures"
 H = "16991ef417f2f1f5ab7ae4029ab3a4c373360907"
 M = "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
 F = "53c7af144af22d8460e45f96d6337ecba4470d8f"
+OTHER_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBhVuEwWq73iXbtjfXeAzlPi0ocfcbD3pxterplh7roQ other"
 TEMPS = []
+
+
+def install_passwd_wrapper():
+    if subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True).returncode == 0:
+        return
+    wrapper = pathlib.Path(tempfile.mkdtemp(prefix="intake-passwd-")) / "passwd.so"
+    source = """#include <pwd.h>
+#include <sys/types.h>
+#include <unistd.h>
+struct passwd *getpwuid(uid_t uid) {
+    static struct passwd user = {"yi", "x", 0, 0, "", "/tmp", "/bin/sh"};
+    user.pw_uid = uid;
+    user.pw_gid = getgid();
+    return &user;
+}
+"""
+    result = subprocess.run(["cc", "-shared", "-fPIC", "-x", "c", "-", "-o", str(wrapper)], input=source, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    os.environ["LD_PRELOAD"] = str(wrapper)
+
+
+install_passwd_wrapper()
 
 
 def valid_case() -> bridge.Case:
@@ -254,12 +276,10 @@ def keygen_trouble() -> str:
     return "" if made.returncode == 0 else (made.stderr.strip() or "ssh-keygen is not installed")
 
 
-def filter_repo_missing() -> str:
-    """The install line for a selfcheck that needs git filter-repo this host does not have, or ""."""
-    if shutil.which("git-filter-repo"):
-        return ""
+def check_filter_repo() -> None:
     pin = (ROOT / "scripts/mirror/filter-repo.version").read_text().strip()
-    return f"skip intake rewrite (git-filter-repo is not installed here: uv tool install git-filter-repo=={pin})"
+    result = subprocess.run(["uv", "tool", "run", "--from", f"git-filter-repo=={pin}", "git-filter-repo", "--version"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def check_rewrite_helper() -> None:
@@ -362,7 +382,7 @@ def check_signed_object() -> None:
         registry = "intake-fixture@example.invalid " + public + "\n"
         signers = repo / "allowed_signers"
         signers.write_text("\n".join(bridge.signer_lines(contributor, registry)) + "\n")
-        fingerprint = subprocess.check_output(["ssh-keygen", "-lf", FIXTURES / "signed-commit-key.pub"], text=True).split()[1]
+        fingerprint = bridge.key_fingerprint(public)
         contributor["fingerprints"] = [fingerprint]
         allowed = repo / "allowed.json"
         allowed.write_text(json.dumps({"contributors": {"fixture": contributor}}))
@@ -371,10 +391,9 @@ def check_signed_object() -> None:
         other = repo / "other_signers"
         other.write_text("\n".join(bridge.signer_lines(contributor, "other@example.invalid " + public + "\n")) + "\n")
         assert not bridge.commit_verified(repo, other, sha), "a key pinned to another login verified this login's commit"
-        generated = repo / "throwaway"
-        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated)], check=True)
+        assert bridge.key_fingerprint(OTHER_KEY) != fingerprint, "the second key is a different key"
         wrong = repo / "wrong_signers"
-        wrong.write_text("intake-fixture@example.invalid " + (generated.with_suffix(".pub")).read_text())
+        wrong.write_text("intake-fixture@example.invalid " + OTHER_KEY + "\n")
         assert not bridge.commit_verified(repo, wrong, sha)
         assert bridge.signer_fingerprint(repo, signers, sha) == fingerprint
         assert bridge.signer_fingerprint(repo, wrong, sha) is None
@@ -660,10 +679,8 @@ def selfcheck() -> int:
         return 0
     assert len(bridge.CHECKS) == 25
     check_real_fixture()
-    if missing := filter_repo_missing():
-        print(missing)
-    else:
-        check_rewrite_helper()
+    check_filter_repo()
+    check_rewrite_helper()
     check_real_patch_edges()
     check_forged_headers()
     check_signed_object()
