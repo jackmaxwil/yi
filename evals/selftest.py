@@ -46,6 +46,7 @@ import test_inner  # noqa: E402
 import test_mutate  # noqa: E402
 import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
+import test_memory_inject  # noqa: E402
 import test_kill  # noqa: E402
 import test_s5_kc_ab  # noqa: E402
 import test_stops_on_fail  # noqa: E402
@@ -1162,6 +1163,14 @@ def check_skill_labels():
     assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
 
 
+def check_memory_inject():
+    """The memory judge keeps hand labels intact, counts cost and produces a replayable arm."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_memory_inject)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
+
+
 def check_judge_replay():
     """D259: the readers on recorded transcripts, blindness, the direct call, quote bytes, the caps
     and the metrics."""
@@ -1279,6 +1288,7 @@ CHECKS = (
     check_surface,
     check_surface_compare,
     check_judge_replay,
+    check_memory_inject,
     check_checker_screen,
     check_graph_refiner,
     check_levers,
