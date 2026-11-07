@@ -7,8 +7,14 @@ pub(crate) fn configured_lanes() -> yi_types::lane::LanesConfig {
 }
 
 pub(crate) fn lane_slots() -> u8 {
-    configured_lanes()
-        .slots
+    lane_slots_from(&config())
+}
+
+pub(crate) fn lane_slots_from(config: &yi_types::config::UserConfig) -> u8 {
+    config
+        .lanes
+        .as_ref()
+        .and_then(|lanes| lanes.slots)
         .unwrap_or(yi_runtime::lane::DEFAULT_SLOTS)
 }
 

@@ -385,10 +385,8 @@ fn suggestion(key: &str) -> Option<&'static str> {
         .map(|(_, known)| known)
 }
 
-/// A key starts at a token edge and carries a digit in its run: `disk-backed-storage-layer`
-/// holds `sk-` and a long run after it, and is a word.
-fn key_run(token: &str, prefix: &str, min: usize) -> bool {
-    token.match_indices(prefix).any(|(at, _)| {
+fn key_run(token: &str, prefix: &str, min: usize) -> Option<Vec<u8>> {
+    token.match_indices(prefix).find_map(|(at, _)| {
         let edge = token.get(..at).and_then(|head| head.chars().next_back());
         let run: Vec<u8> = token
             .get(at.saturating_add(prefix.len())..)
@@ -396,9 +394,7 @@ fn key_run(token: &str, prefix: &str, min: usize) -> bool {
             .bytes()
             .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
             .collect();
-        edge.is_none_or(|c| !c.is_alphanumeric())
-            && run.len() >= min
-            && run.iter().any(u8::is_ascii_digit)
+        (edge.is_none_or(|c| !c.is_alphanumeric()) && run.len() >= min).then_some(run)
     })
 }
 
@@ -408,11 +404,15 @@ fn secret_in(text: &str) -> Option<&'static str> {
     }
     text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '='))
         .find_map(|token| {
-            if key_run(token, "sk-", 16) {
+            if key_run(token, "sk-", 16).is_some_and(|run| {
+                !run.contains(&b'-') || run.iter().any(|b| !b.is_ascii_lowercase() && *b != b'-')
+            }) {
                 Some("an API key")
-            } else if key_run(token, "ghp_", 20) || key_run(token, "github_pat_", 20) {
+            } else if key_run(token, "ghp_", 20).is_some()
+                || key_run(token, "github_pat_", 20).is_some()
+            {
                 Some("a GitHub token")
-            } else if key_run(token, "AKIA", 16) {
+            } else if key_run(token, "AKIA", 16).is_some() {
                 Some("an AWS key")
             } else {
                 None
@@ -715,6 +715,12 @@ mod tests {
             assert!(with(words).is_ok(), "{words}");
         }
         for (key, kind) in [
+            ("sk-abcdefgh/ijklmnopqrst".replace('/', ""), "an API key"),
+            (
+                format!("ghp_{}", "abcdefghijklmnopqrstuvwxyzABCDEF"),
+                "a GitHub token",
+            ),
+            ("AKIAIOSF/ODNNEXAMPLEQ".replace('/', ""), "an AWS key"),
             ("sk-ant-".to_owned() + &"Qz7rT2mW".repeat(2), "an API key"),
             ("sk-proj-4fJ9kL2m/N7pQ1rS8".replace('/', ""), "an API key"),
             (format!("ghp_{}", "8Hk2Lm9Np4".repeat(3)), "a GitHub token"),
