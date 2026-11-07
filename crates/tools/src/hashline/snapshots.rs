@@ -1,11 +1,14 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::format::{FileTag, compute_file_hash};
 
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub path: String,
-    pub text: String,
+    /// Invariant: shared, not copied, so a snapshot clone costs a pointer: an edit's reply
+    /// reads the same text the tag minted from.
+    pub text: Arc<str>,
     pub hash: FileTag,
     pub seen_lines: Option<HashSet<u64>>,
     pub clipped_lines: HashSet<u64>,
@@ -80,7 +83,11 @@ impl SnapshotStore {
         self.paths
             .iter()
             .find(|(name, _)| name == path)
-            .and_then(|(_, history)| history.iter().find(|version| version.text == full_text))
+            .and_then(|(_, history)| {
+                history
+                    .iter()
+                    .find(|version| version.text.as_ref() == full_text)
+            })
     }
 
     /// The version whose lines are `full_text`'s up to trailing whitespace, which the tag
@@ -125,7 +132,7 @@ impl SnapshotStore {
         // 4-hex tag corrupts seen-lines and misresolves which snapshot a tag names.
         if let Some(position) = history
             .iter()
-            .position(|version| version.hash == hash && version.text == full_text)
+            .position(|version| version.hash == hash && version.text.as_ref() == full_text)
         {
             let mut existing = history.remove(position);
             merge_seen_lines(&mut existing, seen_lines);
@@ -134,7 +141,7 @@ impl SnapshotStore {
         }
         let mut snapshot = Snapshot {
             path: path.to_owned(),
-            text: full_text.to_owned(),
+            text: Arc::from(full_text),
             hash,
             seen_lines: None,
             program_lines: HashSet::new(),

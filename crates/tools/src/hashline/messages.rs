@@ -581,7 +581,7 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
     if result.op == SectionOp::Delete {
         out.push(op.to_owned());
     } else {
-        let map = super::rebase::LineMap::between(&result.before, &result.after);
+        let map = super::rebase::LineMap::from_script(&result.script);
         let removed = map.removed(&result.before);
         let counts = format!("+{} -{}", map.authored().len(), removed.len());
         let at = map

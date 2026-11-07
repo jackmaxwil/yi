@@ -2,7 +2,7 @@
 issue: Closes #1502, Closes #136, Refs #804, Refs #807, Refs #1442
 ledger+: hashline edit (+ registers, instrumented) | ordinary unseen gaps remain refused; displayed clipped rows may anchor adjacent inserts and register pastes while replacements require shown text, and line bounds exclude the trailing split sentinel; moves refuse to overwrite an existing destination and unreadable sources report their actual I/O error
 growth: +321 typed errors, language-aware block/read validation, displayed-clipped anchor metadata and I/O safety after splitting read arguments out of tool.rs and deleting string-slice and prefix-classification code, with stale duplicate ledger rows removed during the main merge
-raise: crate tools +321, tests +163, comments +2
+raise: crate tools +319, tests +163, comments +2
 ---
 This change combines HB-utf8-tools, HA-EDIT-typed, HA-EDIT-blocks, HA-EDIT-readargs, HA-EDIT-anchor, and HA-EDIT-mvread.
 

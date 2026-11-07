@@ -2,6 +2,7 @@ pub(crate) mod apply;
 pub(crate) mod blocks;
 pub(crate) mod clipboard;
 mod documents;
+mod edit;
 pub mod format;
 pub mod input;
 pub mod messages;
