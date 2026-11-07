@@ -10,6 +10,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::faux_model::faux_model;
 use proptest::prelude::{Just, Strategy, prop, prop_oneof};
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
 use serde_json::{Map, Value};
@@ -19,7 +20,6 @@ use yi_loop::ExecutionMode;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::event::AgentEvent;
 use yi_types::message::StopReason;
-use yi_types::model::{Model, ModelCost};
 use yi_types::subagent::ChildStatus;
 
 /// Invariant: the lane rides `just check`, so the budget stays a few seconds; a soak raises
@@ -37,31 +37,6 @@ enum Action {
     Reap(usize),
     /// The client's bus receiver overflowed: everything queued is lost to it.
     Lag,
-}
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
 }
 
 type Bus = tokio::sync::broadcast::Receiver<AgentEvent>;
@@ -82,7 +57,7 @@ fn host_with(root: &Scratch, gate: Arc<dyn Fn() + Send + Sync>) -> (Arc<Subagent
         cwd: root.to_path_buf(),
         home: root.join("home"),
         lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build| {
             gate();
             let provider = Arc::new(ProviderStream::new(None));
