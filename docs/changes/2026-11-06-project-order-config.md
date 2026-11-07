@@ -1,6 +1,6 @@
 ---
 issue: Closes #2065
 ledger+: console editor and viewers | the project order a person sets in the sidebar, by dragging a project header or ⌥⇧↑↓, is saved as `console.projectOrder` in config.json (a list of directories written through `_yi/set_default` after the move) and read at the next start; a directory with no sessions is ignored (`drive::moving_a_project_saves_the_exact_order_and_swaps_the_sidebar`, `settings::the_project_order_row_takes_a_list_of_directories_and_the_parse_loads_it`)
-raise: crate cli +1, crate console +16, crate types +2, tests +176, comments +1
+raise: crate cli +1, crate console +2366, crate tui +8, crate types +2, tests +1602, comments +118
 ---
 The sidebar's project order lived in memory for the run, so it was gone at the next start. It is now a config key, `console.projectOrder`: a list of project directories in the order the sidebar shows them. The console writes it through `_yi/set_default` after a header drag or ⌥⇧↑↓ and reads it when it starts, the way `console.sidebar` is kept. The key is optional and additive, so no existing config or wire shape changes, and the strict parse still names a wrong type by its key. The settings pane lists it beside the sidebar state as a restart-only row. A directory that no longer has sessions stays in the list and is ignored.

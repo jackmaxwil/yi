@@ -3213,7 +3213,7 @@ fn named_after_prompt(frame: &Value) -> Vec<Value> {
 }
 
 /// The first prompt names the session: the console re-lists as soon as the prompt is
-/// accepted, and the ledger's name lands on the row the pane is showing.
+/// accepted, and the ledger's name lands on the sidebar row for that session.
 #[test]
 fn the_first_prompt_names_the_session_row() -> TestResult {
     let mut fixture = session_fixture();
@@ -3228,7 +3228,7 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
          type fix login\n\
          key enter\n\
          wait-frame 5000 fix login\n\
-         wait-frame 3000 ○ fix login\n\
+         wait-frame 3000 1 FI  fix login\n\
          quit\n",
     )
 }
