@@ -5,8 +5,8 @@
 use std::error::Error;
 use std::io::{BufReader, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 
 use serde_json::json;
 use yi_ai::openai::OpenAiOptions;
@@ -63,16 +63,27 @@ fn framed(body: &str) -> Vec<u8> {
 }
 
 fn keep_alive(reply: Vec<u8>) -> std::io::Result<(u16, Count, std::thread::JoinHandle<()>)> {
+    in_flight(reply, 1)
+}
+
+/// Incident: a fast stream finished before its siblings dialed and lent them its socket, so "eight
+/// concurrent" opened six on a loaded runner; no reply leaves until `width` requests are waiting.
+fn in_flight(
+    reply: Vec<u8>,
+    width: usize,
+) -> std::io::Result<(u16, Count, std::thread::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let counts = Count::default();
     let returned = counts.clone();
+    let together = Arc::new(Barrier::new(width));
     let handle = std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { break };
             counts.accepts.fetch_add(1, Ordering::SeqCst);
             let reply = reply.clone();
             let counts = counts.clone();
+            let together = Arc::clone(&together);
             std::thread::spawn(move || {
                 let Ok(cloned) = stream.try_clone() else {
                     return;
@@ -84,6 +95,7 @@ fn keep_alive(reply: Vec<u8>) -> std::io::Result<(u16, Count, std::thread::JoinH
                         return;
                     }
                     counts.requests.fetch_add(1, Ordering::SeqCst);
+                    together.wait();
                     if writer.write_all(&reply).is_err() || writer.flush().is_err() {
                         return;
                     }
@@ -239,7 +251,7 @@ fn two_sequential_responses_turns_reuse_one_connection() -> TestResult {
 /// connection per host, so the second batch dialed seven more.
 #[test]
 fn eight_concurrent_streams_then_eight_more_reuse_eight() -> TestResult {
-    let (port, counts, server) = keep_alive(framed(&responses_body()))?;
+    let (port, counts, server) = in_flight(framed(&responses_body()), 8)?;
     let model = Arc::new(model("openai-responses", "openai", port)?);
     for _ in 0..2 {
         let mut threads = Vec::new();

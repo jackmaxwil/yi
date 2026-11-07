@@ -19,6 +19,7 @@ from collections import Counter
 import json
 import os
 import pathlib
+import pwd
 import re
 import shutil
 import subprocess
@@ -929,9 +930,9 @@ def findings_in(clone, pr, rnd, answer, tried=0, floor=0):
     return summary, model, touched, declined_highs
 
 
-# Numeric on purpose: no passwd entry, and each fix its own, so one PR's leftovers bind no later one.
-# A random base, so a pass that was killed and left a process cannot share a uid with the next pass.
+# A fresh random uid per fix keeps one pass's leftovers and killed processes away from the next.
 UIDS = itertools.count(61000 + int.from_bytes(os.urandom(2), "big") % 4000)
+PASSWD = pathlib.Path("/etc/passwd")
 
 
 def lock_job(root=ROOT):
@@ -959,19 +960,36 @@ def workspace(root, sha):
         make_clone(root, work / "clone", sha)
         yield work
     finally:
+        with contextlib.suppress(FileNotFoundError):
+            rows = PASSWD.read_text().splitlines(keepends=True)
+            home = f"{box}/work/home"
+            kept = [row for row in rows if not (row.startswith("yi-autofix-") and f"::{home}:" in row)]
+            if kept != rows:
+                PASSWD.write_text("".join(kept))
         shutil.rmtree(box, ignore_errors=True)
 
 
 def handed_over(work):
     """`work` given to a fresh uid with its own copy of every cache a build writes, and the env it runs under.
     Incident: a PR's build shared the fixer's target dir, so its build.rs could replace the next fix's yi."""
-    uid, home, real = next(UIDS), work / "home", pathlib.Path.home()
+    home, real = work / "home", pathlib.Path.home()
+    while True:
+        uid = next(UIDS)
+        try:
+            pwd.getpwuid(uid)
+        except KeyError:
+            break
     # Of the cargo home only the downloads: its credentials.toml and config hold registry tokens.
     cargo = pathlib.Path(os.environ.get("CARGO_HOME") or real / ".cargo")
     seeds = ((cargo / "registry", work / "cargo/registry"), (cargo / "git", work / "cargo/git"),
              (scrubbed()["CARGO_TARGET_DIR"], work / "target"),
              (real / ".yi", home / ".yi"), (real / ".cache/uv", home / ".cache/uv"))
     home.mkdir()
+    # Incident: OpenSSH needs a passwd row; only CI gets one, and workspace removes it with the box.
+    if os.environ.get("CI"):
+        with contextlib.suppress(OSError):
+            with open(PASSWD, "a", encoding="utf-8") as passwd:
+                passwd.write(f"yi-autofix-{uid}:x:{uid}:{uid}::{home}:/bin/false\n")
     for source, into in seeds:
         into.parent.mkdir(parents=True, exist_ok=True)
         if pathlib.Path(source).is_dir():
@@ -2034,7 +2052,8 @@ def stand_in_cargo(work, attack, payload):
 def confined_selfcheck():
     """PR code run through the real worker. As root it must fail to reach what the next fix trusts;
     any other user has no second user to drop to, so there it proves the worker's own contract."""
-    errs, tmp = [], pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-confined-"))
+    global PASSWD
+    errs, tmp, installed_passwd = [], pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-confined-")), PASSWD
     saved = {k: os.environ.get(k) for k in ("PATH", "HOME", "FGJ_TOKEN", "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_HOME", "CI", "FORGEJO_ENV", "YI_BIN")}
     tmp.chmod(0o755)
     bot_home, fixer = tmp / "bot", tmp / "fixer-yi"
@@ -2055,6 +2074,48 @@ def confined_selfcheck():
         git("init", "-q", "-b", "main"); git("add", "-A"); git("commit", "-qm", "seed")
         (tmp / "bin").mkdir(mode=0o755)
         attack = tmp / "bin/cargo"
+        just = tmp / "bin/just"
+        just.write_text("#!/bin/sh\nenv -0 > \"$HOOK_ENV_OUT\"\n")
+        just.chmod(0o755)
+        git("checkout", "-q", "-b", "hooks")
+        zero = "0" * 40
+        for name, stdin in (("pre-commit", ""), ("pre-push", f"refs/tags/v1.2.3 {zero} refs/tags/v1.2.3 {zero}\n")):
+            report = tmp / f"{name}.env"
+            env = {**os.environ, "PATH": f"{tmp / 'bin'}{os.pathsep}{saved['PATH']}", "HOOK_ENV_OUT": str(report),
+                   "GIT_DIR": str(repo / ".git"), "GIT_WORK_TREE": str(repo), "GIT_INDEX_FILE": str(repo / ".git/index"),
+                   "GIT_AUTHOR_NAME": pr_review.BOT, "GIT_COMMITTER_EMAIL": "yi-bot@noreply.example.invalid",
+                   "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "hook"}
+            ran = subprocess.run([str(ROOT / "scripts/hooks" / name)], cwd=repo, env=env, input=stdin,
+                                 capture_output=True, text=True, check=False)
+            inherited = report.read_bytes().split(b"\0") if report.exists() else []
+            leaked = sorted(row.split(b"=", 1)[0] for row in inherited if row.startswith(b"GIT_"))
+            if ran.returncode or leaked:
+                errs.append(f"the real {name} hook leaked its git environment or failed: {ran.returncode}, "
+                            f"{leaked}, {(ran.stdout + ran.stderr)[-200:]}")
+        os.environ["CI"] = "1"
+        account_file = PASSWD
+        with workspace(repo, git("rev-parse", "HEAD")) as work:
+            real_sh = sh
+            globals()["sh"] = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0)
+            try:
+                handed_over(work)
+            finally:
+                globals()["sh"] = real_sh
+        if account_file.exists() and account_file.read_text():
+            errs.append("a worker's passwd entry survived its workspace")
+        PASSWD = tmp / "absent/passwd"
+        try:
+            with workspace(repo, git("rev-parse", "HEAD")) as work:
+                real_sh = sh
+                globals()["sh"] = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0)
+                try:
+                    handed_over(work)
+                finally:
+                    globals()["sh"] = real_sh
+        except OSError as error:
+            errs.append(f"an unwritable passwd file stopped the worker: {error}")
+        finally:
+            PASSWD = account_file
         attack_payload = f"""import json, os, pathlib, subprocess, sys
 def tried(fn):
     try:
@@ -2199,6 +2260,7 @@ sys.exit(7)
     finally:
         for key, value in saved.items():
             os.environ.pop(key, None) if value is None else os.environ.update({key: value})
+        PASSWD = installed_passwd
         shutil.rmtree(tmp, ignore_errors=True)
     return errs
 
@@ -2324,7 +2386,14 @@ def merge_selfcheck():
 
 
 def selfcheck():
-    errs = merge_selfcheck() + gate_selfcheck() + waits_selfcheck() + confined_selfcheck()
+    global PASSWD
+    installed_passwd, box = PASSWD, pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-passwd-"))
+    try:
+        PASSWD = box / "passwd"
+        errs = merge_selfcheck() + gate_selfcheck() + waits_selfcheck() + confined_selfcheck()
+    finally:
+        PASSWD = installed_passwd
+        shutil.rmtree(box, ignore_errors=True)
     installed, pr_review.SKILLS = pr_review.SKILLS, pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-skills-"))
     (pr_review.SKILLS / "har").mkdir()
     (pr_review.SKILLS / "har/SKILL.md").write_text("---\nname: har\ndescription: d\n---\n")

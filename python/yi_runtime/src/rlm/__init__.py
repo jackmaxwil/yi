@@ -733,6 +733,8 @@ async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
     """Search a bounded list of models backed by active user credentials, in registry order.
 
     Each model's ``cost`` is ``{input, output}`` in USD per million tokens, ``None`` when unknown.
+    A search that matched more than ``limit`` prints the host's row saying how many it held back
+    and the call that lists them all; the list returned is at most the ``limit`` asked for.
     """
     if not isinstance(query, str):
         raise TypeError(f"query must be str, got {type(query).__name__}")
@@ -742,7 +744,11 @@ async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
     models = payload.get("models")
     if not isinstance(models, list):
         raise RuntimeError("rlm.find_models returned an invalid models list")
-    return [_model_from_payload(model) for model in models]
+    found = [_model_from_payload(model) for model in models]
+    cut = payload.get("cut")
+    if isinstance(cut, str) and cut:
+        print(cut)
+    return found
 
 
 def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") -> RLMSubagent:

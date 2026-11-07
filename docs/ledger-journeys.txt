@@ -27,6 +27,11 @@ hashline edit (+ registers, instrumented) | `tools::a_grep_apply_carries_the_syn
 hashline edit (+ registers, instrumented) | `tools::a_write_through_a_symlink_is_refused`
 hashline edit (+ registers, instrumented) | `tools::a_changed_contract_names_the_callers_that_still_call_the_old_one`
 hashline edit (+ registers, instrumented) | `toolcells::an_edit_cell_shows_the_check_rows_the_model_read_under_its_diff`
+hashline edit (+ registers, instrumented) | `hashline_patcher::mv_onto_an_existing_file_is_refused_without_changing_either_file`
+hashline edit (+ registers, instrumented) | `hashline_patcher::a_latin1_file_reports_not_utf8_instead_of_inviting_an_overwrite`
+hashline edit (+ registers, instrumented) | `hashline_patcher::a_clipped_row_anchors_an_adjacent_insert_but_not_its_replacement`
+hashline edit (+ registers, instrumented) | `hashline_patcher::unseen_gap_anchors_are_refused_without_changing_the_file`
+hashline edit (+ registers, instrumented) | `hashline_patcher::an_anchor_past_the_end_is_not_called_unseen`
 hashline edit (+ registers, instrumented) | `tools::a_twelve_row_edit_replies_with_counts_not_the_new_text`
 hashline edit (+ registers, instrumented) | `tools::an_edit_that_drops_a_kept_line_shows_it`
 hashline edit (+ registers, instrumented) | `tools::nine_removed_rows_report_the_cap_and_the_read_that_shows_the_rest`
@@ -112,6 +117,7 @@ loud caps on runtime lists and echoes | `caps_runtime::todo_error_lists_stop_at_
 loud caps on runtime lists and echoes | `caps_runtime::a_phase_list_stops_at_the_cap_and_names_the_view_call` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::a_refused_answer_echoes_a_bounded_view_naming_the_held_file` (T1)
 loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_lists_a_bounded_number_of_names` (T0)
+loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_cuts_a_long_list_of_names_it_could_not_restore` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_memory_index_names_what_it_did_not_load` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_files_line_names_the_cap_and_the_hidden_names_it_skipped` (T0)
 kernel tool calls (`yi.tools`) | `kernel_tools::a_cell_writes_and_reads_through_the_sessions_own_gated_tools`
@@ -122,6 +128,7 @@ kernel tool calls (`yi.tools`) | `kernel_tools::a_console_cell_running_while_the
 kernel tool calls (`yi.tools`) | `kernel_tools::a_program_gets_whole_values_and_edits_a_line_the_view_never_showed`
 kernel tool calls (`yi.tools`) | `kernel_tools::every_tool_hands_a_program_its_typed_value`
 dill snapshot | `snapshot_e2e::session_dir_snapshot_revives_through_the_service`
+dill snapshot | `snapshot_skips::a_name_the_snapshot_skipped_comes_back_named_at_resume`
 dill snapshot | `snapshot_e2e::post_compaction_sync_reports_only_the_models_names`
 heartbeats: clock subscriptions | `serve_daemon::workers_do_not_lose_heartbeats_or_tear_the_job_ledger` (T2)
 heartbeats: clock subscriptions | `schedule_e2e::a_heartbeat_due_mid_compaction_is_deferred`
@@ -489,6 +496,11 @@ catastrophic-path denylist M10 | `decide::a_catastrophic_target_in_any_segment_i
 `yi plugin` | `plugin_tree::a_tampered_zip_an_escaping_entry_or_a_wrong_member_installs_nothing`
 `yi plugin` | `plugin_tree::eight_threads_adding_one_new_tree_end_with_one_valid_install`
 `yi plugin` | `plugin_tree::every_chrome_asset_names_the_pinned_version_s_headless_shell`
+`yi doctor` | `cli_surfaces::doctor_judges_the_socket_named_on_the_command_line`
+`yi doctor` | `cli_surfaces::doctor_judges_only_the_configured_lane_slots`
+`yi doctor` | `cli_surfaces::doctor_names_each_skipped_exec_tool_and_its_reason`
+`yi doctor` | `tools::a_hung_exec_tool_is_skipped_and_the_others_load`
+`yi doctor` | `exec::tests::exec_tool_probes_stop_at_their_own_deadline`
 `yi gc` and the retention sweep | `cli_surfaces::gc_fix_takes_the_checkpoints_of_a_deleted_project`
 `yi gc` and the retention sweep | `retention::only_an_orphan_past_seven_days_is_removed`
 `yi gc` and the retention sweep | `retention::a_trim_keeps_every_capture_inside_the_window`
@@ -631,6 +643,7 @@ model read deadline | `read_timeout::a_gateway_silent_past_the_models_deadline_n
 model read deadline | `a_run_that_ends_on_a_provider_error_exits_non_zero_in_json_too` (T0)
 fetch: one addressable read path | `kernel_across_sessions::a_read_of_a_busy_kernel_gives_up_within_its_deadline`
 host-written memory (one file per fact, hook index) | `memory_inject::the_focused_block_scores_against_the_saved_labels` (T1)
+daemon (ACP-router supervisor + worker/root) | `serve_daemon::replacing_a_worker_keeps_the_session_and_the_daemon_serving_it` (T2)
 kernel + ipython + rlm() subagents | `requests_e2e::a_final_text_over_the_body_cap_points_at_the_childs_transcript`
 kernel + ipython + rlm() subagents | `recursion_e2e::a_high_discovery_with_no_goal_is_delivered_as_a_note`
 kernel + ipython + rlm() subagents | `tools::tests::a_large_cell_result_names_the_file_write_one_liner` (T0)
