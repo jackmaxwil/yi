@@ -3175,28 +3175,36 @@ fn the_repository_root_is_found_once_per_directory() -> TestResult {
     Ok(())
 }
 
-/// Incident: a cached miss hid a repository created later in the same process from lanes,
-/// memory and session storage until restart.
+/// Incident: a cached session lookup miss hid a worktree created later in the same process
+/// until restart.
 #[test]
 fn a_repository_that_appears_after_a_miss_is_found() -> TestResult {
-    let root = Scratch::new("yi-lanes-canonical-missing")?;
-    let plain = root.join("plain");
+    let rig = Rig::new("canonical-missing")?;
+    let plain = rig.root.join("plain");
     std::fs::create_dir(&plain)?;
-    let callers: Vec<_> = (0..8)
-        .map(|_| {
-            let dir = plain.clone();
-            std::thread::spawn(move || yi_runtime::lane::canonical_repo(&dir))
-        })
-        .collect();
-    for caller in callers {
-        let found = caller.join().map_err(|_| "repository lookup panicked")?;
-        assert_eq!(found, None);
-    }
-    init_repo(&plain)?;
+    let sessions = rig.root.join("sessions");
+    let store =
+        yi_session::create_flat_session(sessions.join("project"), plain.to_string_lossy(), None)?;
+    let file = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("no session file")?;
+    assert!(
+        yi_runtime::history::repo_sessions(&sessions, &rig.repo)
+            .files
+            .is_empty(),
+        "the plain directory is not yet part of the repository"
+    );
+    let worktree = plain.to_string_lossy().into_owned();
+    git(
+        &rig.repo,
+        &["worktree", "add", "-b", "after-miss", &worktree],
+    )?;
+    let found = yi_runtime::history::repo_sessions(&sessions, &rig.repo);
     assert_eq!(
-        yi_runtime::lane::canonical_repo(&plain),
-        Some(plain.canonicalize()?),
-        "repository created after the first miss was not found"
+        found.files,
+        vec![file],
+        "worktree created after the first miss was not found"
     );
     Ok(())
 }
