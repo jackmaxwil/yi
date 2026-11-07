@@ -37,6 +37,7 @@ pub(crate) struct Setup {
     pub(crate) parent: Option<yi_session::SharedSession>,
     pub(crate) provider: Option<Arc<ProviderStream>>,
     pub(crate) model: Option<Model>,
+    pub(crate) resolver: Option<Arc<yi_runtime::fetch::Resolver>>,
     pub(crate) kernel: Option<Hook>,
 }
 
@@ -50,6 +51,7 @@ impl Default for Setup {
             parent: None,
             provider: None,
             model: None,
+            resolver: None,
             kernel: None,
         }
     }
@@ -73,6 +75,7 @@ pub(crate) fn family_with(
         parent,
         provider,
         model,
+        resolver,
         kernel,
     } = setup;
     let model = model.unwrap_or_else(|| faux_model(window));
@@ -170,10 +173,12 @@ pub(crate) fn family_with(
         plans_dir: root.join("plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
-    host.set_resolver(Arc::new(yi_runtime::fetch::Resolver::new(
-        workspace,
-        yi_runtime::Wall::default(),
-    )));
+    host.set_resolver(resolver.unwrap_or_else(|| {
+        Arc::new(yi_runtime::fetch::Resolver::new(
+            workspace,
+            yi_runtime::Wall::default(),
+        ))
+    }));
     Ok(Family {
         root,
         host,
@@ -1155,4 +1160,66 @@ fn parent_greps_child(family: &Family, name: &str) -> Result<String, Box<dyn Err
         .with_transcripts(Arc::new(desk));
     let input = json!({"pattern": "cutover", "path": format!("history://{name}")});
     Ok(crate::support::routed_tool(&Arc::new(resolver), "grep", input)?.0)
+}
+
+#[tokio::test]
+async fn a_child_that_can_read_is_pointed_at_the_catalog_and_the_skills_its_parent_loaded()
+-> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("one"), reply("two")]));
+    let skills = Scratch::new("yi-reader-skills")?;
+    let home = skills.join("home");
+    for (name, description) in [
+        (
+            "release-notes",
+            "Draft release notes from merged pull requests.",
+        ),
+        ("changelog", "Keep the changelog in the house format."),
+        ("unread", "Never read by the parent."),
+    ] {
+        let dir = home.join(".yi/skills").join(name);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nBody.\n"),
+        )?;
+    }
+    std::fs::write(
+        home.join(".yi/skills/changelog/format.md"),
+        "Newest first.\n",
+    )?;
+    let resolver = yi_runtime::fetch::Resolver::new(skills.join("ws"), yi_runtime::Wall::default())
+        .with_home(home);
+    resolver.fetch(&"yi://skills/release-notes".parse()?)?;
+    resolver.fetch(&"yi://skills/changelog/format.md".parse()?)?;
+    let setup = Setup {
+        resolver: Some(Arc::new(resolver)),
+        ..Setup::default()
+    };
+    let family = family_with(4, script, setup)?;
+    family.host.spawn(
+        "Which line names the sky?".to_owned(),
+        kwargs(json!({"name": "reads", "role": "reader", "tools": ["read"], "turns": 3})),
+    )?;
+    family.host.spawn(
+        "Which line names the sea?".to_owned(),
+        kwargs(json!({"name": "blind", "role": "reader", "tools": []})),
+    )?;
+    let prompts = family.prompts.lock().map_err(|_| "poisoned")?.clone();
+    let (reads, blind) = (
+        prompts.first().ok_or("no reading reader built")?,
+        prompts.get(1).ok_or("no tool-less reader built")?,
+    );
+    assert!(
+        reads.ends_with(&format!(
+            "{}\nYour parent loaded: yi://skills/changelog, yi://skills/release-notes",
+            yi_runtime::skills::CHILD_POINTER
+        )),
+        "{reads}"
+    );
+    assert!(!reads.contains("unread"), "{reads}");
+    assert!(
+        !blind.contains("yi://skills"),
+        "a reader with no read is pointed nowhere: {blind}"
+    );
+    Ok(())
 }
