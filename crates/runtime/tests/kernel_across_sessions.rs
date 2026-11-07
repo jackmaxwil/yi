@@ -6,6 +6,7 @@ use scratch::Scratch;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::faux_model::faux_model;
 use serde_json::{Map, Value};
@@ -259,12 +260,7 @@ async fn printed(
     kernel: &Arc<yi_runtime::KernelService>,
     code: &'static str,
 ) -> Result<String, Box<dyn Error>> {
-    let service = Arc::clone(kernel);
-    let outcome = tokio::task::spawn_blocking(move || {
-        let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
-        yi_tools::KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
-    })
-    .await??;
+    let outcome = run_cell(kernel, &Arc::new(AtomicBool::new(false)), code).await??;
     Ok(format!(
         "{}{}",
         outcome.result.stdout, outcome.result.stderr
@@ -332,38 +328,33 @@ fn read_main(
     Ok(tokio::task::spawn_blocking(move || resolver.fetch(&url)))
 }
 
+type Cell = tokio::task::JoinHandle<Result<yi_tools::KernelCellOutcome, String>>;
+
+const SLEEP: &str = "import time\nopen('sleeping', 'w').close()\ntime.sleep(20)";
+
+fn run_cell(service: &Arc<KernelService>, stop: &Arc<AtomicBool>, code: &'static str) -> Cell {
+    let (service, stop) = (Arc::clone(service), Arc::clone(stop));
+    tokio::task::spawn_blocking(move || {
+        let cancelled: yi_tools::CancelFlag = Arc::new(move || stop.load(Ordering::SeqCst));
+        yi_tools::KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
+    })
+}
+
 /// Incident: a read of an agent mid-cell waited for the whole cell, up to the 600 s ceiling,
 /// then failed with an empty detail; its 5 s timer never raced the execution queue.
 #[tokio::test]
 async fn a_read_of_a_busy_kernel_gives_up_within_its_deadline() -> TestResult {
     let root = Scratch::new("yi-kernel-busy-read")?;
     let service = bare_service(&root)?;
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let run = |code: &'static str| {
-        let (service, stop) = (Arc::clone(&service), Arc::clone(&stop));
-        tokio::task::spawn_blocking(move || {
-            let cancelled: yi_tools::CancelFlag =
-                Arc::new(move || stop.load(std::sync::atomic::Ordering::SeqCst));
-            yi_tools::KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
-        })
-    };
-    run("x = 1").await??;
-    let sleeper = run("import time\nopen('sleeping', 'w').close()\ntime.sleep(20)");
-    for _ in 0..600 {
-        if root.join("sleeping").is_file() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert!(
-        root.join("sleeping").is_file(),
-        "the sleeper cell never started"
-    );
+    let stop = Arc::new(AtomicBool::new(false));
+    run_cell(&service, &stop, "x = 1").await??;
+    let sleeper = run_cell(&service, &stop, SLEEP);
+    crate::support::wait_for_path(&root.join("sleeping"), "the sleeper cell never started").await?;
 
     let started = std::time::Instant::now();
     let read = read_main(&root, &service, "x")?.await?;
     let waited = started.elapsed();
-    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    stop.store(true, Ordering::SeqCst);
     let _interrupted = sleeper.await?;
     service.dispose().await;
 
@@ -374,9 +365,18 @@ async fn a_read_of_a_busy_kernel_gives_up_within_its_deadline() -> TestResult {
         waited < std::time::Duration::from_secs(8),
         "the read waited {waited:?} for the running cell"
     );
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("running a cell"),
-        "the read failed without saying why: {error}"
+        message.contains("running a cell"),
+        "the read failed without saying why: {message}"
+    );
+    assert!(
+        message.contains("rlm.put") && message.contains("rlm.get"),
+        "the refusal did not name the remedy: {message}"
+    );
+    assert!(
+        message.contains("context_keys") && !message.contains("read family://"),
+        "the refusal sent a kernel-less reader to the sidecar: {message}"
     );
     Ok(())
 }
@@ -405,6 +405,33 @@ async fn a_slow_read_of_an_idle_kernel_is_not_called_busy() -> TestResult {
     assert!(
         !error.to_string().contains("running a cell"),
         "an idle kernel's slow read was called busy: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_put_readback_lands_while_the_parent_cell_still_runs() -> TestResult {
+    let root = Scratch::new("yi-kernel-put-mid-cell")?;
+    let (_parent_session, parent) = root_session(&root, "rlm-1", "family")?;
+    let (_child_session, child) = root_session(&root, "rlm-2", "family")?;
+    printed(&parent, "rlm.put('x', 'from the parent')").await?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let sleeper = run_cell(&parent, &stop, SLEEP);
+    crate::support::wait_for_path(&root.join("sleeping"), "the sleeper cell never started").await?;
+    let seen = printed(&child, "print(rlm.get('x'))").await?;
+    let mid_cell = root.join("sleeping").is_file();
+    stop.store(true, Ordering::SeqCst);
+    let _interrupted = sleeper.await?;
+    for kernel in [parent, child] {
+        kernel.dispose().await;
+    }
+    assert!(
+        mid_cell,
+        "the readback was not taken while the parent cell was still running"
+    );
+    assert!(
+        seen.contains("from the parent"),
+        "the child could not read the put value: {seen}"
     );
     Ok(())
 }
