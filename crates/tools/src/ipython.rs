@@ -270,6 +270,11 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
         "result": detail_text(result.result.as_deref().unwrap_or_default()),
         "error": result.error,
     });
+    if let Value::Object(details) = &mut output.result.details
+        && let Some(mime) = result.result_mime
+    {
+        details.insert("resultMime".to_owned(), Value::String(mime));
+    }
     output.is_error = result.status != ExecuteStatus::Ok;
     // A cell killed at the ceiling reads as any other error, so the graph could not carry a
     // next step for it and one F0e session wrote a second 600 s wait loop (#475).

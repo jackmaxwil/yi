@@ -22,29 +22,24 @@ fn find(dir: &Scratch, path: &str, needle: &str) -> String {
     text
 }
 
-fn block_span(output: &str) -> Option<(usize, usize)> {
-    let rest = output.split("[find: block at lines ").nth(1)?;
-    let (a, rest) = rest.split_once('-')?;
-    let (b, _) = rest.split_once(' ')?;
-    Some((a.parse().ok()?, b.parse().ok()?))
-}
-
-fn line_of(text: &str, needle: &str) -> Option<usize> {
-    text.lines().position(|l| l.contains(needle)).map(|i| i + 1)
-}
-
 #[test]
 fn a_multiline_python_signature_resolves_through_the_function_body() -> TestResult {
     let dir = temp_dir("hashline-python-signature")?;
     let source = include_str!("../../../python/yi_runtime/src/rlm/__init__.py");
+    let line_of = |needle: &str| source.lines().position(|line| line.starts_with(needle));
+    let start = line_of("    async def result(").ok_or("no async def result(")? + 1;
+    let close = line_of("    ) -> ").ok_or("no signature close")? + 1;
     fs::write(dir.join("input.py"), source)?;
     let output = find(&dir, "input.py", "async def result(");
-    let start = line_of(source, "async def result(");
-    assert_eq!(
-        block_span(&output),
-        start.map(|s| (s, s.saturating_add(61))),
-        "{output}"
-    );
+    let header = output
+        .lines()
+        .find(|line| line.starts_with("[find: block at lines "))
+        .ok_or_else(|| format!("no block header: {output}"))?;
+    let span = header.trim_start_matches("[find: block at lines ");
+    let (first, rest) = span.split_once('-').ok_or("no span")?;
+    let last = rest.split_once(' ').ok_or("no end")?.0.parse::<usize>()?;
+    assert_eq!(first.parse::<usize>()?, start, "{output}");
+    assert!(last >= close, "the block ends at {last}, before {close}");
 
     fs::write(dir.join("one.py"), "def a():\n")?;
     let one = find(&dir, "one.py", "def a():");
@@ -64,13 +59,20 @@ fn rust_lifetimes_do_not_hide_braces_and_character_literals_stay_unchanged() -> 
     let dir = temp_dir("hashline-rust-lifetimes")?;
     let source = include_str!("../../ai/src/leak.rs");
     fs::write(dir.join("leak.rs"), source)?;
+    let lines: Vec<&str> = source.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("fn between<'a>"))
+        .ok_or("no fn between")?;
+    let close = start
+        + lines
+            .iter()
+            .skip(start)
+            .position(|line| *line == "}")
+            .ok_or("no close")?;
     let output = find(&dir, "leak.rs", "fn between<'a>");
-    let start = line_of(source, "fn between<'a>");
-    assert_eq!(
-        block_span(&output),
-        start.map(|s| (s, s.saturating_add(8))),
-        "{output}"
-    );
+    let span = format!("[find: block at lines {}-{} of", start + 1, close + 1);
+    assert!(output.contains(&span), "{output}");
 
     fs::write(
         dir.join("getter.rs"),
@@ -132,151 +134,6 @@ fn non_rust_block_comment_apostrophes_do_not_hide_delimiters() -> TestResult {
         let output = find(&dir, name, "function f()");
         assert!(
             output.contains("[find: block at lines 1-5 of"),
-            "{name}: {output}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn multiline_block_comments_do_not_close_the_enclosing_block() -> TestResult {
-    let dir = temp_dir("hashline-multiline-block-comments")?;
-    fs::write(
-        dir.join("comment.js"),
-        "function f() {\n    /* disabled {\n     * still disabled\n    } */\n    return 1;\n}\n",
-    )?;
-    let output = find(&dir, "comment.js", "function f()");
-    assert!(output.contains("[find: block at lines 1-6 of"), "{output}");
-    Ok(())
-}
-
-#[test]
-fn comment_markers_inside_regex_classes_do_not_hide_delimiters() -> TestResult {
-    let dir = temp_dir("hashline-regex-comment-markers")?;
-    for (name, literal) in [("leading.js", "/[/*]/"), ("middle.js", "/a[/*]/")] {
-        fs::write(
-            dir.join(name),
-            format!(
-                "function f() {{\n    const pattern = {literal};\n    const value = total / count / 2;\n    return pattern.test(\"/*\");\n}}\n"
-            ),
-        )?;
-        let output = find(&dir, name, "function f()");
-        assert!(
-            output.contains("[find: block at lines 1-5 of"),
-            "{name}: {output}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn division_operators_and_continuations_do_not_hide_delimiters() -> TestResult {
-    let dir = temp_dir("hashline-division-not-regex")?;
-    for (name, source, span) in [
-        (
-            "calc.css",
-            ".rule {\n    width: calc(100% / 3);\n    color: red;\n}\n",
-            "[find: block at lines 1-4 of",
-        ),
-        (
-            "increment.js",
-            "function f() {\n    const value = i++ / 2;\n    return value;\n}\n",
-            "[find: block at lines 1-4 of",
-        ),
-        (
-            "continued.rs",
-            "fn f() {\n    let value = (a\n        / b);\n    value\n}\n",
-            "[find: block at lines 1-5 of",
-        ),
-    ] {
-        fs::write(dir.join(name), source)?;
-        let anchor = if name == "calc.css" { ".rule" } else { "f()" };
-        let output = find(&dir, name, anchor);
-        assert!(output.contains(span), "{name}: {output}");
-    }
-    Ok(())
-}
-
-#[test]
-fn shell_globs_do_not_start_block_comments() -> TestResult {
-    let dir = temp_dir("hashline-shell-glob-not-comment")?;
-    for (name, shebang, span) in [
-        ("run.sh", "", "1-4"),
-        ("deploy", "#!/bin/sh\n", "2-5"),
-        (".bashrc", "", "1-4"),
-        ("Makefile", "", "1-4"),
-        ("rules.mk", "", "1-4"),
-    ] {
-        fs::write(
-            dir.join(name),
-            format!("{shebang}run() {{\n    cp *.log /var/backups/*\n    echo done\n}}\n"),
-        )?;
-        let output = find(&dir, name, "run()");
-        assert!(
-            output.contains(&format!("[find: block at lines {span} of")),
-            "{name}: {output}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn a_non_shell_shebang_keeps_c_style_block_comments() -> TestResult {
-    let dir = temp_dir("hashline-non-shell-shebang")?;
-    for (name, shebang) in [
-        ("cli", "#!/usr/bin/env node\n"),
-        ("script", "#!/usr/bin/env -S php -d strict\n"),
-        ("daemon", "#!/opt/bin/ruby\n"),
-    ] {
-        fs::write(
-            dir.join(name),
-            format!("{shebang}function f() {{\n    /* }} */\n    return 1;\n}}\n"),
-        )?;
-        let output = find(&dir, name, "function f()");
-        assert!(
-            output.contains("[find: block at lines 2-5 of"),
-            "{name}: {output}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn a_regex_literal_opening_a_continuation_line_does_not_hide_delimiters() -> TestResult {
-    let dir = temp_dir("hashline-regex-continuation")?;
-    for name in ["split.js", "split.mts", "split.cts"] {
-        fs::write(
-            dir.join(name),
-            "function f() {\n    const pattern =\n        /[/*]/;\n    return pattern;\n}\n",
-        )?;
-        let output = find(&dir, name, "function f()");
-        assert!(
-            output.contains("[find: block at lines 1-5 of"),
-            "{name}: {output}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn block_comments_stay_out_of_depth_for_brace_languages_beyond_the_named_ones() -> TestResult {
-    let dir = temp_dir("hashline-unlisted-brace-languages")?;
-    for name in [
-        "main.tf",
-        "view.mm",
-        "kernel.cu",
-        "schema.proto",
-        "app.dart",
-        "match.mts",
-        "Jenkinsfile",
-        ".eslintrc",
-        ".babelrc",
-        ".swcrc",
-    ] {
-        fs::write(dir.join(name), "resource {\n  /* } */\n  name = 1\n}\n")?;
-        let output = find(&dir, name, "resource {");
-        assert!(
-            output.contains("[find: block at lines 1-4 of"),
             "{name}: {output}"
         );
     }

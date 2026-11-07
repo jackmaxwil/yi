@@ -36,7 +36,7 @@ pub use builtins::{BashTool, WriteTool, list_files, wall_refusal, walled};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use document::{Converter, DEFAULT_TIMEOUT, Documents, INPUT_CEILING};
-pub use exec::discover_exec_tools;
+pub use exec::{SkippedExecTool, discover_exec_tools};
 pub use grep::{GrepTool, line_matcher};
 pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
 pub use ipython::{cell_output, shell_cell};
@@ -44,7 +44,7 @@ pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, run_or_background};
 pub use orient::{GUIDE as GET_CONTEXT_GUIDE, GetContextTool};
 pub use process::{
     CommandCapture, HostRefused, OUTPUT_CAP, command, edit_file, git_root, host_command,
-    keyless_command, run_captured, spill_path,
+    keyless_command, run_captured, run_captured_until, spill_path,
 };
 pub use redact::Redactor;
 pub use reduce::{Involuntary, Reduced, VIEW_CEILING, reduce, rerun, view};

@@ -329,18 +329,27 @@ pub struct StuckLatch(std::collections::HashSet<String>);
 impl StuckLatch {
     /// The `[child <name> stuck: <note>]` notices the members newly stuck this tick earn.
     pub fn notices(&mut self, views: &[MemberView]) -> Vec<String> {
-        let mut notices = Vec::new();
+        self.fresh(views)
+            .into_iter()
+            .map(|view| {
+                let note = view.note.as_deref().unwrap_or("no note");
+                format!("[child {} stuck: {note}]", view.name)
+            })
+            .collect()
+    }
+
+    pub fn fresh<'a>(&mut self, views: &'a [MemberView]) -> Vec<&'a MemberView> {
+        let mut fresh = Vec::new();
         for view in views {
             if view.state != MemberState::Stuck {
                 self.0.remove(&view.name);
             } else if self.0.insert(view.name.clone()) {
-                let note = view.note.as_deref().unwrap_or("no note");
-                notices.push(format!("[child {} stuck: {note}]", view.name));
+                fresh.push(view);
             }
         }
         self.0
             .retain(|name| views.iter().any(|view| view.name == *name));
-        notices
+        fresh
     }
 }
 
