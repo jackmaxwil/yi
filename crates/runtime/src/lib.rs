@@ -165,6 +165,11 @@ pub use yi_tools::{
     discover_exec_tools, edit_file, list_files,
 };
 
+/// Every job running in this process, whoever started it: an empty root prefixes every path.
+pub fn running_jobs() -> Vec<String> {
+    yi_tools::jobs::registry().running_under(std::path::Path::new(""))
+}
+
 pub fn documents(home: &std::path::Path) -> Documents {
     let venv_home = home.to_path_buf();
     Documents {

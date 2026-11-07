@@ -530,5 +530,6 @@ edited by hand.
 - [D557](adr/d557.md) - a catalog entry's `readTimeoutSecs` (default 60 s) is the model's own read...
 - [D558](adr/d558.md) - reclaim decides a cut in tokens alone
 - [D559](adr/d559.md) - a route's moving tail mark is suspended for an hour after four consecutive...
+- [D560](adr/d560.md) - Run test processes under private TMPDIRs, removed by a wrapper
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
