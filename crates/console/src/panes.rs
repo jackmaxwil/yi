@@ -442,13 +442,8 @@ pub(crate) fn review_hits(
 
 /// Each chip and file row the last draw laid out is a control, for this frame's panels only.
 pub(crate) fn offer_review(app: &mut crate::app::App) {
-    let drawn: Vec<_> = app
-        .hits
-        .as_ref()
-        .map(|hits| hits.panes.iter().map(|(id, _)| *id).collect())
-        .unwrap_or_default();
     let mut found = Vec::new();
-    for id in drawn {
+    for id in crate::hit::drawn(app) {
         let Some(pane) = app.state.panes.get(&id) else {
             continue;
         };
@@ -460,9 +455,7 @@ pub(crate) fn offer_review(app: &mut crate::app::App) {
             );
         }
     }
-    if let Some(hits) = app.hits.as_mut() {
-        hits.controls.extend(found);
-    }
+    crate::hit::offer(app, found);
 }
 
 /// The review as one column of text: header rows, then the diff.

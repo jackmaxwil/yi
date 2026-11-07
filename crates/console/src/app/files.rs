@@ -16,12 +16,13 @@ impl App {
             Some(files) => files.focused = true,
             None => {
                 let fits = self.hits.as_ref().is_some_and(|hits| {
-                    let open = hits.area.width.saturating_sub(hits.sidebar_width) >= 60;
-                    crate::files::side(hits.area, open).width > 0
+                    crate::files::side(hits.area, hits.sidebar_width).width > 0
                 });
                 if fits {
                     let root = self.session_dir();
                     self.state.files = Some(Files::open(&root));
+                } else {
+                    self.note("the tree needs 60 columns beside the session sidebar");
                 }
             }
         }
@@ -66,7 +67,7 @@ impl App {
             files.focused = false;
         }
         self.state.focus_panes();
-        self.open_editor(&path, workdir, true);
+        self.open_editor(&path, workdir);
     }
 
     pub(crate) fn files_key(&mut self, key: KeyEvent) {
@@ -138,5 +139,31 @@ impl App {
         }
         self.dirty = true;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+
+    /// Dies silently: a press at fifty columns opened nothing and said nothing.
+    #[test]
+    fn a_files_press_with_no_room_says_what_the_tree_needs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = super::App::new("/r".to_owned(), theme);
+        app.hits = Some(crate::render::Hits {
+            area: Rect::new(0, 0, 70, 24),
+            sidebar_width: 20,
+            ..crate::render::Hits::default()
+        });
+        app.toggle_files();
+        assert!(app.state.files.is_none(), "no tree where it does not fit");
+        assert_eq!(
+            app.state.banner.as_deref(),
+            Some("the tree needs 60 columns beside the session sidebar"),
+            "the refused press names its reason"
+        );
+        Ok(())
     }
 }

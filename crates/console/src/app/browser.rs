@@ -47,9 +47,7 @@ impl App {
             return;
         }
         let (kitty, cell) = (self.kitty, crate::chrome::cell_pixels());
-        let shown: Vec<_> = (self.hits.iter())
-            .flat_map(|hits| hits.panes.iter().map(|(id, _)| *id))
-            .collect();
+        let shown = crate::hit::drawn(self);
         let state = &mut self.state;
         for id in shown {
             if let Some(PaneContent::Browser(browser)) =

@@ -51,8 +51,9 @@ pub(crate) struct Drag {
 /// Every pane rectangle together: the area a snap is measured against.
 fn area_of(app: &App) -> Option<Rect> {
     let hits = app.hits.as_ref()?;
-    hits.panes
-        .iter()
+    crate::hit::drawn(app)
+        .into_iter()
+        .filter_map(|id| hits.panes.iter().find(|(pane, _)| *pane == id))
         .map(|(_, rect)| *rect)
         .reduce(|all, rect| all.union(rect))
 }

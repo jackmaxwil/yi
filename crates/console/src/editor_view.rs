@@ -227,13 +227,8 @@ fn strip(tabs: &mut Tabs, area: Rect, theme: &Theme) -> Line<'static> {
 
 /// Each tab and ✕ the last draw laid out is a control the press walks, for this frame's panels only.
 pub(crate) fn offer_tabs(app: &mut crate::app::App) {
-    let drawn: Vec<_> = app
-        .hits
-        .as_ref()
-        .map(|hits| hits.panes.iter().map(|(id, _)| *id).collect())
-        .unwrap_or_default();
     let mut found = Vec::new();
-    for id in drawn {
+    for id in crate::hit::drawn(app) {
         let Some(pane) = app.state.panes.get(&id) else {
             continue;
         };
@@ -248,9 +243,7 @@ pub(crate) fn offer_tabs(app: &mut crate::app::App) {
             }
         }
     }
-    if let Some(hits) = app.hits.as_mut() {
-        hits.controls.extend(found);
-    }
+    crate::hit::offer(app, found);
 }
 
 fn drawn_col(line: &str, index: usize) -> usize {
