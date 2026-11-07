@@ -1,4 +1,5 @@
 ---
+version: 0.971.0
 issue: Refs #1940
 growth: +157 is the merged snapshot and lane changes; weighed for deletion: the duplicate GIT_CONFIG builder and the older transport matcher, both removed in favor of one implementation.
 raise: comments +8, crate runtime +125, crate tools +32, tests +296
