@@ -31,6 +31,9 @@ pub(crate) fn load_config() -> Result<(), String> {
     for migration in migrations {
         eprintln!("warning: {migration}");
     }
+    if let Some(providers) = &config.providers {
+        yi_runtime::set_custom_providers(providers);
+    }
     set_config(config)
 }
 

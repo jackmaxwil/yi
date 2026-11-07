@@ -32,6 +32,7 @@ mod ask_check;
 mod browser;
 mod cli_surfaces;
 mod console_drive;
+mod custom_providers;
 mod install_script;
 mod journeys;
 mod kimi_login;
