@@ -42,6 +42,7 @@ pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
             CallCaptures {
                 shadow: Arc::clone(&shadow),
                 flight: Flight::Idle,
+                noticed: false,
             },
         );
     session.set_turn_start_hook(capture_hook(
@@ -86,6 +87,7 @@ enum Flight {
 struct CallCaptures {
     shadow: Arc<Shadow>,
     flight: Flight,
+    noticed: bool,
 }
 
 const SNAPSHOT_BUDGET: Duration = Duration::from_millis(500);
@@ -132,7 +134,7 @@ fn capture_calls(shadow: &Shadow, cwd: &Path, first: String, store: &yi_session:
         let begun = Instant::now();
         let captured = shadow
             .get()
-            .map(|checkpoints| checkpoints.capture_within(SNAPSHOT_KILL));
+            .map(|checkpoints| checkpoints.own_index().capture_within(SNAPSHOT_KILL));
         let elapsed = begun.elapsed();
         if let Some(Ok(tree)) = &captured {
             let data = TreeSnapshot {
@@ -152,6 +154,7 @@ fn capture_calls(shadow: &Shadow, cwd: &Path, first: String, store: &yi_session:
         };
         if killed || over_budget(elapsed, SNAPSHOT_BUDGET) {
             tree.flight = Flight::Off { last: elapsed };
+            tree.noticed = false;
             return;
         }
         match tree.flight {
@@ -164,18 +167,37 @@ fn capture_calls(shadow: &Shadow, cwd: &Path, first: String, store: &yi_session:
     }
 }
 
-/// The notice `t.log()` shows at the cut: the capture that turned snapshots off, and its budget.
+/// The notice a surface shows at the cut: the capture that turned snapshots off, and its budget.
 #[must_use]
 pub fn snapshots_off_row(cwd: &Path) -> Option<String> {
     let trees = calls().lock().unwrap_or_else(PoisonError::into_inner);
-    match trees.get(cwd)?.flight {
-        Flight::Off { last } => Some(format!(
-            "[… per-call snapshots off: last capture {:.1} s (snapshot.budget_ms {}); t.head() still works]",
-            last.as_secs_f64(),
-            SNAPSHOT_BUDGET.as_millis()
-        )),
-        Flight::Idle | Flight::Running | Flight::RunningWithPending => None,
+    let Flight::Off { last } = trees.get(cwd)?.flight else {
+        return None;
+    };
+    Some(row(last))
+}
+
+/// [`snapshots_off_row`] that spends its cut: the first model-facing result after it carries the
+/// row, and the calls behind it do not.
+#[must_use]
+pub fn take_snapshots_off_row(cwd: &Path) -> Option<String> {
+    let mut trees = calls().lock().unwrap_or_else(PoisonError::into_inner);
+    let tree = trees.get_mut(cwd)?;
+    let Flight::Off { last } = tree.flight else {
+        return None;
+    };
+    if std::mem::replace(&mut tree.noticed, true) {
+        return None;
     }
+    Some(row(last))
+}
+
+fn row(last: Duration) -> String {
+    format!(
+        "[… per-call snapshots off: last capture {:.1} s (snapshot.budget_ms {}); t.head() still works]",
+        last.as_secs_f64(),
+        SNAPSHOT_BUDGET.as_millis()
+    )
 }
 
 fn append_checkpoint(
@@ -288,14 +310,14 @@ fn restore_tree(
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
     let since = since.map(TreeId::new);
-    // A session across the one-store upgrade: its old start in the old store, its newest end in the
-    // new. "What the agent moved" has no answer across two stores, so nothing moves.
+    // A session across the one-store upgrade: its start in one store, its newest end in the other.
+    // Nothing moves, since what the turn moved cannot be told from what the user changed after it.
     if since
         .as_ref()
         .is_some_and(|since| !checkpoints.holds(since))
     {
         return UndoOutcome::Failed(
-            "this turn's end is not in the checkpoint store (a session from before the upgrade, or git could not read it), so nothing moved".to_owned(),
+            "this turn's end is not in the checkpoint store (a session from before the upgrade has it in an older checkpoint store, or git could not read it); nothing was restored, so nothing moved".to_owned(),
         );
     }
     let replaced = match checkpoints.capture() {
