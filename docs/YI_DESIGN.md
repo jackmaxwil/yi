@@ -12,7 +12,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Language | Rust workspace of 17 crates (§2); every dependency declared once in `[workspace.dependencies]` (§18) | D31 |
 | Session file | Pi's v4 session JSONL format: a header, then one `Mutation` per line; any other version is rejected (§4.1) | D32 |
 | Pi RPC | `yi rpc` serves Pi's RPC JSONL command names plus Yi's own (§17.1) | |
-| Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog (§5) | |
+| Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog, plus OpenAI-compatible providers `config.json` declares (§5) | |
 | Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor` | D191 |
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
@@ -262,11 +262,21 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
   `kimi` models take any of the first three by their listed `protocol`, Moonshot's wire rules
   derived from the route. Any other api is faux. Catalog:
-  deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
-  `models.primary`, else `model`; none is built in.
-  Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
+  deflated bundle overlaid by `~/.yi/catalog/<provider>.json`, then the `providers` the config
+  declares. Model: `--model`, else `models.primary`, else `model`; none is built in.
+- Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
   `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
   default. This default does not select a primary model.
+- Custom providers: `providers.<id>{baseUrl,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
+  contextWindow,maxTokens,cost}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
+  OpenAI chat completions; an id a built-in provider, `laya` or `faux` holds refuses at load. They
+  merge after the cache, so no refresh rewrites or drops them, and no refresh ever fetches one.
+  Requests go through the OpenAI completions adapter at `baseUrl` with plain `max_tokens`
+  (`compat.plainMaxTokens`) and none of OpenAI's own fields. Key: `apiKeyEnv`'s variable, else
+  `apiKey` (a literal placeholder that is not a secret), else a token in the yi-oauth store under
+  `~/.yi/providers/tokens`; none is a missing-credential refusal naming the variable. A
+  real key belongs in the variable, never in `config.json`. The block is read once per process: an
+  edit takes hold on restart. `yi doctor` has a `providers` row naming each and where its key resolved.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
@@ -1190,7 +1200,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace,follow}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
-  `mail{hopLimit}`, `open[{name,command}]`.
+  `mail{hopLimit}`, `open[{name,command}]`, `providers{<id>:{baseUrl,apiKeyEnv,apiKey,models}}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
