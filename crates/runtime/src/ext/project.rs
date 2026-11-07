@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 use super::{Effect, Event, EventMask, Extension, Rank, Slot, Trust};
 
@@ -99,11 +98,7 @@ fn write_table(path: &Path, table: &Map<String, Value>) -> Result<(), String> {
     std::fs::write(path, body).map_err(|error| error.to_string())
 }
 
-pub fn content_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
+pub use crate::fetch::content_hash;
 
 pub use yi_tools::git_root;
 
