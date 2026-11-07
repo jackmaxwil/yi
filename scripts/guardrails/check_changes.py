@@ -21,16 +21,13 @@ Cells split on an unescaped ` | `; a literal pipe is `\\|`, as the table writes 
 100 conflicted main merges touched a ledger row, a 2-4 KB line every feature appends to.
 scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
 diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
-import functools, os, pathlib, re, sys, types
-from unittest import mock
+import functools, os, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail, fork, git, no_fork, row_key, scratch_repo, table_rows
 
 DIR = "docs/changes"
 NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$")
 LEDGER, LEDGER_OPS = "Feature ledger", {"ledger+": 2, "ledger~": 3, "ledger=": 6, "ledger-": 1}
-# Invariant: a row edit committed before this date came from a PR whose review rounds moving it would void.
-LEDGER_FROM = "2026-11-02"
 CELL = re.compile(r"(?<!\\) \| ")
 KEYS = {"issue", "growth", "raise", "decision", "version", "decisions", *LEDGER_OPS}
 GROWTH = re.compile(r"^\+(\d+)\s+\S")
@@ -223,38 +220,7 @@ def ledger_lines(was, now):
     return out
 
 
-def merged_row_edits(before, pr, main, current):
-    maps = [{row_key(row): row for row in rows} for rows in (before, pr, main, current)]
-    expected = {}
-    for key in set().union(*(rows.keys() for rows in maps)):
-        old, ours, theirs = (rows.get(key) for rows in maps[:3])
-        if ours == theirs:
-            want = ours
-        elif ours == old:
-            want = theirs
-        elif theirs == old:
-            want = ours
-        else:
-            return False
-        if want is not None:
-            expected[key] = want
-    return expected == maps[3]
-
-
-def old_row_edits(base):
-    """Whether every row edit on this branch predates LEDGER_FROM. Commit by commit, so a new PR
-    batched with an old one on a candidate does not inherit its exemption."""
-    arch = "docs/ARCHITECTURE.md"
-    rows = lambda rev: table_rows(at(rev, arch) or "", LEDGER)
-    current = table_rows((ROOT / arch).read_text(), LEDGER)
-    if rows("HEAD") != current:
-        ancestor = git("merge-base", "HEAD", "MERGE_HEAD")
-        if ancestor.returncode or not merged_row_edits(rows(ancestor.stdout.strip()), rows("HEAD"), rows("MERGE_HEAD"), current):
-            return False
-    log = git("log", "--no-merges", "--format=%H %cs", f"{base}..HEAD", "--", arch).stdout
-    return not any(date >= LEDGER_FROM and rows(sha) != rows(f"{sha}^") for sha, date in map(str.split, log.splitlines()))
-
-def view_edits(was, now, old_rows=False):
+def view_edits(was, now):
     """What a PR changed in the recorder's views. `was` and `now` map path -> text (None: absent)."""
     errs = []
     if "rows" not in OFF and changelog_rows(was["docs/CHANGELOG.md"] or "") != changelog_rows(now["docs/CHANGELOG.md"] or ""):
@@ -264,7 +230,7 @@ def view_edits(was, now, old_rows=False):
         errs.append("docs/ARCHITECTURE.md: the `version:` line changed; the recorder numbers versions")
     if "decisions" not in OFF and table(arch_was, DECISIONS) != table(arch_now, DECISIONS):
         errs.append("docs/ARCHITECTURE.md: a decision row changed; write `decision:` in a change file")
-    if "ledger-edit" not in OFF and not old_rows and table_rows(arch_was, LEDGER) != table_rows(arch_now, LEDGER):
+    if "ledger-edit" not in OFF and table_rows(arch_was, LEDGER) != table_rows(arch_now, LEDGER):
         lines = "\n".join(f"  {line}" for line in ledger_lines(arch_was, arch_now))
         errs.append(f"docs/ARCHITECTURE.md: a feature-ledger row changed; restore the table from the fork and add to a change file:\n{lines}")
     return errs
@@ -356,7 +322,6 @@ def cases():
         "changelog prose": edit("docs/CHANGELOG.md", "prose", "new prose"),
         "the version line's comment": edit("docs/ARCHITECTURE.md", "# x", "# y"),
         "a row in another table": view_edits(was, dict(was, **{"docs/ARCHITECTURE.md": arch + "| feature | row |\n"})),
-        "an old PR's ledger edit": view_edits(was, dict(was, **{"docs/ARCHITECTURE.md": arch.replace("first", "changed")}), True),
     }
     bad = [f"not refused: {name}" for name, errs in refused.items() if not errs]
     bad += [f"refused: {name}: {errs}" for name, errs in passed.items() if errs]
@@ -372,23 +337,6 @@ def ledger_cases():
     """Each op on the rows it is for, below a blank line in the table and through an escaped pipe, and
     the two real edits of the 3 KB context row that #1890 and #1870 made, as lines."""
     bad = []
-    pr = LEDGER_FIXTURE.replace("first core", "first core; old PR")
-    main = LEDGER_FIXTURE.replace("has \\| pipe", "has \\| pipe; main")
-    merged = pr.replace("has \\| pipe", "has \\| pipe; main")
-    texts = {"ancestor": LEDGER_FIXTURE, "HEAD": pr, "MERGE_HEAD": main, "deadbeef": pr, "deadbeef^": LEDGER_FIXTURE}
-    def fake_git(*args):
-        if args[0] == "merge-base":
-            return types.SimpleNamespace(returncode=0, stdout="ancestor\n")
-        if args[0] == "log":
-            return types.SimpleNamespace(stdout="deadbeef 2026-10-31\n")
-        raise AssertionError(args)
-    def merged_case(current):
-        with mock.patch(__name__ + ".git", fake_git), mock.patch(__name__ + ".at", lambda rev, path: texts[rev]), mock.patch("pathlib.Path.read_text", return_value=current):
-            return old_row_edits("base")
-    if not merged_case(merged):
-        bad.append("a mid-merge resolution of old PR rows was refused")
-    if merged_case(merged.replace("old PR", "new edit")):
-        bad.append("a new mid-merge row edit inherited the old PR exemption")
     lines = parse("---\nledger~: two – § | has \\| pipe | no pipe\nledger+: two – § | c \\| d\nledger=: new | 3 | gated | M | L | n\n---\nx\n")
     if lines[1] or len(lines[0]["ledger"]) != 3:
         bad.append(f"a line with an escaped pipe read as {lines}")
@@ -537,7 +485,7 @@ def main():
     views = ("docs/CHANGELOG.md", "docs/ARCHITECTURE.md")
     errs = file_errors(files(), held(base))
     now = {p: (ROOT / p).read_text() for p in views}
-    edits = view_edits({p: at(base, p) for p in views}, now, old_row_edits(base)) + tree_edits(base)
+    edits = view_edits({p: at(base, p) for p in views}, now) + tree_edits(base)
     errs += edits if edits and not recorded(base) else []
     errs += unapplied_ledger(now["docs/ARCHITECTURE.md"])[1]
     fail(errs, f"changes ({len(pending(base))} pending in this branch, fork {base[:8]})")

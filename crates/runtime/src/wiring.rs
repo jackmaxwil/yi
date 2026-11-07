@@ -307,7 +307,7 @@ fn wire_fetch(
     host: &Arc<SubagentHost>,
     registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
-    kernels: Arc<crate::fetch::KernelServiceMap>,
+    checkpoint_show: Arc<dyn crate::fetch::CheckpointShow>,
 ) -> Arc<crate::fetch::Resolver> {
     let transcripts = crate::fetch::SessionTranscripts::new(
         Arc::clone(host),
@@ -328,15 +328,13 @@ fn wire_fetch(
     )
     .with_plans_dir(plans_dir.to_path_buf())
     .with_log(log)
-    .with_kernel_variables(kernels)
+    .with_kernel_variables(wiring.kernels.clone())
     .with_transcripts(transcripts)
     .with_family_dir(wiring.family_dir())
     .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>)
     .with_home(wiring.home.clone())
     .with_screen(session.screeners());
-    if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
-        resolver = resolver.with_checkpoint_show(show);
-    }
+    resolver = resolver.with_checkpoint_show(checkpoint_show);
     resolver = resolver.with_mcp_read(wiring.mcp_read.clone());
     let resolver = Arc::new(resolver);
     host.set_resolver(Arc::clone(&resolver));
@@ -743,7 +741,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             wiring.summarizer.clone(),
         );
     }
-    crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
+    let checkpoint_show =
+        crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_exec(wiring.exec_home(), job_profile(&wiring, session));
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
@@ -790,7 +789,6 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     wire_goal(session, &mut registry, &wiring, &plans_dir);
     let fetch_log = Arc::new(crate::fetch::FetchLog::new());
     fetch_log.attach_session_handle(session.store_handle());
-    let kernels = Arc::clone(&wiring.kernels);
     let resolver = wire_fetch(
         session,
         &wiring,
@@ -798,7 +796,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &host,
         &mut registry,
         Arc::clone(&fetch_log),
-        Arc::clone(&kernels),
+        checkpoint_show,
     );
     wire_plan_compaction(session, &plans_dir);
     let plan = wire_plan_request(

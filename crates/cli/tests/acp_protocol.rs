@@ -22,6 +22,15 @@ fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
     Ok(dir)
 }
 
+fn blocking_tool(dir: &std::path::Path) -> (std::path::PathBuf, String) {
+    let go = dir.join("go");
+    let wait = format!(
+        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
+        go.display()
+    );
+    (go, wait)
+}
+
 struct AcpClient {
     child: Child,
     stdin: ChildStdin,
@@ -872,11 +881,7 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
 #[test]
 fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
     let dir = temp_dir("rewind-running")?;
-    let go = dir.join("go");
-    let wait = format!(
-        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
-        go.display()
-    );
+    let (go, wait) = blocking_tool(&dir);
     let script = faux_script(
         &dir,
         &[
@@ -1752,6 +1757,105 @@ fn typed_on(frames: &[Value]) -> Vec<String> {
         .filter(|entry| entry["message"]["role"] == "user")
         .map(|entry| entry["message"]["content"].to_string())
         .collect()
+}
+
+/// Hidden entries on main ride the next committed message oldest-first, including while a tool runs.
+#[test]
+fn committed_updates_include_ordered_model_and_tool_entries() -> TestResult {
+    let dir = temp_dir("committed-ancestors")?;
+    let (go, wait) = blocking_tool(&dir);
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "bash", "id": "wait", "args": {"command": wait}}),
+            json!({"text": "finished"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "prompt",
+        &session_id,
+        json!([{"type": "text", "text": "wait"}]),
+    )?;
+    read_allowing(&mut client, |frame| {
+        frame["params"]["update"]["sessionUpdate"] == "tool_call_update"
+            && frame["params"]["update"]["status"] == "in_progress"
+    })?;
+    for change in 0..512 {
+        let model = if change % 2 == 0 {
+            "openrouter/anthropic/claude-opus-5"
+        } else {
+            "openrouter/anthropic/claude-sonnet-5"
+        };
+        let response = client.request(
+            &format!("model-{change}"),
+            "session/set_config_option",
+            json!({
+                "sessionId": session_id,
+                "configId": "model",
+                "type": "id",
+                "value": model,
+            }),
+        )?;
+        assert!(
+            response
+                .last()
+                .is_some_and(|frame| frame.get("error").is_none()),
+            "{response:?}"
+        );
+    }
+    std::fs::write(&go, "")?;
+    let frames = read_allowing(&mut client, is_idle)?;
+    let updates = updates_of(&frames, "_yi/committed");
+    let target = updates.last().ok_or("no committed target update")?;
+    let update = &target["params"]["update"];
+    assert_eq!(update["entry"]["message"]["content"][0]["text"], "finished");
+    let ancestors = update["ancestors"]
+        .as_array()
+        .ok_or("no committed ancestors")?;
+    assert_eq!(
+        ancestors.len(),
+        512,
+        "the live suffix kept its entry budget"
+    );
+    let notice = update["ancestors_notice"]
+        .as_str()
+        .ok_or("no committed ancestors cap notice")?;
+    assert!(
+        notice.starts_with("[…] kept 512 of 515 committed ancestors"),
+        "{notice}"
+    );
+    assert!(notice.contains("512 entries"), "{notice}");
+    assert!(notice.contains("8 MiB"), "{notice}");
+    assert!(notice.contains("session/resume"), "{notice}");
+    assert!(notice.contains("replayFrom: 0"), "{notice}");
+    let model_index = ancestors
+        .iter()
+        .position(|entry| entry["type"] == "model_change")
+        .ok_or("no ModelChange ancestor")?;
+    let result_index = ancestors
+        .iter()
+        .position(|entry| entry["message"]["role"] == "toolResult")
+        .ok_or("no ToolResult ancestor")?;
+    assert!(
+        model_index < result_index,
+        "hidden ancestry is out of order: {ancestors:?}"
+    );
+    let ancestor_seqs = ancestors
+        .iter()
+        .map(|entry| entry["seq"].as_u64().ok_or("ancestor has no sequence"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let target_seq = update["entry"]["seq"]
+        .as_u64()
+        .ok_or("target has no sequence")?;
+    assert!(
+        ancestor_seqs.windows(2).all(|pair| pair[0] < pair[1])
+            && ancestor_seqs.last().is_some_and(|seq| *seq < target_seq),
+        "not oldest-first through the target: {update}"
+    );
+    client.finish()
 }
 
 /// The worker names each saved message as it lands, so a console can act on a reply it watched
