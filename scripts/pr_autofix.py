@@ -49,6 +49,7 @@ LABELS = {
 # Two quiet hours give a person time to fix their own branch first. A spend or streak limit delays a
 # fix and never parks the PR: every one of them names when it lets go.
 QUIET = 2 * 3600
+STALE_QUIET = 600
 PER_RUN = 5
 # Incident: the runner killed a pass at its job limit mid-fix. A fix's model gets 20 minutes and its
 # hook repair 10; a new PR starts only while both fit the limit autofix.yml sets.
@@ -130,19 +131,21 @@ def verdict_of(err, notes):
     return "failed"
 
 
-def decide(labels, conflicted, quiet_for, asked=False, blocked=False, red=False):
+def decide(labels, conflicted, quiet_for, asked=False, blocked=False, red=False, stale=False):
     """The one table: what a pass does with a PR, from its labels, its conflict, the round on its
-    head, its red gate lanes and its quiet. A conflict goes first, since a round on a head that cannot
-    merge is moot, and findings before a red gate, since their fix moves the code the gate judges."""
+    head, its red gate lanes, its quiet and a workflow lane main moved under it. A conflict goes
+    first, since a round on a head that cannot merge is moot, and findings before a red gate, since
+    their fix moves the code the gate judges. A stale lane waits only ten quiet minutes instead of two
+    hours, since the branch's old workflow keeps filling the runner queue."""
     if "autofix:hold" in labels:
         return "hold"
     if "autofix:failed" in labels:
         return "stopped"
-    if not conflicted and not blocked and not red:
+    if not conflicted and not blocked and not red and not stale:
         return "clean"
-    if not (asked or "autofix" in labels or quiet_for >= QUIET):
+    if not (asked or "autofix" in labels or quiet_for >= (STALE_QUIET if stale and not conflicted else QUIET)):
         return "wait"
-    return "fix" if conflicted else "findings" if blocked else "gate"
+    return "fix" if conflicted or stale else "findings" if blocked else "gate"
 
 
 def points(heavy, light):
@@ -285,6 +288,28 @@ def merge_clean(pr, repo=ROOT):
         new = sh(repo, "git", "rev-parse", "FETCH_HEAD").stdout.strip()
         push_head(repo, ref, new)
         return None
+
+
+WORKFLOWS = ".forgejo/workflows"
+RUNS_ON = re.compile(r"^\s*runs-on:.*$", re.M)
+
+def stale_lane(base_ref, sha, repo=ROOT):
+    """Whether the base changed a workflow's `runs-on` since the branch left it while the branch's copy
+    still has the old line. Incident: review.yml moved to the `llm` runner and ten branches that never
+    merged main kept running their own copy on `ubuntu-latest`, holding five of six runners (2026-10-12).
+    A workflow absent at the fork or at the base is no lane the branch ran."""
+    base = f"origin/{base_ref}"
+    fork = sh(repo, "git", "merge-base", base, sha, check=False).stdout.strip()
+    if not fork:
+        return False
+
+    def lane(rev, path):
+        shown = sh(repo, "git", "show", f"{rev}:{path}", check=False)
+        return None if shown.returncode else RUNS_ON.findall(shown.stdout)
+
+    changed = sh(repo, "git", "diff", "--name-only", fork, base, "--", WORKFLOWS).stdout.split()
+    return any(old is not None and new is not None and old != new and lane(sha, path) == old
+               for path in changed for old, new in [(lane(fork, path), lane(base, path))])
 
 
 def make_clone(repo, into, sha):
@@ -1401,14 +1426,15 @@ def attempt(repo, pr, ids, asked=False):
     # push mid-landing restarts its checks. Conflict fixes still go to every PR.
     if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT):
         blocked = False
+    stale = pr.get("title", "").startswith(forge_pr.DRAFT) and stale_lane(pr["base"]["ref"], pr["head"]["sha"])
     # A round the fixer declined whole on this head waits for a person, a new round, a new head or
     # an explicit `just pr autofix N`.
     if blocked and not conflicted and not asked and any(
             row["kind"] == "yi-autofix" and row.get("verdict") == "declined" and row.get("from") == pr["head"]["sha"][:12]
             and row.get("round") == str(rnd["n"]) for row in bot_meter.rows(notes)):
         return "waiting"
-    lanes = [] if conflicted or blocked else red_lanes(repo, pr["head"]["sha"])
-    said = decide(labels, conflicted, quiet_for(pr, notes, time.time()), asked, blocked, bool(lanes))
+    lanes = [] if conflicted or blocked or stale else red_lanes(repo, pr["head"]["sha"])
+    said = decide(labels, conflicted, quiet_for(pr, notes, time.time()), asked, blocked, bool(lanes), stale)
     if said == "clean" and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
     if said not in ("fix", "findings", "gate"):
@@ -2549,6 +2575,37 @@ def selfcheck():
     if os.environ.pop("AUTOFIX_SELFCHECK_KEPT", None) != "kept":
         errs.append("a key without_env popped was not restored when the block raised")
 
+    lanes_repo = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-lanes-"))
+    try:
+        lgit = lambda *a: sh(lanes_repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        lgit("init", "-q", "-b", "main")
+        (lanes_repo / WORKFLOWS).mkdir(parents=True)
+        for name in ("review", "other"):
+            (lanes_repo / WORKFLOWS / f"{name}.yml").write_text("jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps: []\n")
+        lgit("add", "-A"); lgit("commit", "-qm", "seed")
+        for branch in ("stale", "moved", "same", "step"):
+            lgit("branch", branch)
+        review = lanes_repo / WORKFLOWS / "review.yml"
+        review.write_text("jobs:\n  j:\n    runs-on: llm\n    steps: []\n")
+        lgit("commit", "-qam", "llm"); lgit("branch", "late")
+        (lanes_repo / WORKFLOWS / "new.yml").write_text("jobs:\n  j:\n    runs-on: llm\n    steps: []\n")
+        (lanes_repo / WORKFLOWS / "other.yml").unlink()
+        lgit("add", "-A"); lgit("commit", "-qm", "add one, delete one"); lgit("update-ref", "refs/remotes/origin/main", "main")
+        lgit("checkout", "-q", "moved"); review.write_text("jobs:\n  j:\n    runs-on: llm\n    steps: [y]\n")
+        lgit("commit", "-qam", "own lane")
+        lgit("checkout", "-q", "step"); review.write_text("jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps: [y]\n")
+        lgit("commit", "-qam", "own step")
+        lgit("checkout", "-q", "same"); (lanes_repo / "a.txt").write_text("a\n"); lgit("add", "a.txt"); lgit("commit", "-qm", "work")
+        names = ("stale", "moved", "same", "step", "late", "main")
+        got = {b: stale_lane("main", sh(lanes_repo, "git", "rev-parse", b).stdout.strip(), lanes_repo) for b in names}
+        want = dict(zip(names, (True, False, True, True, False, False)))
+        if got != want:
+            errs.append(f"a branch on a retired runner lane read {got}, not {want}")
+    finally:
+        shutil.rmtree(lanes_repo, ignore_errors=True)
+    if (decide(set(), [], 60, stale=True) != "wait" or decide(set(), [], STALE_QUIET, stale=True) != "fix"
+            or decide({"autofix:hold"}, [], STALE_QUIET, stale=True) != "hold" or decide(set(), [], 60) != "clean"):
+        errs.append("a stale lane fixes a head pushed a minute ago, outranks a hold, or a current branch is fixed")
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-check-"))
     try:
         git = lambda *a: sh(tmp, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
