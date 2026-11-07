@@ -1,4 +1,6 @@
 ---
+version: 0.982.0
+decisions: D566
 issue: Closes #2036
 decision: every child is sent a pointer in place of a skill catalog, `Skills: read("yi://skills") lists them; read("yi://skills/<name>") loads one.`, and a second line naming each skill its parent read through `yi://skills/<name>` (amends D334, whose narrow child carried no catalog, and D290, whose full child listed `~/.yi/skills` and the repository's skills); `read("yi://skills")` serves every listed skill with its whole description, fitted to 32 KiB with a cut row naming kept of total, the cap and the per-skill read; a reader with no `read` is sent no pointer | the owner, 2026-11-05: "narrow children should get skill catalog on demand. should get a pointer to skill catalog"; a worker could not look up a skill, and `read("yi://skills")` was refused as a bad address | drop the `Pointer` arm of `ProjectResources` and the `skills` arm of `resolve_docs`
 ledger~: skills: catalog ladder, `$name`, Yi's triggered skills | the whole skill at `yi://skills/<name>` and every pointer | the whole skill at `yi://skills/<name>`, every listed skill with its whole description at `yi://skills`, a child's catalog one pointer to it plus the skills its parent read, and every pointer
