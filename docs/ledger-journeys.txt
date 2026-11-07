@@ -620,6 +620,13 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+cache marks and TTL from the session ledger | `cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes` (T0)
+cache marks and TTL from the session ledger | `cache_miss::an_upstream_pin_needs_two_switch_misses_inside_half_an_hour` (T0)
+cache marks and TTL from the session ledger | `cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour` (T0)
+cache marks and TTL from the session ledger | `openrouter::a_pinned_upstream_rides_the_provider_order` (T0)
+cache marks and TTL from the session ledger | `openrouter::a_suspended_tail_mark_keeps_the_marks_before_it_only` (T0)
+cache marks and TTL from the session ledger | `strip::a_400_naming_a_cache_field_is_resent_once_without_it` (T0)
+cache marks and TTL from the session ledger | `strip::the_reply_records_the_field_the_route_refused` (T0)
 model read deadline | `read_timeout::a_gateway_silent_past_the_models_deadline_names_the_field_and_runs_once` (T0)
 model read deadline | `a_run_that_ends_on_a_provider_error_exits_non_zero_in_json_too` (T0)
 fetch: one addressable read path | `kernel_across_sessions::a_read_of_a_busy_kernel_gives_up_within_its_deadline`
