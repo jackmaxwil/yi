@@ -2837,15 +2837,16 @@ def selfcheck():
         held = dict(sample, labels=[{"name": "autofix:hold"}])
         if attempt("o/r", held, {}) != "hold" or len(attempted) != 1:
             errs.append("an autofix:hold PR reached the clean-merge path")
-        # The first case was already green before this change. The base, eligibility, mode and enqueue
-        # cases refute the broad guard; the unreadable cases refute it without its later error handling.
+        # Incident: a clean main merge moved a queued head and the queue dropped a green candidate.
+        # The first case pins the queue read, not just the decision; the rest refute the label-only guard.
         real_queue = (forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem)
+        reads = []
         forge_pr.jobs_of, forge_pr.queue_mode = (lambda pr: {"title": "success"}), (lambda: "on")
-        pr_queue.enqueued_at, pr_queue.eligible_problem = (lambda number: "2026-01-01"), (lambda pr, jobs: None)
+        pr_queue.enqueued_at, pr_queue.eligible_problem = (lambda number: reads.append(number) or "2026-01-01"), (lambda pr, jobs: None)
         queued = dict(sample, labels=[{"name": "queue"}])
         try:
-            if attempt("o/r", queued, {}) != "queued" or len(attempted) != 1:
-                errs.append("a queued PR only behind main was merged, which drops its candidate")
+            if attempt("o/r", queued, {}) != "queued" or len(attempted) != 1 or reads != [1]:
+                errs.append("a queued PR only behind main was merged, or held without its queue asked, so its candidate is dropped or frozen")
             if attempt("o/r", dict(queued, base={"ref": "feature"}), {}) == "queued" or len(attempted) != 2:
                 errs.append("a queued PR based elsewhere was held, so the merge its base needs never happens")
             pr_queue.eligible_problem = lambda pr, jobs: "its own gate reads red"
