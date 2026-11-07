@@ -56,8 +56,6 @@ is one a round bought. Mechanics (scene grammar, `diff`, `watch`, `gallery`) liv
   was the Kali fold with 3x3 samples. Past about 30 ms the console stutters.
 - Ask for a frame once per interval on the app's own clock, never once per loop turn: the first
   version drew at 58 fps, wrote 590 KB a second, and was fixed to 17 fps and a third of the bytes.
-- The dist binary has a hard cap and a baseline; a pretty change that grows it by 16 KB needs the
-  cap decision first (`just push` runs the ratchet and refuses over the cap).
 
 ## Proof for the PR
 

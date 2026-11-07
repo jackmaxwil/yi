@@ -1,3 +1,7 @@
+mod check;
+
+pub(crate) use check::{CheckShell, captured};
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -11,9 +15,12 @@ use yi_types::subagent::Discovery;
 
 use crate::args::Args;
 
-pub const CONTINUATION_TEMPLATE: &str = include_str!("prompts/continuation.md");
-pub const BUDGET_LIMIT_TEMPLATE: &str = include_str!("prompts/budget_limit.md");
-pub const OBJECTIVE_UPDATED_TEMPLATE: &str = include_str!("prompts/objective_updated.md");
+pub(crate) static CONTINUATION: std::sync::LazyLock<String> =
+    crate::packed::packed!("continuation");
+pub(crate) static BUDGET_LIMIT: std::sync::LazyLock<String> =
+    crate::packed::packed!("budget_limit");
+pub(crate) static OBJECTIVE_UPDATED: std::sync::LazyLock<String> =
+    crate::packed::packed!("objective_updated");
 
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
@@ -89,47 +96,34 @@ pub(crate) fn evidence_once(first: bool, evidence: String) -> String {
     }
 }
 
+/// Why a check did not pass, typed so a caller can release instead of re-prompting when the
+/// failure is not the model's to fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckFailure {
+    /// A Claude Code shell hook refused the command.
+    Refused(String),
+    Spawn(String),
+    TimedOut(u64),
+    /// The command ran and its exit was not 0; the evidence is the viewed capture.
+    Red(String),
+}
+
+impl CheckFailure {
+    pub fn evidence(&self) -> String {
+        match self {
+            Self::Refused(why) => why.clone(),
+            Self::Spawn(error) => format!("goal check failed to run: {error}"),
+            Self::TimedOut(ms) => format!("goal check timed out after {ms} ms"),
+            Self::Red(evidence) => evidence.clone(),
+        }
+    }
+}
 /// What a check runs under: the project's Claude Code hooks and the session's sandbox.
 #[derive(Clone, Default)]
 pub struct Checker {
     hooks: Option<Arc<crate::claude_hooks::Hooks>>,
     broker: Option<Arc<crate::permission::PermissionBroker>>,
     wall: crate::wall::Wall,
-}
-
-/// A check's command, its proxy lease, and what kills what a killed `docker exec` left running.
-pub(crate) struct CheckShell {
-    pub(crate) command: std::process::Command,
-    lease: Option<crate::egress::Lease>,
-    sweep: Option<String>,
-}
-
-/// Runs a check to its capture, holding its lease until then. Invariant: a check past its deadline
-/// is swept before it reads as settled, or what it started goes on writing the tree.
-pub(crate) fn captured(
-    shell: CheckShell,
-    stdin: Option<Vec<u8>>,
-    cancelled: &yi_tools::CancelFlag,
-) -> Result<yi_tools::CommandCapture, String> {
-    let mut capture =
-        yi_tools::run_captured(shell.command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
-    capture.rows = shell
-        .lease
-        .map(crate::egress::Lease::revoke)
-        .unwrap_or_default();
-    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
-        match yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND)) {
-            yi_tools::jobs::SweepOutcome::Completed => {}
-            yi_tools::jobs::SweepOutcome::TimedOut => capture.rows.push(
-                "[… the container sweep did not finish inside SWEEP_BOUND (5 s); what a killed call left may still write the tree]"
-                    .to_owned(),
-            ),
-            yi_tools::jobs::SweepOutcome::Failed(reason) => capture.rows.push(format!(
-                "[… the container sweep {reason}; what a killed call left may still write the tree]"
-            )),
-        }
-    }
-    Ok(capture)
 }
 
 /// The lease's proxy variables: the one place a spawned check learns the proxy's address.
@@ -215,23 +209,44 @@ pub(crate) fn run_check(
     timeout_ms: u64,
     checker: &Checker,
 ) -> Result<(), String> {
-    checker.guard(check, cwd)?;
+    run_check_typed_under(check, cwd, timeout_ms, checker).map_err(|failed| failed.evidence())
+}
+
+/// [`run_check`] without a session's hooks, its failure still typed: `yi ask --check` releases
+/// on a spawn or a timeout and only re-prompts a check that ran and was red.
+///
+/// # Errors
+/// Any check that is not exit 0, with the reason it did not run.
+pub fn run_check_typed(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+) -> Result<(), CheckFailure> {
+    run_check_typed_under(check, cwd, timeout_ms, &Checker::from_hooks(None))
+}
+
+fn run_check_typed_under(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+    checker: &Checker,
+) -> Result<(), CheckFailure> {
+    checker.guard(check, cwd).map_err(CheckFailure::Refused)?;
     // Invariant: a check placed in a container is judged there, so its first word is not on the
     // host's PATH and the host probe would refuse a program the image has.
     if checker.wall.container.is_none()
         && let Some(refusal) = probe(check, cwd)
     {
-        return Err(refusal);
+        return Err(CheckFailure::Refused(refusal));
     }
     let command = checker.shell("sh", check, cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = captured(command, None, &cancelled)
-        .map_err(|error| format!("goal check failed to run: {error}"))?;
+    let capture = captured(command, None, &cancelled).map_err(CheckFailure::Spawn)?;
     if capture.cancelled {
-        return Err(format!("goal check timed out after {timeout_ms} ms"));
+        return Err(CheckFailure::TimedOut(timeout_ms));
     }
     match capture.exit_code {
         Some(0) => Ok(()),
@@ -240,10 +255,10 @@ pub(crate) fn run_check(
             let contained = checker
                 .refusal(cwd, check, &capture)
                 .map_or_else(String::new, |why| format!("[contained: {why}]\n"));
-            Err(format!(
+            Err(CheckFailure::Red(format!(
                 "{contained}goal check `{check}` exited {exit}:\n{}",
                 check_view(check, cwd, None, &capture)
-            ))
+            )))
         }
     }
 }
@@ -371,22 +386,25 @@ pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 /// and per completion attempt, so it gets a per-row budget, not [`DEFAULT_CHECK_TIMEOUT_MS`].
 pub(crate) const DISCOVERY_CHECK_TIMEOUT_MS: u64 = 60_000;
 
-/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it
-/// survives compaction and resume and is still there to block completion.
-pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<(), String> {
+/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it survives compaction
+/// and resume to block completion. `false` means no goal exists, so no completion gate holds.
+pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<bool, String> {
     let handle = store().ok_or("no session store is attached")?;
     let mut session = yi_session::lock_session(&handle);
-    let mut goal = session.goal().ok_or(NO_GOAL_ERROR)?;
+    let Some(mut goal) = session.goal() else {
+        return Ok(false);
+    };
     if goal
         .discoveries
         .iter()
         .any(|kept| kept.fingerprint == row.fingerprint)
     {
-        return Ok(());
+        return Ok(true);
     }
     goal.discoveries.push(row.clone());
     goal.updated = yi_session::now_ms();
-    session.set_goal(goal).map_err(|error| error.to_string())
+    session.set_goal(goal).map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 fn drained_message(row: &Discovery, mut details: Value) -> AgentMessage {
@@ -466,15 +484,15 @@ pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) 
         ("check_status", check_status),
         ("plan_frontier", plan_frontier),
     ];
-    fill(CONTINUATION_TEMPLATE, goal, extra)
+    fill(CONTINUATION.as_str(), goal, extra)
 }
 
 pub fn budget_limit_text(goal: &Goal) -> String {
-    fill(BUDGET_LIMIT_TEMPLATE, goal, Vec::new())
+    fill(BUDGET_LIMIT.as_str(), goal, Vec::new())
 }
 
 pub fn objective_updated_text(goal: &Goal) -> String {
-    fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
+    fill(OBJECTIVE_UPDATED.as_str(), goal, Vec::new())
 }
 
 /// The objective-edit and budget notices ride the continuation kind but are never superseded.
