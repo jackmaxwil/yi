@@ -39,6 +39,7 @@ import _common  # noqa: E402
 import forge_pr  # noqa: E402
 import merge_baseline  # noqa: E402
 import pr_review  # noqa: E402
+import pr_queue  # noqa: E402
 
 LABELS = {
     "autofix": ("1d76db", "Fix this PR's conflicts on the next autofix pass, without the quiet wait"),
@@ -1362,6 +1363,13 @@ def quiet_for(pr, notes, now):
     return now - max(times) if times else float("inf")
 
 
+def queue_builds(pr, labels):
+    """Whether the queue will build this PR, so a push here drops a candidate it would otherwise land."""
+    return ("queue" in labels and "autofix" not in labels and pr["base"]["ref"] == "main"
+            and forge_pr.queue_mode() != "off" and pr_queue.enqueued_at(pr["number"]) is not None
+            and pr_queue.eligible_problem(pr, forge_pr.jobs_of(pr)) is None)
+
+
 def attempt(repo, pr, ids, asked=False):
     """Decide and, when owed, fix one PR. Returns the decision made."""
     number = pr["number"]
@@ -1376,8 +1384,9 @@ def attempt(repo, pr, ids, asked=False):
     if behind and time.time() - when(pr.get("updated_at")) < 5 * 60:
         return "recent"
     # Incident: a clean main merge into a queued PR moved its head and the queue dropped a green
-    # candidate; the queue builds on main itself and labels a real conflict `autofix`.
-    if behind and "queue" in labels and "autofix" not in labels:
+    # candidate; the queue builds on main itself and labels a real conflict `autofix`. A PR the queue
+    # skips has no candidate to protect and needs the gate fix nobody else gives it.
+    if behind and queue_builds(pr, labels):
         return "queued"
     try:
         conflicted = merge_clean(pr) if behind else []
@@ -2823,9 +2832,30 @@ def selfcheck():
         held = dict(sample, labels=[{"name": "autofix:hold"}])
         if attempt("o/r", held, {}) != "hold" or len(attempted) != 1:
             errs.append("an autofix:hold PR reached the clean-merge path")
+        # A queued PR is held only when the queue will build it: a green head on main, a merger's
+        # enqueue, a mode that reads the label. One the queue skips keeps the fix it exists for.
+        real_queue = (forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem)
+        forge_pr.jobs_of, forge_pr.queue_mode = (lambda pr: {"title": "success"}), (lambda: "on")
+        pr_queue.enqueued_at, pr_queue.eligible_problem = (lambda number: "2026-01-01"), (lambda pr, jobs: None)
         queued = dict(sample, labels=[{"name": "queue"}])
-        if attempt("o/r", queued, {}) != "queued" or len(attempted) != 1:
-            errs.append("a queued PR only behind main was merged, which drops its candidate")
+        try:
+            if attempt("o/r", queued, {}) != "queued" or len(attempted) != 1:
+                errs.append("a queued PR only behind main was merged, which drops its candidate")
+            if attempt("o/r", dict(queued, base={"ref": "feature"}), {}) == "queued" or len(attempted) != 2:
+                errs.append("a queued PR based elsewhere was held, so the merge its base needs never happens")
+            pr_queue.eligible_problem = lambda pr, jobs: "its own gate reads red"
+            if attempt("o/r", queued, {}) == "queued" or len(attempted) != 3:
+                errs.append("a queued PR whose own gate reads red was left alone, so neither bot fixes it")
+            pr_queue.eligible_problem = lambda pr, jobs: None
+            forge_pr.queue_mode = lambda: "off"
+            if attempt("o/r", queued, {}) == "queued" or len(attempted) != 4:
+                errs.append("a queued PR under MERGE_QUEUE=off was frozen, since no tick reads its label")
+            forge_pr.queue_mode = lambda: "on"
+            pr_queue.enqueued_at = lambda number: None
+            if attempt("o/r", queued, {}) == "queued" or len(attempted) != 5:
+                errs.append("a label no merger added held the PR, and the queue skips what it never enqueued")
+        finally:
+            forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem = real_queue
         def moved(pr):
             raise LookupError("non-fast-forward")
         module.merge_clean = moved
