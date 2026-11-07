@@ -118,7 +118,7 @@ fn sections(packet: &str) -> Vec<(String, String)> {
 }
 
 #[test]
-fn every_layer_is_named_and_the_header_count_matches() -> TestResult {
+fn every_layer_is_named_and_the_header_counts_only_the_layers_asked() -> TestResult {
     let dir = fixture("honest-header")?;
     let packet = run(&dir, Map::new());
     let sections = sections(&packet);
@@ -129,21 +129,74 @@ fn every_layer_is_named_and_the_header_count_matches() -> TestResult {
             "layer {name} must say something, absence included: {packet}"
         );
     }
-    let present = sections
+    let asked: Vec<&(String, String)> = sections
+        .iter()
+        .filter(|(_, first)| !first.starts_with("not asked: "))
+        .collect();
+    let present = asked
         .iter()
         .filter(|(_, first)| !first.starts_with("absent: "))
         .count();
     let header = packet.lines().nth(1).unwrap_or_default();
-    let expected = if present == 6 {
+    let expected = if present == asked.len() {
         "COMPLETE".to_owned()
     } else {
-        format!("PARTIAL - {present} of 6 layers")
+        format!("PARTIAL - {present} of {} layers", asked.len())
     };
-    assert_eq!(header, expected, "header must count layers honestly");
+    assert_eq!(header, expected, "header must count the layers asked for");
     assert!(
-        packet.contains("## symbol neighborhood\nabsent: no symbol argument was given"),
-        "a layer with no argument names the reason: {packet}"
+        packet.contains("## symbol neighborhood\nnot asked: pass symbol="),
+        "a layer with no argument is not asked, never absent: {packet}"
     );
+    assert!(
+        packet.contains("## task map\nnot asked: pass task="),
+        "{packet}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_repository_with_no_mining_store_does_not_count_the_issues_layer() -> TestResult {
+    let dir = fixture("no-mining")?;
+    fs::remove_dir_all(dir.join(".yi"))?;
+    let packet = run(&dir, Map::new());
+    let header = packet.lines().nth(1).unwrap_or_default();
+    assert_eq!(header, "COMPLETE", "{packet}");
+    assert!(
+        packet.contains("## prior issues\nnot asked: no .yi/mining/issues.jsonl"),
+        "{packet}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_absent_asked_layer_makes_the_header_partial() -> TestResult {
+    let dir = fixture("partial-header")?;
+    fs::remove_file(dir.join("Cargo.toml"))?;
+    let packet = run(&dir, Map::new());
+    assert!(
+        packet.contains("PARTIAL - 3 of 4 layers"),
+        "the denominator is the layers asked for: {packet}"
+    );
+    assert!(
+        packet.contains("## gate commands\nabsent: no gate manifest"),
+        "{packet}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_task_argument_adds_one_layer_to_the_denominator() -> TestResult {
+    let dir = fixture("task-count")?;
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    let packet = run(&dir, input);
+    let header = packet.lines().nth(1).unwrap_or_default();
+    assert!(
+        header == "COMPLETE" || header.starts_with("PARTIAL - 4 of 5 layers"),
+        "a task map is asked for and counted: {packet}"
+    );
+    assert!(!packet.contains("## task map\nnot asked:"), "{packet}");
     Ok(())
 }
 
@@ -223,8 +276,8 @@ fn symbol_argument_reaches_the_neighborhood_layer() -> TestResult {
     input.insert("symbol".to_owned(), json!("yi_tools.orient"));
     let packet = run(&dir, input);
     assert!(
-        !packet.contains("absent: no symbol argument was given"),
-        "a named symbol must not report itself missing: {packet}"
+        !packet.contains("## symbol neighborhood\nnot asked:"),
+        "a named symbol must not report itself unasked: {packet}"
     );
     Ok(())
 }
@@ -565,7 +618,7 @@ fn the_task_map_names_ripwires_own_cuts() -> TestResult {
     );
     let untasked = run(dir, Map::new());
     assert!(
-        untasked.contains("absent: no task argument was given"),
+        untasked.contains("## task map\nnot asked: pass task="),
         "{untasked}"
     );
     Ok(())

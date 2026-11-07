@@ -93,11 +93,19 @@ pub fn verdict(path: &Path) -> Option<String> {
         _ => on_path(program).map(|_| PathBuf::from(program))?,
     };
     let mut check = command(resolved);
-    check.args(flags).arg(path).env(
+    check.args(flags).env(
         "PYTHONPYCACHEPREFIX",
         std::env::temp_dir().join("yi-pycache"), // nosemgrep: yi-rust-temp-dir Disposable pycache shares no durable state.
     );
-    let capture = run_captured_until(check, None, None, TIMEOUT, OUTPUT_CAP).ok()?;
+    // Incident: rustfmt given a path follows `mod` declarations, so checking a crate root re-read
+    // the whole tree (0.53 s); its text on stdin keeps the check to the one file.
+    let source = if extension == "rs" {
+        Some(std::fs::read(path).ok()?)
+    } else {
+        check.arg(path);
+        None
+    };
+    let capture = run_captured_until(check, source, None, TIMEOUT, OUTPUT_CAP).ok()?;
     if capture.cancelled {
         return Some("syntax: check timed out".to_owned());
     }
