@@ -598,7 +598,7 @@ fn a_name_that_resolves_to_this_machine_is_not_dialed() -> TestResult {
 
 #[test]
 fn an_address_is_public_only_outside_every_private_range() -> TestResult {
-    let private: [[u8; 4]; 7] = [
+    let private: [[u8; 4]; 10] = [
         [127, 0, 0, 1],
         [10, 0, 0, 1],
         [172, 16, 0, 1],
@@ -606,6 +606,9 @@ fn an_address_is_public_only_outside_every_private_range() -> TestResult {
         [169, 254, 169, 254],
         [100, 64, 0, 1],
         [0, 0, 0, 0],
+        [0, 1, 2, 3],
+        [224, 0, 0, 1],
+        [240, 1, 1, 1],
     ];
     for octets in private {
         let v4 = Ipv4Addr::from(octets);

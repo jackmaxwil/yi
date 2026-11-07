@@ -1,7 +1,7 @@
+mod hits;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use serde_json::{Map, Value, json};
 
 use crate::builtins::walk_files;
 use crate::hashline::normalize::{Endings, split};
@@ -10,6 +10,8 @@ use crate::tool::{
     RootedGlob, Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, resolve_path,
     rooted_glob, text_output,
 };
+use hits::hits_in;
+use serde_json::{Map, Value, json};
 
 const PAGE_CAP: usize = 200;
 /// Invariant: a page stops between hits, so one hit's window may pass this cap and a page always
@@ -199,30 +201,6 @@ struct FileHits {
     hits: Vec<usize>,
     endings: Endings,
     utf8: bool,
-}
-
-fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool) -> Vec<usize> {
-    let mut hits: Vec<usize> = if multiline {
-        let newlines: Vec<usize> = normalized.match_indices('\n').map(|(at, _)| at).collect();
-        let mut hits: Vec<usize> = matcher
-            .find_iter(normalized)
-            .map(|found| newlines.partition_point(|at| *at < found.start()))
-            .collect();
-        hits.dedup();
-        hits
-    } else {
-        normalized
-            .split('\n')
-            .enumerate()
-            .filter(|(_, line)| matcher.is_match(line))
-            .map(|(index, _)| index)
-            .collect()
-    };
-    if def {
-        let lines: Vec<&str> = normalized.split('\n').collect();
-        hits.retain(|index| lines.get(*index).is_some_and(|l| crate::orient::is_decl(l)));
-    }
-    hits
 }
 
 struct Collected {

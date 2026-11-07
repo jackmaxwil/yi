@@ -3,7 +3,7 @@ issue: Closes #1532
 growth: +510 one line-diff builder replaces four copies per edit; four runtime helpers and two hashline unquoters fold into one each, and the rest is the tests that hold them.
 raise: tests +508
 raise: crate runtime +199
-raise: crate tools +264
+raise: crate tools +273
 raise: comments +14
 ledger~: `get_context` orientation packet | r; skeletons ranked by `symbol`, then change heat, then name | r that counts only the layers the call asked for, a layer it did not ask for saying `not asked:` rather than counting as absent; skeletons ranked by `symbol`, then change heat, then name, and reading a declaration word one indent level in, so an `impl`'s methods and a class's defs reach the model
 ---

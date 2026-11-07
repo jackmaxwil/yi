@@ -1,7 +1,9 @@
+//! The one ask a request has in flight: a second ask for the same request waits, and the guard's
+//! drop releases it whether the ask settled, failed or panicked.
+
 use std::{collections::BTreeSet, sync::Mutex};
 use yi_permission::RequestId;
 
-/// One asking request in flight, released on drop: a second ask for it joins the first.
 pub(crate) struct InFlight<'a> {
     set: &'a Mutex<BTreeSet<RequestId>>,
     request: RequestId,

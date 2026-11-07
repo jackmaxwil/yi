@@ -1,11 +1,10 @@
 //! Parse-only check of an edited file, run by the language's own tool when it is on PATH.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::Duration;
 
-use crate::process::{OUTPUT_CAP, command, run_captured};
-use crate::tool::CancelFlag;
+use crate::process::{OUTPUT_CAP, command, run_captured_until};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGE_CAP: usize = 160;
@@ -31,11 +30,6 @@ pub(crate) fn on_path(program: &str) -> Option<PathBuf> {
         .find(|found| found.is_file())
 }
 
-fn before_deadline() -> CancelFlag {
-    let deadline = Instant::now() + TIMEOUT;
-    Arc::new(move || Instant::now() >= deadline)
-}
-
 /// A rustup proxy re-resolves the toolchain on every call (~45 ms), and a pinned toolchain it
 /// lacks is downloaded until the timeout kills it; the binary it names is asked once.
 fn rustfmt() -> Option<PathBuf> {
@@ -49,7 +43,7 @@ fn rustfmt() -> Option<PathBuf> {
             }
             let mut which = command(&rustup);
             which.args(["which", "rustfmt"]);
-            let capture = run_captured(which, None, &before_deadline(), OUTPUT_CAP).ok()?;
+            let capture = run_captured_until(which, None, None, TIMEOUT, OUTPUT_CAP).ok()?;
             let named = PathBuf::from(capture.stdout.trim());
             (capture.exit_code == Some(0) && named.is_file()).then_some(named)
         })
@@ -111,7 +105,7 @@ pub fn verdict(path: &Path) -> Option<String> {
         check.arg(path);
         None
     };
-    let capture = run_captured(check, source, &before_deadline(), OUTPUT_CAP).ok()?;
+    let capture = run_captured_until(check, source, None, TIMEOUT, OUTPUT_CAP).ok()?;
     if capture.cancelled {
         return Some("syntax: check timed out".to_owned());
     }
