@@ -14,6 +14,18 @@ pub const PROVIDER_KEY_VARS: [(&str, &str); 4] = [
     ("google", "GEMINI_API_KEY"),
 ];
 
+/// The providers the compiled-in catalog carries, in its load order; a custom provider in
+/// `config.json` may take none of these ids.
+pub const CATALOG_PROVIDERS: [&str; 7] = [
+    "anthropic",
+    "openai",
+    "openrouter",
+    "openai-codex",
+    "google",
+    "cursor",
+    "kimi",
+];
+
 /// Every provider, catalog and login request names Yi; ureq's default named the HTTP library.
 pub const USER_AGENT: &str = concat!("yi/", env!("CARGO_PKG_VERSION"));
 

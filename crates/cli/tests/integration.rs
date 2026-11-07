@@ -34,6 +34,7 @@ mod ask_check;
 mod browser;
 mod cli_surfaces;
 mod console_drive;
+mod custom_providers;
 mod install_script;
 mod journeys;
 mod kimi_login;
@@ -44,6 +45,7 @@ mod plan_cli;
 mod plan_ops;
 mod rpc_protocol;
 mod serve_daemon;
+mod tool_import;
 mod tui_cells;
 mod tui_drive;
 #[cfg(target_os = "linux")]

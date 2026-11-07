@@ -988,7 +988,7 @@ fn resume_alpha_on_a_lane(frame: &Value) -> Vec<Value> {
 /// D208: the row named the root the console opened, for a session that ran in a lane.
 #[test]
 fn the_status_row_follows_the_workers_lane() -> TestResult {
-    run(
+    run_frames_with(
         "workdir",
         vec![
             Step::Expect("initialize", init_reply),
@@ -1000,10 +1000,13 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 › yi \n\
+         wait-frame 5000 › worktree yi \n\
          wait-frame 3000 !⎇ lane\n\
          quit\n",
+        SidebarMode::Full,
+        160,
     )
+    .map(drop)
 }
 
 fn lane_dir(name: &str) -> PathBuf {
@@ -1351,6 +1354,7 @@ fn mouse_focuses_opens_and_drags() -> TestResult {
         // pane, then prove focus moved there by submitting into it.
         "wait-frame 5000 s-alpha\n\
          mouse down 2 3\n\
+         mouse up 2 3\n\
          wait-frame 5000 replayed world\n\
          key alt-v\n\
          wait-frame 3000 no session\n\
@@ -2193,10 +2197,12 @@ fn a_click_on_a_workspace_header_folds_it() -> TestResult {
         "wait-frame 5000 s-beta\n\
          wait-frame 3000 demo-root 2 ▾\n\
          mouse down 3 2\n\
+         mouse up 3 2\n\
          wait-frame 3000 demo-root 2 ▸\n\
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 s-gamma\n\
          mouse down 3 2\n\
+         mouse up 3 2\n\
          wait-frame 3000 s-alpha\n\
          wait-frame 3000 demo-root 2 ▾\n\
          quit\n",
@@ -2248,6 +2254,7 @@ fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
         ],
         "wait-frame 5000 s-beta\n\
          mouse down 16 5\n\
+         mouse up 16 5\n\
          wait-frame 3000 SN  untitled\n\
          quit\n",
     )?;
@@ -2269,14 +2276,16 @@ fn the_sidebars_new_row_starts_a_session() -> TestResult {
         ],
         "wait-frame 5000 s-beta\n\
          mouse down 3 0\n\
+         mouse up 3 0\n\
          wait-frame 3000 SN  s-new\n\
          quit\n",
     )
 }
 
-/// A press on the sidebar's Search row opens the command palette.
+/// A press on the sidebar's Search row turns it into an input that filters the sessions in place:
+/// the palette stays shut, a typed name hides the rest, and esc brings them back.
 #[test]
-fn the_sidebars_search_row_opens_the_palette() -> TestResult {
+fn the_sidebars_search_row_filters_the_sessions_in_place() -> TestResult {
     run(
         "search",
         vec![
@@ -2286,7 +2295,14 @@ fn the_sidebars_search_row_opens_the_palette() -> TestResult {
         ],
         "wait-frame 5000 s-beta\n\
          mouse down 3 1\n\
-         wait-frame 3000 Command Palette\n\
+         mouse up 3 1\n\
+         type beta\n\
+         wait-frame 3000 ⌕ beta\n\
+         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 s-beta\n\
+         wait-frame 3000 !Command Palette\n\
+         key esc\n\
+         wait-frame 3000 s-alpha\n\
          quit\n",
     )
 }
@@ -2404,10 +2420,10 @@ pub(crate) fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
     editor_script(path, "", rest)
 }
 
-/// Splits first so the chat pane survives beside the editor and the transcript still shows
-/// what the agent did.
+/// Opening a file keeps the chat pane beside the editor, so the transcript still shows what the
+/// agent did.
 fn split_editor_script(path: &std::path::Path, rest: &str) -> String {
-    editor_script(path, "key alt-v\n", rest)
+    editor_script(path, "", rest)
 }
 
 fn editor_script(path: &std::path::Path, split: &str, rest: &str) -> String {
@@ -2573,15 +2589,15 @@ fn cmd_u_undoes_the_chat_draft() -> TestResult {
 #[test]
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
-    // The sidebar fits `s-alpha` to its ten-column floor, 18 wide: border at x=18, one padding
-    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=2 under the header row.
+    // The chat keeps the left half after the file opens. The editor's gutter shifts the input
+    // cells two columns right of their visible text, so `c` is x=64 and `a` is x=62.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 24 3\nmouse up 24 3\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 22 3\nmouse drag 24 3\nmouse up 24 3\n\
+            "wait-frame 3000 abcdef\nmouse down 64 4\nmouse up 64 4\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 62 4\nmouse drag 64 4\nmouse up 64 4\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;
@@ -2737,8 +2753,8 @@ fn the_editor_shows_a_scroll_bar_and_the_wheel_moves_it() -> TestResult {
         script.push_str("mouse scrolldown 60 8\n");
     }
     script.push_str(
-        "wait-frame 3000 line 40\nwait-frame 3000 !the header comment\n\
-         wait-frame 3000 \u{2503}\nquit\n",
+        "wait-frame 3000 40    still inside\nwait-frame 3000 !the header comment\n\
+         wait-frame 3000 ┃\nquit\n",
     );
     run(
         "editor-scroll",
@@ -3101,7 +3117,7 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
          type fix login\n\
          key enter\n\
          wait-frame 5000 fix login\n\
-         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 1 FI  fix login  ○\n\
          quit\n",
     )
 }
@@ -3593,7 +3609,7 @@ fn the_status_row_shows_model_effort_cost_and_context() -> TestResult {
 }
 
 /// Dies with `1.0% / 200K` in the left third of a 254-column pane: every meter sat in the
-/// left group and the right one, the session name, is hidden in the console.
+/// left group and the right one, the session's id, stood alone.
 #[test]
 fn the_wide_pane_puts_its_meters_on_the_right() -> TestResult {
     let mut fixture = session_fixture();
@@ -3618,9 +3634,10 @@ fn the_wide_pane_puts_its_meters_on_the_right() -> TestResult {
         .split_once("1.0% / 200K")
         .unwrap_or_default();
     let tail = ratatui::text::Line::from(after).width();
-    // The meter's trailing space, the box's corner and the margin either side of it.
+    // The meter's trailing space, the session group after it, the box's corner and the margin.
+    let session = ratatui::text::Line::from(" › session SA s-alpha ").width();
     assert!(
-        tail <= 4,
+        tail <= 4 + session,
         "the context meter ends {tail} cells short of the edge: {row}"
     );
     Ok(())
@@ -3634,7 +3651,7 @@ fn a_routed_model_names_the_router() -> TestResult {
     fixture.push(Step::Push(|| {
         vec![config_frame("openrouter/anthropic/claude-opus-5.5", "high")]
     }));
-    run(
+    run_frames_with(
         "routed-model",
         fixture,
         "wait-frame 5000 s-alpha\n\
@@ -3642,7 +3659,10 @@ fn a_routed_model_names_the_router() -> TestResult {
          wait-frame 5000 replayed world\n\
          wait-frame 3000 claude-opus-5.5 via openrouter\n\
          quit\n",
+        SidebarMode::Full,
+        160,
     )
+    .map(drop)
 }
 
 fn running_push() -> Vec<Value> {
@@ -4914,18 +4934,92 @@ fn prompt_committed(frame: &Value) -> Vec<Value> {
         .and_then(Value::as_str)
         .unwrap_or("");
     let asked = entry("e3", Some("e2"), 3, &user_message(prompt));
-    let answered = entry("e4", Some("e3"), 4, &assistant("streamed answer"));
-    for saved in [asked, answered] {
-        frames.push(update(
-            "s-alpha",
-            json!({"sessionUpdate": "_yi/committed", "entry": saved}),
-        ));
+    let changed = json!({
+        "type": "model_change", "id": "e4", "provider": "faux", "modelId": "faux-1",
+        "parentId": "e3", "seq": 4, "timestamp": 4
+    });
+    let mut call_message = assistant("");
+    if let AgentMessage::Assistant {
+        content,
+        stop_reason,
+        ..
+    } = &mut call_message
+    {
+        *content = vec![Content::ToolCall {
+            id: "call-1".to_owned(),
+            name: "bash".to_owned(),
+            arguments: serde_json::Map::from_iter([("command".to_owned(), json!("echo hidden"))]),
+            thought_signature: None,
+            namespace: None,
+        }];
+        *stop_reason = StopReason::ToolUse;
     }
+    let call = entry("e5", Some("e4"), 5, &call_message);
+    let tool_result = json!({
+        "type": "message", "id": "e6",
+        "message": {
+            "role": "toolResult", "toolCallId": "call-1", "toolName": "bash",
+            "content": [{"type": "text", "text": "hidden tool output"}], "isError": false, "timestamp": 6
+        },
+        "parentId": "e5", "seq": 6, "timestamp": 6
+    });
+    let answered = entry("e7", Some("e6"), 7, &assistant("streamed answer"));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": asked}),
+    ));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": call, "ancestors": [changed]}),
+    ));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": answered, "ancestors": [tool_result]}),
+    ));
     frames
 }
 
-/// A reply that streamed in live is in no replay; the worker's committed notice is what lets
-/// its menu reach the ledger, so Inspect opens the entry the notice named.
+/// The session tree keeps a live tool call on the active path through hidden ancestors.
+fn rewind_live_tool_call(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e5"}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]["entryId"]));
+    }
+    vec![
+        replay("s-alpha", &[], 0, None),
+        ok(
+            frame,
+            json!({"leafId": "e2", "unsent": "again", "summarizing": false}),
+        ),
+    ]
+}
+
+#[test]
+fn a_live_tool_call_with_hidden_ancestors_rewinds_to_itself() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("session/prompt", prompt_committed));
+    steps.push(Step::Expect("_yi/rewind", rewind_live_tool_call));
+    let dir = Scratch::new("yi-console-frames-menu-live-rewind")?;
+    run_opts(
+        "menu-live-rewind",
+        Some(steps),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         type again\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\n\
+         key esc\nkey esc\nkey up\nwait-frame 3000 › ● assistant: ⚙ bash\n\
+         key enter\nwait-idle 5000\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let active_tool_row = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .any(|frame| frame.contains("› ● assistant: ⚙ bash"));
+    assert!(active_tool_row, "tool-call row is not on the active path");
+    Ok(())
+}
+
+/// A live reply is available for Inspect after its committed notice names its ledger entry.
 #[test]
 fn a_live_reply_is_inspectable_once_committed() -> TestResult {
     let mut steps = opened_unicode();
@@ -4936,7 +5030,7 @@ fn a_live_reply_is_inspectable_once_committed() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          type again\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\n\
          mouse right 25 13\nwait-frame 3000 Inspect\nkey up\nkey enter\n\
-         wait-frame 3000 entry e4\nquit\n",
+         wait-frame 3000 entry e7\nquit\n",
     )
 }
 
@@ -5529,6 +5623,92 @@ fn a_resumed_sessions_kernel_cells_fill_the_notebook() -> TestResult {
     Ok(())
 }
 
+/// The recorded kernel call and its result, `count` copies: each renumbered and with its script
+/// replaced, so a fixture is one session's shape with N cells in it.
+fn replayed_cells(count: usize) -> Vec<(Value, Value)> {
+    let entries = recorded(KERNEL_SESSION);
+    let Some(result) = entries
+        .iter()
+        .find(|e| e["message"]["toolName"] == "ipython")
+    else {
+        return Vec::new();
+    };
+    let Some(call) = entries
+        .iter()
+        .find(|e| e["message"]["content"][0]["id"] == result["message"]["toolCallId"])
+    else {
+        return Vec::new();
+    };
+    (0..count)
+        .map(|n| {
+            let (mut call, mut result) = (call.clone(), result.clone());
+            let id = json!(format!("call_{n}"));
+            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
+            call["message"]["content"][0]["id"] = id.clone();
+            result["message"]["toolCallId"] = id;
+            (call, result)
+        })
+        .collect()
+}
+
+/// Four kernel calls of one recorded session, each result carrying the mime a notebook renders
+/// it by: markdown, JSON, python, then the plain text it already drew.
+fn mime_entries() -> Vec<Value> {
+    let values = [
+        ("text/markdown", "# Tide survey\n\n- one\n- two"),
+        ("application/json", "{\"datum\":4}"),
+        ("text/x-python", "def tide(sea):\n    return sea"),
+        ("text/plain", "plain 42"),
+    ];
+    let mut out: Vec<Value> = Vec::new();
+    for ((call, mut result), (mime, text)) in replayed_cells(values.len()).into_iter().zip(values) {
+        result["message"]["details"] = json!({"stdout": "", "result": text, "resultMime": mime});
+        out.push(call);
+        out.push(result);
+    }
+    out.push(entry("e-tail", None, 9999, &assistant("kinds in")));
+    out
+}
+
+/// Dies with a declared mime drawn as its flat text: one frame of one recorded session must
+/// show a rendered heading, a pretty JSON row, a highlighted `def` and untouched plain text.
+#[test]
+fn a_replayed_sessions_values_draw_by_their_mime() -> TestResult {
+    let frame = run_frames_sized(
+        "replay-notebook-mimes",
+        replayed_session(|frame| resume_with(frame, &mime_entries())),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 kinds in\ncmd-i\n\
+         wait-frame 5000 ● [4]\nquit\n",
+        SidebarMode::Full,
+        (180, 40),
+    )?;
+    let markdown = cell_rows(&frame, 1)?;
+    assert!(
+        markdown.iter().any(|row| row.contains("Tide survey")),
+        "{markdown:?}"
+    );
+    assert!(
+        !markdown.iter().any(|row| row.contains("# Tide survey")),
+        "{markdown:?}"
+    );
+    let json = cell_rows(&frame, 2)?;
+    assert!(
+        json.iter().any(|row| row.contains("\"datum\": 4")),
+        "{json:?}"
+    );
+    let python = cell_rows(&frame, 3)?;
+    assert!(
+        python.iter().any(|row| row.contains("def tide(sea):")),
+        "{python:?}"
+    );
+    let plain = cell_rows(&frame, 4)?;
+    assert!(
+        plain.iter().any(|row| row.contains("plain 42")),
+        "{plain:?}"
+    );
+    Ok(())
+}
+
 /// A full replay after a reconnect finds the cells already there; it must not append them again.
 #[test]
 fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
@@ -5555,25 +5735,15 @@ fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
     Ok(())
 }
 
-/// `count` kernel calls: the recording's first call and result, each under its own ids and as a
-/// one-line cell, then a last reply `tail`.
+/// `count` kernel calls, each a one-line cell, then a last reply `tail`.
 fn cell_entries(count: usize, tail: &str) -> Vec<Value> {
-    let entries = recorded(KERNEL_SESSION);
-    let result = (entries.iter()).find(|e| e["message"]["toolName"] == "ipython");
-    let call = result.and_then(|r| {
-        (entries.iter()).find(|e| e["message"]["content"][0]["id"] == r["message"]["toolCallId"])
-    });
-    let mut out: Vec<Value> = (0..count)
-        .filter_map(|n| {
-            let (mut call, mut result) = (call.cloned()?, result.cloned()?);
-            let id = json!(format!("call_{n}"));
-            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
-            call["message"]["content"][0]["id"] = id.clone();
+    let mut out: Vec<Value> = replayed_cells(count)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(n, (call, mut result))| {
             result["message"]["details"]["stdout"] = json!(format!("{n}\n"));
-            result["message"]["toolCallId"] = id;
-            Some([call, result])
+            [call, result]
         })
-        .flatten()
         .collect();
     out.push(entry("e-tail", None, 9999, &assistant(tail)));
     out
@@ -5657,9 +5827,10 @@ fn a_resumed_sessions_edit_and_reads_fill_review() -> TestResult {
         .find_map(|line| line.strip_prefix("+++ b/"))
         .ok_or("no path")?;
     let (added, removed) = (&details["added"], &details["removed"]);
-    assert_eq!(
-        row_holding(&frame, "▸ ")?,
-        format!("▸ {path}  +{added} −{removed}")
+    let file_row = row_holding(&frame, "▸ ")?;
+    assert!(
+        file_row.starts_with("▸ ") && file_row.contains(&format!("{path}  +{added} −{removed}")),
+        "{file_row}"
     );
     let reads = results("read").len();
     assert_eq!(
@@ -5769,7 +5940,10 @@ fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestRe
     let row = row_holding(&frame, "Review · turn")?;
     assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
     let file = row_holding(&frame, "▸ ")?;
-    assert!(file.contains("▸ b.py  +2 −2"), "{file}");
+    assert!(
+        file.starts_with("▸ ") && file.contains("b.py  +2 −2"),
+        "{file}"
+    );
     Ok(())
 }
 
@@ -5913,4 +6087,91 @@ fn pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not() ->
         "the fence label opened a terminal: {label}"
     );
     Ok(())
+}
+
+/// Dies when an empty chat is a blank rectangle above its composer, or when a session that already
+/// has a transcript still wears the start screen over the words it replays.
+#[test]
+fn an_empty_chat_shows_the_start_screen_and_a_replayed_one_does_not() -> TestResult {
+    let marker = ready_marker(SidebarMode::Full);
+    let blank = format!(
+        "wait-frame 5000 {marker}\nkey enter\nwait-frame 5000 0.0% / 128K\n\
+         wait-frame 3000 ask below, or start with\nwait-frame 3000 command palette\nquit\n"
+    );
+    let frame = run_frames_sized(
+        "start-blank",
+        replayed_session(resume_blank),
+        &blank,
+        SidebarMode::Full,
+        (120, 40),
+    )?;
+    let rows: Vec<&str> = frame.lines().collect();
+    let at = rows
+        .iter()
+        .position(|row| row.contains("ask below, or start with"))
+        .ok_or("no start screen subtitle")?;
+    let col = rows
+        .get(at)
+        .and_then(|row| row.find("ask below"))
+        .unwrap_or(0);
+    let above: String = rows
+        .get(at.saturating_sub(1))
+        .map_or("", |row| row.get(col..).unwrap_or(""))
+        .to_owned();
+    assert!(
+        above.trim_matches([' ', '"']).is_empty(),
+        "a title still sits above the subtitle: {above:?}"
+    );
+    if let Some(heading) = rows.iter().position(|row| {
+        row.get(col..)
+            .is_some_and(|rest| rest.starts_with("recent"))
+    }) {
+        let first = rows
+            .get(heading + 1)
+            .and_then(|row| row.get(col..))
+            .unwrap_or("");
+        assert!(
+            !first.starts_with(' '),
+            "a recent session is indented: {first:?}"
+        );
+    }
+    let busy = format!(
+        "wait-frame 5000 {marker}\nkey enter\nwait-frame 5000 third message\n\
+         wait-frame 2000 !ask below, or start with\nquit\n"
+    );
+    run_frames_sized(
+        "start-replayed",
+        replayed_session(resume_three_messages),
+        &busy,
+        SidebarMode::Full,
+        (120, 40),
+    )?;
+    Ok(())
+}
+
+fn worker_replaced() -> Vec<Value> {
+    vec![update(
+        "s-new",
+        json!({"sessionUpdate": "_yi/worker_replaced", "binary": "/bin/yi", "generation": 2}),
+    )]
+}
+
+fn resumed_notice() -> Vec<Value> {
+    vec![update(
+        "s-new",
+        json!({"sessionUpdate": "_yi/notice", "text": "resumed on the new build"}),
+    )]
+}
+
+/// Dies with a pane left bound to the stream of a worker the daemon replaced: the console must
+/// resume the session from the ledger the moment `_yi/worker_replaced` arrives.
+#[test]
+fn a_replaced_worker_resumes_the_pane_bound_to_its_session() -> TestResult {
+    let mut steps = new_session_steps();
+    steps.push(Step::Push(worker_replaced));
+    steps.push(Step::Expect("session/resume", resume_blank));
+    steps.push(Step::Push(resumed_notice));
+    let script = "wait-frame 5000 command palette\nkey alt-n\nwait-frame 5000 s-new\n\
+                  wait-frame 5000 resumed on the new build\nquit\n";
+    run("worker-replaced", steps, script)
 }

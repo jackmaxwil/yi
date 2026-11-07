@@ -4,39 +4,15 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+pub(crate) use crate::faux_model::faux_model;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Effort, Model, ModelCost, Reuse};
+use yi_types::model::{Effort, Model, Reuse};
 
 type TestResult = Result<(), Box<dyn Error>>;
 type Script = Arc<Mutex<Vec<AgentMessage>>>;
-
-pub(crate) fn faux_model(context_window: u64) -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 pub(crate) struct Family {
     root: Scratch,
@@ -61,6 +37,8 @@ pub(crate) struct Setup {
     pub(crate) parent: Option<yi_session::SharedSession>,
     pub(crate) provider: Option<Arc<ProviderStream>>,
     pub(crate) model: Option<Model>,
+    pub(crate) resolver: Option<Arc<yi_runtime::fetch::Resolver>>,
+    pub(crate) kernel: Option<Hook>,
 }
 
 impl Default for Setup {
@@ -73,6 +51,8 @@ impl Default for Setup {
             parent: None,
             provider: None,
             model: None,
+            resolver: None,
+            kernel: None,
         }
     }
 }
@@ -95,6 +75,8 @@ pub(crate) fn family_with(
         parent,
         provider,
         model,
+        resolver,
+        kernel,
     } = setup;
     let model = model.unwrap_or_else(|| faux_model(window));
     let fresh = || Arc::new(ProviderStream::new(None));
@@ -149,7 +131,12 @@ pub(crate) fn family_with(
                 provider,
                 build,
                 &reader,
-                yi_tools::builtin_tools(),
+                (yi_tools::builtin_tools, |_| {
+                    if let Some(kernel) = &kernel {
+                        kernel();
+                    }
+                    None
+                }),
                 (cwd.clone(), &home),
                 broker.clone(),
                 rules.clone(),
@@ -186,10 +173,12 @@ pub(crate) fn family_with(
         plans_dir: root.join("plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
-    host.set_resolver(Arc::new(yi_runtime::fetch::Resolver::new(
-        workspace,
-        yi_runtime::Wall::default(),
-    )));
+    host.set_resolver(resolver.unwrap_or_else(|| {
+        Arc::new(yi_runtime::fetch::Resolver::new(
+            workspace,
+            yi_runtime::Wall::default(),
+        ))
+    }));
     Ok(Family {
         root,
         host,
@@ -846,7 +835,35 @@ async fn a_worker_writes_where_a_reader_is_walled_and_holds_a_worker_slot() -> T
 }
 
 #[tokio::test]
-async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
+async fn a_one_turn_worker_naming_ipython_builds_no_kernel() -> TestResult {
+    let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sink = Arc::clone(&builds);
+    let kernel: Hook = Arc::new(move || {
+        sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    let family = family_with(
+        1,
+        Arc::new(Mutex::new(vec![reply("done")])),
+        Setup {
+            kernel: Some(kernel),
+            ..Setup::default()
+        },
+    )?;
+    family.host.spawn(
+        "Answer once".to_owned(),
+        kwargs(json!({"name": "once", "role": "worker", "tools": ["ipython"], "turns": 1})),
+    )?;
+    let rows = transcript(&family, "once").await?;
+    assert_eq!(
+        builds.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "a one-turn worker built a kernel it cannot call: {rows:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_worker_is_refused_a_fork_a_check_and_a_tool_it_may_not_call() -> TestResult {
     let family = family(4, Arc::default())?;
     let refused = |args: Value| family.host.spawn("w".to_owned(), kwargs(args)).err();
     let fork = refused(json!({"role": "worker", "fork": "all"})).ok_or("fork admitted")?;
@@ -860,11 +877,10 @@ async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
         check.contains("a worker answers once and runs no check"),
         "{check}"
     );
-    let kernel =
-        refused(json!({"role": "worker", "tools": ["ipython"]})).ok_or("ipython admitted")?;
+    let spawn = refused(json!({"role": "worker", "tools": ["answer"]})).ok_or("answer admitted")?;
     assert_eq!(
-        kernel,
-        "a worker may call read, grep, edit, write, bash and get_context, not ipython; \
+        spawn,
+        "a worker may call read, grep, edit, write, bash, get_context and ipython, not answer; \
          role=\"root\" spawns a full child"
     );
     let turns = refused(json!({"role": "worker", "turns": 41})).ok_or("41 turns admitted")?;
@@ -1144,4 +1160,66 @@ fn parent_greps_child(family: &Family, name: &str) -> Result<String, Box<dyn Err
         .with_transcripts(Arc::new(desk));
     let input = json!({"pattern": "cutover", "path": format!("history://{name}")});
     Ok(crate::support::routed_tool(&Arc::new(resolver), "grep", input)?.0)
+}
+
+#[tokio::test]
+async fn a_child_that_can_read_is_pointed_at_the_catalog_and_the_skills_its_parent_loaded()
+-> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("one"), reply("two")]));
+    let skills = Scratch::new("yi-reader-skills")?;
+    let home = skills.join("home");
+    for (name, description) in [
+        (
+            "release-notes",
+            "Draft release notes from merged pull requests.",
+        ),
+        ("changelog", "Keep the changelog in the house format."),
+        ("unread", "Never read by the parent."),
+    ] {
+        let dir = home.join(".yi/skills").join(name);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nBody.\n"),
+        )?;
+    }
+    std::fs::write(
+        home.join(".yi/skills/changelog/format.md"),
+        "Newest first.\n",
+    )?;
+    let resolver = yi_runtime::fetch::Resolver::new(skills.join("ws"), yi_runtime::Wall::default())
+        .with_home(home);
+    resolver.fetch(&"yi://skills/release-notes".parse()?)?;
+    resolver.fetch(&"yi://skills/changelog/format.md".parse()?)?;
+    let setup = Setup {
+        resolver: Some(Arc::new(resolver)),
+        ..Setup::default()
+    };
+    let family = family_with(4, script, setup)?;
+    family.host.spawn(
+        "Which line names the sky?".to_owned(),
+        kwargs(json!({"name": "reads", "role": "reader", "tools": ["read"], "turns": 3})),
+    )?;
+    family.host.spawn(
+        "Which line names the sea?".to_owned(),
+        kwargs(json!({"name": "blind", "role": "reader", "tools": []})),
+    )?;
+    let prompts = family.prompts.lock().map_err(|_| "poisoned")?.clone();
+    let (reads, blind) = (
+        prompts.first().ok_or("no reading reader built")?,
+        prompts.get(1).ok_or("no tool-less reader built")?,
+    );
+    assert!(
+        reads.ends_with(&format!(
+            "{}\nYour parent loaded: yi://skills/changelog, yi://skills/release-notes",
+            yi_runtime::skills::CHILD_POINTER
+        )),
+        "{reads}"
+    );
+    assert!(!reads.contains("unread"), "{reads}");
+    assert!(
+        !blind.contains("yi://skills"),
+        "a reader with no read is pointed nowhere: {blind}"
+    );
+    Ok(())
 }

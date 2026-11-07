@@ -20,6 +20,7 @@ TRAILER_OK = re.compile(r"^(Opt-(Run|Delta|Lever|Cases)|Signed-off-by)$", re.I)
 # it, so `git blame` resolves to the user's own words. Its value is checked
 # because a trailer nothing can resolve indexes nothing.
 PLAN_TRAILER = re.compile(r"^plan://[a-z0-9.-]+/[^\s]+$")
+GITHUB_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 LIMIT = 72
 PREFIX = "Ratchet: "
@@ -74,6 +75,10 @@ def trailer_errors(trailers):
         key = key.strip()
         if not key or TRAILER_OK.match(key):
             continue
+        if key.lower() == "github-commit":
+            if not GITHUB_COMMIT.fullmatch(value.strip()):
+                errs.append(f"GitHub-Commit trailer {value.strip()!r} is not a full commit id")
+            continue
         if key.lower() == "plan":
             if not PLAN_TRAILER.match(value.strip()):
                 errs.append(f"Plan trailer {value.strip()!r} is not a plan://<plan>/<todo> url")
@@ -117,6 +122,8 @@ def selfcheck():
         "a new baseline seeding with its gate": (mix_errors(1, [("A", b), ("A", code)]), False),
         "a merge carrying both": (mix_errors(2, [("M", b), ("M", code)]), False),
         "a doc beside a baseline": (mix_errors(1, [("M", b), ("M", "docs/FORGE.md")]), False),
+        "a forge source trailer": (trailer_errors("GitHub-Commit: d9417b163c2d704763d347b1eecb066b79183a91"), False),
+        "a malformed forge source trailer": (trailer_errors("GitHub-Commit: d941"), True),
     }
     fail([f"{name}: {'not refused' if refuse else 'refused'}" for name, (errs, refuse) in cases.items() if bool(errs) != refuse],
          "commit_style selfcheck")

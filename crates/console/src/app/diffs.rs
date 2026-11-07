@@ -371,6 +371,7 @@ impl App {
                             session,
                             scope,
                             drawn,
+                            ui: crate::panes::ReviewUi::default(),
                         },
                         crate::panes::TOP,
                     )

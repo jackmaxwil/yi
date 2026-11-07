@@ -45,11 +45,10 @@ impl App {
 
     pub(super) fn dir_of(&self, pane: PaneId) -> String {
         let session = match self.state.panes.get(&pane).map(|pane| &pane.content) {
-            Some(
-                PaneContent::Editor(crate::model::Editor { workdir, .. })
-                | PaneContent::Markdown { workdir, .. }
-                | PaneContent::Diff { workdir, .. },
-            ) => return workdir.clone(),
+            Some(PaneContent::Editor(tabs)) => return tabs.workdir.clone(),
+            Some(PaneContent::Markdown { workdir, .. } | PaneContent::Diff { workdir, .. }) => {
+                return workdir.clone();
+            }
             Some(PaneContent::SessionDiff { session, .. }) => Some(session.clone()),
             _ => self
                 .state

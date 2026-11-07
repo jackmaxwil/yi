@@ -5,36 +5,12 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::faux_model::faux_model;
 use serde_json::{Map, Value, json};
 use yi_runtime::{ProviderStream, SubagentHost, SubagentHostOptions};
-use yi_types::model::{Effort, Model, ModelCost};
+use yi_types::model::Effort;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 /// A host whose parent has a real transcript on disk, as every CLI root does at spawn time.
 type Slot = Arc<std::sync::Mutex<Option<yi_session::SharedSession>>>;
@@ -72,7 +48,7 @@ fn host_with_providers(
         cwd: std::env::temp_dir(),
         home: std::env::temp_dir(),
         lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), Effort::Medium)),
+        defaults: Arc::new(|| (faux_model(128_000), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let provider = Arc::new(ProviderStream::new(None));
             if let Ok(mut held) = factory_providers.lock() {

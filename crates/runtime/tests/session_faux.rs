@@ -1,6 +1,7 @@
 use crate::scratch;
 use scratch::Scratch;
 
+use crate::faux_model::faux_model;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,31 +11,17 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Status};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
 
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
+fn session(provider: Arc<ProviderStream>) -> AgentSession {
+    AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(128_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
         },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
+        provider,
+    )
 }
 
 #[tokio::test]
@@ -47,7 +34,7 @@ async fn prompt_runs_to_idle_with_events() -> Result<(), Box<dyn Error>> {
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -83,7 +70,7 @@ fn session_with_reply(text: &str) -> AgentSession {
     AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -106,15 +93,7 @@ async fn executes_a_read_tool_call_through_the_adapter() -> Result<(), Box<dyn E
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
     let mut events = session.subscribe();
     session.prompt("read the fact")?;
@@ -193,7 +172,7 @@ fn one_call_session(
     AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -306,15 +285,7 @@ async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     let broker = Arc::new(yi_runtime::PermissionBroker::new(
         yi_runtime::PermissionMode::Ask,
         dir.to_path_buf(),
@@ -360,7 +331,7 @@ async fn a_session_still_runs_turns_after_an_abort() -> Result<(), Box<dyn Error
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -582,15 +553,7 @@ fn note(log: &Log, what: &'static str) {
 fn capture_session(dir: &Scratch, replies: Vec<AgentMessage>) -> (AgentSession, Log) {
     let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(replies);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
     let log: Log = Arc::default();
     let (start, request, end) = (Arc::clone(&log), Arc::clone(&log), Arc::clone(&log));
@@ -979,7 +942,7 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1058,7 +1021,7 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1072,6 +1035,7 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     }));
     session.prompt("hi")?;
@@ -1153,15 +1117,7 @@ async fn a_mode_flip_and_the_protocol_survive_a_compaction() -> Result<(), Box<d
         reply("## Goal\nThe summary"),
         reply("reply 4"),
     ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     let broker = Arc::new(yi_runtime::permission::PermissionBroker::new(
         yi_runtime::PermissionMode::Auto,
         dir.to_path_buf(),
@@ -1183,6 +1139,7 @@ async fn a_mode_flip_and_the_protocol_survive_a_compaction() -> Result<(), Box<d
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     }));
     session.prompt("hi")?;
@@ -1258,7 +1215,7 @@ fn bash_session(
     provider.queue_faux(calls.chain(replies).collect());
     let config = SessionConfig {
         system_prompt: "sys".to_owned(),
-        model: faux_model(),
+        model: faux_model(128_000),
         thinking_level: None,
         tool_execution: ExecutionMode::Sequential,
     };
@@ -1575,7 +1532,7 @@ async fn every_wait_idle_wakes_when_its_run_settles() -> Result<(), Box<dyn Erro
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1671,15 +1628,7 @@ async fn an_empty_optional_argument_is_not_sent_and_a_required_one_is() -> Resul
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
     let mut events = session.subscribe();
     session.prompt("read calc.py and write an empty file")?;
@@ -1717,7 +1666,7 @@ async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
 -> Result<(), Box<dyn Error>> {
     let dir = Scratch::new("yi-runtime-reclaim")?;
     let provider = Arc::new(ProviderStream::new(None));
-    let mut script: Vec<AgentMessage> = (0..8)
+    let mut script: Vec<AgentMessage> = (0..20)
         .map(|turn| {
             let args = serde_json::json!({"command": format!("seq 1 1500 # {turn}")});
             let args = args.as_object().cloned().unwrap_or_default();
@@ -1730,7 +1679,7 @@ async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
         StopReason::Stop,
     ));
     provider.queue_faux(script);
-    let mut model = faux_model();
+    let mut model = faux_model(128_000);
     model.cost.input = serde_json::Number::from(1u64);
     let mut session = AgentSession::new(
         SessionConfig {
@@ -1754,7 +1703,7 @@ async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
         .collect();
     assert_eq!(ids.first(), Some(&"call-0"), "{records:?}");
     assert!(
-        !ids.contains(&"call-7"),
+        !ids.contains(&"call-19"),
         "the newest results stay: {records:?}"
     );
     assert!(
@@ -1795,7 +1744,7 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
         let mut session = AgentSession::new(
             SessionConfig {
                 system_prompt: "sys".to_owned(),
-                model: faux_model(),
+                model: faux_model(128_000),
                 thinking_level: None,
                 tool_execution: ExecutionMode::Sequential,
             },
@@ -1804,7 +1753,7 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
         session.set_spills(dir.join("spills"));
         session.set_selector(Some(yi_runtime::select::Selector::new(
             picker,
-            faux_model(),
+            faux_model(128_000),
         )));
         let store = crate::support::memory_store("select");
         session.attach_store(Arc::clone(&store)).ok();
@@ -1902,7 +1851,7 @@ async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

@@ -1,6 +1,6 @@
 ---
 issue: Closes #1542
-raise: crate cli +101, crate types +8, tests +432
+raise: crate cli +98, crate types +8, tests +432
 ledger+: Pi RPC mode | each command answers from its own task, so a compact that takes seconds never parks the event arm and fills the broadcast buffer, `isCompacting` reports a compact in flight, `get_commands` lists the RPC commands this transport answers, and the two steering-mode setters refuse rather than echo a mode nothing reads
 ---
 `yi stats <id>` billed only the messages it could fold, so a family's child lanes

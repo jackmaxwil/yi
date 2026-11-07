@@ -27,6 +27,7 @@ pub mod render;
 pub mod select;
 pub mod settings;
 pub mod sidebar;
+mod start;
 mod title;
 
 use std::io::Stdout;
@@ -287,21 +288,17 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
     app.wake = Some(event_tx.clone());
-    app.kitty = crate::kitty::supported(
-        std::env::var("TERM").ok().as_deref(),
-        std::env::var("TERM_PROGRAM").ok().as_deref(),
-    );
+    app.kitty = yi_tui::orb::kitty::supported();
     configure(&mut app, options);
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
     );
-    app.cmd_hints = crate::kitty::supported(
+    app.cmd_hints = yi_tui::orb::kitty::kitty_named_terminal(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
     );
-
     if let Err(error) = enable_raw_mode() {
         eprintln!("error: raw mode: {error}");
         return 1;
@@ -386,6 +383,7 @@ fn run_interactive(
             scheduler.request();
         }
         let mut out = std::io::stdout();
+        app.flush_osc(&mut out);
         if step_frame(
             app,
             terminal,
@@ -416,10 +414,7 @@ fn step_frame<B: Backend>(
         let start = Instant::now();
         present(app, terminal, theme, orb_owners, out)?;
         set_window_title(app);
-        for sequence in app.osc_out.drain(..) {
-            let _ = out.write_all(sequence.as_bytes());
-            let _ = out.flush();
-        }
+        app.flush_osc(out);
         scheduler.mark_drawn(start, Instant::now());
     } else if app.kitty {
         let _ = yi_tui::term::framed(out, |out| {
@@ -513,8 +508,8 @@ fn place_chat_orbs(app: &mut App, out: &mut impl std::io::Write) {
     let focused = app.state.focused_pane_id();
     let shown = |id: PaneId| {
         app.hits.as_ref().is_some_and(|hits| {
-            let pane = hits.panes.iter().find(|(pane, _)| *pane == id);
-            pane.is_some_and(|(_, rect)| !hits.overlays.iter().any(|cover| cover.intersects(*rect)))
+            hits.rect_of(id)
+                .is_some_and(|rect| !hits.overlays.iter().any(|cover| cover.intersects(rect)))
         })
     };
     let shown: Vec<PaneId> = app
@@ -569,20 +564,14 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
                 .next()
         })
         .and_then(|image| {
-            let rect = app
-                .hits
-                .as_ref()
-                .and_then(|hits| {
-                    hits.panes
-                        .iter()
-                        .find(|(id, _)| focused.is_some_and(|pane| id == &pane))
-                        .map(|(_, rect)| {
-                            let inner = rect.inner(crate::layout::pane_margin(true, false));
-                            ratatui::layout::Rect {
-                                height: inner.height / 2,
-                                ..inner
-                            }
-                        })
+            let rect = focused.and_then(|pane| app.hits.as_ref()?.rect_of(pane));
+            let rect = rect
+                .map(|rect| {
+                    let inner = rect.inner(crate::layout::pane_margin(true, false));
+                    ratatui::layout::Rect {
+                        height: inner.height / 2,
+                        ..inner
+                    }
                 })
                 .filter(|half| {
                     half.height >= 3

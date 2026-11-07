@@ -8,7 +8,8 @@ use std::path::Path;
 use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, fstat, mkdirat, openat, unlinkat};
 use rustix::io::Errno;
 
-const DEPTH_MAX: usize = 8;
+/// The deepest `refs/…` the sweep walks; past it an entry is named, never taken for a ref.
+pub const DEPTH_MAX: usize = 8;
 pub const NAMES_PER_DIR_MAX: usize = 1024;
 const VALUE_MAX_BYTES: u64 = 64;
 
@@ -18,6 +19,8 @@ pub struct Taken {
     pub refs: Vec<(Vec<u8>, Vec<u8>)>,
     /// Names that were a link, a FIFO or anything else no ref is, and are gone now.
     pub refused: usize,
+    /// A directory past [`DEPTH_MAX`]: no ref, and it stays, so a sweep says so once a call.
+    pub too_deep: usize,
     pub past_cap: bool,
     pub past_names: bool,
 }
@@ -86,6 +89,12 @@ pub fn take_refs(store: &Path, max: usize) -> Taken {
             match (opened, kind) {
                 (Ok(file), Some(FileType::Directory)) if depth < DEPTH_MAX => {
                     walk.push((file, path, depth.saturating_add(1)));
+                    continue;
+                }
+                (Ok(_), Some(FileType::Directory)) => {
+                    let _an_empty_one_goes =
+                        unlinkat(dir.as_fd(), name.as_slice(), AtFlags::REMOVEDIR);
+                    taken.too_deep = taken.too_deep.saturating_add(1);
                     continue;
                 }
                 (Ok(file), Some(FileType::RegularFile)) => {

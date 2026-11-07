@@ -183,4 +183,14 @@ impl PermissionBroker {
         (self.prompts_close_on_settle.load(Ordering::Relaxed))
             .then(|| ask_or_judge(self.asker.as_ref(), ask, late))
     }
+
+    /// A long patch is cut: the prompt is a decision aid, not the file.
+    pub(crate) fn cut_preview(patch: &str) -> String {
+        const PREVIEW_LINES: usize = 40;
+        let mut lines: Vec<&str> = patch.lines().take(PREVIEW_LINES).collect();
+        if patch.lines().count() > PREVIEW_LINES {
+            lines.push("… patch truncated");
+        }
+        lines.join("\n")
+    }
 }

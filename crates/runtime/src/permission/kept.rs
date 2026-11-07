@@ -195,6 +195,19 @@ impl PermissionBroker {
         Ok(())
     }
 
+    /// Confines this holder's writes inside its tree, and its children's, to `glob` and any other
+    /// scope. The run's own, so unlike a grant it is never journaled: `--continue` opens unscoped.
+    pub fn grant_scope(&self, glob: &str) -> Result<(), String> {
+        let scope = yi_permission::write_scope(glob)?;
+        let kept = (self.lock_rules()).insert(
+            scope.kind,
+            &scope.canonical,
+            &scope.label,
+            RuleDecision::Allow,
+        );
+        kept.map_err(|error| error.to_string())
+    }
+
     /// The session store in use, when `--session-dir` moved it from `~/.yi/sessions`.
     pub fn session_stores(&self) -> &[PathBuf] {
         &self.context.host_owned

@@ -920,6 +920,78 @@ fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
     outcome
 }
 
+/// A request waiting in the mailbox of a session no process holds starts it: the daemon resumes
+/// it through the worker for its repository, with no client and no model turn asked for, and
+/// the session reads the letter.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_request_in_a_stopped_sessions_mailbox_starts_it_and_is_read() -> TestResult {
+    use yi_runtime::session_store::{JsonlRepo, SessionRepo, lock_session};
+    use yi_types::mail::{Envelope, Hops, Kind, MailId};
+    let dir = Scratch::new("yi-serve-mail-start")?;
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    let sessions = dir.join("sessions");
+    let id = {
+        let mut store = JsonlRepo::new(sessions.clone(), repo.display().to_string());
+        let store = store.create(Default::default())?;
+        lock_session(&store).set_name(Some("sleeper".to_owned()))?;
+        lock_session(&store).metadata().id.clone()
+    };
+    let channels = sessions.join("channels");
+    let long_ago = yi_runtime::session_store::now_ms().saturating_sub(10 * 60_000);
+    let request = Envelope {
+        id: MailId("asker-1".to_owned()),
+        from: "history://asker".to_owned(),
+        from_incarnation: None,
+        to: format!("history://{id}"),
+        to_incarnation: None,
+        kind: Kind::Request,
+        conversation: MailId("asker-1".to_owned()),
+        in_reply_to: None,
+        seq: long_ago,
+        sent_at: long_ago,
+        deadline_ms: None,
+        body: "is the gate green?".to_owned(),
+        reference: None,
+        answered_by: None,
+        origin: None,
+        intent: Vec::new(),
+        hops: Hops(1),
+    };
+    std::fs::create_dir_all(&channels)?;
+    let address = yi_runtime::post::mailbox(&id);
+    let channel = yi_runtime::schedule::channel::Channel::named(&channels, &address)?;
+    channel.open(&address, None)?;
+    channel.append(&request.id.0, long_ago, serde_json::to_value(&request)?)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let meta = channels.join(format!("mail-{id}.json"));
+        wait_until(Instant::now() + Duration::from_secs(60), || {
+            let acked = std::fs::read_to_string(&meta)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|meta| {
+                    meta["acks"]
+                        .as_object()?
+                        .values()
+                        .filter_map(Value::as_u64)
+                        .max()
+                });
+            Ok(acked.is_some_and(|offset| offset > 0))
+        })?;
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let row =
+            listed_row(&mut client, &id)?.ok_or("the daemon must list the session it started")?;
+        assert_eq!(row["cwd"], repo.display().to_string(), "{row}");
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// The pids of the workers serving `root`, read from the process table.
 fn worker_pids(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     #[expect(
@@ -1047,6 +1119,91 @@ fn open_in_runs_the_configured_app_on_the_saved_message() -> TestResult {
         );
         Ok(())
     })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
+/// The owner's dev loop: a root's worker is swapped for a freshly built binary while the
+/// supervisor and the attached client stay up, and the same session resumes from the ledger.
+#[test]
+fn replacing_a_worker_keeps_the_session_and_the_daemon_serving_it() -> TestResult {
+    let dir = Scratch::new("yi-worker-replace")?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let session_id = new_session(&mut client, "n1", &root)?;
+        let turn = client.request_with_notifications(
+            "p1",
+            "session/prompt",
+            json!({"sessionId": session_id,
+                "prompt": [{"type": "text", "text": "before the swap"}]}),
+        )?;
+        let idle = |frame: &Value| frame["params"]["update"]["state"] == "idle";
+        if !turn.iter().any(idle) {
+            client.read_until(idle)?;
+        }
+
+        let binary = crate::yi_bin::yi_command(&dir.home()?);
+        let replaced = client.request(
+            "w1",
+            "_yi/worker_replace",
+            json!({"cwd": root.display().to_string(), "binary": Path::new(binary.get_program())}),
+        )?;
+        assert!(
+            replaced.get("error").is_none(),
+            "the replacement was refused: {replaced}"
+        );
+        assert_eq!(replaced["result"]["from"], 1, "{replaced}");
+        assert_eq!(
+            replaced["result"]["to"], 2,
+            "a new generation serves: {replaced}"
+        );
+        assert!(
+            replaced["result"]["sessions"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|row| row == &json!(session_id))),
+            "the session is not in what the new generation holds: {replaced}"
+        );
+
+        let resumed = client.request_with_notifications(
+            "r2",
+            "session/resume",
+            json!({"sessionId": session_id, "cwd": root.display().to_string(), "replayFrom": 0}),
+        )?;
+        let answer = resumed.last().ok_or("no resume answer")?;
+        assert!(
+            answer.get("error").is_none(),
+            "the new worker does not hold the session: {answer}"
+        );
+        assert!(
+            resumed
+                .iter()
+                .any(|frame| frame.to_string().contains("before the swap")),
+            "the session did not resume from the ledger: {resumed:?}"
+        );
+
+        let answered = client.request_with_notifications(
+            "p2",
+            "session/prompt",
+            json!({"sessionId": session_id,
+                "prompt": [{"type": "text", "text": "after the swap"}]}),
+        )?;
+        let chunk = |frame: &Value| {
+            frame["method"] == "session/update"
+                && frame["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        };
+        let spoke = answered.iter().any(chunk);
+        if !spoke {
+            client.read_until(chunk)?;
+        }
+        Ok(())
+    })();
+
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome

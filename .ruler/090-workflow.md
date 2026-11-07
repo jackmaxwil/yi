@@ -21,12 +21,15 @@
   every other `word:` prefix fails, conventional-commit dialect included. Body only when the why
   is not obvious from the diff. check_commit_style.py gates `HEAD --not origin/main`, and the
   same script reads `PR_TITLE` so CI judges the title by the identical rule.
-- No trailers, with three carve-outs: the flywheel plan's §8 `Opt-*` set on optimizer commits, one
-  `Plan: plan://<plan>/<todo>` on a commit that lands work under a plan, and the trailers git writes
-  itself. Assistant co-author trailers stay banned outright. The `Plan:` value is checked as a URL,
-  because a trailer nothing can resolve indexes nothing: it is what makes `git blame` → commit →
-  todo → goal → the user's own words resolve with no inference, and the index only holds what was
-  trailered when it landed, so it is written from the first such commit rather than added later.
+- No trailers, with four carve-outs: the flywheel plan's §8 `Opt-*` set on optimizer commits, one
+  `Plan: plan://<plan>/<todo>` on a commit that lands work under a plan, the trailers git writes
+  itself, and `GitHub-Commit: <40-hex sha>`, written by yi-bot's history-preserving GitHub import
+  on an imported commit to record the GitHub-side commit it came from. The current squash intake in
+  `scripts/intake/bridge.py` spells that source head `GitHub-Head:`. Assistant co-author trailers
+  stay banned outright. The `Plan:` value is checked as a URL, because a trailer nothing can resolve
+  indexes nothing: it is what makes `git blame` → commit → todo → goal → the user's own words resolve
+  with no inference, and the index only holds what was trailered when it landed, so it is written
+  from the first such commit rather than added later.
 - A PR body is the cold-reader narrative in .github/PULL_REQUEST_TEMPLATE.md — why needed,
   summary, user outcomes, seen red, UI changes, files-edited map, schema changes, deleted /
   alternatives, risk and rollback, performance, architecture notes — every section written and
@@ -42,7 +45,8 @@
   construction: they add no ledger row and move no bytes past the band.
 - A user-visible behavior change writes `ledger+`, `ledger~`, `ledger=` or `ledger-` lines in its
   change file, in the same change as the code. The recorder applies them to the ARCHITECTURE
-  feature ledger after the merge; a branch that edits a row is refused and told the lines to write.
+  feature ledger after the merge; a branch that edits a row directly is refused and told the lines
+  to write, whenever that edit was committed.
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
   rendered from the row by the recorder rather than hand-drifted) and a line in the docs/solutions index.
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage

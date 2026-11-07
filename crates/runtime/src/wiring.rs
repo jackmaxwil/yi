@@ -7,9 +7,11 @@ use yi_types::model::Model;
 
 use crate::args::Args;
 use crate::mailbox::{ParentLink, register_child_messaging};
+use crate::permission::PermissionBroker;
 use crate::rules::RuleEngine;
 use crate::session::AgentSession;
 use crate::subagent::{SubagentHost, SubagentHostOptions};
+use crate::wall::Wall;
 
 mod child;
 
@@ -23,7 +25,7 @@ pub struct RuntimeWiring {
     pub home: PathBuf,
     /// `lanes.slots`: how many worktree slots the repo's pool holds.
     pub lane_slots: u8,
-    pub broker: Option<Arc<crate::permission::PermissionBroker>>,
+    pub broker: Option<Arc<PermissionBroker>>,
     pub tools: Arc<dyn Fn() -> Vec<Arc<dyn yi_tools::Tool>> + Send + Sync>,
     pub depth: u8,
     pub max_depth: u8,
@@ -46,7 +48,7 @@ pub struct RuntimeWiring {
     /// Set for a child: its §12 route back into the family that spawned it.
     pub parent_link: Option<ParentLink>,
     /// The wall reduction: paths this session may not touch (plan §3.4 wall).
-    pub wall: crate::wall::Wall,
+    pub wall: Wall,
     /// `bash.autoBackgroundMs`, for a call that passes no `wait`; None backgrounds only one that does.
     pub auto_background: Option<std::time::Duration>,
     /// `--deadline`: the run's wall clock, counted down in the environment block and enforced.
@@ -305,7 +307,7 @@ fn wire_fetch(
     host: &Arc<SubagentHost>,
     registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
-    kernels: Arc<crate::fetch::KernelServiceMap>,
+    checkpoint_show: Arc<dyn crate::fetch::CheckpointShow>,
 ) -> Arc<crate::fetch::Resolver> {
     let transcripts = crate::fetch::SessionTranscripts::new(
         Arc::clone(host),
@@ -326,22 +328,30 @@ fn wire_fetch(
     )
     .with_plans_dir(plans_dir.to_path_buf())
     .with_log(log)
-    .with_kernel_variables(kernels)
+    .with_kernel_variables(wiring.kernels.clone())
     .with_transcripts(transcripts)
     .with_family_dir(wiring.family_dir())
     .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>)
     .with_home(wiring.home.clone())
     .with_screen(session.screeners());
-    if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
-        resolver = resolver.with_checkpoint_show(show);
-    }
+    resolver = resolver.with_checkpoint_show(checkpoint_show);
     resolver = resolver.with_mcp_read(wiring.mcp_read.clone());
     let resolver = Arc::new(resolver);
     host.set_resolver(Arc::clone(&resolver));
     if let (Some(sessions), 0) = (&wiring.sessions_dir, wiring.depth) {
         crate::post::wire(host, sessions.join("channels"));
     }
-    let handler = Arc::clone(&resolver);
+    register_fetch(session, wiring, registry, &resolver);
+    resolver
+}
+
+fn register_fetch(
+    session: &AgentSession,
+    wiring: &RuntimeWiring,
+    registry: &mut crate::kernel::HostRegistry,
+    resolver: &Arc<crate::fetch::Resolver>,
+) {
+    let handler = Arc::clone(resolver);
     registry.register("fetch", move |payload| {
         let resolver = Arc::clone(&handler);
         Box::pin(async move { crate::fetch::serve(&resolver, &payload).await })
@@ -357,7 +367,6 @@ fn wire_fetch(
         wiring.cwd.clone(),
         wiring.depth == 0,
     );
-    resolver
 }
 
 /// The engine and `plan.op` with this session's principal; `None` (no plan surface at all)
@@ -638,6 +647,87 @@ fn wire_kernel(
     Arc::new(service.with_own_paths(wiring.own_paths(session)))
 }
 
+/// A kernel `bash()` job's profile, built as it spawns: the kernel's own plus every write
+/// grant kept since, so a grant reaches a kernel that was running before it (#600).
+fn job_profile(
+    wiring: &RuntimeWiring,
+    session: &AgentSession,
+) -> impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static {
+    let (profile, broker) = (wiring.exec_sandbox(), wiring.broker.clone());
+    let (own, state) = (wiring.own_paths(session), wiring.writable_kernel_dir());
+    move || {
+        let mut profile = profile.clone()?;
+        let kept = broker.iter().flat_map(|broker| broker.kept_writes());
+        profile.writable.extend(kept);
+        profile
+            .spared
+            .extend(own.iter().flat_map(|own| own(state.as_deref())));
+        Some(profile)
+    }
+}
+
+fn attach_kernel(
+    session: &AgentSession,
+    wiring: &RuntimeWiring,
+    mut registry: crate::kernel::HostRegistry,
+) -> (
+    Arc<crate::kernel::KernelService>,
+    Arc<crate::kernel_tools::Calls>,
+) {
+    let calls = Arc::new(crate::kernel_tools::Calls::default());
+    let (tools_now, root) = (session.tools_handle(), wiring.parent_link.is_none());
+    crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
+    let service = wire_kernel(session, wiring, registry);
+    session.set_kernel_service(Arc::clone(&service));
+    wiring.kernels.insert(
+        wiring
+            .parent_link
+            .as_ref()
+            .map_or_else(|| "main".to_owned(), |link| link.child_name.clone()),
+        &service,
+    );
+    (service, calls)
+}
+
+pub(crate) fn worker_ipython(
+    session: &AgentSession,
+    wiring: &RuntimeWiring,
+) -> Arc<dyn yi_tools::Tool> {
+    let mut registry = crate::kernel::HostRegistry::default();
+    registry.register_exec(wiring.exec_home(), job_profile(wiring, session));
+    crate::kernel_state::register_host_stores(&mut registry, wiring);
+    let agent = wiring
+        .parent_link
+        .as_ref()
+        .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
+    let plans_dir = crate::plan::resolve_plans_dir(wiring.plans_dir.clone(), &wiring.cwd);
+    let mut resolver = crate::fetch::Resolver::for_child(
+        wiring.cwd.clone(),
+        wiring.wall.clone(),
+        agent,
+        session.store_handle(),
+        wiring.broker.as_deref(),
+    )
+    .with_plans_dir(plans_dir)
+    .with_kernel_variables(wiring.kernels.clone())
+    .with_family_dir(wiring.family_dir())
+    .with_home(wiring.home.clone())
+    .with_screen(session.screeners());
+    if let Some(link) = &wiring.parent_link {
+        resolver = resolver
+            .with_transcripts(Arc::new(crate::fetch::ParentTranscript(link.host.clone())))
+            .with_member_trees(Arc::new(crate::fetch::ParentTrees(link.host.clone())));
+    }
+    if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
+        resolver = resolver.with_checkpoint_show(show);
+    }
+    resolver = resolver.with_mcp_read(wiring.mcp_read.clone());
+    let resolver = Arc::new(resolver);
+    register_fetch(session, wiring, &mut registry, &resolver);
+    let (service, calls) = attach_kernel(session, wiring, registry);
+    crate::kernel_tools::ipython_tool(service, Some(calls))
+}
+
 pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> Arc<SubagentHost> {
     if let Some(total) = wiring.deadline {
         session.set_deadline(total);
@@ -651,12 +741,10 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             wiring.summarizer.clone(),
         );
     }
-    crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
+    let checkpoint_show =
+        crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
-    registry.register_exec(
-        wiring.exec_home(),
-        crate::kernel_state::job_profile(&wiring, session),
-    );
+    registry.register_exec(wiring.exec_home(), job_profile(&wiring, session));
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
@@ -701,7 +789,6 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     wire_goal(session, &mut registry, &wiring, &plans_dir);
     let fetch_log = Arc::new(crate::fetch::FetchLog::new());
     fetch_log.attach_session_handle(session.store_handle());
-    let kernels = Arc::clone(&wiring.kernels);
     let resolver = wire_fetch(
         session,
         &wiring,
@@ -709,7 +796,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &host,
         &mut registry,
         Arc::clone(&fetch_log),
-        Arc::clone(&kernels),
+        checkpoint_show,
     );
     wire_plan_compaction(session, &plans_dir);
     let plan = wire_plan_request(
@@ -721,24 +808,14 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&fetch_log),
         Arc::clone(&resolver),
     );
-    let calls = Arc::new(crate::kernel_tools::Calls::default());
-    let (tools_now, root) = (session.tools_handle(), wiring.parent_link.is_none());
-    crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
-    let service = wire_kernel(session, &wiring, registry);
+    let (service, calls) = attach_kernel(session, &wiring, registry);
     host.attach_kernel(&service);
     crate::advisor::wire::attach(session, &wiring);
     if wiring.kernel_prewarm {
         let warm = Arc::clone(&service);
         tokio::spawn(async move { warm.prewarm().await });
     }
-    session.set_kernel_service(Arc::clone(&service));
-    kernels.insert(
-        wiring
-            .parent_link
-            .as_ref()
-            .map_or_else(|| "main".to_owned(), |link| link.child_name.clone()),
-        &service,
-    );
+
     let mut tools = (wiring.tools)();
     crate::web_search::wire_search(&wiring, &mut tools, &resolver, session.screeners());
     let ipython = crate::kernel_tools::ipython_tool(Arc::clone(&service), Some(calls));

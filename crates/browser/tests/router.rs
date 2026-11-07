@@ -6,8 +6,12 @@ const FIRST: &str = "data:text/html,<body style='margin:0;background:%23c33'><a 
 const SECOND: &str = "data:text/html,<body style='margin:0;background:%233c3'>second</body>";
 
 fn fixture(name: &str) -> Result<Vec<u8>, std::io::Error> {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../types/tests/fixtures/");
-    std::fs::read(format!("{dir}{name}"))
+    let current = std::env::current_dir()?;
+    let root = current
+        .ancestors()
+        .find(|path| path.join("crates/types").is_dir())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "workspace root"))?;
+    std::fs::read(root.join("crates/types/tests/fixtures").join(name))
 }
 
 fn sent(router: &mut Router) -> Result<Vec<Value>, serde_json::Error> {

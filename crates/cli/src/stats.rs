@@ -251,16 +251,13 @@ pub fn run(id_arg: &str, options: &Options) -> i32 {
 
 fn one_session(id_arg: &str, options: &Options) -> i32 {
     let mut repo = JsonlRepo::new(options.session_dir.clone(), options.cwd.clone());
-    let id = if id_arg.trim().is_empty() {
-        match crate::sessions::latest_id(&mut repo) {
-            Some(id) => id,
-            None => {
-                eprintln!("error: no sessions for this directory");
-                return 1;
-            }
-        }
-    } else {
-        id_arg.trim().to_owned()
+    let id = match id_arg.trim() {
+        "" => crate::sessions::latest_id(&mut repo),
+        id => Some(id.to_owned()),
+    };
+    let Some(id) = id else {
+        eprintln!("error: no sessions for this directory");
+        return 1;
     };
     let store = match repo.open(&id) {
         Ok(store) => store,
@@ -286,8 +283,10 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
     };
     let mut tools: BTreeMap<String, ToolRow> = BTreeMap::new();
     let mut totals = Totals::default();
+    let mut skills = yi_runtime::rollup::SkillUptake::default();
     for entry in &entries {
         reduce_entry(entry, &mut tools, &mut totals);
+        skills.observe(entry);
     }
     if let Err(error) = fold_usage(&session, &mut totals) {
         eprintln!("error: {error}");
@@ -340,6 +339,7 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
             "cost": totals.cost(),
             "bashCategories": totals.categories,
             "editOps": totals.edit_ops,
+            "skills": skills.json(),
         });
         crate::print_json(&value);
         return 0;
@@ -351,6 +351,7 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
             println!("  {model}  {}", tokens.line());
         }
     }
+    println!("{}", skills.line());
     if tools.is_empty() {
         println!("no tool calls");
         return 0;

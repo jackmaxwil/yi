@@ -479,8 +479,8 @@ fn journal_contracts(path: &std::path::Path) -> Result<Vec<Contract>, Box<dyn Er
 /// A contract carrying the retired preview globs keeps the digest its start record froze.
 #[test]
 fn a_journal_with_covers_keeps_its_contract_digest() -> TestResult {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/journals/plan-covers-contract.jsonl");
+    let path = crate::workspace_root()?
+        .join("crates/types/tests/fixtures/journals/plan-covers-contract.jsonl");
     let contracts = journal_contracts(&path)?;
     assert_eq!(contracts.len(), 1, "the recorded init carries one contract");
     assert_eq!(
@@ -498,8 +498,8 @@ fn a_journal_with_covers_keeps_its_contract_digest() -> TestResult {
 /// canonicalize to the same bytes.
 #[test]
 fn a_journal_with_a_judge_item_and_a_juror_line_keeps_its_bytes() -> TestResult {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/journals/plan-judge-verdict-v1.jsonl");
+    let path = crate::workspace_root()?
+        .join("crates/types/tests/fixtures/journals/plan-judge-verdict-v1.jsonl");
     let contracts = journal_contracts(&path)?;
     let judged = |item: &&ContractItem| matches!(item.decider, Decider::Judge { .. });
     let judges = contracts
