@@ -11,13 +11,16 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import bot_meter
 import forge_pr
 import forge_tracking
+import pr_autofix
+import pr_review
 
 OPS = pathlib.Path.home() / "Development/buildhost/the infra repository-apply"
 MAX_RETRIES = 2
 CODE_FAILURE = re.compile(
-    r"^(?:\S+ )?error(?:\[[^\]]+\])?: (?!recipe `|test run failed)"
+    r"^(?:\S+ )?error(?:\[[^\]]+\])?: (?!(?i:recipe )`|test run failed)"
     r"|Summary \[[^\n]*[1-9]\d* failed|^\S+ FAIL \w+",
     re.M,
 )
@@ -106,46 +109,23 @@ def failed_tasks(name, sha, jobs):
 
 
 def read_log(task):
-    out = subprocess.run(
-        ("just", "ci-log", f"task:{task['id']}", "0"),
-        cwd=OPS,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=90,
-        check=False,
-    )
+    try:
+        out = subprocess.run(
+            ("just", "ci-log", f"task:{task['id']}", "0"),
+            cwd=OPS,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=90,
+            check=False,
+        )
+    except OSError as err:
+        raise RetryError(f"task {task['id']} log: `just ci-log` in {OPS} did not start: {err}") from err
     if out.returncode:
         lines = out.stderr.strip().splitlines()
         detail = lines[-1] if lines else f"exit {out.returncode}"
         raise RetryError(f"task {task['id']} log: {detail}")
     return out.stdout
-
-
-RETRY_ROW = re.compile(r"<!-- yi-runner-retry sha=([0-9a-f]{40}) attempt=(\d+) -->")
-
-
-def comments(name, number):
-    def transport(method, path, payload):
-        answer = forge_pr.fgj_api(method, path, payload)
-        if not isinstance(answer, list):
-            raise RetryError(f"the forge did not list PR comments: {answer}")
-        return answer
-
-    return list(forge_tracking.paged(transport, f"repos/{name}/issues/{number}/comments?x=1"))
-
-
-def retries_of(notes, sha):
-    attempts = {int(match.group(2)) for note in notes
-                if (match := RETRY_ROW.search(note.get("body") or "")) and match.group(1) == sha}
-    return max(attempts, default=0)
-
-
-def owns_attempt(notes, sha, attempt, comment_id):
-    """Invariant: the lowest comment id for one deterministic attempt reruns; later duplicates abstain."""
-    marker = f"<!-- yi-runner-retry sha={sha} attempt={attempt} -->"
-    owners = [note["id"] for note in notes if marker in (note.get("body") or "")]
-    return bool(owners) and comment_id == min(owners)
 
 
 def workflow_run_id(name, run_number, sha):
@@ -202,24 +182,21 @@ def retry(args):
         print(f"#{number}: no runner-only failed run to retry")
         return 1
     run_ids = [workflow_run_id(forge_pr.repo(), run_number, sha) for run_number in selected]
-    notes = comments(forge_pr.repo(), number)
-    used = retries_of(notes, sha)
+    notes = pr_review.comments(forge_pr.repo(), number)
+    used = len(pr_autofix.head_rows(notes, sha, "rerun"))
     if used >= MAX_RETRIES:
-        print(f"#{number}: {MAX_RETRIES} runner retries already spent on {sha[:12]}")
+        print(f"#{number}: {MAX_RETRIES} gate reruns already spent on {sha[:12]}")
         return 1
     attempt = used + 1
     reasons = sorted({reason for run_id in selected for reason in candidates[run_id]})
     body = (
-        f"<!-- yi-runner-retry sha={sha} attempt={attempt} -->\n"
+        f"<!-- yi-autofix -->\n<!-- yi-autofix-meta pr={number} kind=gate from={sha[:12]} verdict=rerun -->\n"
         f"Runner retry {attempt} of {MAX_RETRIES} for run(s) "
         f"{', '.join(str(run_id) for run_id in run_ids)}: {', '.join(reasons)}."
     )
     answer = forge_pr.fgj_api("POST", f"repos/{forge_pr.repo()}/issues/{number}/comments", {"body": body})
     if not isinstance(answer, dict) or answer.get("message") or "id" not in answer:
         raise RetryError(f"the retry ledger was not written: {answer}")
-    if not owns_attempt(comments(forge_pr.repo(), number), sha, attempt, answer["id"]):
-        print(f"#{number}: another invocation owns runner retry {attempt}; not rerunning")
-        return 0
     ok = True
     for run_id in run_ids:
         out = rerun(run_id)
@@ -228,14 +205,14 @@ def retry(args):
             detail = (out.stderr or out.stdout).strip()
             print(f"#{number}: run {run_id} rerun refused: {detail}")
         else:
-            print(f"#{number}: reran run {run_id} (runner retry {used + 1} of {MAX_RETRIES})")
+            print(f"#{number}: reran run {run_id} (runner retry {attempt} of {MAX_RETRIES})")
     return 0 if ok else 1
 
 
 def cmd_retry(args):
     try:
         return retry(args)
-    except (RetryError, subprocess.TimeoutExpired) as err:
+    except (RetryError, pr_review.Unanswered, subprocess.TimeoutExpired) as err:
         print(f"retry: {err}")
         return 1
 
@@ -245,9 +222,13 @@ def classifier_cases(off=""):
     for name, _, sample in RUNNER_FAILURES:
         if classify_log(sample, off) != ("runner", name):
             bad.append(f"signature {name} did not classify its sample")
+        for wrapper in ("error: Recipe `lane` failed on line 12 with exit code 1",
+                        "error: recipe `lane` failed on line 12 with exit code 1"):
+            if classify_log(f"{sample}\n{wrapper}", off) != ("runner", name):
+                bad.append(f"signature {name} under just's wrapper line did not classify runner")
     for name, log in CODE_LOGS:
-        if classify_log(log, off)[0] != "code":
-            bad.append(f"real {name} failure classified as runner")
+        if classify_log(log, off) != ("code", "compiler or test failure"):
+            bad.append(f"real {name} failure not recognized as a code failure")
     if classify_log("unrecognized failure", off)[0] != "code":
         bad.append("an unknown failure classified as runner")
     if classify_log(CODE_LOGS[0][1] + "\nCannot connect to the Docker daemon", off)[0] != "code":
@@ -292,7 +273,7 @@ def check_retry_flow():
             return notes if "page=1" in path else []
         assert method == "POST", (method, path)
         posts.append(payload)
-        notes.append({"id": len(posts), "body": payload["body"]})
+        notes.append({"id": len(posts), "body": payload["body"], "user": {"login": bot_meter.BOT}})
         return {"id": len(posts)}
 
     def run(run_id, **kwargs):
@@ -334,26 +315,30 @@ def check_retry_flow():
         with contextlib.redirect_stdout(io.StringIO()):
             separate = cmd_retry(argparse.Namespace(number=str(number)))
         assert separate == 0 and runs == [17842] and len(posts) == 1, "a code-failed run rode a runner retry"
+        notes.clear()
+        posts.clear()
+        runs.clear()
+        tasks[1]["run_number"] = 42
+        logs[7] = "No such image: yi-term"
+        with mock.patch.object(forge_pr, "rerun_waits", lambda value: ["gate (lint)"]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            waiting = cmd_retry(argparse.Namespace(number=str(number)))
+        assert waiting == 1 and not posts and not runs, "a gate run still in flight was rerun"
 
 
 def check_ledger():
     sha = "a" * 40
     page1 = [{"id": n, "body": "other"} for n in range(50)]
-    old = [
-        {"id": 50, "body": f"<!-- yi-runner-retry sha={sha} attempt=1 -->"},
-        {"id": 51, "body": f"<!-- yi-runner-retry sha={sha} attempt=2 -->"},
-        {"id": 52, "body": f"<!-- yi-runner-retry sha={sha} attempt=2 -->"},
-    ]
+    row = f"<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=7 kind=gate from={sha[:12]} verdict=rerun -->"
+    old = [{"id": n, "body": row, "user": {"login": bot_meter.BOT}} for n in (50, 51)]
 
     def api(method, path, payload=None):
         return [*page1, *old] if "page=1" in path else []
 
     with mock.patch.object(forge_pr, "fgj_api", api):
-        notes = comments("o/r", 7)
-    assert len(notes) == 53, len(notes)
-    assert retries_of(notes, sha) == 2, notes
-    assert owns_attempt(notes, sha, 2, 51)
-    assert not owns_attempt(notes, sha, 2, 52)
+        notes = pr_review.comments("o/r", 7)
+    assert len(notes) == 52, len(notes)
+    assert len(pr_autofix.head_rows(notes, sha, "rerun")) == 2, notes
 
 
 
@@ -398,6 +383,26 @@ def check_log_command():
     assert kwargs["cwd"] == pathlib.Path.home() / "Development/buildhost/the infra repository-apply", kwargs
     assert kwargs["capture_output"] and not kwargs["check"], kwargs
 
+    def missing(command, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", str(kwargs.get("cwd")))
+
+    with mock.patch.object(subprocess, "run", missing):
+        try:
+            read_log({"id": 6})
+        except RetryError:
+            pass
+        else:
+            raise AssertionError("a missing log checkout did not refuse as a retry error")
+
+
+def check_retry_verb():
+    seen = []
+    for code in (1, 0):
+        args = forge_pr.build_parser().parse_args(["pr", "retry", "7"])
+        with mock.patch.object(sys.modules[__name__], "retry", lambda value, code=code: seen.append(value.number) or code):
+            assert args.run(args) == code, f"`just pr retry` did not return the retry's exit {code}"
+    assert seen == ["7", "7"], seen
+
 
 def check_status_hint():
     pr = {"number": 7, "title": "Keep gate", "state": "open", "head": {"sha": "a" * 40, "ref": "x"}}
@@ -436,7 +441,7 @@ def check_merge_flow():
         mock.patch.object(forge_pr, "is_behind", lambda value: False),
         mock.patch.object(forge_pr, "unreviewed", lambda *args: []),
         mock.patch.object(forge_pr, "fgj_api", api),
-        mock.patch.object(forge_pr, "cmd_retry", retried),
+        mock.patch.object(sys.modules[__name__], "retry", retried),
         mock.patch.object(forge_pr, "POLL", 0),
     )
     with contextlib.ExitStack() as stack:
@@ -455,7 +460,8 @@ def selfcheck():
     for name, check in (("task discovery", check_task_discovery), ("retry flow", check_retry_flow),
                         ("ledger", check_ledger), ("run id", check_workflow_run_id),
                         ("rerun command", check_rerun_command), ("log command", check_log_command),
-                        ("status hint", check_status_hint), ("merge flow", check_merge_flow)):
+                        ("retry verb", check_retry_verb), ("status hint", check_status_hint),
+                        ("merge flow", check_merge_flow)):
         try:
             check()
         except AssertionError as err:
@@ -465,16 +471,3 @@ def selfcheck():
         return 1
     print("ok   runner retry selfcheck")
     return 0
-
-
-def main(argv):
-    if "--selfcheck" in argv:
-        return selfcheck()
-    parser = argparse.ArgumentParser(prog="just pr retry")
-    parser.add_argument("number", nargs="?")
-    args = parser.parse_args(argv)
-    return cmd_retry(args)
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

@@ -38,6 +38,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import bot_meter  # noqa: E402
 import forge_pr  # noqa: E402
+import forge_tracking  # noqa: E402
 from check_commit_style import subject_errors  # noqa: E402
 from check_pr_metadata import CITE, DRAFT, section, template_problems  # noqa: E402
 
@@ -850,10 +851,13 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
 
 
 def comments(repo, number):
-    answer = forge_pr.fgj_api("GET", f"repos/{repo}/issues/{number}/comments") or []
-    if not isinstance(answer, list):
-        raise Unanswered(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
-    return answer
+    def transport(method, path, payload):
+        answer = forge_pr.fgj_api(method, path, payload) or []
+        if not isinstance(answer, list):
+            raise Unanswered(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
+        return answer
+
+    return list(forge_tracking.paged(transport, f"repos/{repo}/issues/{number}/comments?x=1"))
 
 
 def authors():
