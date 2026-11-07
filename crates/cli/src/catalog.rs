@@ -34,7 +34,9 @@ pub(crate) fn spawn_refresh(
     key: Option<&yi_runtime::auth::Secret>,
     proxy: Option<&yi_runtime::ProxyConfig>,
 ) {
-    let Some(hours) = refresh_hours(config().catalog.as_ref()) else {
+    let Some(hours) = refresh_hours(config().catalog.as_ref())
+        .filter(|_| yi_runtime::CATALOG_PROVIDERS.contains(&provider))
+    else {
         return;
     };
     let Some(dir) = yi_runtime::catalog_cache_dir() else {

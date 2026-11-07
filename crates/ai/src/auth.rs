@@ -38,16 +38,41 @@ pub struct Resolved {
     pub headers: Vec<(String, String)>,
 }
 
+/// Where a `config.json` provider's key is: `apiKeyEnv`'s variable, else the literal `apiKey`.
+#[derive(Debug, Default)]
+pub struct CustomKey {
+    pub env: Option<String>,
+    pub literal: Option<Secret>,
+}
+
+static CUSTOM_KEYS: std::sync::OnceLock<Vec<(String, CustomKey)>> = std::sync::OnceLock::new();
+
+/// Set once at config load, before the first credential is resolved.
+pub fn set_custom_keys(keys: Vec<(String, CustomKey)>) {
+    let _already_set = CUSTOM_KEYS.set(keys);
+}
+
+fn custom_key(provider: &str) -> Option<&'static CustomKey> {
+    (CUSTOM_KEYS.get()?.iter())
+        .find(|(id, _)| id == provider)
+        .map(|(_, key)| key)
+}
+
 fn env_var(provider: &str) -> Option<&'static str> {
+    if let Some(custom) = custom_key(provider) {
+        return custom.env.as_deref();
+    }
     (yi_types::PROVIDER_KEY_VARS.iter())
         .find(|(name, _)| *name == provider)
         .map(|(_, variable)| *variable)
 }
 
 fn env_key(provider: &str) -> Option<Secret> {
-    let variable = env_var(provider)?;
-    std::env::var(variable)
-        .ok()
+    let from_env = env_var(provider)
+        .and_then(|variable| std::env::var(variable).ok())
+        .filter(|value| !value.is_empty());
+    from_env
+        .or_else(|| Some(custom_key(provider)?.literal.as_ref()?.expose().to_owned()))
         .filter(|value| !value.is_empty())
         .map(Secret::new)
 }
@@ -162,7 +187,16 @@ pub fn api_key(provider: &str) -> Option<Secret> {
 }
 
 pub fn missing_message(provider: &str) -> String {
-    let env = env_var(provider)
+    let env = env_var(provider);
+    if custom_key(provider).is_some() {
+        return match env {
+            Some(name) => format!("no credential for provider {provider} (export {name})"),
+            None => format!(
+                "no credential for provider {provider} (set providers.{provider}.apiKeyEnv in config.json)"
+            ),
+        };
+    }
+    let env = env
         .map(|name| format!(" or export {name}"))
         .unwrap_or_default();
     format!("no credential for provider {provider} (run: yi login {provider}{env})")
