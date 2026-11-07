@@ -4,7 +4,7 @@
 //! less than it wrote over its last ten requests. No LLM, nothing stored.
 //! A cause names only what usage shows: which marks were sent is not in the record.
 //! The same fold estimates the next gap and write for the cost-minimising TTL choice (D315):
-//! [`TtlEstimate::cheapest`] writes a loop request's history for an hour when the hour's write
+//! [`CacheAdvice::cheapest`] writes a loop request's history for an hour when the hour's write
 //! premium on the tokens the request writes costs less than the expected rewrite a five-minute
 //! entry would pay, the chance of that rewrite being the session's own share of pauses between
 //! five minutes and an hour.
@@ -32,6 +32,9 @@ const HOUR_MS: u64 = 60 * 60 * 1000;
 /// Pseudo-gaps added to the short band: one pause early in a short session counts for a third
 /// of its gaps rather than a half.
 const SHORT_PSEUDO_GAPS: f64 = 2.0;
+const DRILL_HOLD_MS: u64 = HOUR_MS;
+/// Consecutive unexplained requests that wrote the prompt and read nothing back, on one route.
+const ZERO_READ_WRITES: u32 = 4;
 
 /// Why a request read less than the prompt before it, in the order the causes are tested.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +113,9 @@ pub struct MissTracker {
     reuse: std::collections::VecDeque<(u64, u64)>,
     reuse_announced: bool,
     notice: Option<String>,
+    zero_read_writes: u32,
+    /// When the tail mark is written again, and the route it was suspended on.
+    tail_suspended: Option<(u64, String)>,
 }
 
 fn tokens(count: i64) -> u64 {
@@ -210,6 +216,8 @@ impl MissTracker {
             .is_some_and(|last| last.route != request.route)
         {
             self.reuse.clear();
+            self.zero_read_writes = 0;
+            self.tail_suspended = None;
         }
         let cause = self
             .last
@@ -261,9 +269,40 @@ impl MissTracker {
             }
             self.reuse.push_back((read, write));
         }
+        self.escalate(&request, cause, read);
         self.reuse_alarm(&request.route);
         self.last = Some(request);
         cause
+    }
+
+    /// Invariant: only an unexplained run on a route whose tail is being probed moves the mark.
+    fn escalate(&mut self, request: &Request, cause: Option<MissCause>, read: u64) {
+        let at = request.at;
+        if read > 0
+            && self
+                .tail_suspended
+                .as_ref()
+                .is_some_and(|(_, route)| route == &request.route)
+        {
+            self.tail_suspended = None;
+        }
+        let suspended = self
+            .tail_suspended
+            .as_ref()
+            .is_some_and(|(until, route)| route == &request.route && at < *until);
+        let zero_read = !suspended
+            && read == 0
+            && request.write > 0
+            && cause.is_some_and(MissCause::is_unexplained);
+        self.zero_read_writes = if zero_read {
+            self.zero_read_writes.saturating_add(1)
+        } else {
+            0
+        };
+        if self.zero_read_writes >= ZERO_READ_WRITES {
+            self.zero_read_writes = 0;
+            self.tail_suspended = Some((at.saturating_add(DRILL_HOLD_MS), request.route.clone()));
+        }
     }
 
     /// Invariant: a write is billed above plain input, so a route that read back less than it
@@ -293,18 +332,20 @@ impl MissTracker {
     fn reset(&mut self) {
         self.last = None;
         self.reuse.clear();
+        self.zero_read_writes = 0;
+        self.tail_suspended = None;
     }
 
-    /// What the fold knows for the next request's TTL; `None` before a first request and after
-    /// a compaction, whose next request writes a prompt of unknown size.
-    pub fn estimate(&self) -> Option<TtlEstimate> {
+    /// What the fold advises; `None` before a first request and after a compaction.
+    pub fn advice(&self) -> Option<CacheAdvice> {
         let last = self.last.as_ref()?;
-        Some(TtlEstimate {
+        Some(CacheAdvice {
             last_start: last.at,
             last_ttl: last.ttl,
             last_prompt: last.prompt,
             growth: self.growth,
             gaps: self.gaps,
+            tail_suspended: self.tail_suspended.clone(),
         })
     }
 
@@ -314,15 +355,15 @@ impl MissTracker {
     }
 }
 
-/// The fold's view of the next request: when the last one started and its history's TTL, its
-/// prompt, the smoothed prompt growth (`None` until two requests are seen), and the gap bands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TtlEstimate {
+/// The fold's advice for the next request: the TTL and the moving tail mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheAdvice {
     pub last_start: u64,
     pub last_ttl: Ttl,
     pub last_prompt: u64,
     pub growth: Option<u64>,
     pub gaps: [u32; 3],
+    pub tail_suspended: Option<(u64, String)>,
 }
 
 fn lifetime_ms(ttl: Ttl) -> u64 {
@@ -336,7 +377,14 @@ fn tokens_f64(count: u64) -> f64 {
     f64::from(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
-impl TtlEstimate {
+impl CacheAdvice {
+    /// Whether `route`'s request at `now` writes a moving tail mark.
+    pub fn tail(&self, now: u64, route: &str) -> bool {
+        self.tail_suspended
+            .as_ref()
+            .is_none_or(|(until, suspended)| suspended != route || now >= *until)
+    }
+
     /// The TTL whose expected cost over this request and the next is lower, at `model`'s own
     /// prices, for a request sent at `now` ms. An hour costs `(w1 − w5)` on the tokens this
     /// request writes: its growth while the last entry lives, the whole prompt once it is gone.
@@ -393,7 +441,7 @@ pub fn attach(session: &AgentSession) {
         // The process that wrote the ledger showed its notice; this one alerts on its own misses.
         (folded.notice, folded.announced, folded.total_misses) = (None, false, 0);
         (folded.reuse_announced, folded.reuse) = (false, Default::default());
-        seeded.set_ttl_estimate(folded.estimate());
+        seeded.set_cache_advice(folded.advice());
         *resumed.lock().unwrap_or_else(PoisonError::into_inner) = folded;
     });
     session.show_notices(CACHE_ALERT_TYPE, move |event| {
@@ -407,7 +455,7 @@ pub fn attach(session: &AgentSession) {
             } => tracker.reset(),
             _ => return tracker.take_notice(),
         }
-        provider.set_ttl_estimate(tracker.estimate());
+        provider.set_cache_advice(tracker.advice());
         tracker.take_notice()
     });
 }

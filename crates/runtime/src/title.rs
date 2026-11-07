@@ -56,6 +56,7 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
     );
     let context = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "You name coding sessions.".to_owned(),
         messages: vec![AgentMessage::task(&prompt, 0)],
         transient: Vec::new(),
