@@ -22,7 +22,6 @@ use yi_types::model::{LlmContext, Model, ModelCost, Reuse, ToolChoice, ToolDef};
 const CASES: u32 = 128;
 
 fn model(api: &str, provider: &str, base_url: &str, id: &str) -> Model {
-    let zero = || serde_json::Number::from(0u64);
     Model {
         id: id.to_owned(),
         name: id.to_owned(),
@@ -31,18 +30,13 @@ fn model(api: &str, provider: &str, base_url: &str, id: &str) -> Model {
         base_url: base_url.to_owned(),
         reasoning: false,
         input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window: 200_000,
         max_tokens: 4_096,
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     }
 }
 

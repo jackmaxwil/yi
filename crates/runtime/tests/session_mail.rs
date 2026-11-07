@@ -54,7 +54,7 @@ fn bind(
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: support::faux_model(),
+            model: support::faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

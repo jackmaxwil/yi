@@ -5,39 +5,14 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::faux_model::faux_model;
 use yi_runtime::{
     AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, RuntimeWiring,
     SessionConfig, Wall, attach_runtime, restore_notice_text,
 };
 use yi_tools::{CancelFlag, KernelBridge};
-use yi_types::model::{Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 /// One `yi` process resuming session `id`: the root wired as `main.rs` wires it, with
 /// its per-pid `rlm-<pid>` directory under the shared sessions directory.
@@ -50,7 +25,7 @@ fn process(
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         },
