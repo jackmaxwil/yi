@@ -826,6 +826,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             result: None,
+            result_mime: None,
             attachments: Vec::new(),
             status: ExecuteStatus::Aborted,
             error: None,

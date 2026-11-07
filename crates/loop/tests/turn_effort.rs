@@ -10,7 +10,6 @@ use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Effort, ForcedTool, LlmContext, Model, ModelCost, ToolChoice, ToolDef};
 
 fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
         name: "Faux".to_owned(),
@@ -19,18 +18,13 @@ fn faux_model() -> Model {
         base_url: String::new(),
         reasoning: true,
         input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window: 128_000,
         max_tokens: 16_384,
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     }
 }
 
