@@ -364,6 +364,11 @@ console notebook pane | `app::notebook::tests::a_wrapped_code_row_hangs_deeper_t
 console notebook pane | `app::notebook::tests::only_the_newest_figure_keeps_its_bytes_across_two_hundred_cells`
 console notebook pane | `app::notebook::tests::the_newest_image_of_the_newest_cell_is_the_one_placed`
 console notebook pane | `tests::v_on_the_notebook_shows_the_code_rows_its_cap_cut` (T0)
+console notebook pane | `app::notebook::tests::a_markdown_result_draws_its_blocks_as_the_chat_does`
+console notebook pane | `app::notebook::tests::a_json_result_draws_pretty_and_names_the_cap_it_collapsed_past`
+console notebook pane | `app::notebook::tests::a_code_result_is_highlighted_by_the_language_its_mime_names`
+console notebook pane | `app::notebook::tests::a_cells_details_hand_its_mime_to_the_pane`
+console notebook pane | `drive::a_replayed_sessions_values_draw_by_their_mime` (T2)
 console notebook pane | `drive::notebook_pane_shows_cells_and_image_placeholder` (T2)
 kitty terminal capabilities | `keys::terminal_environments_share_graphics_support_but_not_chord_support` (T0)
 kitty terminal capabilities | `kitty::base64_payloads_leave_in_bounded_chunks` (T0)
