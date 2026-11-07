@@ -2837,8 +2837,8 @@ def selfcheck():
         held = dict(sample, labels=[{"name": "autofix:hold"}])
         if attempt("o/r", held, {}) != "hold" or len(attempted) != 1:
             errs.append("an autofix:hold PR reached the clean-merge path")
-        # A queued PR is held only when the queue will build it: a green head on main, a merger's
-        # enqueue, a mode that reads the label. One the queue skips keeps the fix it exists for.
+        # The first case was already green before this change. The base, eligibility, mode and enqueue
+        # cases refute the broad guard; the unreadable cases refute it without its later error handling.
         real_queue = (forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem)
         forge_pr.jobs_of, forge_pr.queue_mode = (lambda pr: {"title": "success"}), (lambda: "on")
         pr_queue.enqueued_at, pr_queue.eligible_problem = (lambda number: "2026-01-01"), (lambda pr, jobs: None)
