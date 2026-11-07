@@ -1,4 +1,5 @@
 ---
+version: 0.966.0
 issue: Closes #1487
 raise: crate kernel +15, crate runtime +8, tests +223
 ---
