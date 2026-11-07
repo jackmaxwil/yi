@@ -481,7 +481,7 @@ pub(crate) fn result_answer(messages: &[AgentMessage], schema: Option<&Value>) -
     let answer = schema.and_then(|_| crate::subagent::schema_answer(messages));
     match answer {
         Some(answer) => crate::subagent::answer_text(answer),
-        None => crate::subagent::last_assistant_text(messages),
+        None => crate::subagent::answer_text(messages),
     }
     .unwrap_or_default()
 }
@@ -728,14 +728,16 @@ impl SubagentHost {
         match kept {
             Ok(()) => (
                 format!(
-                    "{head}\n[... {} bytes in all: rlm.get({name:?}) or fetch family://{name}]",
+                    "{head}{}{cut} of {} bytes · cap HEAD_BYTES = {HEAD_BYTES} · rlm.get({name:?}) or fetch family://{name}]",
+                    crate::mailbox::CUT_ROW,
                     text.len()
                 ),
                 format!("family://{name}").parse().ok(),
             ),
             Err(error) => (
                 format!(
-                    "{head}\n[... {} bytes in all; the rest could not be kept: {error}]",
+                    "{head}{}{cut} of {} bytes · cap HEAD_BYTES = {HEAD_BYTES} · the rest could not be kept: {error}]",
+                    crate::mailbox::CUT_ROW,
                     text.len()
                 ),
                 None,

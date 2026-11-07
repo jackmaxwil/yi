@@ -113,6 +113,10 @@ pub enum ErrorClass {
 /// plain 429 stays transport. One constant so a wording change cannot drift the scan.
 pub const QUOTA_STAMP: &str = "quota exhausted:";
 
+/// Incident: the request layer's spent-deadline refusal read as transport and the loop re-ran the
+/// turn, so one stall cost two deadlines; this spelling is final.
+pub const READ_DEADLINE_SPENT: &str = "timed out reading response after";
+
 /// The ai layer's stamp on a status it would not resend: the provider said `x-should-retry: false`
 /// or asked for a wait past the retry cap.
 pub const REFUSED_STAMP: &str = "retry refused:";
@@ -178,6 +182,11 @@ impl ErrorClass {
 }
 
 impl ErrorClass {
+    /// A transport failure the loop may run again; a spent read deadline is final.
+    pub fn resendable(text: &str) -> bool {
+        !text.contains(READ_DEADLINE_SPENT) && Self::from_provider_text(text).is_wire_refusal()
+    }
+
     /// The wire failed, not the provider's answer: a rerun cannot duplicate anything. Any other
     /// 4xx refuses the same bytes again, so the loop must not spend a retry or a steer on one.
     pub fn is_transport(&self) -> bool {
