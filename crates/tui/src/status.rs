@@ -217,12 +217,11 @@ struct Fit {
     path_max: usize,
     name_max: usize,
     place: bool,
-    labels: bool,
 }
 
 /// The drop order, applied first to last until the row fits. The order never changes, only
 /// how many apply, and each cut takes a whole field; the model is never cut.
-const CUTS: [fn(&mut Fit); 14] = [
+const CUTS: [fn(&mut Fit); 13] = [
     |fit| fit.input.cache = None,
     |fit| fit.input.landing = None,
     |fit| fit.input.subagents = 0,
@@ -236,7 +235,6 @@ const CUTS: [fn(&mut Fit); 14] = [
     |fit| fit.input.context_window = 0,
     |fit| fit.input.cost = None,
     |fit| fit.place = false,
-    |fit| fit.labels = false,
 ];
 
 /// Cells kept empty between the groups, so they never read as one run.
@@ -324,7 +322,7 @@ fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     );
     for (label, seg, style) in segs {
         spans.push(chevron(theme));
-        if fit.labels && !label.is_empty() {
+        if !label.is_empty() {
             spans.push(Span::styled(format!("{label} "), theme.dim_style()));
         }
         spans.push(Span::styled(format!("{seg} "), style));
@@ -389,9 +387,7 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
                 .fg(name_accent(&input.session_name))
                 .add_modifier(Modifier::BOLD)
         };
-        if fit.labels {
-            spans.push(Span::styled("session ", theme.dim_style()));
-        }
+        spans.push(Span::styled("session ", theme.dim_style()));
         spans.push(Span::styled(
             crate::colors::name_tile(&input.session_name),
             crate::colors::tile_style(&input.session_name),
@@ -444,7 +440,6 @@ fn render_with(
         path_max: 24,
         name_max: 24,
         place: true,
-        labels: true,
     };
     let mut cuts = CUTS.iter();
     let (mut spans, right) = loop {
