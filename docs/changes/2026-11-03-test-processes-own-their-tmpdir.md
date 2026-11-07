@@ -1,4 +1,6 @@
 ---
+version: 0.969.0
+decisions: D560
 raise: tests +7
 decision: Run test processes under private TMPDIRs, removed by a wrapper | tests that build dirs under temp_dir() by hand, and runs nextest kills before Drop, left ~96,000 entries (20 GiB) in the user TMPDIR | delete the wrapper-scripts block in .config/nextest.toml and the wrapper calls in justfile
 ---
