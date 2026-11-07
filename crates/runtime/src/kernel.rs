@@ -1102,6 +1102,67 @@ mod tests {
         Ok(())
     }
 
+    /// Dies with a kernel whose git starts with no transport block: a contained kernel keeps the
+    /// network, so this env is the whole wall its git has, and the line that passes it has no test.
+    #[test]
+    fn a_kernels_prefix_carries_the_contained_git_transport_block() -> TestResult {
+        if !yi_tools::Sandbox::available() {
+            return Ok(());
+        }
+        let scratch = crate::scratch::Scratch::new("kernel-git-assign")?;
+        let project = scratch.join("project");
+        std::fs::create_dir_all(&project)?;
+        for args in [
+            ["init", "-q", "-b", "main"].as_slice(),
+            ["remote", "add", "origin", "https://example.invalid/x.git"].as_slice(),
+        ] {
+            let out = yi_tools::keyless_command("git")
+                .args(args)
+                .current_dir(&project)
+                .output()?;
+            if !out.status.success() {
+                return Err(
+                    format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into(),
+                );
+            }
+        }
+        let service = KernelService::new(KernelServiceOptions {
+            cwd: project.clone(),
+            home: scratch.to_path_buf(),
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(HostRegistry::default()),
+            on_restore: None,
+            on_boot: None,
+            sandbox: None,
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        });
+        let sandbox = yi_tools::Sandbox {
+            writable: vec![project],
+            deny_read: Vec::new(),
+            deny_write: Vec::new(),
+            sealed: Vec::new(),
+            host_owned: Vec::new(),
+            spared: Vec::new(),
+        };
+        let (_, prefix) = service
+            .kernel_wrap(Some(&sandbox), None)
+            .ok_or("no kernel prefix")?;
+        let past_scrub = |needle: &str| {
+            prefix
+                .iter()
+                .skip_while(|arg| *arg != "--")
+                .any(|arg| arg == needle)
+        };
+        assert!(
+            past_scrub("GIT_CONFIG_KEY_1=protocol.allow") && past_scrub("GIT_CONFIG_VALUE_1=never"),
+            "the kernel's git keeps the no-transport env: {prefix:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn only_a_bare_ascii_identifier_is_a_variable_name() -> TestResult {
         for good in ["x", "_x", "a1", "Data_2", "_", "__doc__"] {

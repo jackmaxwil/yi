@@ -70,8 +70,8 @@ pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row, undo,
-    undo_notes, undo_to, wire_turn_checkpoints,
+    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row,
+    take_snapshots_off_row, undo, undo_notes, undo_to, wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
 
@@ -91,6 +91,7 @@ pub use provider::{
     CATALOG_PROVIDERS, DEFAULT_REFRESH_HOURS, MODELS_DEV, ProviderStream, available_models,
     catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, catalog_needs_credential,
     catalog_rejected, kimi_usages, refresh_catalog, resolve_model, set_catalog_cache_dir,
+    set_custom_providers,
 };
 pub use rewind::{BranchStub, Rewound, ensure_idle, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status, next_event};

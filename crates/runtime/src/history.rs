@@ -65,34 +65,13 @@ fn belongs(dir: &Path, repo: &Path) -> Belongs {
     };
     // Incident: a header's `/var/…` never matched its own `/private/var/…` repository.
     let at = at.canonicalize().unwrap_or(at);
-    match repo_at(&at) {
+    match crate::lane::canonical_repo(&at) {
         Some(other) if other == repo => Belongs::Mine,
         Some(_) => Belongs::Other,
         None if at.starts_with(repo) => Belongs::Mine,
         None if at.exists() => Belongs::Other,
         None => Belongs::Unknown,
     }
-}
-
-/// [`crate::lane::canonical_repo`] with its misses kept too: a gone checkout spawned a git
-/// per session directory on every name lookup.
-fn repo_at(at: &Path) -> Option<PathBuf> {
-    static MISSED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
-    let missed = |at: &Path| {
-        MISSED
-            .lock()
-            .is_ok_and(|missed| missed.iter().any(|known| known == at))
-    };
-    if missed(at) {
-        return None;
-    }
-    let repo = crate::lane::canonical_repo(at);
-    if repo.is_none()
-        && let Ok(mut missed) = MISSED.lock()
-    {
-        missed.push(at.to_path_buf());
-    }
-    repo
 }
 
 fn repo_of(cwd: &Path) -> PathBuf {
