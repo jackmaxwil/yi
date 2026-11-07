@@ -87,6 +87,7 @@ run "$PY" scripts/guardrails/check_orphans.py
 run "$PY" scripts/guardrails/check_panic.py
 run "$PY" scripts/guardrails/check_host_git.py
 run "$PY" scripts/guardrails/check_changes.py
+run "$PY" scripts/guardrails/check_intent.py
 run "$PY" scripts/guardrails/check_comments.py
 run "$PY" scripts/guardrails/check_file_size.py
 run "$PY" scripts/guardrails/check_crate_size.py
@@ -170,6 +171,7 @@ run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # Change files are the one place a branch records a change; the format and the view-edit
 # refusals are rules over text, so only this flag proves each refusal fires.
 run "$PY" scripts/guardrails/check_changes.py --selfcheck
+run "$PY" scripts/guardrails/check_intent.py --selfcheck
 # The recorder numbers versions and decisions on main, where a wrong order is a renumbering
 # nobody can undo; only this flag runs it over real change files in their real landing order.
 if [ "$FAST" -eq 1 ]; then
