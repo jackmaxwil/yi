@@ -1,6 +1,8 @@
 ---
 issue: Closes #2054
 growth: +200 first-run setup became menus with an inline key step and word answers; weighed deleting the other-login rows and the word matching, kept both because a kimi or codex login was invisible and a typed provider name was rejected, and deleted the whole classifier step and the free-text provider and model prompts
+raise: crate cli +62
+raise: tests +96
 decision: `yi setup` asks two numbered menus, takes the key of the provider picked, and always records that it ran, amending D300 | the first-run flow asked free text, ended with no config when nothing was chosen so every launch asked again, saved a model whose key it never took, and a dogfood as a first-time user found the jargon and dead ends; the classifier question is dropped because `models.classifier` is already a config key | restore the free-text prompts, classifier_step and the no-write finish in crates/cli/src/setup.rs
 ledger~: first-run setup (`yi setup`) | the model, the saved permission mode and the optional classifier, each skippable, written | the model (with the key pasted for a provider that has none) and the saved permission mode, each a numbered menu whose Enter answer is the safe default and a word that names one row, written
 ---

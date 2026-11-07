@@ -1,6 +1,7 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
+use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
 use serde_json::{Value, json};
 use yi_types::config::{ModeName, UserConfig};
 
@@ -119,7 +120,7 @@ fn model_step(stored: &UserConfig, input: &mut dyn BufRead, out: &mut dyn Write,
 fn key_step(provider: &str, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<bool, String> {
     let (title, url) = PROVIDERS.iter().find(|(name, ..)| *name == provider).map_or((provider, ""), |(_, _, title, url)| (*title, *url));
     if !url.is_empty() { say(out, &format!("Get a {title} key at {url}"))?; }
-    let key = ask(input, out, &format!("API key for {provider}: "))?;
+    let key = ask_secret(input, out, &format!("Paste your {title} key here (it stays hidden), or press Enter to add it later: "))?;
     if key.is_empty() { say(out, &yi_runtime::auth::missing_message(provider))?; return Ok(false); }
     if yi_runtime::auth::login(&[provider.to_owned(), "--key".to_owned(), key]) != 0 { say(out, &format!("The key was not saved; run `yi login {provider}` to try again."))?; }
     let found = yi_runtime::auth::api_key(provider).is_some(); if !found { say(out, &yi_runtime::auth::missing_message(provider))?; } Ok(found)
@@ -140,9 +141,41 @@ fn choose(input: &mut dyn BufRead, out: &mut dyn Write, title: &str, options: &[
     loop {
         let answer = ask(input, out, "Your choice: ")?; if answer.is_empty() { return Ok(default); }
         let by_number = answer.bytes().all(|byte| byte.is_ascii_digit()).then(|| answer.parse::<usize>().ok()).flatten().and_then(|number| number.checked_sub(1)).filter(|index| *index < options.len());
-        let word = answer.to_lowercase(); let hits: Vec<_> = answers.unwrap_or(options).iter().enumerate().filter(|(_, option)| word.chars().count() >= 3 && option.to_lowercase().contains(&word)).map(|(index, _)| index).collect();
-        match by_number.or(match hits.as_slice() { [only] => Some(*only), _ => None }) { Some(index) => return Ok(index), None if hits.len() > 1 => say(out, "More than one choice has that word; type its number.")?, None => say(out, &format!("Type a number from 1 to {}, or a word from the choice you want.", options.len()))?, }
+        let word = answer.to_lowercase(); let hits: Vec<_> = options.iter().enumerate().filter(|(index, option)| word.chars().count() >= 3 && (option.to_lowercase().contains(&word) || answers.and_then(|answers| answers.get(*index)).is_some_and(|answer| answer.to_lowercase().contains(&word)))).map(|(index, _)| index).collect();
+        match by_number.or(match hits.as_slice() { [only] => Some(*only), _ => None }) { Some(index) => return Ok(index), None if hits.len() > 1 => say(out, "More than one choice has that word; type its number.")?, None => { let hint = answers.map_or_else(|| "a word shown in a row".to_owned(), |answers| format!("one of: {}", options.iter().zip(answers).map(|(option, answer)| format!("{}, {}", option.split_whitespace().next().unwrap_or(option), answer)).collect::<Vec<_>>().join(", "))); say(out, &format!("Type a number from 1 to {}, or {hint}.", options.len()))?; } }
     }
+}
+
+fn ask_secret(
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    prompt: &str,
+) -> Result<String, String> {
+    let stdin = std::io::stdin();
+    let before = if stdin.is_terminal() {
+        hide_echo(&stdin)
+    } else {
+        None
+    };
+    let answer = ask(input, out, prompt);
+    if let Some(before) = before {
+        if tcsetattr(&stdin, OptionalActions::Now, &before).is_err() {
+            say(
+                out,
+                "\nwarning: the terminal's echo could not be restored; run `reset`",
+            )?;
+        }
+        say(out, "")?;
+    }
+    answer
+}
+
+fn hide_echo(stdin: &std::io::Stdin) -> Option<Termios> {
+    let before = tcgetattr(stdin).ok()?;
+    let mut quiet = before.clone();
+    quiet.local_modes.remove(LocalModes::ECHO);
+    tcsetattr(stdin, OptionalActions::Now, &quiet).ok()?;
+    Some(before)
 }
 
 fn ask(input: &mut dyn BufRead, out: &mut dyn Write, prompt: &str) -> Result<String, String> {
@@ -162,4 +195,99 @@ fn say(out: &mut dyn Write, text: &str) -> Result<(), String> {
 }
 fn yes_default(answer: &str) -> bool {
     matches!(answer.to_lowercase().as_str(), "" | "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MODES, choose, offers};
+
+    #[test]
+    fn a_mistyped_choice_is_asked_again_not_taken_as_a_skip() -> Result<(), String> {
+        let options = ["alpha".to_owned(), "bravo".to_owned(), "charlie".to_owned()];
+        let mut out = Vec::new();
+        let picked = choose(
+            &mut "9\n0\nbravo\n".as_bytes(),
+            &mut out,
+            "T:",
+            &options,
+            None,
+            2,
+        )?;
+        assert_eq!(picked, 1, "only a number in range is an answer");
+        let blank = choose(&mut "\n".as_bytes(), &mut out, "T:", &options, None, 2)?;
+        assert_eq!(blank, 2, "Enter takes the default");
+
+        let options: Vec<_> = MODES
+            .iter()
+            .map(|(_, label, _)| (*label).to_owned())
+            .collect();
+        let answers: Vec<_> = MODES
+            .iter()
+            .map(|(_, _, answer)| (*answer).to_owned())
+            .collect();
+        let mut out = Vec::new();
+        let picked = choose(
+            &mut "ask\n9\ncareful\n".as_bytes(),
+            &mut out,
+            "T:",
+            &options,
+            Some(&answers),
+            0,
+        )?;
+        assert_eq!(picked, 1);
+        let said = String::from_utf8(out).map_err(|error| error.to_string())?;
+        assert!(said.contains("More than one choice"), "{said}");
+        assert!(
+            said.contains("Smart, auto, Careful, ask, Hands-off, yolo"),
+            "{said}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mode_rows_answer_to_their_visible_names() -> Result<(), String> {
+        let options: Vec<_> = MODES
+            .iter()
+            .map(|(_, label, _)| (*label).to_owned())
+            .collect();
+        let answers: Vec<_> = MODES
+            .iter()
+            .map(|(_, _, answer)| (*answer).to_owned())
+            .collect();
+        for (word, expected) in [("smart", 0), ("careful", 1), ("hands-off", 2)] {
+            let input = format!("{word}\n");
+            let picked = choose(
+                &mut input.as_bytes(),
+                &mut Vec::new(),
+                "T:",
+                &options,
+                Some(&answers),
+                0,
+            )?;
+            assert_eq!(picked, expected, "{word}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_first_interactive_launch_is_offered_setup() {
+        assert!(offers(None, false, true));
+        assert!(
+            !offers(Some("--version"), false, true),
+            "only a bare `yi` is offered it"
+        );
+        assert!(!offers(Some("--yolo"), false, true));
+        assert!(
+            !offers(Some("ask"), false, true),
+            "a subcommand is never interrupted"
+        );
+        assert!(
+            !offers(None, true, true),
+            "a config file means it already ran or was declined"
+        );
+        assert!(
+            !offers(None, false, false),
+            "scripts and pipes are never asked"
+        );
+    }
 }

@@ -839,7 +839,11 @@ fn setup_takes_the_key_of_the_provider_picked() -> TestResult {
         .root
         .join("home/.yi/providers/tokens/anthropic.json");
     assert!(std::fs::read_to_string(token)?.contains("sk-journey"));
-    let _said = String::from_utf8_lossy(&saved.stderr);
+    let said = String::from_utf8_lossy(&saved.stderr);
+    assert!(
+        !said.contains("sk-journey"),
+        "the key is never echoed: {said}"
+    );
     journey.reclaim();
     Ok(())
 }
@@ -895,7 +899,7 @@ fn setup_writes_the_model_where_the_config_reads_it() -> TestResult {
         journey.root.join("home/.yi/config.json"),
         r#"{"kernel":{"prewarm":false},"models":{"primary":"faux/faux-1"}}"#,
     )?;
-    let saved = setup(&journey, "4\n\n\n")?;
+    let saved = setup(&journey, "4\nsk-journey\n\n")?;
     assert!(saved.status.success(), "{saved:?}");
     let config = config_of(&journey)?;
     assert_eq!(
