@@ -1,6 +1,7 @@
 ---
 issue: Closes #1542
-raise: crate cli +114, crate types +8, tests +435
+raise: crate cli +157, crate types +8, tests +462, comments +1
+growth: +159 the rpc command enum beside its served-name table, so the compiler refuses a name without an arm and an arm without a name, and the per-cause record rows in yi stats; weighed a macro that writes both lists from one and kept the plain enum, and the hand-kept name array it replaces is gone
 ledger+: Pi RPC mode | each command answers from its own task, so a compact that takes seconds never parks the event arm and fills the broadcast buffer, `isCompacting` reports a compact in flight, `get_commands` lists the RPC commands this transport answers, and the two steering-mode setters refuse rather than echo a mode nothing reads
 ---
 `yi stats <id>` billed only the messages it could fold, so a family's child lanes

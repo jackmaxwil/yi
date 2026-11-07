@@ -357,8 +357,11 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
     println!("session {id}");
     println!("{}", totals.all.line());
     if totals.by_model.len() + totals.by_cause.len() > 1 {
-        for (model, tokens) in totals.by_model.iter().chain(&totals.by_cause) {
+        for (model, tokens) in &totals.by_model {
             println!("  {model}  {}", tokens.line());
+        }
+        for (cause, tokens) in &totals.by_cause {
+            println!("  records/{cause}  {}", tokens.line());
         }
     }
     println!("{}", skills.line());

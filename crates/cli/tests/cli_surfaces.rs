@@ -3941,5 +3941,21 @@ fn stats_bills_a_sessions_usage_records_as_its_ledger_does() -> TestResult {
         (parts - cost).abs() < 1e-9,
         "the model and record rows bill {parts} under a {cost} total: {folded}"
     );
+    let text = String::from_utf8(workspace.yi(&["stats", &id])?.stdout)?;
+    let row_cost = |label: &str| -> Option<f64> {
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(&format!("  {label}  ")))?;
+        line.split("cost $")
+            .nth(1)?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    };
+    let model = row_cost("faux/faux-1").ok_or_else(|| format!("no model row: {text}"))?;
+    let child = row_cost("records/child_usage_attributed")
+        .ok_or_else(|| format!("no labelled record row: {text}"))?;
+    assert!((model + child - 0.15).abs() < 1e-9, "{text}");
     Ok(())
 }
