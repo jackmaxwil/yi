@@ -235,6 +235,14 @@ impl LaneRecord {
         }
     }
 
+    /// Invariant: a `cause: "assistant"` row mirrors an entry already billed, so it bills nothing.
+    pub fn billed_usage(&self) -> Option<&Usage> {
+        match self {
+            Self::Usage { cause, usage, .. } if cause != "assistant" => Some(usage),
+            _ => None,
+        }
+    }
+
     pub fn assign(&mut self, new_seq: u64, new_timestamp: u64) {
         match self {
             Self::OperationStarted { seq, timestamp, .. }

@@ -11,6 +11,8 @@ entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_fi
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
+Pi RPC mode | `rpc_protocol::a_command_in_flight_does_not_starve_the_event_stream`
+Pi RPC mode | `rpc_protocol::a_compact_in_flight_reports_compacting`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_second_compaction_keeps_the_values_the_first_recorded`
 context P1–P19; prefix-aligned P7 | `primitives::a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it` (T0)
@@ -173,6 +175,7 @@ cross-session stats, observed prices and plan-op counters | `cli_surfaces::stats
 cross-session stats, observed prices and plan-op counters | `cli_surfaces::stats_by_plan_names_the_rows_it_cut`
 cross-session stats, observed prices and plan-op counters | `cli_surfaces::the_rollup_flags_belong_to_stats_alone_and_refuse_a_session_id`
 cross-session stats, observed prices and plan-op counters | `cli_surfaces::a_flag_name_that_is_another_options_value_is_a_value` (T2)
+cross-session stats, observed prices and plan-op counters | `stats::stats_bills_a_sessions_usage_records_as_its_ledger_does`
 goals + autonomous | `journeys::a_red_goal_check_refuses_the_completion_claim_and_the_plan_surface_mints_no_principal` (T2)
 plan ledger: op stream, `yi plan`, `yi why` | `journeys::a_hand_written_plan_lints_resolves_and_answers_why` (T2)
 plan ledger: op stream, `yi plan`, `yi why` | `plan_cli::a_cli_set_keeps_unnamed_rows_drops_struck_ones_and_reads_string_todos` (T2)

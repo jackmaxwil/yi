@@ -9,10 +9,11 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use yi_runtime::session_store::{
-    BranchBounds, EntryOrder, EntryQuery, JsonlRepo, SessionRepo, lock_session,
+    BranchBounds, EntryOrder, EntryQuery, JsonlRepo, RecordQuery, SessionRepo, SessionStore,
+    lock_session,
 };
 use yi_types::entry::Entry;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Usage};
 
 #[derive(Default)]
 struct ToolRow {
@@ -40,15 +41,19 @@ struct Tokens {
 }
 
 impl Tokens {
-    fn add(&mut self, usage: &yi_types::message::Usage, miss: bool) {
+    fn add(&mut self, usage: &Usage, miss: bool) {
         self.turns = self.turns.saturating_add(1);
+        self.spend(usage);
+        self.misses = self.misses.saturating_add(u64::from(miss));
+    }
+
+    fn spend(&mut self, usage: &Usage) {
         self.input = self.input.saturating_add(usage.input);
         self.output = self.output.saturating_add(usage.output);
         self.cache_read = self.cache_read.saturating_add(usage.cache_read);
         self.cache_write = self.cache_write.saturating_add(usage.cache_write);
         self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
         self.lower_bound |= usage.unknown;
-        self.misses = self.misses.saturating_add(u64::from(miss));
     }
 
     fn hit_rate(&self) -> f64 {
@@ -113,9 +118,20 @@ fn share(part: i64, tokens: &Tokens) -> f64 {
 struct Totals {
     all: Tokens,
     by_model: BTreeMap<String, Tokens>,
+    by_cause: BTreeMap<String, Tokens>,
     last_model: Option<String>,
     categories: BTreeMap<String, u64>,
     edit_ops: BTreeMap<String, u64>,
+}
+
+fn rows(map: &BTreeMap<String, Tokens>, key: &str) -> Vec<Value> {
+    map.iter()
+        .map(|(name, tokens)| {
+            let mut row = tokens.json();
+            row[key] = json!(name);
+            row
+        })
+        .collect()
 }
 
 fn percentile(sorted: &[u64], fraction: f64) -> u64 {
@@ -197,6 +213,30 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
     }
 }
 
+fn fold_usage(
+    session: &SessionStore,
+    totals: &mut Totals,
+) -> Result<(), yi_runtime::session_store::SessionError> {
+    let query = RecordQuery {
+        record_type: Some("usage"),
+        order: EntryOrder::OldestFirst,
+        ..RecordQuery::default()
+    };
+    for record in &session.find_records(&query)? {
+        if let (Some(usage), yi_types::record::LaneRecord::Usage { cause, .. }) =
+            (record.billed_usage(), record)
+        {
+            totals.all.spend(usage);
+            totals
+                .by_cause
+                .entry(cause.clone())
+                .or_default()
+                .spend(usage);
+        }
+    }
+    Ok(())
+}
+
 pub struct Options {
     pub session_dir: std::path::PathBuf,
     pub plans_dir: std::path::PathBuf,
@@ -229,16 +269,13 @@ pub fn run(id_arg: &str, options: &Options) -> i32 {
 
 fn one_session(id_arg: &str, options: &Options) -> i32 {
     let mut repo = JsonlRepo::new(options.session_dir.clone(), options.cwd.clone());
-    let id = if id_arg.trim().is_empty() {
-        match crate::sessions::latest_id(&mut repo) {
-            Some(id) => id,
-            None => {
-                eprintln!("error: no sessions for this directory");
-                return 1;
-            }
-        }
-    } else {
-        id_arg.trim().to_owned()
+    let id = match id_arg.trim() {
+        "" => crate::sessions::latest_id(&mut repo),
+        id => Some(id.to_owned()),
+    };
+    let Some(id) = id else {
+        eprintln!("error: no sessions for this directory");
+        return 1;
     };
     let store = match repo.open(&id) {
         Ok(store) => store,
@@ -269,6 +306,10 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
         reduce_entry(entry, &mut tools, &mut totals);
         skills.observe(entry);
     }
+    if let Err(error) = fold_usage(&session, &mut totals) {
+        eprintln!("error: {error}");
+        return 1;
+    }
     for row in tools.values_mut() {
         row.durations_ms.sort_unstable();
     }
@@ -288,15 +329,6 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
                 })
             })
             .collect();
-        let models: Vec<Value> = totals
-            .by_model
-            .iter()
-            .map(|(model, tokens)| {
-                let mut row = tokens.json();
-                row["model"] = json!(model);
-                row
-            })
-            .collect();
         let value = json!({
             "session": id,
             "tools": tool_rows,
@@ -312,7 +344,8 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
                 "writeShare": totals.all.write_share(),
                 "misses": totals.all.misses,
             },
-            "models": models,
+            "models": rows(&totals.by_model, "model"),
+            "records": rows(&totals.by_cause, "cause"),
             "cost": totals.cost(),
             "bashCategories": totals.categories,
             "editOps": totals.edit_ops,
@@ -323,9 +356,12 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
     }
     println!("session {id}");
     println!("{}", totals.all.line());
-    if totals.by_model.len() > 1 {
+    if totals.by_model.len() + totals.by_cause.len() > 1 {
         for (model, tokens) in &totals.by_model {
             println!("  {model}  {}", tokens.line());
+        }
+        for (cause, tokens) in &totals.by_cause {
+            println!("  records/{cause}  {}", tokens.line());
         }
     }
     println!("{}", skills.line());
