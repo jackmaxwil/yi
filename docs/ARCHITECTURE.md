@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.978.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.979.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -352,6 +352,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D565 | a head is reviewed once and one clean round promotes it (revises D322 and D332's two rounds): a head a round has read whole, clean or blocked, is never read again, whatever triggers it, a lost lens is the only reread and asks just the lenses still owed with the earlier round's findings kept and no refuter paid for again, and `just pr ready`, `just pr merge` and the sweep's promotion take one round on the head | the bot paid for a second full round on an unchanged head: #1888, #1977, #1830 and #1974 each ran two or three rounds on one sha ($0.30 to $1.09 each), from the second clean round a draft needed, a review job that called the round twice, `--again` skipping every reason but a blocked head, and a void erasing which lens was lost | restore `wanted=2` in `skip_reason`, the two-round clause of `ready_problems` and the blocked-head rule of `--again` in scripts/pr_review.py |
 | D564 | Every direct feature-ledger edit is refused, whenever it was committed (extends D524) | 31 of the 33 unmerged jack branches editing ARCHITECTURE.md changed a feature-ledger row, and the pre-2026-11-02 exemption still let those branches conflict on recorder-owned rows | revert the whole change: restore the commit-date exemption in scripts/guardrails/check_changes.py together with the old-edit refusal in scripts/record_changes.py's ledger selfcheck, which expects that edit to be refused |
 | D563 | A write scope is a kept command rule judged inside decide, between the catastrophic denylist and the configured rules | the runs that edited outside their brief were yolo, so only a tier above the mode holds, and a kept rule reaches children through the copy a child already takes, where a wall would make the run a walled one | delete scope.rs, its one line in decide and the flag |
 | D562 | `~/.yi/config.json` declares custom OpenAI-compatible providers under `providers`, merged into the catalog after the bundle and the cache, keyed by `apiKeyEnv`, a literal `apiKey` or a token the yi-oauth store holds, refused at load when the id is a built-in one | a local gateway that speaks chat completions could only be reached by overwriting the `openai` catalog cache, which the next refresh rewrote within minutes | delete the `providers` key and its merge; a config carrying the key then refuses as an unknown field, naming it |
