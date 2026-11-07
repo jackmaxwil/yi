@@ -94,6 +94,21 @@ impl Fixture {
         }
         .preview(&args(&[("patch", json!(patch))]), &self.context.cwd)
     }
+
+    fn shown_first_ten(&self, path: &str) -> Result<(String, String), Box<dyn Error>> {
+        let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+        self.write(path, &body)?;
+        let read = HashlineReadTool::new(std::sync::Arc::clone(&self.state)).execute(
+            args(&[
+                ("path", json!(path)),
+                ("offset", json!(1)),
+                ("limit", json!(10)),
+            ]),
+            &self.context,
+        );
+        let tag = minted_tag(&output_text(&read), path)?;
+        Ok((body, tag))
+    }
 }
 
 #[test]
@@ -297,23 +312,7 @@ fn a_rejected_edit_classifies_as_stale_tag() -> TestResult {
 #[test]
 fn seen_lines_guard_reveals_unseen_lines_then_allows_retry() -> TestResult {
     let fixture = Fixture::new("seen")?;
-    let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
-    fixture.write("big.txt", &body)?;
-    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
-        args(&[
-            ("path", json!("big.txt")),
-            ("offset", json!(1)),
-            ("limit", json!(10)),
-        ]),
-        &fixture.context,
-    );
-    let text = output_text(&read);
-    let tag = text
-        .lines()
-        .next()
-        .and_then(|line| line.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or("no tag")?;
+    let (_, tag) = fixture.shown_first_ten("big.txt")?;
 
     let blind = fixture.edit(&format!("[big.txt#{tag}]\nPUT 30.=30:\n+changed line 30\n"));
     assert!(blind.is_error);
@@ -324,6 +323,22 @@ fn seen_lines_guard_reveals_unseen_lines_then_allows_retry() -> TestResult {
     let retry = fixture.edit(&format!("[big.txt#{tag}]\nPUT 30.=30:\n+changed line 30\n"));
     assert!(!retry.is_error, "{}", output_text(&retry));
     assert!(fixture.content("big.txt")?.contains("changed line 30"));
+    Ok(())
+}
+#[test]
+fn unseen_gap_anchors_are_refused_without_changing_the_file() -> TestResult {
+    for (name, operation) in [
+        ("paste", "CUT 1.=1 @x\nPUT >30 @x\n"),
+        ("insert", "PUT >30:\n+inserted\n"),
+    ] {
+        let fixture = Fixture::new(name)?;
+        let (body, tag) = fixture.shown_first_ten("big.txt")?;
+        let edit = fixture.edit(&format!("[big.txt#{tag}]\n{operation}"));
+        let text = output_text(&edit);
+        assert!(edit.is_error, "{name}: {text}");
+        assert!(text.contains("never displayed"), "{name}: {text}");
+        assert_eq!(fixture.content("big.txt")?, body, "{name}");
+    }
     Ok(())
 }
 
@@ -839,7 +854,10 @@ fn an_anchor_past_the_end_is_not_called_unseen() -> TestResult {
     assert!(edit.is_error);
     let text = output_text(&edit);
     assert!(!text.contains("never displayed"), "{text}");
-    assert!(text.contains("136 lines"), "{text}");
+    assert!(text.contains("135 lines"), "{text}");
+    let phantom = fixture.edit(&format!("[rot.py#{tag}]\nPUT >136:\n+phantom\n"));
+    assert!(phantom.is_error, "{}", output_text(&phantom));
+    assert!(output_text(&phantom).contains("135 lines"));
     Ok(())
 }
 
@@ -912,19 +930,19 @@ fn an_unknown_tag_rejection_displays_only_its_anchored_lines() -> TestResult {
 
 /// A read that shows no rows recorded an empty seen set, which the guard read as unrestricted.
 #[test]
-fn a_read_that_shows_no_rows_displays_nothing() -> TestResult {
+fn a_zero_limit_read_is_refused_without_unlocking_lines() -> TestResult {
     let fixture = Fixture::new("empty-view-seen")?;
     fixture.write("a.txt", &ten_lines())?;
     let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
         args(&[("path", json!("a.txt")), ("limit", json!(0))]),
         &fixture.context,
     );
-    assert!(!read.is_error, "{}", output_text(&read));
+    assert!(read.is_error, "{}", output_text(&read));
 
     let blind = fixture.edit("[a.txt]\nPUT 7.=7:\n+seven\n");
     let text = output_text(&blind);
     assert!(blind.is_error, "{text}");
-    assert!(text.contains("never displayed"), "{text}");
+    assert!(text.contains("No version of a.txt is on record"), "{text}");
     assert_eq!(fixture.content("a.txt")?, ten_lines());
     Ok(())
 }
@@ -1110,17 +1128,7 @@ fn a_preview_under_a_prior_sessions_tag_unlocks_nothing_for_the_execute() -> Tes
 #[test]
 fn a_preview_of_an_unseen_line_unlocks_nothing_for_the_execute() -> TestResult {
     let fixture = Fixture::new("preview-unseen")?;
-    let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
-    fixture.write("big.txt", &body)?;
-    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
-        args(&[
-            ("path", json!("big.txt")),
-            ("offset", json!(1)),
-            ("limit", json!(10)),
-        ]),
-        &fixture.context,
-    );
-    let tag = minted_tag(&output_text(&read), "big.txt")?;
+    let (body, tag) = fixture.shown_first_ten("big.txt")?;
     let patch = format!("[big.txt#{tag}]\nPUT 30.=30:\n+changed\n");
     assert!(fixture.preview(&patch).is_none());
     let edit = fixture.edit(&patch);
@@ -1230,5 +1238,62 @@ fn an_anchor_past_the_end_of_a_never_read_file_names_the_length() -> TestResult 
         "{text}"
     );
     assert!(!text.contains("re-issue with this header"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_clipped_row_anchors_an_adjacent_insert_but_not_its_replacement() -> TestResult {
+    let fixture = Fixture::new("clipped-gap")?;
+    let wide = "x".repeat(600);
+    fixture.write("ledger.md", &format!("| head |\n| {wide} |\n| tail |\n"))?;
+    let tag = fixture.tag_of("ledger.md")?;
+    let inserted = fixture.edit(&format!("[ledger.md#{tag}]\nPUT >2:\n+| inserted |\n"));
+    assert!(!inserted.is_error, "{}", output_text(&inserted));
+    assert!(fixture.content("ledger.md")?.contains("| inserted |"));
+
+    let replacement = Fixture::new("clipped-replacement")?;
+    replacement.write("ledger.md", &format!("| head |\n| {wide} |\n| tail |\n"))?;
+    let tag = replacement.tag_of("ledger.md")?;
+    let replaced = replacement.edit(&format!("[ledger.md#{tag}]\nPUT 2.=2:\n+| short |\n"));
+    let text = output_text(&replaced);
+    assert!(replaced.is_error, "{text}");
+    assert!(text.contains("a replacement cannot anchor one"), "{text}");
+    assert!(text.contains("grep"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_latin1_file_reports_not_utf8_instead_of_inviting_an_overwrite() -> TestResult {
+    let fixture = Fixture::new("latin1-read")?;
+    let utf8 = fixture.context.cwd.join("source.txt");
+    let latin1 = fixture.context.cwd.join("latin1.txt");
+    fs::write(&utf8, "café\n")?;
+    let converted = yi_tools::command("iconv")
+        .args(["-f", "UTF-8", "-t", "ISO-8859-1"])
+        .arg(&utf8)
+        .output()?;
+    assert!(converted.status.success(), "iconv: {converted:?}");
+    fs::write(&latin1, converted.stdout)?;
+
+    let edit = fixture.edit("[latin1.txt#ABCD]\nPUT 1.=1:\n+cafe\n");
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(text.contains("not UTF-8"), "{text}");
+    assert!(!text.contains("Use the write tool"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn mv_onto_an_existing_file_is_refused_without_changing_either_file() -> TestResult {
+    let fixture = Fixture::new("mv-existing")?;
+    fixture.write("source.txt", "source\n")?;
+    fixture.write("dest.txt", "destination\n")?;
+    let tag = fixture.tag_of("source.txt")?;
+    let edit = fixture.edit(&format!("[source.txt#{tag}]\nMV dest.txt\n"));
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(text.contains("MV destination already exists"), "{text}");
+    assert_eq!(fixture.content("source.txt")?, "source\n");
+    assert_eq!(fixture.content("dest.txt")?, "destination\n");
     Ok(())
 }

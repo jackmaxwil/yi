@@ -2322,6 +2322,7 @@ async fn an_in_loop_compaction_redelivers_late_slots_on_the_next_request()
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     }));
     let broker = yi_runtime::permission::PermissionBroker::new(

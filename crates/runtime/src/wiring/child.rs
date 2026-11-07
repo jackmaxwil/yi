@@ -63,6 +63,7 @@ pub(crate) fn child_factory(
             schema_instruction: None,
             context_window: child.model().context_window,
             global_skills: Vec::new(),
+            pointer: Some(crate::skills::child_pointer(&build.link)),
             can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
         screen.hand_down(&child.screeners(), crate::classifier::journal(&child));
