@@ -1357,6 +1357,10 @@ def attempt(repo, pr, ids, asked=False):
     behind = sh(ROOT, "git", "merge-base", "--is-ancestor", f"origin/{pr['base']['ref']}", pr["head"]["sha"], check=False).returncode != 0
     if behind and time.time() - when(pr.get("updated_at")) < 5 * 60:
         return "recent"
+    # Incident: a clean main merge into a queued PR moved its head and the queue dropped a green
+    # candidate; the queue builds on main itself and labels a real conflict `autofix`.
+    if behind and "queue" in labels and "autofix" not in labels:
+        return "queued"
     try:
         conflicted = merge_clean(pr) if behind else []
     except LookupError as err:
@@ -2750,6 +2754,9 @@ def selfcheck():
         held = dict(sample, labels=[{"name": "autofix:hold"}])
         if attempt("o/r", held, {}) != "hold" or len(attempted) != 1:
             errs.append("an autofix:hold PR reached the clean-merge path")
+        queued = dict(sample, labels=[{"name": "queue"}])
+        if attempt("o/r", queued, {}) != "queued" or len(attempted) != 1:
+            errs.append("a queued PR only behind main was merged, which drops its candidate")
         def moved(pr):
             raise LookupError("non-fast-forward")
         module.merge_clean = moved
