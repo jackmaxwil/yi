@@ -887,7 +887,8 @@ def record_cases():
             bad.append(f"a recorder's refusal stopped the tick: {kept}, {out.getvalue()!r}")
         script.write_text(RECORDER)
 
-        # The race itself: another pusher wins between the recorder's commit and its push.
+        # Incident: the race hung on a pre-push hook whose own push could fail unfelt, so the check read a moved main
+        # only when that push happened to win; the recorder now moves main itself, every run.
         sh("pull", "-q", "origin", "main", where=other)
         (other / "moved.txt").write_text("moved\n")
         sh("add", ".", where=other), sh("commit", "-qm", "moved", where=other)
@@ -902,6 +903,7 @@ def record_cases():
         if moved is not False:
             bad.append("main moved under the push and the tick read it as recorded")
         race.unlink()
+        script.write_text(RECORDER)
     return bad
 
 def landing_cases():
