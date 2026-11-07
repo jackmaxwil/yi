@@ -6,7 +6,7 @@
 
 Nothing is stored: the state is the `queue` label, the `queue/candidate` ref and that ref's statuses,
 so a crashed tick loses nothing. A red candidate stays until it is replaced, since it is the memory
-of what comes next. Base, retry and split markers ride the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
+of what comes next. Base and retry markers ride the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
 import argparse, contextlib, io, os, pathlib, re, shutil, subprocess, sys, tempfile, time
 from unittest import mock
 
@@ -226,14 +226,14 @@ def order(pulls):
 
 
 def base_of(tip, body, in_main):
-    """The main a candidate was built on: the queue's own marker, else a pre-batch tip's first parent.
+    """The main a candidate was built on: the queue's own marker, else a pre-batch tip's first parent; None when unreadable.
 
     Invariant: the queue appends its marker last, and a marker that is not an ancestor of the tip is refused."""
     marks = FORK.findall(body)
     if marks and git("merge-base", "--is-ancestor", marks[-1], tip, check=False).returncode == 0:
         return marks[-1]
     if in_main:
-        return git("rev-parse", f"{tip}^1").stdout.strip()
+        return None if marks else git("rev-parse", f"{tip}^1").stdout.strip()
     return git("merge-base", tip, "origin/main").stdout.strip()
 
 
@@ -254,6 +254,9 @@ def observe(mode):
         obs["in_main"] = git("merge-base", "--is-ancestor", tip, "origin/main", check=False).returncode == 0
         body = git("log", "-1", "--format=%B", tip).stdout
         obs["base"] = base_of(tip, body, obs["in_main"])
+        if obs["base"] is None:
+            raise SystemExit(f"queue: {CANDIDATE} at {tip[:10]} is in main under a refused base marker, so its members are "
+                             f"unreadable; take `{LABEL}` off and close their issues by hand, then delete the ref")
         obs["members"] = members_of(tip, obs["base"])
         obs["lanes"] = forge_pr.head_jobs(forge_pr.repo(), tip)
         date = git("log", "-1", "--format=%ct", tip).stdout.strip()
@@ -625,6 +628,8 @@ def git_cases():
             for body in (f"Queue base {stranger}.\n", f"Queue base {stranger}.\n\nQueue base {base}.\n"):
                 if (got := base_of(tip, body, False)) != base:
                     bad.append(f"a candidate whose body reads {body!r} took base {got[:10]}, not its fork {base[:10]}")
+            if (got := base_of(tip, f"Queue base {stranger}.\n", True)) is not None:
+                bad.append(f"a landed candidate with a refused base marker took base {got[:10]}, so it would half-finish")
     return bad
 
 
@@ -669,7 +674,7 @@ def scenario_repo(numbers, shared=False):
             real_git("push", "-q", "origin", "--delete", CANDIDATE, cwd=root, check=False)
         def jobs(repo, tip):
             red = state.get("red")
-            return RED if red and real_git("cat-file", "-e", f"{tip}:pr-{red}.txt", cwd=root, check=False).returncode == 0 else GREEN
+            return RED if red and red in [number for number, _ in members_of(tip, state["base"])] else GREEN
 
         module = sys.modules[__name__]
         with mock.patch.multiple(module, ROOT=root, git=counted, record_main=lambda root=ROOT: True,
@@ -688,15 +693,16 @@ def drive_scenario(state, red=None, off=""):
     state["red"] = red
     real_step = step
     for _ in range(20):
-        obs = observe("on")
-        action, _ = real_step(obs, off)
+        seen = []
+        pushes = len(state["pushes"])
+        with mock.patch.object(sys.modules[__name__], "step", lambda obs: (seen.append(obs), real_step(obs, off))[1]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            tick("on")
+        action, _ = real_step(seen[-1], off)
         actions.append(action)
         if action == "idle":
             return actions, bad
-        before = [number for number, _ in obs["members"]]
-        pushes = len(state["pushes"])
-        with mock.patch.object(sys.modules[__name__], "step", lambda obs: real_step(obs, off)), contextlib.redirect_stdout(io.StringIO()):
-            tick("on")
+        before = [number for number, _ in seen[-1]["members"]]
         if action == "land" and len(state["pushes"]) != pushes + 1:
             bad.append(f"a green candidate made {len(state['pushes']) - pushes} main pushes, not one")
         if action == "split":
