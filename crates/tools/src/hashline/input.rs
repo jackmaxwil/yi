@@ -4,20 +4,10 @@ use super::clipboard::has_clipboard_edit;
 use super::format::{HL_FILE_HASH_LENGTH, HL_FILE_PREFIX, HL_FILE_SUFFIX};
 use super::messages::CLIPBOARD_INTERLEAVED_SECTIONS;
 use super::parser::{Executor, ParsedSection};
-use super::tokenizer::{TokenKind, classify_line, split_hashline_lines, tokenize_all};
+use super::tokenizer::{
+    TokenKind, classify_line, split_hashline_lines, tokenize_all, unquote_path,
+};
 use super::types::FileOp;
-
-fn unquote_hashline_path(path_text: &str) -> &str {
-    if path_text.len() < 2 {
-        return path_text;
-    }
-    let bytes = path_text.as_bytes();
-    let first = bytes[0];
-    if (first == b'"' || first == b'\'') && bytes[path_text.len() - 1] == first {
-        return path_text.get(1..path_text.len() - 1).unwrap_or(path_text);
-    }
-    path_text
-}
 
 /// Strip apply_patch-style noise models prepend to the path: a leading `***` and a
 /// `(Update|Add|Delete|Move)<sep>*(File|to)?<sep>*:` keyword block, case-insensitive.
@@ -71,7 +61,7 @@ fn strip_apply_patch_path_noise(path_text: &str) -> &str {
 }
 
 fn normalize_hashline_path(raw_path: &str, cwd: Option<&Path>) -> String {
-    let unquoted = strip_apply_patch_path_noise(unquote_hashline_path(raw_path.trim())).to_owned();
+    let unquoted = strip_apply_patch_path_noise(unquote_path(raw_path.trim())).to_owned();
     let Some(cwd) = cwd else {
         return unquoted;
     };
