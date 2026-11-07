@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.972.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.974.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -344,6 +344,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | model read deadline | 5 | core | M | L | a catalog entry's `readTimeoutSecs` (default 60 s) is the wait for one read, so an idle gap between chunks and not the whole body; a timeout is neither retried nor resent, its refusal names the field, the default and the attempts that ran, a `yi ask` run that ends on one exits 1 with `--json` too, and a cursor-agent entry carrying the field is refused at load because that wire bounds its own connect and headers |
 | cache marks and TTL from the session ledger | 6, 7 | core | M | M | a loop request's history marks and their TTL come from the session's own replies: the TTL remains the expected-cost choice D315 landed (`cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes`, T0), four unexplained requests that wrote and read nothing back stop the moving tail mark on that route for an hour (`cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour`, `openrouter::a_suspended_tail_mark_keeps_the_marks_before_it_only`, T0), and a 400 naming a cache field is resent once with only the encoder's cache fields stripped, the field recorded on the reply (`strip::a_400_naming_a_cache_field_is_resent_once_without_it`, `strip::the_reply_records_the_field_the_route_refused`, T0) |
 | `yi doctor` | 17.1 | core | M | L | reads the user's config leniently before the strict global load, judges the daemon socket and ledger named by `--socket`, checks only the configured `lanes.slots`, and names every exec tool whose two-second schema probe times out, exits nonzero, or returns no valid schema |
+| custom OpenAI-compatible providers | 5 | core | M | L | `providers` in `~/.yi/config.json` declares an endpoint that speaks chat completions and its models, each addressed `<id>/<model>`; merged after the bundle and the catalog cache, so a refresh neither rewrites nor fetches it; the key is `apiKeyEnv`, else a literal `apiKey`; read once per process, so an edit takes hold on restart; a built-in id refuses at load; `yi doctor` names each and its key's source |
 
 ## Decision log
 
@@ -351,6 +352,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D562 | `~/.yi/config.json` declares custom OpenAI-compatible providers under `providers`, merged into the catalog after the bundle and the cache, keyed by `apiKeyEnv`, a literal `apiKey` or a token the yi-oauth store holds, refused at load when the id is a built-in one | a local gateway that speaks chat completions could only be reached by overwriting the `openai` catalog cache, which the next refresh rewrote within minutes | delete the `providers` key and its merge; a config carrying the key then refuses as an unknown field, naming it |
 | D561 | the edit side is the `[path#TAG]` headers a direct `edit` or `write` prints plus the `ok` `edit` and `write` rows on a cell's `ipython` result, matched by path suffix as before (revises D398) | a program's edit reached the session only in its cell's `calls` rows, so the read whose tags the next edit needs was cut once it aged | delete the `ipython` arm in `reclaim::newest_reads` |
 | D560 | Run test processes under private TMPDIRs, removed by a wrapper | tests that build dirs under temp_dir() by hand, and runs nextest kills before Drop, left ~96,000 entries (20 GiB) in the user TMPDIR | delete the wrapper-scripts block in .config/nextest.toml and the wrapper calls in justfile |
 | D559 | a route's moving tail mark is suspended for an hour after four consecutive unexplained requests that wrote and read nothing back, and a 400 naming a cache field is retried once with only the encoder's cache fields stripped | the session ledger already shows both failures, so no model, probe, stored state or outbound routing change is needed | remove the tail escalation in `cache_miss::MissTracker::escalate` and the strip branch in `request::send_stripping_cache` |
