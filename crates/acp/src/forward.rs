@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use tokio::task::JoinSet;
-use yi_runtime::session_store::{SharedSession, lock_session};
+use yi_runtime::session_store::{
+    BranchBounds, EntryOrder, EntryQuery, SharedSession, lock_session,
+};
 use yi_runtime::{AgentSession, SubagentHost};
 use yi_types::acp::AcpSessionUpdate;
 use yi_types::entry::Entry;
@@ -76,9 +78,40 @@ pub(crate) struct Parent {
     pub(crate) titled: bool,
     pub(crate) launch_cwd: std::path::PathBuf,
     pub(crate) last_active: Arc<AtomicU64>,
+    pub(crate) last_committed_id: Option<String>,
 }
 
 impl Parent {
+    pub(crate) fn new(
+        forward: Forward,
+        session: Arc<AgentSession>,
+        host: Arc<SubagentHost>,
+        ids: IdMap,
+        store: &SharedSession,
+        launch_cwd: std::path::PathBuf,
+        last_active: Arc<AtomicU64>,
+    ) -> Self {
+        let store = lock_session(store);
+        let titled = store.name().is_some();
+        let last_committed_id = store.find_on_branch("main", |entry| Some(entry.id().to_owned()));
+        Self {
+            forward,
+            session,
+            host,
+            ids,
+            children: JoinSet::new(),
+            seen: HashSet::new(),
+            last_goal: Value::Null,
+            last_workdir: Value::Null,
+            last_claims: Value::Null,
+            last_plan: Value::Null,
+            titled,
+            launch_cwd,
+            last_active,
+            last_committed_id,
+        }
+    }
+
     fn adopt_children(&mut self) {
         for child in self.host.children_view() {
             if !self.seen.insert(child.update.id.0.clone()) {
@@ -99,16 +132,80 @@ impl Parent {
     /// later one by the time this lags through, so the entry is found by the message it holds.
     fn committed(&mut self, message: &AgentMessage) {
         let _span = yi_types::trace::span("acp.committed");
-        let entry = self.session.store().and_then(|store| {
-            lock_session(&store).find_on_branch("main", |entry| {
+        let last_committed_id = self.last_committed_id.clone();
+        let committed = self.session.store().and_then(|store| {
+            let session = lock_session(&store);
+            let id = session.find_on_branch("main", |entry| {
                 matches!(entry, Entry::Message { message: saved, .. } if saved == message)
-                    .then(|| entry.clone())
+                    .then(|| entry.id().to_owned())
+            })?;
+            let mut suffix = session
+                .find_entries_on_branch(
+                    "main",
+                    &EntryQuery {
+                        order: EntryOrder::NewestFirst,
+                        ..EntryQuery::default()
+                    },
+                    &BranchBounds {
+                        start: Some(id.clone()),
+                        stop_at_id: last_committed_id,
+                        ..BranchBounds::default()
+                    },
+                )
+                .ok()?;
+            let entry = suffix.first().cloned().filter(|entry| entry.id() == id)?;
+            let mut ancestors = suffix.split_off(1);
+            if ancestors
+                .last()
+                .is_some_and(|entry| Some(entry.id()) == self.last_committed_id.as_deref())
+            {
+                ancestors.pop();
+            }
+            ancestors.reverse();
+            Some((
+                id,
+                yi_types::acp::AcpCommitted {
+                    entry,
+                    ancestors,
+                    ancestors_notice: None,
+                },
+            ))
+        });
+        if let Some((id, mut committed)) = committed {
+            Self::cap_committed(&mut committed);
+            if let Ok(Value::Object(fields)) = serde_json::to_value(committed) {
+                self.forward.emit(extension("_yi/committed", fields));
+                self.last_committed_id = Some(id);
+            }
+        }
+    }
+
+    fn cap_committed(committed: &mut yi_types::acp::AcpCommitted) {
+        let total = committed.ancestors.len();
+        committed.ancestors.reverse();
+        let frames = crate::replay::frames(&committed.ancestors);
+        let first_bytes = frames.first().map_or(0, |frame| {
+            frame.iter().fold(0_usize, |bytes, entry| {
+                bytes.saturating_add(serde_json::to_vec(entry).map_or(0, |encoded| encoded.len()))
             })
         });
-        let committed = entry.map(|entry| yi_types::acp::AcpCommitted { entry });
-        if let Some(Value::Object(fields)) = committed.and_then(|c| serde_json::to_value(c).ok()) {
-            self.forward.emit(extension("_yi/committed", fields));
+        if frames.len() <= 1 && first_bytes <= crate::replay::REPLAY_BYTES {
+            committed.ancestors.reverse();
+            return;
         }
+        let mut ancestors = if first_bytes > crate::replay::REPLAY_BYTES {
+            Vec::new()
+        } else {
+            frames.first().map_or_else(Vec::new, |frame| frame.to_vec())
+        };
+        let kept = ancestors.len();
+        ancestors.reverse();
+        committed.ancestors = ancestors;
+        committed.ancestors_notice = Some(format!(
+            "[…] kept {kept} of {total} committed ancestors (replay frame caps {} entries and {} MiB); session/resume with replayFrom: 0 returns the complete branch",
+            crate::replay::REPLAY_CHUNK,
+            crate::replay::REPLAY_BYTES / (1024 * 1024),
+        ));
     }
 
     fn watch_goal(&mut self) {
@@ -267,4 +364,60 @@ pub(crate) fn session_name(store: &SharedSession) -> Option<String> {
         } => yi_runtime::session_store::session_title(&crate::update::plain(content, " ")),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod committed_tests {
+    use super::*;
+    use yi_types::acp::AcpCommitted;
+    use yi_types::message::UserContent;
+
+    fn message(id: &str, seq: u64, text: String) -> Entry {
+        Entry::Message {
+            id: id.to_owned(),
+            parent_id: None,
+            seq,
+            timestamp: 0,
+            message: AgentMessage::user_input(UserContent::Text(text), 0),
+            terminate: None,
+        }
+    }
+
+    #[test]
+    fn an_oversized_committed_ancestor_is_dropped_with_a_resume_notice()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let overhead = serde_json::to_vec(&message("large", 1, String::new()))?.len();
+        let fits = crate::replay::REPLAY_BYTES
+            .checked_sub(overhead)
+            .ok_or("entry overhead exceeds budget")?;
+        let mut exact = AcpCommitted {
+            entry: message("target", 2, "target".to_owned()),
+            ancestors: vec![message("large", 1, "x".repeat(fits))],
+            ancestors_notice: None,
+        };
+        Parent::cap_committed(&mut exact);
+        assert_eq!(exact.ancestors.len(), 1);
+        assert_eq!(exact.ancestors_notice, None);
+
+        let large = "x".repeat(crate::replay::REPLAY_BYTES.saturating_add(1));
+        let mut committed = AcpCommitted {
+            entry: message("target", 2, "target".to_owned()),
+            ancestors: vec![message("large", 1, large)],
+            ancestors_notice: None,
+        };
+        Parent::cap_committed(&mut committed);
+        assert!(committed.ancestors.is_empty());
+        let notice = committed
+            .ancestors_notice
+            .as_deref()
+            .ok_or("no cap notice")?;
+        assert!(
+            notice.starts_with("[…] kept 0 of 1 committed ancestors"),
+            "{notice}"
+        );
+        assert!(notice.contains("8 MiB"), "{notice}");
+        assert!(notice.contains("session/resume"), "{notice}");
+        assert!(notice.contains("replayFrom: 0"), "{notice}");
+        Ok(())
+    }
 }

@@ -62,32 +62,69 @@ pub struct GitLane {
 
 // ponytail: one lane per tree for the process's life; a `git remote set-url` by hand needs a restart.
 static LANES: Mutex<Option<HashMap<PathBuf, Option<Arc<GitLane>>>>> = Mutex::new(None);
-// ponytail: the same for a tree with no lane, so the spawn hook forks no git per call.
-static NO_LANE: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
+// Only a found remote is kept: a remote added later closes the transport on the next call.
+static ASSIGNS: Mutex<Option<HashMap<PathBuf, Vec<String>>>> = Mutex::new(None);
+// One gate per tree, so two spawns of one tree wait on whoever is opening it and no other tree's.
+static OPENING: Mutex<Option<HashMap<PathBuf, Arc<Mutex<()>>>>> = Mutex::new(None);
+
+/// One answer per tree for the process's life: built outside the map's lock, so one tree's first
+/// spawn never holds another's, and under a gate of its own, so two of them open a tree once.
+fn memo<T: Clone>(
+    cache: &Mutex<Option<HashMap<PathBuf, T>>>,
+    cwd: &Path,
+    build: impl FnOnce() -> T,
+) -> T {
+    let cached = || {
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|entries| entries.get(cwd))
+            .cloned()
+    };
+    if let Some(hit) = cached() {
+        return hit;
+    }
+    let gate = OPENING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert_with(HashMap::new)
+        .entry(cwd.to_path_buf())
+        .or_default()
+        .clone();
+    let _opening = gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(hit) = cached() {
+        return hit;
+    }
+    let built = build();
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert_with(HashMap::new)
+        .insert(cwd.to_path_buf(), built.clone());
+    built
+}
 
 impl GitLane {
     /// `None` with no origin, no pool or a credentialed origin: `git push` then fails contained
     /// and its refusal asks, as it did before there was a lane.
     pub(crate) fn for_tree(cwd: &Path) -> Option<Arc<Self>> {
-        let mut lanes = LANES.lock().ok()?;
-        let lanes = lanes.get_or_insert_with(HashMap::new);
-        lanes
-            .entry(cwd.to_path_buf())
-            .or_insert_with(|| Self::open(cwd, FORWARD_TIMEOUT).map(Arc::new))
-            .clone()
+        memo(&LANES, cwd, || {
+            Self::open(cwd, FORWARD_TIMEOUT).map(Arc::new)
+        })
     }
 
     /// What a contained git gets where a repository has an origin and no lane: no transport but a
     /// local path. Without it, git reads a credential from the URL and lands on main through a
     /// seeded host, asked by nobody. Any remote counts, by whatever name; a git that cannot say
     /// whether one exists gets the same, never fail open.
-    pub(crate) fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
+    pub fn assign_for(lane: Option<&Self>, cwd: &Path) -> Vec<String> {
         if let Some(lane) = lane {
             return lane.assign.clone();
         }
-        // Only a found remote is kept: a kernel restarts when its block changes, and a remote
-        // added later must close the transport on the next call, not on the next process.
-        let mut memo = NO_LANE
+        let mut memo = ASSIGNS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let memo = memo.get_or_insert_with(HashMap::new);

@@ -412,10 +412,15 @@ Tests are tiered by where they run and what they may spend:
 
 # A skill for every tool
 
-The owner, 2026-10-10: "every major agent tool/feature needs a corresponding skill".
+The owner, 2026-10-10: "every major agent tool/feature needs a corresponding skill". Again
+2026-10-30, reviewing #1891: "every new feature, tool, pattern, etc available to Yi, MUST BE TAUGHT
+TO YI with a visible schema and skill. Skills are lazy loaded with a pointer but always a
+representative description and compact info."
 
 - **Major** is every tool a root session's model can call and every row of the plugin table
-  (`yi_tools::plugin::PLUGINS`).
+  (`yi_tools::plugin::PLUGINS`). Beyond those, a `yi` subcommand or flag the model may run, a config
+  key, or a marker or file format it reads or writes is taught the same way, in a skill; no gate
+  reads those kinds yet, so the reviewer enforces them.
 - **Covered** means a shipped `SKILL.md` (under `skills/` or `python/skills/`) whose frontmatter
   says `covers: tool:<name>` or `covers: plugin:<name>` (a comma list), or an on-demand tool guide
   served at `yi://tools/<name>`.
@@ -427,6 +432,13 @@ The owner, 2026-10-10: "every major agent tool/feature needs a corresponding ski
 - The content bar: a skill teaches what the tool description cannot — when to reach for this tool
   over another, how its calls combine, and how to recover from its failures. It never restates
   the schema or the description; the duplication gate refuses that.
+- A feature with no tool schema carries its shape in the skill's opening lines: a subcommand's usage
+  line and output shape, a config key's type and default, a marker's grammar. A tool's own schema is
+  already visible to the model, so its skill points at it.
+- The catalog line is the first 60 characters of `description` (`DESCRIPTION_CLIP`), so lead with
+  what the feature is and when to reach for it. Under budget pressure the trailing skills fall to a
+  bare-name list.
+- The pull request body says where Yi is taught: the skill path and the catalog line as rendered.
 - Skills load lazily: one catalog line each, the body on `read("yi://skills/<name>")`. A plugin's
   own skills sit behind one pointer skill and are never listed.
 
@@ -535,12 +547,15 @@ trailing blanks and the counts drift (the duplicated-list bug).
   every other `word:` prefix fails, conventional-commit dialect included. Body only when the why
   is not obvious from the diff. check_commit_style.py gates `HEAD --not origin/main`, and the
   same script reads `PR_TITLE` so CI judges the title by the identical rule.
-- No trailers, with three carve-outs: the flywheel plan's §8 `Opt-*` set on optimizer commits, one
-  `Plan: plan://<plan>/<todo>` on a commit that lands work under a plan, and the trailers git writes
-  itself. Assistant co-author trailers stay banned outright. The `Plan:` value is checked as a URL,
-  because a trailer nothing can resolve indexes nothing: it is what makes `git blame` → commit →
-  todo → goal → the user's own words resolve with no inference, and the index only holds what was
-  trailered when it landed, so it is written from the first such commit rather than added later.
+- No trailers, with four carve-outs: the flywheel plan's §8 `Opt-*` set on optimizer commits, one
+  `Plan: plan://<plan>/<todo>` on a commit that lands work under a plan, the trailers git writes
+  itself, and `GitHub-Commit: <40-hex sha>`, written by yi-bot's history-preserving GitHub import
+  on an imported commit to record the GitHub-side commit it came from. The current squash intake in
+  `scripts/intake/bridge.py` spells that source head `GitHub-Head:`. Assistant co-author trailers
+  stay banned outright. The `Plan:` value is checked as a URL, because a trailer nothing can resolve
+  indexes nothing: it is what makes `git blame` → commit → todo → goal → the user's own words resolve
+  with no inference, and the index only holds what was trailered when it landed, so it is written
+  from the first such commit rather than added later.
 - A PR body is the cold-reader narrative in .github/PULL_REQUEST_TEMPLATE.md — why needed,
   summary, user outcomes, seen red, UI changes, files-edited map, schema changes, deleted /
   alternatives, risk and rollback, performance, architecture notes — every section written and
@@ -556,7 +571,8 @@ trailing blanks and the counts drift (the duplicated-list bug).
   construction: they add no ledger row and move no bytes past the band.
 - A user-visible behavior change writes `ledger+`, `ledger~`, `ledger=` or `ledger-` lines in its
   change file, in the same change as the code. The recorder applies them to the ARCHITECTURE
-  feature ledger after the merge; a branch that edits a row is refused and told the lines to write.
+  feature ledger after the merge; a branch that edits a row directly is refused and told the lines
+  to write, whenever that edit was committed.
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
   rendered from the row by the recorder rather than hand-drifted) and a line in the docs/solutions index.
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage
@@ -612,7 +628,9 @@ A branch is finished when its pull request is merged on the forge, not when its 
 here. The steps between the two are where sessions fail, so they are verbs, not habits:
 `just ratchet`, `just commit`, `just push`, `just pr open`, `just pr status`, `just pr merge`,
 or `just land` to open the PR as a draft the review bot reads; it merges after `just pr ready`
-passes on two clean rounds. The yi-forge skill is the procedure; this is the law.
+passes on one clean round. A head is reviewed once: a head a round has read whole is never
+read again, a lost lens is the only reread, and only a new head earns a new round. The yi-forge
+skill is the procedure; this is the law.
 
 - The size ceilings move with no commit: a raise is a line in the change file (040). Every
   other baseline moves in its own `Ratchet: …` commit, never beside the code commit: a raised

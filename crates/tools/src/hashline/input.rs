@@ -4,20 +4,10 @@ use super::clipboard::has_clipboard_edit;
 use super::format::{HL_FILE_HASH_LENGTH, HL_FILE_PREFIX, HL_FILE_SUFFIX};
 use super::messages::CLIPBOARD_INTERLEAVED_SECTIONS;
 use super::parser::{Executor, ParsedSection};
-use super::tokenizer::{TokenKind, classify_line, split_hashline_lines, tokenize_all};
+use super::tokenizer::{
+    TokenKind, classify_line, split_hashline_lines, tokenize_all, unquote_path,
+};
 use super::types::FileOp;
-
-fn unquote_hashline_path(path_text: &str) -> &str {
-    if path_text.len() < 2 {
-        return path_text;
-    }
-    let bytes = path_text.as_bytes();
-    let first = bytes[0];
-    if (first == b'"' || first == b'\'') && bytes[path_text.len() - 1] == first {
-        return &path_text[1..path_text.len() - 1];
-    }
-    path_text
-}
 
 /// Strip apply_patch-style noise models prepend to the path: a leading `***` and a
 /// `(Update|Add|Delete|Move)<sep>*(File|to)?<sep>*:` keyword block, case-insensitive.
@@ -25,7 +15,7 @@ fn strip_apply_patch_path_noise(path_text: &str) -> &str {
     let mut rest = path_text.trim_start();
     let mut stars = 0;
     while stars < 3 && rest.starts_with('*') {
-        rest = &rest[1..];
+        rest = rest.get(1..).unwrap_or_default();
         stars += 1;
     }
     rest = rest.trim_start();
@@ -57,11 +47,11 @@ fn strip_apply_patch_path_noise(path_text: &str) -> &str {
             index += 1;
         }
         if index < bytes.len() && bytes[index] == b':' {
-            let mut after = &rest[index + 1..];
+            let mut after = rest.get(index + 1..).unwrap_or_default();
             after = after.trim_start();
             let mut trailing_stars = 0;
             while trailing_stars < 3 && after.starts_with('*') {
-                after = &after[1..];
+                after = after.get(1..).unwrap_or_default();
                 trailing_stars += 1;
             }
             return after.trim_start();
@@ -71,7 +61,7 @@ fn strip_apply_patch_path_noise(path_text: &str) -> &str {
 }
 
 fn normalize_hashline_path(raw_path: &str, cwd: Option<&Path>) -> String {
-    let unquoted = strip_apply_patch_path_noise(unquote_hashline_path(raw_path.trim())).to_owned();
+    let unquoted = strip_apply_patch_path_noise(unquote_path(raw_path.trim())).to_owned();
     let Some(cwd) = cwd else {
         return unquoted;
     };
@@ -106,13 +96,13 @@ fn try_parse_recovery_header(line: &str, cwd: Option<&Path>) -> Option<RawSectio
     let trimmed = body.trim_end();
     let (path_text, file_hash) = match trimmed.char_indices().rev().nth(HL_FILE_HASH_LENGTH) {
         Some((position, '#'))
-            if trimmed[position + 1..]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit()) =>
+            if trimmed
+                .get(position + 1..)
+                .is_some_and(|tag| tag.bytes().all(|byte| byte.is_ascii_hexdigit())) =>
         {
             (
-                &trimmed[..position],
-                Some(trimmed[position + 1..].to_uppercase()),
+                trimmed.get(..position)?,
+                Some(trimmed.get(position + 1..)?.to_uppercase()),
             )
         }
         _ => (trimmed, None),

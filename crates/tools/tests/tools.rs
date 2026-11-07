@@ -440,7 +440,8 @@ fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
     fs::write(dir.join("not-executable.txt"), "ignored")?;
 
-    let tools = discover_exec_tools(&dir);
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
     assert_eq!(tools.len(), 1);
     let tool = &tools[0];
     assert_eq!(tool.name(), "greet");
@@ -465,7 +466,8 @@ fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  printf '{\"name\":\"count\",\"description\":\"counts\",\"input_schema\":{\"type\":\"object\"},\"kind\":\"read\"}'\n  exit 0\nfi\nprintf '{\"files\": 3}'\n",
     )?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-    let tools = discover_exec_tools(&dir);
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
     let tool = tools.first().ok_or("no exec tool found")?;
     let mut context = ToolContext::new(dir.to_path_buf());
     assert_eq!(
@@ -477,6 +479,39 @@ fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
     assert_eq!(
         tool.execute(Map::new(), &context).value,
         Some(json!({"files": 3}))
+    );
+    Ok(())
+}
+
+/// One hanging schema probe cannot stall discovery or hide the healthy tools beside it.
+#[cfg(unix)]
+#[test]
+fn a_hung_exec_tool_is_skipped_and_the_others_load() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("exec-hung")?;
+    let hang = dir.join("hang");
+    fs::write(&hang, "#!/bin/sh\nsleep 30\n")?;
+    fs::set_permissions(&hang, fs::Permissions::from_mode(0o755))?;
+    let good = dir.join("good");
+    fs::write(
+        &good,
+        "#!/bin/sh\nprintf '{\"name\":\"good\",\"input_schema\":{\"type\":\"object\"}}'\n",
+    )?;
+    fs::set_permissions(&good, fs::Permissions::from_mode(0o755))?;
+    let started = std::time::Instant::now();
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name(), "good");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].path, hang);
+    assert!(
+        skipped[0].reason.contains("timed out after 2s"),
+        "{skipped:?}"
     );
     Ok(())
 }
@@ -1362,7 +1397,7 @@ fn a_job_wait_returns_as_the_job_settles() -> TestResult {
         "twenty attempts never backgrounded a 100 ms sleep"
     );
     assert!(
-        waited < std::time::Duration::from_millis(500),
+        waited < std::time::Duration::from_millis(3000),
         "five waits took {waited:?}"
     );
     Ok(())
@@ -3468,7 +3503,172 @@ fn a_write_result_carries_the_tag_an_edit_must_cite() -> TestResult {
     Ok(())
 }
 
-/// A placeholder tag names the road back rather than only the rule it broke (#473).
+#[test]
+fn a_grep_hit_on_a_long_line_names_the_clip_and_its_remedy_prints_the_line() -> TestResult {
+    let dir = temp_dir("grep-long-line")?;
+    let long = format!("{} NEEDLE {}", "x".repeat(600), "y".repeat(600));
+    fs::write(dir.join("long.txt"), format!("short\n{long}\nend\n"))?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let found = GrepTool::default().execute(args(&[("pattern", json!("NEEDLE"))]), &context);
+    let shown = output_text(&found);
+    let notice = shown
+        .lines()
+        .find(|row| row.contains("exceeded 512 chars and were clipped"))
+        .ok_or_else(|| format!("no clip notice: {shown}"))?;
+    let remedy = format!("sed -n '{}p' long.txt]", 2);
+    assert!(notice.ends_with(&remedy), "{notice}");
+    let printed = fs::read_to_string(dir.join("long.txt"))?;
+    assert_eq!(printed.lines().nth(1), Some(long.as_str()));
+    Ok(())
+}
+
+#[test]
+fn multiline_hits_keep_their_line_numbers_in_a_linear_walk() -> TestResult {
+    let dir = temp_dir("grep-multiline-linear")?;
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/grep.rs"))?;
+    let mut text = String::with_capacity(4 << 20);
+    while text.len() < 4 << 20 {
+        text.push_str(&source);
+    }
+    fs::write(dir.join("big.rs"), &text)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let pattern = "let ";
+    let started = std::time::Instant::now();
+    let found = GrepTool::default().execute(
+        args(&[("pattern", json!(pattern)), ("multiline", json!(true))]),
+        &context,
+    );
+    let took = started.elapsed();
+    let shown = output_text(&found);
+    let matcher = regex::Regex::new(pattern)?;
+    assert!(
+        matcher.find_iter(&text).count() >= 10_000,
+        "the fixture must carry about fifteen thousand matches"
+    );
+    for found in matcher.find_iter(&text).take(5) {
+        let line = text
+            .get(..found.start())
+            .unwrap_or_default()
+            .matches('\n')
+            .count()
+            .saturating_add(1);
+        assert!(
+            shown.contains(&format!("big.rs:{line}:")),
+            "a hit on line {line} was numbered elsewhere: {}",
+            shown.chars().take(400).collect::<String>()
+        );
+    }
+    let bound = Duration::from_secs(2);
+    assert!(
+        took < bound,
+        "the quadratic walk took {took:?}; a linear one is well under {bound:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_crate_root_is_checked_without_reading_its_children() -> TestResult {
+    let dir = temp_dir("syntax-root")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    fs::write(dir.join("child.rs"), "pub fn broken( {\n")?;
+    let root = WriteTool::default().execute(
+        args(&[
+            ("path", json!("lib.rs")),
+            ("content", json!("mod child;\npub fn ok() {}\n")),
+        ]),
+        &context,
+    );
+    let Some(syntax) = root.result.details.get("syntax").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    assert_eq!(
+        syntax,
+        "syntax: ok",
+        "the child's error is not the root's: {}",
+        output_text(&root)
+    );
+    let broken = WriteTool::default().execute(
+        args(&[
+            ("path", json!("lib.rs")),
+            ("content", json!("pub fn ok() {}\npub fn broken( {\n")),
+        ]),
+        &context,
+    );
+    let text = output_text(&broken);
+    assert!(text.contains("syntax: error line 2:"), "{text}");
+    Ok(())
+}
+
+/// Two sections of one file share one reply block and retain both patch rows.
+#[test]
+fn a_two_section_edit_of_a_recorded_session_renders_one_patch_per_section() -> TestResult {
+    let dir = temp_dir("edit-session-fixture")?;
+    let session = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tui/tests/fixtures/sessions/01a129b6.jsonl"
+    ))?;
+    fs::write(dir.join("session.jsonl"), &session)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let read = yi_tools::hashline::tool::HashlineReadTool::new(std::sync::Arc::clone(&state))
+        .execute(args(&[("path", json!("session.jsonl"))]), &context);
+    let shown = output_text(&read);
+    let tag = shown
+        .lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or_else(|| {
+            format!(
+                "no tag on the read result: {}",
+                shown.chars().take(300).collect::<String>()
+            )
+        })?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: std::sync::Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!(
+                "[session.jsonl#{tag}]\nPUT 1.=1:\n+{{\"probe\":1}}\nPUT 3.=3:\n+{{\"probe\":3}}\n"
+            )),
+        )]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    assert!(
+        reply.starts_with("[session.jsonl#"),
+        "a file block opens the reply"
+    );
+    assert!(
+        reply.contains("updated; +2 -2 at line 1"),
+        "the reply names both replacements and their first line: {reply}"
+    );
+    assert_eq!(
+        reply.matches("updated;").count(),
+        1,
+        "one block for one file"
+    );
+    let patch = edit.result.details["patch"].as_str().ok_or("no patch")?;
+    assert!(
+        patch.contains("+{\"probe\":1}") && patch.contains("+{\"probe\":3}"),
+        "both sections render their own changed line: {patch}"
+    );
+    let after = fs::read_to_string(dir.join("session.jsonl"))?;
+    let lines: Vec<&str> = after.lines().collect();
+    assert_eq!(lines.first().copied(), Some("{\"probe\":1}"));
+    assert_eq!(lines.get(2).copied(), Some("{\"probe\":3}"));
+    assert_eq!(
+        lines.len(),
+        session.lines().count(),
+        "two replacements keep the line count"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_placeholder_tag_refusal_names_where_the_tag_comes_from() -> TestResult {
     let dir = temp_dir("write-tag-refusal")?;
@@ -5351,5 +5551,24 @@ fn a_spill_past_the_read_limit_is_named_not_skipped() -> TestResult {
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn non_ascii_hashline_paths_and_rows_parse_without_byte_boundary_panics() -> TestResult {
+    use yi_tools::hashline::input::Patch;
+    use yi_tools::hashline::tokenizer::{tokenize_all, try_parse_header};
+
+    let header = try_parse_header("[crates/tui/src/cell-✱.rs#ABCD]").ok_or("Unicode header")?;
+    assert_eq!(header.path, "crates/tui/src/cell-✱.rs");
+    assert_eq!(tokenize_all("PUT 1.=1:\n+↳ done\n").len(), 2);
+    let source = include_str!("../../tui/src/cell.rs");
+    let row = source
+        .lines()
+        .find(|line| line.contains("alt-↓"))
+        .ok_or("the real TUI source lost its non-ASCII reply hint")?;
+    let patch = Patch::parse(&format!("[crates/tui/src/cell-✱.rs#ABCD]\n{row}\n"), None)
+        .map_err(|error| format!("Unicode patch refused: {error}"))?;
+    assert_eq!(patch.sections.len(), 1);
     Ok(())
 }

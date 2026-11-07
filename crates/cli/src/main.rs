@@ -27,6 +27,7 @@ mod tty;
 mod update;
 mod user_config;
 mod why;
+mod worker;
 
 use std::sync::Arc;
 use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};
@@ -272,6 +273,13 @@ fn build_session(
                 reason: format!("allow-write: {reason}"),
                 class: yi_types::telemetry::ErrorClass::RefusalConfig,
             })?;
+    }
+    for glob in &args.scope {
+        broker.grant_scope(glob).map_err(|reason| Refused {
+            code: 2,
+            reason: format!("scope: {reason}"),
+            class: yi_types::telemetry::ErrorClass::RefusalConfig,
+        })?;
     }
     if prompts_close {
         broker.prompts_close_on_settle();

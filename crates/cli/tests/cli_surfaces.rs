@@ -440,6 +440,20 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
         &["--allow-write", &workspace.project().to_string_lossy()],
     )?;
     assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let granted = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("allow-write-config-{}", std::process::id()));
+    std::fs::create_dir_all(&granted)?;
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [granted]}}).to_string(),
+    )?;
+    let made = granted.join("made");
+    let command = format!("touch '{}'", made.display());
+    let script = bash_script(&workspace, &command, Some("done"))?;
+    let configured = ask(&workspace, "look", &["--faux", &script, "--yolo"])?;
+    assert_eq!(configured.status.code(), Some(0), "{configured:?}");
+    assert!(made.exists());
+    std::fs::remove_dir_all(granted)?;
     let ledger = session_text(&workspace.0.join("home/sessions"))?;
     assert!(
         !ledger.contains(yi_types::permission::PERMISSION_RULE_ENTRY),
@@ -575,24 +589,12 @@ fn show_calls_an_unflagged_nonzero_exit_an_error() -> TestResult {
     Ok(())
 }
 
-/// Dies with an old session's list reading differently after the todo merge: `yi todo` over a
-/// recorded session prints what the pre-merge binary printed for it, byte for byte.
-#[test]
-fn yi_todo_reads_a_recorded_session_as_before_the_merge() -> TestResult {
-    let workspace = Workspace::new("todo-before")?;
-    let cwd = workspace.project().display().to_string();
-    let session_dir = workspace
-        .0
-        .join("home/sessions")
-        .join(yi_runtime::session_store::session_directory_name(&cwd));
-    std::fs::create_dir_all(&session_dir)?;
-    // The scrub masked every id and the loader refuses duplicates, so they are re-minted as a chain.
+/// The scrub masked every id and the loader refuses duplicates, so they are re-minted as a chain
+/// and the header becomes session `recorded`.
+fn reminted(scrubbed: &str) -> Result<String, Box<dyn Error>> {
     let mut rows = Vec::new();
     let mut parent = Value::Null;
-    for (index, line) in include_str!("../../tui/tests/fixtures/sessions/01a0d6e4.jsonl")
-        .lines()
-        .enumerate()
-    {
+    for (index, line) in scrubbed.lines().enumerate() {
         let mut row: Value = serde_json::from_str(line)?;
         let id = if index == 0 {
             json!("recorded")
@@ -607,7 +609,26 @@ fn yi_todo_reads_a_recorded_session_as_before_the_merge() -> TestResult {
         }
         rows.push(row.to_string());
     }
-    std::fs::write(session_dir.join("1_recorded.jsonl"), rows.join("\n") + "\n")?;
+    Ok(rows.join("\n") + "\n")
+}
+
+/// Dies with an old session's list reading differently after the todo merge: `yi todo` over a
+/// recorded session prints what the pre-merge binary printed for it, byte for byte.
+#[test]
+fn yi_todo_reads_a_recorded_session_as_before_the_merge() -> TestResult {
+    let workspace = Workspace::new("todo-before")?;
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    std::fs::write(
+        session_dir.join("1_recorded.jsonl"),
+        reminted(include_str!(
+            "../../tui/tests/fixtures/sessions/01a0d6e4.jsonl"
+        ))?,
+    )?;
     let output = workspace.yi(&["todo"])?;
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout(&output), include_str!("fixtures/todo-before.txt"));
@@ -2108,6 +2129,13 @@ fn doctor_lines(output: &Output) -> Vec<String> {
     stdout(output).lines().map(str::to_owned).collect()
 }
 
+/// Incident: SUN_LEN is 104 here, and a nextest temp dir can push a socket path past it.
+fn short_socket(name: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(format!("/tmp/yi-{name}-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
 /// The classifier row answers for the endpoint it names: a stored key and an endpoint that
 /// answers is ok, the same config without the key is a FAIL the user can act on, and the probe
 /// names the model it asked.
@@ -2167,17 +2195,19 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
     let workspace = Workspace::new("doctor")?;
     let yi_dir = workspace.0.join("home/.yi");
     std::fs::create_dir_all(&yi_dir)?;
-    std::fs::write(yi_dir.join("daemon.sock"), b"")?;
+    let socket = short_socket("doctor");
+    drop(std::os::unix::net::UnixListener::bind(&socket)?);
     std::fs::write(
-        yi_dir.join("daemon.ledger.json"),
+        socket.with_extension("ledger.json"),
         r#"{"sessions":{"s-gone":{"cwd":"/nonexistent/yi-gone-root","unseen":0,"lastEventMs":1}}}"#,
     )?;
+    let named = socket.display().to_string();
     std::fs::create_dir_all(yi_dir.join("catalog"))?;
     std::fs::write(
         yi_dir.join("catalog/openrouter.json"),
         r#"{"openai-completions":{"x/hand-edited":{"id":"x/hand-edited"}}}"#,
     )?;
-    let seen = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let seen = workspace.yi_env(&["doctor", "--socket", &named], NO_KERNEL)?;
     assert_eq!(seen.status.code(), Some(1), "{}", stdout(&seen));
     let lines = doctor_lines(&seen);
     assert!(
@@ -2209,16 +2239,13 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             .any(|l| l.starts_with("ok    host") && l.len() > "ok    host".len() + 2),
         "the doctor names the host environment: {lines:?}"
     );
-    let fixed = workspace.yi_env(&["doctor", "--fix"], NO_KERNEL)?;
+    let fixed = workspace.yi_env(&["doctor", "--fix", "--socket", &named], NO_KERNEL)?;
     let lines = doctor_lines(&fixed);
     assert!(
         lines.iter().any(|l| l.starts_with("fixed daemon-socket")),
         "{lines:?}"
     );
-    assert!(
-        !yi_dir.join("daemon.sock").exists(),
-        "the dead socket file is gone"
-    );
+    assert!(!socket.exists(), "the dead socket file is gone");
     assert!(
         lines.iter().any(|l| l.starts_with("FAIL  daemon-ledger")),
         "a gone root is not doctor's to prune: {lines:?}"
@@ -2240,6 +2267,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "config",
             "classifier",
             "catalog",
+            "providers",
             "python-runtime",
             "kernel-toolchain",
             "kernel-boot",
@@ -2248,10 +2276,11 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "lanes",
             "cache",
             "sandbox-listeners",
-            "plugins"
+            "plugins",
+            "exec-tools"
         ]
     );
-    assert_eq!(rows[11]["detail"], "no session here", "{rows}");
+    assert_eq!(rows[12]["detail"], "no session here", "{rows}");
     Ok(())
 }
 
@@ -2276,7 +2305,7 @@ fn doctor_reports_a_cache_notice_and_leaves_the_session_file_alone() -> TestResu
     std::fs::write(&file, &torn)?;
     let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
     let rows: Value = serde_json::from_str(&stdout(&json))?;
-    let row = &rows[11];
+    let row = &rows[12];
     assert_eq!(row["name"], "cache", "{rows}");
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().ok_or("detail")?;
@@ -2306,6 +2335,196 @@ fn doctor_without_fix_reports_the_uv_fetch_instead_of_running_it() -> TestResult
         "{lines:?}"
     );
     assert!(!workspace.0.join("home/.yi/uv").exists());
+    Ok(())
+}
+
+/// A socket explicitly named on the command line is the one both daemon rows judge.
+#[test]
+fn doctor_judges_the_socket_named_on_the_command_line() -> TestResult {
+    let workspace = Workspace::new("doctor-socket")?;
+    let socket = short_socket("doctor-host");
+    let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    std::fs::write(
+        socket.with_extension("ledger.json"),
+        r#"{"sessions":{"s-gone":{"cwd":"/nonexistent/yi-gone-root","unseen":0,"lastEventMs":1}}}"#,
+    )?;
+    let path = socket.display().to_string();
+    let live = workspace.yi_env(&["doctor", "--json", "--socket", &path], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&live))?;
+    let row = |name: &str| {
+        rows.as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+            .cloned()
+            .ok_or_else(|| format!("no {name} row: {rows}"))
+    };
+    assert_eq!(row("daemon-socket")?["detail"], "daemon answers", "{rows}");
+    assert!(
+        row("daemon-ledger")?["detail"]
+            .as_str()
+            .is_some_and(|row| row.contains("s-gone")),
+        "{rows}"
+    );
+    drop(listener);
+    let dead = workspace.yi_env(&["doctor", "--json", "--socket", &path], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&dead))?;
+    let dead_row = |name: &str| {
+        rows.as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+            .cloned()
+            .ok_or_else(|| format!("no {name} row: {rows}"))
+    };
+    assert!(
+        dead_row("daemon-socket")?["detail"]
+            .as_str()
+            .is_some_and(|row| row.contains("dead socket file")),
+        "{rows}"
+    );
+    let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(socket.with_extension("ledger.json"));
+    Ok(())
+}
+
+/// `--fix` repairs a socket, not whatever file the flag happens to name.
+#[test]
+fn doctor_fix_leaves_a_named_path_that_is_not_a_socket() -> TestResult {
+    let workspace = Workspace::new("doctor-socket-file")?;
+    let path = workspace.0.join("home/.yi/chosen.txt");
+    std::fs::write(&path, "not a socket\n")?;
+    let named = path.display().to_string();
+    let fixed = workspace.yi_env(
+        &["doctor", "--json", "--fix", "--socket", &named],
+        NO_KERNEL,
+    )?;
+    let rows: Value = serde_json::from_str(&stdout(&fixed))?;
+    let row = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "daemon-socket"))
+        .cloned()
+        .ok_or_else(|| format!("no daemon-socket row: {rows}"))?;
+    assert_eq!(row["status"], "fail", "{row}");
+    assert!(
+        row["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("not a socket")),
+        "{row}"
+    );
+    assert!(path.exists(), "the file `--socket` named was removed");
+    Ok(())
+}
+
+/// The configured pool bound, not the default, decides which stale slots doctor judges.
+#[test]
+fn doctor_judges_only_the_configured_lane_slots() -> TestResult {
+    use yi_runtime::lane::{ClaimBase, Pool};
+    let workspace = Workspace::new("doctor-lanes")?;
+    write_config(&workspace, r#"{"lanes":{"slots":1}}"#)?;
+    crate::repo::init_repo(&workspace.project())?;
+    let home = workspace.0.join("home");
+    let pool = Pool::open(&home, &workspace.project(), 2)?;
+    let first = pool.claim("first", ClaimBase::Main)?;
+    let second = pool.claim("second", ClaimBase::Main)?;
+    let stale = second.slot();
+    drop((first, second));
+    let git = |cwd: &std::path::Path, args: &[&str]| -> TestResult {
+        let output = yi_tools::command("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    };
+    git(&workspace.project(), &["branch", "-q", "yi/stale", "HEAD"])?;
+    let tree = pool.dir().join(stale.to_string());
+    git(&tree, &["checkout", "-q", "yi/stale"])?;
+    let state_path = pool.dir().join(format!("{stale}.json"));
+    let mut state: yi_types::lane::SlotState =
+        serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    state.session = Some("stale".to_owned());
+    std::fs::write(state_path, serde_json::to_vec(&state)?)?;
+    let seen = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&seen))?;
+    let lanes = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "lanes"))
+        .ok_or("no lanes row")?;
+    assert_eq!(
+        (lanes["status"].as_str(), lanes["detail"].as_str()),
+        (Some("ok"), Some("1 slot(s) consistent")),
+        "{rows}"
+    );
+    Ok(())
+}
+
+/// An unreadable config leaves the slot bound unknown, so the lanes row defers to the config row
+/// rather than judging the pool against the default bound.
+#[test]
+fn doctor_judges_no_lanes_when_the_config_is_unreadable() -> TestResult {
+    let workspace = Workspace::new("doctor-lanes-bad-config")?;
+    write_config(&workspace, r#"{"lanes":{"slots":1},"nope":1}"#)?;
+    crate::repo::init_repo(&workspace.project())?;
+    let seen = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&seen))?;
+    let row = |name: &str| {
+        rows.as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+            .map(|row| (row["status"].clone(), row["detail"].clone()))
+    };
+    assert_eq!(
+        row("config").map(|(status, _)| status),
+        Some(Value::from("fail")),
+        "{rows}"
+    );
+    assert_eq!(
+        row("lanes"),
+        Some((Value::from("ok"), Value::from("see config"))),
+        "{rows}"
+    );
+    Ok(())
+}
+
+/// Every skipped executable is named with its probe's outcome; healthy tools still load.
+#[test]
+fn doctor_names_each_skipped_exec_tool_and_its_reason() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = Workspace::new("doctor-exec-tools")?;
+    let dir = workspace.0.join("home/.yi/tools");
+    std::fs::create_dir_all(&dir)?;
+    for (name, body) in [
+        (
+            "good",
+            "#!/bin/sh\nprintf '{\"name\":\"good\",\"input_schema\":{\"type\":\"object\"}}'\n",
+        ),
+        ("hang", "#!/bin/sh\nsleep 30\n"),
+        ("fail", "#!/bin/sh\nexit 7\n"),
+        ("invalid", "#!/bin/sh\nprintf 'not json'\n"),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, body)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let seen = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&seen))?;
+    let row = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "exec-tools"))
+        .ok_or_else(|| format!("no exec-tools row: {rows}"))?;
+    assert_eq!(row["status"], "fail", "{row}");
+    let detail = row["detail"].as_str().ok_or("no detail")?;
+    assert!(detail.contains("1 loaded"), "{detail}");
+    for needle in [
+        "hang",
+        "timed out after 2s",
+        "fail",
+        "exited with code 7",
+        "invalid",
+        "no valid schema",
+    ] {
+        assert!(detail.contains(needle), "{needle}: {detail}");
+    }
     Ok(())
 }
 
@@ -2453,6 +2672,41 @@ fn stats_prices_fits_the_published_price_and_names_the_route_it_left_out() -> Te
         text.contains("[1 route(s) not fitted: fewer than 30 priced replies (MIN_SAMPLES)"),
         "{text}"
     );
+    Ok(())
+}
+
+/// Dies when `yi stats` loses a followed skill pointer: the recorded session reads
+/// `yi://skills/debug` one turn after `Relevant: yi://skills/debug`, in one session and the fold.
+#[test]
+fn stats_counts_a_followed_skill_pointer_in_one_session_and_the_fold() -> TestResult {
+    let workspace = Workspace::new("stats-skills")?;
+    let empty = rolled(&workspace, &["stats", "--by", "skills", "--json"])?;
+    assert_eq!(empty["skills"]["pointers"], 0, "{empty}");
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    std::fs::write(
+        session_dir.join("1_recorded.jsonl"),
+        reminted(include_str!(
+            "../../tui/tests/fixtures/sessions/01a14278.jsonl"
+        ))?,
+    )?;
+    let expected = json!({
+        "skillReads": 1, "pointers": 1, "followed": 1, "followWindow": 3,
+    });
+    let one: Value =
+        serde_json::from_str(&stdout(&workspace.yi(&["stats", "--json", "recorded"])?))?;
+    assert_eq!(one["skills"], expected, "{one}");
+    let text = stdout(&workspace.yi(&["stats", "recorded"])?);
+    let line = "skills  skill reads 1, pointers 1 (1 followed by a read within 3 turns)";
+    assert!(text.lines().any(|row| row == line), "{text}");
+    let fold = rolled(&workspace, &["stats", "--by", "skills", "--json"])?;
+    assert_eq!(fold["skills"], expected, "{fold}");
+    let folded = stdout(&workspace.yi(&["stats", "--by", "skills"])?);
+    assert!(folded.lines().any(|row| row == line), "{folded}");
     Ok(())
 }
 
@@ -3087,6 +3341,30 @@ fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -
     Ok(())
 }
 
+/// Dies with `edit edit` offered as an exact remedy: its pattern allows every edit, so a pathless
+/// display must send the operator to an interactive approval instead of printing that entry.
+#[test]
+fn a_headless_edit_denial_does_not_offer_an_allow_everything_entry() -> TestResult {
+    let workspace = Workspace::new("headless-edit-denial")?;
+    let patch = "[crates/x.rs#1234]\nPUT 1.=1:\n+changed";
+    let script = tool_script(&workspace, &[("edit", json!({"patch": patch}))], Some("no"))?;
+    let run = ask(
+        &workspace,
+        "go",
+        &["--confirm", "--json", "--faux", &script],
+    )?;
+    assert_eq!(run.status.code(), Some(4), "{run:?}");
+    let out = stdout(&run);
+    let mut lines = out.lines().rev();
+    let last: Value = serde_json::from_str(lines.next().ok_or("no output")?)?;
+    assert_eq!(last["type"], "final", "{out}");
+    let denied: Value = serde_json::from_str(lines.next().ok_or("no denial")?)?;
+    let reason = denied["reason"].as_str().ok_or("no reason")?;
+    assert!(!reason.contains("Allow exactly this call"), "{reason}");
+    assert!(reason.contains("interactive"), "{reason}");
+    Ok(())
+}
+
 /// Dies with a mistyped `permissions.allow` entry dropped, so the denial it was written to
 /// prevent came back with no word of why.
 #[test]
@@ -3097,6 +3375,106 @@ fn an_allow_entry_without_a_pattern_ends_the_run_with_exit_2() -> TestResult {
     let err = String::from_utf8_lossy(&run.stderr).into_owned();
     assert_eq!(run.status.code(), Some(2), "{err}");
     assert!(err.contains("permissions.allow"), "{err}");
+    Ok(())
+}
+
+/// Dies with a fix pass under a brief for `evals/` editing `crates/` (#1630, #1638): in yolo, where
+/// those runs ran, the write outside the glob is refused with both named, the one inside lands,
+/// and without the flag the same script writes both.
+#[test]
+fn scope_refuses_a_write_outside_its_glob_and_lets_one_inside_through() -> TestResult {
+    let workspace = Workspace::new("scope")?;
+    let project = workspace.project();
+    for dir in ["crates", "evals"] {
+        std::fs::create_dir_all(project.join(dir))?;
+    }
+    let script = tool_script(
+        &workspace,
+        &[
+            (
+                "write",
+                json!({"path": "crates/lock.rs", "content": "locked"}),
+            ),
+            (
+                "write",
+                json!({"path": "evals/probe.py", "content": "probe"}),
+            ),
+        ],
+        Some("done"),
+    )?;
+    let flags = ["--yolo", "--json", "--faux", &script];
+    let free = ask(&workspace, "go", &flags)?;
+    assert_eq!(free.status.code(), Some(0), "{}", stdout(&free));
+    assert!(project.join("crates/lock.rs").exists());
+    std::fs::remove_file(project.join("crates/lock.rs"))?;
+    std::fs::remove_file(project.join("evals/probe.py"))?;
+
+    let run = ask(
+        &workspace,
+        "go",
+        &[&flags[..], &["--scope", "evals/**"]].concat(),
+    )?;
+    let out = stdout(&run);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert!(!project.join("crates/lock.rs").exists(), "{out}");
+    assert!(project.join("evals/probe.py").exists(), "{out}");
+    let ended = |id: &str| -> Result<Value, Box<dyn Error>> {
+        let events = out.lines().map(serde_json::from_str::<Value>);
+        for event in events {
+            let event = event?;
+            if event["type"] == "tool_execution_end" && event["toolCallId"] == id {
+                return Ok(event);
+            }
+        }
+        Err(format!("no end for {id}: {out}").into())
+    };
+    let refused = ended("c0")?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let said = refused["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or("no text")?;
+    assert!(
+        said.contains("crates/lock.rs") && said.contains("evals/**"),
+        "{said}"
+    );
+    assert_eq!(ended("c1")?["isError"], false, "{out}");
+    Ok(())
+}
+
+/// Dies with a run that ended on a scope refusal exiting 0 as if it had answered, and a glob that
+/// could never match (absolute) or a verb that drops the flag (`console`) failing only at the
+/// first write, or never.
+#[test]
+fn a_run_ending_on_a_scope_refusal_exits_4_and_a_bad_scope_is_refused_up_front() -> TestResult {
+    let workspace = Workspace::new("scope-exit")?;
+    let script = tool_script(
+        &workspace,
+        &[("write", json!({"path": "lock.rs", "content": "locked"}))],
+        Some("could not"),
+    )?;
+    let run = ask(
+        &workspace,
+        "go",
+        &["--yolo", "--json", "--faux", &script, "--scope", "evals/**"],
+    )?;
+    let (out, err) = (
+        stdout(&run),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    );
+    assert_eq!(run.status.code(), Some(4), "{out}{err}");
+    assert!(err.contains("lock.rs") && err.contains("evals/**"), "{err}");
+    assert!(!workspace.project().join("lock.rs").exists());
+
+    let absolute = ask(&workspace, "go", &["--scope", "/work/evals/**"])?;
+    let console = workspace.yi(&["console", "--scope", "evals/**"])?;
+    for (run, said) in [(absolute, "scope"), (console, "needs `yi ask`")] {
+        let err = String::from_utf8_lossy(&run.stderr).into_owned();
+        assert_eq!(
+            (run.status.code(), err.contains(said)),
+            (Some(2), true),
+            "{err}"
+        );
+    }
     Ok(())
 }
 

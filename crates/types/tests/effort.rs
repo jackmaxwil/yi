@@ -1,10 +1,9 @@
 use std::str::FromStr;
 
-use serde_json::{Number, json};
+use serde_json::json;
 use yi_types::model::{Effort, Model, ModelCost, UnknownEffort};
 
 fn model(reasoning: bool, map: Option<serde_json::Value>) -> Model {
-    let zero = || Number::from(0u64);
     Model {
         id: "m".to_owned(),
         name: "M".to_owned(),
@@ -13,18 +12,13 @@ fn model(reasoning: bool, map: Option<serde_json::Value>) -> Model {
         base_url: String::new(),
         reasoning,
         input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window: 1000,
         max_tokens: 100,
         compat: None,
         thinking_level_map: map,
         headers: None,
+        read_timeout_secs: None,
     }
 }
 

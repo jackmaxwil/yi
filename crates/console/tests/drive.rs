@@ -4914,18 +4914,92 @@ fn prompt_committed(frame: &Value) -> Vec<Value> {
         .and_then(Value::as_str)
         .unwrap_or("");
     let asked = entry("e3", Some("e2"), 3, &user_message(prompt));
-    let answered = entry("e4", Some("e3"), 4, &assistant("streamed answer"));
-    for saved in [asked, answered] {
-        frames.push(update(
-            "s-alpha",
-            json!({"sessionUpdate": "_yi/committed", "entry": saved}),
-        ));
+    let changed = json!({
+        "type": "model_change", "id": "e4", "provider": "faux", "modelId": "faux-1",
+        "parentId": "e3", "seq": 4, "timestamp": 4
+    });
+    let mut call_message = assistant("");
+    if let AgentMessage::Assistant {
+        content,
+        stop_reason,
+        ..
+    } = &mut call_message
+    {
+        *content = vec![Content::ToolCall {
+            id: "call-1".to_owned(),
+            name: "bash".to_owned(),
+            arguments: serde_json::Map::from_iter([("command".to_owned(), json!("echo hidden"))]),
+            thought_signature: None,
+            namespace: None,
+        }];
+        *stop_reason = StopReason::ToolUse;
     }
+    let call = entry("e5", Some("e4"), 5, &call_message);
+    let tool_result = json!({
+        "type": "message", "id": "e6",
+        "message": {
+            "role": "toolResult", "toolCallId": "call-1", "toolName": "bash",
+            "content": [{"type": "text", "text": "hidden tool output"}], "isError": false, "timestamp": 6
+        },
+        "parentId": "e5", "seq": 6, "timestamp": 6
+    });
+    let answered = entry("e7", Some("e6"), 7, &assistant("streamed answer"));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": asked}),
+    ));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": call, "ancestors": [changed]}),
+    ));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": answered, "ancestors": [tool_result]}),
+    ));
     frames
 }
 
-/// A reply that streamed in live is in no replay; the worker's committed notice is what lets
-/// its menu reach the ledger, so Inspect opens the entry the notice named.
+/// The session tree keeps a live tool call on the active path through hidden ancestors.
+fn rewind_live_tool_call(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e5"}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]["entryId"]));
+    }
+    vec![
+        replay("s-alpha", &[], 0, None),
+        ok(
+            frame,
+            json!({"leafId": "e2", "unsent": "again", "summarizing": false}),
+        ),
+    ]
+}
+
+#[test]
+fn a_live_tool_call_with_hidden_ancestors_rewinds_to_itself() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("session/prompt", prompt_committed));
+    steps.push(Step::Expect("_yi/rewind", rewind_live_tool_call));
+    let dir = Scratch::new("yi-console-frames-menu-live-rewind")?;
+    run_opts(
+        "menu-live-rewind",
+        Some(steps),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         type again\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\n\
+         key esc\nkey esc\nkey up\nwait-frame 3000 › ● assistant: ⚙ bash\n\
+         key enter\nwait-idle 5000\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let active_tool_row = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .any(|frame| frame.contains("› ● assistant: ⚙ bash"));
+    assert!(active_tool_row, "tool-call row is not on the active path");
+    Ok(())
+}
+
+/// A live reply is available for Inspect after its committed notice names its ledger entry.
 #[test]
 fn a_live_reply_is_inspectable_once_committed() -> TestResult {
     let mut steps = opened_unicode();
@@ -4936,7 +5010,7 @@ fn a_live_reply_is_inspectable_once_committed() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          type again\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\n\
          mouse right 25 13\nwait-frame 3000 Inspect\nkey up\nkey enter\n\
-         wait-frame 3000 entry e4\nquit\n",
+         wait-frame 3000 entry e7\nquit\n",
     )
 }
 
@@ -5529,6 +5603,92 @@ fn a_resumed_sessions_kernel_cells_fill_the_notebook() -> TestResult {
     Ok(())
 }
 
+/// The recorded kernel call and its result, `count` copies: each renumbered and with its script
+/// replaced, so a fixture is one session's shape with N cells in it.
+fn replayed_cells(count: usize) -> Vec<(Value, Value)> {
+    let entries = recorded(KERNEL_SESSION);
+    let Some(result) = entries
+        .iter()
+        .find(|e| e["message"]["toolName"] == "ipython")
+    else {
+        return Vec::new();
+    };
+    let Some(call) = entries
+        .iter()
+        .find(|e| e["message"]["content"][0]["id"] == result["message"]["toolCallId"])
+    else {
+        return Vec::new();
+    };
+    (0..count)
+        .map(|n| {
+            let (mut call, mut result) = (call.clone(), result.clone());
+            let id = json!(format!("call_{n}"));
+            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
+            call["message"]["content"][0]["id"] = id.clone();
+            result["message"]["toolCallId"] = id;
+            (call, result)
+        })
+        .collect()
+}
+
+/// Four kernel calls of one recorded session, each result carrying the mime a notebook renders
+/// it by: markdown, JSON, python, then the plain text it already drew.
+fn mime_entries() -> Vec<Value> {
+    let values = [
+        ("text/markdown", "# Tide survey\n\n- one\n- two"),
+        ("application/json", "{\"datum\":4}"),
+        ("text/x-python", "def tide(sea):\n    return sea"),
+        ("text/plain", "plain 42"),
+    ];
+    let mut out: Vec<Value> = Vec::new();
+    for ((call, mut result), (mime, text)) in replayed_cells(values.len()).into_iter().zip(values) {
+        result["message"]["details"] = json!({"stdout": "", "result": text, "resultMime": mime});
+        out.push(call);
+        out.push(result);
+    }
+    out.push(entry("e-tail", None, 9999, &assistant("kinds in")));
+    out
+}
+
+/// Dies with a declared mime drawn as its flat text: one frame of one recorded session must
+/// show a rendered heading, a pretty JSON row, a highlighted `def` and untouched plain text.
+#[test]
+fn a_replayed_sessions_values_draw_by_their_mime() -> TestResult {
+    let frame = run_frames_sized(
+        "replay-notebook-mimes",
+        replayed_session(|frame| resume_with(frame, &mime_entries())),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 kinds in\ncmd-i\n\
+         wait-frame 5000 ● [4]\nquit\n",
+        SidebarMode::Full,
+        (180, 40),
+    )?;
+    let markdown = cell_rows(&frame, 1)?;
+    assert!(
+        markdown.iter().any(|row| row.contains("Tide survey")),
+        "{markdown:?}"
+    );
+    assert!(
+        !markdown.iter().any(|row| row.contains("# Tide survey")),
+        "{markdown:?}"
+    );
+    let json = cell_rows(&frame, 2)?;
+    assert!(
+        json.iter().any(|row| row.contains("\"datum\": 4")),
+        "{json:?}"
+    );
+    let python = cell_rows(&frame, 3)?;
+    assert!(
+        python.iter().any(|row| row.contains("def tide(sea):")),
+        "{python:?}"
+    );
+    let plain = cell_rows(&frame, 4)?;
+    assert!(
+        plain.iter().any(|row| row.contains("plain 42")),
+        "{plain:?}"
+    );
+    Ok(())
+}
+
 /// A full replay after a reconnect finds the cells already there; it must not append them again.
 #[test]
 fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
@@ -5555,25 +5715,15 @@ fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
     Ok(())
 }
 
-/// `count` kernel calls: the recording's first call and result, each under its own ids and as a
-/// one-line cell, then a last reply `tail`.
+/// `count` kernel calls, each a one-line cell, then a last reply `tail`.
 fn cell_entries(count: usize, tail: &str) -> Vec<Value> {
-    let entries = recorded(KERNEL_SESSION);
-    let result = (entries.iter()).find(|e| e["message"]["toolName"] == "ipython");
-    let call = result.and_then(|r| {
-        (entries.iter()).find(|e| e["message"]["content"][0]["id"] == r["message"]["toolCallId"])
-    });
-    let mut out: Vec<Value> = (0..count)
-        .filter_map(|n| {
-            let (mut call, mut result) = (call.cloned()?, result.cloned()?);
-            let id = json!(format!("call_{n}"));
-            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
-            call["message"]["content"][0]["id"] = id.clone();
+    let mut out: Vec<Value> = replayed_cells(count)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(n, (call, mut result))| {
             result["message"]["details"]["stdout"] = json!(format!("{n}\n"));
-            result["message"]["toolCallId"] = id;
-            Some([call, result])
+            [call, result]
         })
-        .flatten()
         .collect();
     out.push(entry("e-tail", None, 9999, &assistant(tail)));
     out
@@ -5913,4 +6063,31 @@ fn pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not() ->
         "the fence label opened a terminal: {label}"
     );
     Ok(())
+}
+
+fn worker_replaced() -> Vec<Value> {
+    vec![update(
+        "s-new",
+        json!({"sessionUpdate": "_yi/worker_replaced", "binary": "/bin/yi", "generation": 2}),
+    )]
+}
+
+fn resumed_notice() -> Vec<Value> {
+    vec![update(
+        "s-new",
+        json!({"sessionUpdate": "_yi/notice", "text": "resumed on the new build"}),
+    )]
+}
+
+/// Dies with a pane left bound to the stream of a worker the daemon replaced: the console must
+/// resume the session from the ledger the moment `_yi/worker_replaced` arrives.
+#[test]
+fn a_replaced_worker_resumes_the_pane_bound_to_its_session() -> TestResult {
+    let mut steps = new_session_steps();
+    steps.push(Step::Push(worker_replaced));
+    steps.push(Step::Expect("session/resume", resume_blank));
+    steps.push(Step::Push(resumed_notice));
+    let script = "wait-frame 5000 command palette\nkey alt-n\nwait-frame 5000 s-new\n\
+                  wait-frame 5000 resumed on the new build\nquit\n";
+    run("worker-replaced", steps, script)
 }

@@ -37,17 +37,20 @@ struct Site {
     cwd: PathBuf,
     sessions: PathBuf,
     fix: bool,
+    lane_slots: Option<u8>,
+    socket: PathBuf,
 }
 
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 14] = [
+const ROWS: [(&str, Check); 16] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
     ("classifier", classifier_answers),
     ("catalog", catalog_age),
+    ("providers", custom_providers),
     ("python-runtime", python_runtime_present),
     ("kernel-toolchain", kernel_toolchain),
     ("kernel-boot", kernel_boot),
@@ -57,6 +60,7 @@ const ROWS: [(&str, Check); 14] = [
     ("cache", cache_reads),
     ("sandbox-listeners", sandbox_listeners),
     ("plugins", plugins_pinned),
+    ("exec-tools", exec_tools),
 ];
 
 /// Never a failure: where yi runs decides what a contained command and a placement can reach.
@@ -151,6 +155,48 @@ fn catalog_age(site: &Site) -> Finding {
     }
 }
 
+/// A custom provider whose key resolves nowhere is a session that would refuse at its first turn.
+fn custom_providers(site: &Site) -> Finding {
+    let Ok((config, _)) = read_config(&site.home) else {
+        return ok("see config");
+    };
+    let Some(providers) = config.providers else {
+        return ok("none declared; `providers` in config.json adds one");
+    };
+    let (mut rows, mut missing) = (Vec::new(), false);
+    for (id, provider) in providers.iter() {
+        let from = if let Some(variable) = (provider.api_key_env.as_deref())
+            .filter(|variable| std::env::var(variable).is_ok_and(|value| !value.is_empty()))
+        {
+            format!("key from {variable}")
+        } else if provider
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.is_empty())
+        {
+            "key from apiKey".to_owned()
+        } else if yi_runtime::auth::stored_key(&site.home, id).is_some() {
+            "key from the yi-oauth store in ~/.yi/providers/tokens".to_owned()
+        } else {
+            missing = true;
+            match provider.api_key_env.as_deref() {
+                Some(variable) => format!("no key (export {variable})"),
+                None => "no key (set apiKeyEnv)".to_owned(),
+            }
+        };
+        rows.push(format!(
+            "{id} {} model(s) at {}, {from}",
+            provider.models.len(),
+            provider.base_url
+        ));
+    }
+    if missing {
+        fail(rows.join("; "))
+    } else {
+        ok(rows.join("; "))
+    }
+}
+
 /// Invariant: the root the kernel installs from holds a tree (#278: a binary away from its
 /// checkout resolved to the build machine's path). `--fix` unpacks the embed under ~/.yi.
 fn python_runtime_present(site: &Site) -> Finding {
@@ -192,20 +238,25 @@ fn kernel_boot(site: &Site) -> Finding {
     }
 }
 
-fn socket_path(site: &Site) -> PathBuf {
-    site.home.join(".yi/daemon.sock")
-}
-
+/// Invariant: `--socket` names the file this row removes, so the row judges what it is before it
+/// unlinks it; a path that is not a socket is reported and left alone.
 fn socket_alive_or_absent(site: &Site) -> Finding {
-    let path = socket_path(site);
+    use std::os::unix::fs::FileTypeExt;
+    let path = &site.socket;
     if !path.exists() {
         return ok("no daemon");
     }
-    if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+    if std::os::unix::net::UnixStream::connect(path).is_ok() {
         return ok("daemon answers");
     }
+    let is_socket = std::fs::metadata(path)
+        .map(|meta| meta.file_type().is_socket())
+        .unwrap_or(false);
+    if !is_socket {
+        return fail("not a socket; left alone");
+    }
     if site.fix {
-        return match std::fs::remove_file(&path) {
+        return match std::fs::remove_file(path) {
             Ok(()) => Finding {
                 status: Status::Fixed,
                 detail: "dead socket file removed".to_owned(),
@@ -219,7 +270,7 @@ fn socket_alive_or_absent(site: &Site) -> Finding {
 /// Invariant: a ledger row names a cwd a session can be resumed in; the daemon owns the file
 /// (D118), so a gone root is reported here and pruned there.
 fn ledger_roots_exist(site: &Site) -> Finding {
-    let path = socket_path(site).with_extension("ledger.json");
+    let path = site.socket.with_extension("ledger.json");
     let Ok(raw) = std::fs::read(&path) else {
         return ok("no ledger");
     };
@@ -245,7 +296,10 @@ fn ledger_roots_exist(site: &Site) -> Finding {
 
 fn lanes_consistent(site: &Site) -> Finding {
     use yi_runtime::lane::{LaneError, Pool, SlotView, TreeState, land::lane_line};
-    let pool = match Pool::open(&site.home, &site.cwd, crate::lanes::lane_slots()) {
+    let Some(slots) = site.lane_slots else {
+        return ok("see config");
+    };
+    let pool = match Pool::open(&site.home, &site.cwd, slots) {
         Ok(pool) => pool,
         Err(LaneError::NotARepo(_)) => return ok("not a repository"),
         Err(error) => return fail(error.to_string()),
@@ -376,6 +430,22 @@ fn plugins_pinned(site: &Site) -> Finding {
     }
     ok(installed.join(", "))
 }
+fn exec_tools(site: &Site) -> Finding {
+    let (tools, skipped) = yi_runtime::discover_exec_tools(&site.home.join(".yi/tools"));
+    if skipped.is_empty() {
+        return if tools.is_empty() {
+            ok("none installed")
+        } else {
+            ok(format!("{} loaded", tools.len()))
+        };
+    }
+    let reasons = skipped
+        .iter()
+        .map(|skipped| format!("{}: {}", skipped.path.display(), skipped.reason))
+        .collect::<Vec<_>>()
+        .join("; ");
+    fail(format!("{} loaded; skipped {reasons}", tools.len()))
+}
 
 /// Runs before the config loads, so a config that will not parse is a row, not a death.
 pub(crate) fn early() {
@@ -392,11 +462,15 @@ pub(crate) fn early() {
 }
 
 pub(crate) fn run(args: &Args) -> i32 {
+    let home = crate::home().to_path_buf();
+    let config = read_config(&home).ok().map(|(config, _)| config);
     let site = Site {
-        home: crate::home().to_path_buf(),
         cwd: effective_cwd(args),
         sessions: crate::default_session_dir(args),
         fix: args.fix,
+        lane_slots: config.as_ref().map(crate::lanes::lane_slots_from),
+        socket: crate::shells::daemon_socket(args),
+        home,
     };
     let findings: Vec<(&str, Finding)> = ROWS
         .iter()
