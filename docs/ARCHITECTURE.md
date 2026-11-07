@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.984.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.985.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -352,6 +352,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D568 | a head whose own latest read was clean is read again when a later round read another commit, while a blocked or retry-capped head stays refused (revises D565) | #1852 sat forever between "round 2 read this head" and "round 7 reviewed b6c0477c, not the head", so neither the reviewer nor the queue moved it | delete the stale-latest-round guard at the end of `skip_reason` |
 | D567 | `yi setup` asks two numbered menus, takes the key of the provider picked, and always records that it ran, amending D300 | the first-run flow asked free text, ended with no config when nothing was chosen so every launch asked again, saved a model whose key it never took, and a dogfood as a first-time user found the jargon and dead ends; the classifier question is dropped because `models.classifier` is already a config key | restore the free-text prompts, classifier_step and the no-write finish in crates/cli/src/setup.rs |
 | D566 | every child is sent a pointer in place of a skill catalog, `Skills: read("yi://skills") lists them; read("yi://skills/<name>") loads one.`, and a second line naming each skill its parent read through `yi://skills/<name>` (amends D334, whose narrow child carried no catalog, and D290, whose full child listed `~/.yi/skills` and the repository's skills); `read("yi://skills")` serves every listed skill with its whole description, fitted to 32 KiB with a cut row naming kept of total, the cap and the per-skill read; a reader with no `read` is sent no pointer | the owner, 2026-11-05: "narrow children should get skill catalog on demand. should get a pointer to skill catalog"; a worker could not look up a skill, and `read("yi://skills")` was refused as a bad address | drop the `Pointer` arm of `ProjectResources` and the `skills` arm of `resolve_docs` |
 | D565 | a head is reviewed once and one clean round promotes it (revises D322 and D332's two rounds): a head a round has read whole, clean or blocked, is never read again, whatever triggers it, a lost lens is the only reread and asks just the lenses still owed with the earlier round's findings kept and no refuter paid for again, and `just pr ready`, `just pr merge` and the sweep's promotion take one round on the head | the bot paid for a second full round on an unchanged head: #1888, #1977, #1830 and #1974 each ran two or three rounds on one sha ($0.30 to $1.09 each), from the second clean round a draft needed, a review job that called the round twice, `--again` skipping every reason but a blocked head, and a void erasing which lens was lost | restore `wanted=2` in `skip_reason`, the two-round clause of `ready_problems` and the blocked-head rule of `--again` in scripts/pr_review.py |
