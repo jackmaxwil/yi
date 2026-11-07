@@ -283,6 +283,17 @@ impl App {
                     self.fan_out(id, || UiEvent::Reply(Reply::Notice(notice.clone())));
                 }
             }
+            Decoded::Replaced => {
+                let pane = self
+                    .state
+                    .panes
+                    .iter()
+                    .find(|(_, pane)| pane.session() == Some(id))
+                    .map(|(pane_id, _)| *pane_id);
+                if let Some(pane) = pane {
+                    self.resume_into(outbound, pane, id);
+                }
+            }
             Decoded::Notice(text) => {
                 self.fan_out(id, || UiEvent::Reply(Reply::Notice(text.clone())))
             }
