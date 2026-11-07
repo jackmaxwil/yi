@@ -201,29 +201,29 @@ struct FileHits {
     utf8: bool,
 }
 
-fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool) -> Vec<usize> {
+fn hits_in(matcher: &regex::Regex, s: &str, multiline: bool, def: bool) -> Vec<usize> {
     let mut hits: Vec<usize> = if multiline {
-        let mut hits: Vec<usize> = matcher
-            .find_iter(normalized)
-            .map(|found| normalized[..found.start()].matches('\n').count())
-            .collect();
-        hits.dedup();
-        hits
+        matcher
+            .find_iter(s)
+            .map(|found| {
+                s.as_bytes()
+                    .iter()
+                    .take(found.start())
+                    .filter(|&&c| c == b'\n')
+                    .count()
+            })
+            .collect::<Vec<_>>()
     } else {
-        normalized
-            .split('\n')
+        s.split('\n')
             .enumerate()
             .filter(|(_, line)| matcher.is_match(line))
             .map(|(index, _)| index)
             .collect()
     };
+    hits.dedup();
     if def {
-        let lines: Vec<&str> = normalized.split('\n').collect();
-        hits.retain(|index| {
-            lines
-                .get(*index)
-                .is_some_and(|line| crate::orient::is_decl(line))
-        });
+        let lines: Vec<&str> = s.split('\n').collect();
+        hits.retain(|index| lines.get(*index).is_some_and(|l| crate::orient::is_decl(l)));
     }
     hits
 }
@@ -688,15 +688,10 @@ impl GrepTool {
                 continue;
             }
             let persisted = file.endings.restore(&after, &origins);
-            match crate::builtins::land(
-                home.as_deref(),
-                Path::new(&file.canonical),
-                &persisted,
-                context,
-            ) {
-                Ok((_, verdict)) => {
+            let canonical = Path::new(&file.canonical);
+            match crate::builtins::land(home.as_deref(), canonical, &persisted, context) {
+                Ok((_, verdict, note)) => {
                     written = written.saturating_add(1);
-                    let canonical = Path::new(&file.canonical);
                     let absolute = crate::diff::patch(&file.normalized, &after, canonical);
                     patches.push_str(absolute.as_str());
                     if let Some(line) = verdict {
@@ -705,10 +700,11 @@ impl GrepTool {
                         }
                         syntax = Some(crate::syntax::worst(syntax, line));
                     }
+                    rows.extend(note.map(|note| format!("{}: {note}", file.display)));
                     if let Some(state) = &self.hashline {
                         crate::hashline::tool::record_view_snapshot(
                             state,
-                            Path::new(&file.canonical),
+                            canonical,
                             &after,
                             &crate::diff::shown_after_lines(&file.normalized, &after),
                         );

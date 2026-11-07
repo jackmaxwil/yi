@@ -14,18 +14,30 @@ pub(crate) fn child_factory(
         let child_cwd = build
             .cwd
             .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
+        let below = RuntimeWiring {
+            broker: child_broker(&wiring, &build.wall, &child_cwd),
+            depth: wiring.depth.saturating_add(1),
+            rlm_dir: build.session_dir.to_path_buf(),
+            family_dir: Some(wiring.family_dir()),
+            cwd: child_cwd.clone(),
+            parent_link: Some(build.link.clone()),
+            wall: build.wall.clone(),
+            deadline: build.deadline,
+            kernel_prewarm: false,
+            provider: Arc::clone(&provider),
+            ..wiring.clone()
+        };
         if let Some(reader) = build.reader.clone() {
-            let broker = child_broker(&wiring, &build.wall, &child_cwd);
-            let tools = (wiring.tools)();
             let rules = crate::rules::discover_armed(&child_cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
+            let kernel = |child: &AgentSession| Some(crate::wiring::worker_ipython(child, &below));
             let child = crate::subagent::reader::session(
                 provider,
                 build,
                 &reader,
-                tools,
+                (|| (wiring.tools)(), kernel),
                 (child_cwd, &wiring.home),
-                broker,
+                below.broker.clone(),
                 rules,
             );
             screen.hand_down(&child.screeners(), crate::classifier::journal(&child));
@@ -54,22 +66,7 @@ pub(crate) fn child_factory(
             can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
         screen.hand_down(&child.screeners(), crate::classifier::journal(&child));
-        let host = attach_runtime(
-            &mut child,
-            RuntimeWiring {
-                broker: child_broker(&wiring, &build.wall, &child_cwd),
-                depth: wiring.depth.saturating_add(1),
-                rlm_dir: build.session_dir.to_path_buf(),
-                family_dir: Some(wiring.family_dir()),
-                cwd: child_cwd,
-                parent_link: Some(build.link),
-                wall: build.wall,
-                deadline: build.deadline,
-                kernel_prewarm: false,
-                provider,
-                ..wiring.clone()
-            },
-        );
+        let host = attach_runtime(&mut child, below);
         host.set_grant(child.wall(), build.tokens);
         Ok(child)
     })

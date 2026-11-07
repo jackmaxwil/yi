@@ -3,6 +3,7 @@
 
 mod args;
 mod ask;
+mod ask_check;
 mod catalog;
 mod commands;
 mod contain;
@@ -20,17 +21,19 @@ mod sessions;
 mod setup;
 mod stats;
 mod todo;
+mod tool_import;
 mod trace_sink;
 mod tty;
 mod update;
 mod user_config;
 mod why;
+mod worker;
 
 use std::sync::Arc;
 use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};
 
 use args::{Args, Resume, parse_args};
-use lanes::{claim_lane, configured_lanes, release_lane};
+use lanes::{SHUTDOWN_GRACE, claim_lane, configured_lanes, end_host, release_lane};
 use user_config::{
     config, configured_auto_background, configured_roles, home, load_config, refreshed,
     reload_config,
@@ -38,32 +41,9 @@ use user_config::{
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
-use yi_types::model::{Model, ModelCost};
+use yi_types::model::Model;
 
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
+use yi_runtime::faux::faux_model;
 
 fn resolve(spec: &str) -> Option<Model> {
     let (provider, id) = spec.split_once('/')?;
@@ -88,6 +68,10 @@ fn effective_cwd(args: &Args) -> std::path::PathBuf {
         || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         std::path::PathBuf::from,
     )
+}
+
+fn work_dir(lane: Option<std::path::PathBuf>, args: &Args) -> std::path::PathBuf {
+    lane.unwrap_or_else(|| effective_cwd(args))
 }
 
 fn env_either(upper: &str, lower: &str) -> Option<String> {
@@ -234,9 +218,7 @@ fn build_session(
             });
         }
     };
-    let work = lane
-        .as_ref()
-        .map_or_else(|| cwd.clone(), |lane| lane.path().to_path_buf());
+    let work = work_dir(lane.as_ref().map(|lane| lane.path().to_path_buf()), args);
     let settings = config();
     let rules = (settings
         .permissions
@@ -899,14 +881,8 @@ fn run_version(_: &Args) -> i32 {
 }
 
 fn run_ask(args: &Args) -> i32 {
-    if let Some(check) = args.check.as_deref() {
-        return match yi_runtime::goal::probe(check, &effective_cwd(args)) {
-            None => 0,
-            Some(refusal) => {
-                eprintln!("{refusal}");
-                2
-            }
-        };
+    if !args.check.is_empty() && args.prompt.is_empty() {
+        return ask_check::probe_only(args);
     }
     if args.prompt.is_empty() {
         eprintln!("usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->");
@@ -920,10 +896,10 @@ fn run_rpc(args: &Args) -> i32 {
         Ok(runtime) => runtime,
         Err(code) => return code,
     };
-    let session = {
+    let (session, host) = {
         let _guard = runtime.enter();
         match build_session(args, None, None, false, [false; 2]) {
-            Ok((session, _host)) => session,
+            Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
     };
@@ -932,7 +908,9 @@ fn run_rpc(args: &Args) -> i32 {
         cwd: effective_cwd(args),
     };
     let lane = session.lane();
-    let code = rpc::run_rpc(session, &options, runtime);
+    let code = rpc::run_rpc(session, &options, &runtime);
+    // A client that hung up ends its children first, so none of their lanes outlives it.
+    end_host(runtime, &host, SHUTDOWN_GRACE);
     release_lane(lane.as_deref());
     code
 }

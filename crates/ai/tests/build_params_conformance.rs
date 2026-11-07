@@ -83,6 +83,7 @@ fn every_adapter_builds_the_recorded_body() -> Result<(), Box<dyn Error>> {
                 for shared in [None, Some(2)] {
                     let context = LlmContext {
                         cache_ttl: Ttl::Min5,
+                        cache_tail: true,
                         system_prompt: "s\u{1d}t".to_owned(),
                         messages: history()?,
                         transient: vec![AgentMessage::user_input(

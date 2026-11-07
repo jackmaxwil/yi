@@ -21,7 +21,8 @@ Cells split on an unescaped ` | `; a literal pipe is `\\|`, as the table writes 
 100 conflicted main merges touched a ledger row, a 2-4 KB line every feature appends to.
 scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
 diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
-import functools, os, pathlib, re, sys
+import functools, os, pathlib, re, sys, types
+from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail, fork, git, no_fork, row_key, scratch_repo, table_rows
 
@@ -222,15 +223,36 @@ def ledger_lines(was, now):
     return out
 
 
+def merged_row_edits(before, pr, main, current):
+    maps = [{row_key(row): row for row in rows} for rows in (before, pr, main, current)]
+    expected = {}
+    for key in set().union(*(rows.keys() for rows in maps)):
+        old, ours, theirs = (rows.get(key) for rows in maps[:3])
+        if ours == theirs:
+            want = ours
+        elif ours == old:
+            want = theirs
+        elif theirs == old:
+            want = ours
+        else:
+            return False
+        if want is not None:
+            expected[key] = want
+    return expected == maps[3]
+
+
 def old_row_edits(base):
     """Whether every row edit on this branch predates LEDGER_FROM. Commit by commit, so a new PR
     batched with an old one on a candidate does not inherit its exemption."""
-    rows = lambda rev: table_rows(at(rev, "docs/ARCHITECTURE.md") or "", LEDGER)
-    if rows("HEAD") != table_rows((ROOT / "docs/ARCHITECTURE.md").read_text(), LEDGER):
-        return False
-    log = git("log", "--no-merges", "--format=%H %cs", f"{base}..HEAD", "--", "docs/ARCHITECTURE.md").stdout
+    arch = "docs/ARCHITECTURE.md"
+    rows = lambda rev: table_rows(at(rev, arch) or "", LEDGER)
+    current = table_rows((ROOT / arch).read_text(), LEDGER)
+    if rows("HEAD") != current:
+        ancestor = git("merge-base", "HEAD", "MERGE_HEAD")
+        if ancestor.returncode or not merged_row_edits(rows(ancestor.stdout.strip()), rows("HEAD"), rows("MERGE_HEAD"), current):
+            return False
+    log = git("log", "--no-merges", "--format=%H %cs", f"{base}..HEAD", "--", arch).stdout
     return not any(date >= LEDGER_FROM and rows(sha) != rows(f"{sha}^") for sha, date in map(str.split, log.splitlines()))
-
 
 def view_edits(was, now, old_rows=False):
     """What a PR changed in the recorder's views. `was` and `now` map path -> text (None: absent)."""
@@ -249,11 +271,14 @@ def view_edits(was, now, old_rows=False):
 
 
 def tree_edits(base):
-    """ADR files and change files main already holds, edited or deleted here."""
+    """ADR, change and archive files main already holds, edited or deleted here."""
     errs = []
-    for path in git("diff", "--name-only", "--no-renames", base, "--", "docs/solutions/adr", DIR).stdout.splitlines():
+    for path in git("diff", "--name-only", "--no-renames", base, "--", "docs/solutions/adr", DIR, "docs/archive").stdout.splitlines():
         exists_at_fork = at(base, path) is not None
-        if path.startswith("docs/solutions/adr/"):
+        if path.startswith("docs/archive/"):
+            if exists_at_fork:
+                errs.append(f"{path}: archived rows live only here; add a new file instead")
+        elif path.startswith("docs/solutions/adr/"):
             errs.append(f"{path}: ADRs are rendered from the decision log by the recorder")
         elif exists_at_fork:
             errs.append(f"{path}: main holds this change file; add a new one instead")
@@ -265,11 +290,13 @@ def recorded(base):
     from the fork's tree holds exactly that text here, and nothing else under those paths changed."""
     sys.path.insert(0, str(ROOT / "scripts"))
     import record_changes
-    writes, fork_names = record_changes.expected_at(ROOT, base), held(base)
+    keep = len(changelog_rows((ROOT / "docs/CHANGELOG.md").read_text()))
+    expected = (record_changes.expected_at(ROOT, base), record_changes.archived_at(ROOT, base, keep))
+    fork_names = held(base)
     changed = {p for p in git("diff", "--name-only", "--no-renames", base, "--", "docs/CHANGELOG.md", "docs/ARCHITECTURE.md",
-                              "docs/solutions", DIR).stdout.split() if not p.startswith(f"{DIR}/") or p[len(DIR) + 1:] in fork_names}
-    return bool(writes) and changed <= writes.keys() and all(
-        (ROOT / p).is_file() and (ROOT / p).read_text() == text for p, text in writes.items())
+                              "docs/solutions", "docs/archive", DIR).stdout.split() if not p.startswith(f"{DIR}/") or p[len(DIR) + 1:] in fork_names}
+    return any(bool(writes) and changed <= writes.keys() and all(
+        (ROOT / p).is_file() and (ROOT / p).read_text() == text for p, text in writes.items()) for writes in expected)
 
 
 def file_errors(names_texts, recorded=()):
@@ -345,6 +372,23 @@ def ledger_cases():
     """Each op on the rows it is for, below a blank line in the table and through an escaped pipe, and
     the two real edits of the 3 KB context row that #1890 and #1870 made, as lines."""
     bad = []
+    pr = LEDGER_FIXTURE.replace("first core", "first core; old PR")
+    main = LEDGER_FIXTURE.replace("has \\| pipe", "has \\| pipe; main")
+    merged = pr.replace("has \\| pipe", "has \\| pipe; main")
+    texts = {"ancestor": LEDGER_FIXTURE, "HEAD": pr, "MERGE_HEAD": main, "deadbeef": pr, "deadbeef^": LEDGER_FIXTURE}
+    def fake_git(*args):
+        if args[0] == "merge-base":
+            return types.SimpleNamespace(returncode=0, stdout="ancestor\n")
+        if args[0] == "log":
+            return types.SimpleNamespace(stdout="deadbeef 2026-10-31\n")
+        raise AssertionError(args)
+    def merged_case(current):
+        with mock.patch(__name__ + ".git", fake_git), mock.patch(__name__ + ".at", lambda rev, path: texts[rev]), mock.patch("pathlib.Path.read_text", return_value=current):
+            return old_row_edits("base")
+    if not merged_case(merged):
+        bad.append("a mid-merge resolution of old PR rows was refused")
+    if merged_case(merged.replace("old PR", "new edit")):
+        bad.append("a new mid-merge row edit inherited the old PR exemption")
     lines = parse("---\nledger~: two – § | has \\| pipe | no pipe\nledger+: two – § | c \\| d\nledger=: new | 3 | gated | M | L | n\n---\nx\n")
     if lines[1] or len(lines[0]["ledger"]) != 3:
         bad.append(f"a line with an escaped pipe read as {lines}")
@@ -416,6 +460,43 @@ def fork_cases():
         (tmp / DIR / "2026-10-01-grow.md").write_text(change.replace("---\nGrow.", "---\n"))
         if verdict()["test_size"] != 1:
             bad.append("a change file this gate refuses still lent its raise")
+    seed = {"docs/CHANGELOG.md": "# Changelog\n", "docs/ARCHITECTURE.md": "version: 0.1.0\n", "docs/archive/changelog-a.md": "| 0.1.0 | d | one |\n"}
+    seed |= {"docs/changes/2026-10-01-x.md": "---\nversion: 0.1.0\nissue: Refs #1\n---\nx\n", "docs/solutions/README.md": "", **{f"scripts/{n}": (ROOT / "scripts" / n).read_bytes() for n in ("record_changes.py", "adr.py", "pr_body.py")}}
+    with scratch_repo("yi-changes-", seed) as (tmp, run):
+        gate = lambda: run(sys.executable, "scripts/guardrails/check_changes.py")
+        (tmp / "docs/archive/changelog-b.md").write_text("new\n")
+        if gate().returncode:
+            bad.append(f"a new archive file was refused: {gate().stdout}")
+        (tmp / "docs/archive/changelog-a.md").write_text("| 0.1.0 | d | edited |\n")
+        refused = gate()
+        if refused.returncode != 1 or "archived rows live only here" not in refused.stdout + refused.stderr:
+            bad.append(f"an edited archive file exited {refused.returncode}: {refused.stdout}{refused.stderr[-200:]}")
+        (tmp / "docs/archive/changelog-a.md").unlink()
+        if gate().returncode != 1:
+            bad.append("a deleted archive file was accepted")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import record_changes
+    old = "# Changelog\n\n| ver | date | change |\n|---|---|---|\n" + "\n".join(
+        f"| 0.{n}.0 | 2026-10-01 | {'x' * 9000} |" for n in range(60, 0, -1)) + "\n"
+    added = "| 0.61.0 | 2026-10-02 | main advanced after the archive was made |"
+    log = record_changes.insert_row(old, record_changes.LOG_HEADER, added)
+    seed = {"docs/CHANGELOG.md": log, "docs/ARCHITECTURE.md": "version: 0.61.0\n", "docs/solutions/README.md": "",
+            "docs/changes/2026-10-02-pending.md": "---\nissue: Refs #1\n---\nPending on main.\n",
+            **{f"scripts/{n}": (ROOT / "scripts" / n).read_bytes() for n in ("record_changes.py", "adr.py", "pr_body.py")}}
+    with scratch_repo("yi-changes-", seed) as (tmp, run):
+        live, archives = record_changes.shrink(old)
+        live = record_changes.insert_row(live, record_changes.LOG_HEADER, added)
+        (tmp / "docs/CHANGELOG.md").write_text(live)
+        for path, text in archives.items():
+            (tmp / path).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / path).write_text(text)
+        gate = lambda: run(sys.executable, "scripts/guardrails/check_changes.py")
+        if gate().returncode:
+            bad.append(f"an archive-only diff beside pending recorder work was refused: {gate().stdout}")
+        path, text = next(iter(archives.items()))
+        (tmp / path).write_text(text.replace("| 0.1.0 |", "| 0.1.0 | edited", 1))
+        if gate().returncode != 1:
+            bad.append("an edited row in a new archive was accepted")
     return bad
 
 

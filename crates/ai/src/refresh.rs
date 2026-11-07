@@ -123,6 +123,7 @@ fn model_from(
             .and_then(|k| k.thinking_level_map.clone())
             .or(if ladder.is_null() { None } else { Some(ladder) }),
         headers: known.and_then(|k| k.headers.clone()),
+        read_timeout_secs: known.and_then(|k| k.read_timeout_secs),
     })
 }
 
@@ -294,7 +295,7 @@ pub fn refresh(
         &models_dev,
         provider,
         reachable.as_ref(),
-        &Catalog::bundled(),
+        &Catalog::bundled().with_cache(dir),
     );
     let count: usize = catalog
         .as_object()
@@ -313,4 +314,29 @@ pub fn refresh(
     }
     write_atomic(&cache_path(dir, provider), &catalog)?;
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refreshed_model_carries_the_deadline_the_cache_held()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let known = Catalog::bundled()
+            .get("openai", "gpt-5.6-luna")
+            .cloned()
+            .ok_or("the bundle no longer carries gpt-5.6-luna")?;
+        let entry = Map::new();
+        let refreshed = model_from("openai", "gpt-5.6-luna", &entry, Some(&known))
+            .ok_or("openai no longer has an adapter")?;
+        let mut hand = known;
+        hand.read_timeout_secs = Some(600);
+        let kept = model_from("openai", "gpt-5.6-luna", &entry, Some(&hand))
+            .ok_or("openai no longer has an adapter")?;
+        assert_eq!(refreshed.read_timeout_secs, None);
+        assert_eq!(kept.read_timeout_secs, Some(600));
+        assert_eq!(kept.api, "openai-responses");
+        Ok(())
+    }
 }

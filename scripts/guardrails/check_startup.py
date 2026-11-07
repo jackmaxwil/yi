@@ -32,10 +32,11 @@ def scratch():
     return root
 
 
-def minimum_seconds(result, schema_version=None):
-    if schema_version != 2 and "min" in result:
-        return result["min"]
-    return result["summary"]["time_wall_clock"]["min"]
+def minimum_seconds(exported):
+    result = exported["results"][0]
+    if exported.get("schema_version") == 2:
+        return result["summary"]["time_wall_clock"]["min"]
+    return result["min"]
 
 
 def errors(bin_path, budgets, runs=50, off="", env=None):
@@ -69,9 +70,7 @@ def errors(bin_path, budgets, runs=50, off="", env=None):
                 diagnostic = run.stderr.strip()
                 errs.append(f"{args}: hyperfine exit {run.returncode}: {diagnostic[-300:] if off == 'stderr' else diagnostic}")
                 continue
-            exported = json.loads(out.read_text())
-            result = exported["results"][0]
-            min_ms = minimum_seconds(result, exported.get("schema_version")) * 1000
+            min_ms = minimum_seconds(json.loads(out.read_text())) * 1000
             report.append(f"{args}: {min_ms:.2f} ms / {max_ms:.1f} ms")
             if min_ms > max_ms:
                 errs.append(f"{args}: {min_ms:.2f} ms > {max_ms} ms")
@@ -93,10 +92,13 @@ def selfcheck(off=""):
     diagnostic is preserved whole; the stand-in also proves the scratch HOME, cwd and git ceiling."""
     budgets = dict.fromkeys(COMMANDS, 10.0)
     errs = []
-    schema_minimums = (minimum_seconds({"min": 1}),
-                       minimum_seconds({"summary": {"time_wall_clock": {"min": 2}}}))
-    if schema_minimums != (1, 2):
-        errs.append(f"Hyperfine v1 and v2 minimum schemas read {schema_minimums}, not (1, 2)")
+    v1 = {"results": [{"min": 1.0}]}
+    v2 = {
+        "schema_version": 2,
+        "results": [{"min": 1.0, "summary": {"time_wall_clock": {"min": 2.0}}}],
+    }
+    if minimum_seconds(v1) != 1.0 or minimum_seconds(v2) != 2.0:
+        errs.append("hyperfine v1 or v2 minimum was not read")
     with tempfile.TemporaryDirectory() as tmp:
         stand_in = pathlib.Path(tmp) / "yi"
         stand_in.write_text(STAND_IN)

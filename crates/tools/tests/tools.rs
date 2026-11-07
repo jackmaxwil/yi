@@ -440,7 +440,8 @@ fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
     fs::write(dir.join("not-executable.txt"), "ignored")?;
 
-    let tools = discover_exec_tools(&dir);
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
     assert_eq!(tools.len(), 1);
     let tool = &tools[0];
     assert_eq!(tool.name(), "greet");
@@ -465,7 +466,8 @@ fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  printf '{\"name\":\"count\",\"description\":\"counts\",\"input_schema\":{\"type\":\"object\"},\"kind\":\"read\"}'\n  exit 0\nfi\nprintf '{\"files\": 3}'\n",
     )?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-    let tools = discover_exec_tools(&dir);
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
     let tool = tools.first().ok_or("no exec tool found")?;
     let mut context = ToolContext::new(dir.to_path_buf());
     assert_eq!(
@@ -477,6 +479,39 @@ fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
     assert_eq!(
         tool.execute(Map::new(), &context).value,
         Some(json!({"files": 3}))
+    );
+    Ok(())
+}
+
+/// One hanging schema probe cannot stall discovery or hide the healthy tools beside it.
+#[cfg(unix)]
+#[test]
+fn a_hung_exec_tool_is_skipped_and_the_others_load() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("exec-hung")?;
+    let hang = dir.join("hang");
+    fs::write(&hang, "#!/bin/sh\nsleep 30\n")?;
+    fs::set_permissions(&hang, fs::Permissions::from_mode(0o755))?;
+    let good = dir.join("good");
+    fs::write(
+        &good,
+        "#!/bin/sh\nprintf '{\"name\":\"good\",\"input_schema\":{\"type\":\"object\"}}'\n",
+    )?;
+    fs::set_permissions(&good, fs::Permissions::from_mode(0o755))?;
+    let started = std::time::Instant::now();
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name(), "good");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].path, hang);
+    assert!(
+        skipped[0].reason.contains("timed out after 2s"),
+        "{skipped:?}"
     );
     Ok(())
 }
@@ -2455,12 +2490,7 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     let viewed = bash.execute(args(&[("command", json!("cat a.txt"))]), &context);
     let text = output_text(&viewed);
     assert!(text.starts_with("[a.txt#"), "{text}");
-    let tag = text
-        .lines()
-        .next()
-        .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or("no tag")?;
+    let tag = tag_of(&text).ok_or("no tag")?;
     let edit = yi_tools::hashline::tool::HashlineEditTool {
         state: std::sync::Arc::clone(&state),
         freeform_grammar: false,
@@ -2500,12 +2530,7 @@ fn bash_then_put(
     bash.hashline = Some(Arc::clone(&state));
     let viewed = bash.execute(args(&[("command", json!(command))]), context);
     let text = output_text(&viewed);
-    let tag = text
-        .lines()
-        .next()
-        .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or_else(|| format!("no tag in {text}"))?;
+    let tag = tag_of(&text).ok_or_else(|| format!("no tag in {text}"))?;
     let old = fs::read_to_string(dir.join(path))?;
     let current = old
         .split('\n')
@@ -3070,6 +3095,32 @@ fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
     Ok(())
 }
 
+/// A grep apply into a name that leaves no room for a sibling falls back to the in-place write,
+/// and the row says so beside the verdict instead of being folded into it.
+#[cfg(unix)]
+#[test]
+fn a_grep_apply_that_cannot_stage_a_sibling_says_it_wrote_in_place() -> TestResult {
+    let dir = temp_dir("grep-apply-in-place")?;
+    let name = format!("{}.txt", "a".repeat(250));
+    fs::write(dir.join(&name), "old_name\n")?;
+    let applied = GrepTool::default().execute(
+        args(&[
+            ("pattern", json!("old_name")),
+            ("replace", json!("new_name")),
+            ("apply", json!(true)),
+        ]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = output_text(&applied);
+    assert!(
+        text.contains(&format!("{name}: warning: the file was written in place")),
+        "{text}"
+    );
+    assert_eq!(fs::read_to_string(dir.join(&name))?, "new_name\n");
+    assert_eq!(applied.result.details["syntax"], Value::Null, "{text}");
+    Ok(())
+}
+
 /// Approval of a write is approval of the named path; through a symlink the bytes land at its
 /// target, a file nobody reviewed.
 #[cfg(unix)]
@@ -3357,12 +3408,7 @@ fn an_edit_that_breaks_python_says_so_in_its_result() -> TestResult {
 
     let read = yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
         .execute(args(&[("path", json!("a.py"))]), &context);
-    let tag = output_text(&read)
-        .lines()
-        .next()
-        .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or("no tag")?;
+    let tag = tag_of(&output_text(&read)).ok_or("no tag")?;
     let edit = yi_tools::hashline::tool::HashlineEditTool {
         state: Arc::clone(&state),
         freeform_grammar: false,
@@ -3437,12 +3483,7 @@ fn a_write_result_carries_the_tag_an_edit_must_cite() -> TestResult {
     let text = output_text(&written);
     assert!(text.starts_with("[w.py#"), "{text}");
     assert!(text.contains("Wrote "), "{text}");
-    let tag = text
-        .lines()
-        .next()
-        .and_then(|header| header.rsplit_once('#'))
-        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-        .ok_or("no tag on the write result")?;
+    let tag = tag_of(&text).ok_or("no tag on the write result")?;
     let edit = yi_tools::hashline::tool::HashlineEditTool {
         state: std::sync::Arc::clone(&state),
         freeform_grammar: false,
@@ -3535,12 +3576,6 @@ fn an_edit_carries_the_seen_lines_it_did_not_move() -> TestResult {
         args(&[("path", json!("long.txt")), ("content", json!(body))]),
         &context,
     );
-    let tag_of = |text: &str| -> Option<String> {
-        text.lines()
-            .next()
-            .and_then(|header| header.rsplit_once('#'))
-            .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
-    };
     let first = tag_of(&output_text(&written)).ok_or("no write tag")?;
     let edit = yi_tools::hashline::tool::HashlineEditTool {
         state: std::sync::Arc::clone(&state),
@@ -3569,6 +3604,332 @@ fn an_edit_carries_the_seen_lines_it_did_not_move() -> TestResult {
     assert!(final_text.contains("TEN\n"), "{final_text}");
     assert!(final_text.contains("FIFTY\n"), "{final_text}");
     Ok(())
+}
+/// Incident: the edit reply reprinted every changed row plus 3 either side, so a 12-row edit
+/// answered with about 1.5x the body it was given and never showed the rows it dropped (#1522).
+#[test]
+fn a_twelve_row_edit_replies_with_counts_not_the_new_text() -> TestResult {
+    let dir = temp_dir("edit-reply-counts")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let body: String = (1..=40).map(|line| format!("line {line}\n")).collect();
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[("path", json!("long.txt")), ("content", json!(body))]),
+        &context,
+    );
+    let tag = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let rows: Vec<String> = (0..12)
+        .map(|index| format!("rewritten_{index} = row({index})"))
+        .collect();
+    let patch: String = rows.iter().map(|row| format!("+{row}\n")).collect();
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!("[long.txt#{tag}]\nPUT >9:\n{patch}")),
+        )]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    assert!(reply.contains("+12 -0 at line 10"), "{reply}");
+    for row in &rows {
+        assert!(!reply.contains(row.as_str()), "row reprinted: {reply}");
+    }
+    let numbered_rows: usize = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| numbered_row_len(10 + index as u64, row))
+        .sum();
+    assert!(
+        reply.len().saturating_mul(100) <= numbered_rows.saturating_mul(40),
+        "reply {} bytes vs {numbered_rows} for its numbered rows alone:\n{reply}",
+        reply.len()
+    );
+    Ok(())
+}
+
+/// The guide's own `range sized to new content` mistake dropped a live row and the reply never
+/// showed it, so nothing in the answer could reveal the loss (#1522).
+#[test]
+fn an_edit_that_drops_a_kept_line_shows_it() -> TestResult {
+    let dir = temp_dir("edit-removed-row")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[
+            ("path", json!("greet.py")),
+            (
+                "content",
+                json!("def greet(name):\n    msg = \"Hello, \" + name\n    print(msg)\ngreet(\"world\")\n"),
+            ),
+        ]),
+        &context,
+    );
+    let tag = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!("[greet.py#{tag}]\nPUT 1.=2:\n+def greet(name):\n")),
+        )]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    assert!(
+        reply.contains("-before 2:    msg = \"Hello, \" + name"),
+        "the dropped row is missing from the reply: {reply}"
+    );
+    Ok(())
+}
+
+/// A cut `-- ` comment renders as a `--- ` patch row, which a header-prefix count skipped, so
+/// the reply said `+0 -0` over the row it printed as dropped (#1522).
+#[test]
+fn an_edit_of_dash_dash_rows_counts_every_row_it_shows() -> TestResult {
+    let dir = temp_dir("edit-dash-rows")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[
+            ("path", json!("query.sql")),
+            ("content", json!("select 1;\n-- old note\nselect 2;\n")),
+        ]),
+        &context,
+    );
+    let tag = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!("[query.sql#{tag}]\nPUT 2.=2:\n+++ access;\n")),
+        )]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    assert!(reply.contains("-before 2:-- old note"), "{reply}");
+    assert!(reply.contains("+1 -1 at line 2"), "{reply}");
+    assert_eq!(edit.result.details["added"], json!(1), "{reply}");
+    assert_eq!(edit.result.details["removed"], json!(1), "{reply}");
+    Ok(())
+}
+
+/// The removed rows are capped at 8, and the ninth trips a loud row naming the cap and the read
+/// that shows what the file holds now (#1522, 045).
+#[test]
+fn nine_removed_rows_report_the_cap_and_the_read_that_shows_the_rest() -> TestResult {
+    let dir = temp_dir("edit-removed-cap")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[
+            ("path", json!("f.txt")),
+            (
+                "content",
+                json!(
+                    (1..=20)
+                        .map(|line| format!("line {line}\n"))
+                        .collect::<String>()
+                ),
+            ),
+        ]),
+        &context,
+    );
+    assert!(!written.is_error, "{}", output_text(&written));
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    };
+    let reply_for = |cut: &str| -> Result<(String, bool), Box<dyn Error>> {
+        let header = tag_of(&output_text(
+            &yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
+                .execute(args(&[("path", json!("f.txt"))]), &context),
+        ))
+        .ok_or("no read tag")?;
+        let out = edit.execute(
+            args(&[("patch", json!(format!("[f.txt#{header}]\n{cut}\n")))]),
+            &context,
+        );
+        let text = output_text(&out);
+        Ok((text, out.is_error))
+    };
+    let (at_cap, failed) = reply_for("CUT 3.=10")?;
+    assert!(!failed, "{at_cap}");
+    assert_eq!(removed_rows(&at_cap), 8, "{at_cap}");
+    assert!(!at_cap.contains("EDIT_REMOVED_CAP"), "{at_cap}");
+    let (over_cap, failed) = reply_for("CUT 3.=11")?;
+    assert!(!failed, "{over_cap}");
+    assert_eq!(removed_rows(&over_cap), 8, "{over_cap}");
+    assert!(over_cap.contains("8 of 9 removed rows"), "{over_cap}");
+    assert!(over_cap.contains("EDIT_REMOVED_CAP 8"), "{over_cap}");
+    assert!(over_cap.contains("read(\"f.txt\")"), "{over_cap}");
+    Ok(())
+}
+
+/// A removed row wider than the clip is cut at 120 columns and marked, so one long line never
+/// costs the reply its shape (#1522).
+#[test]
+fn a_removed_row_wider_than_the_clip_is_cut_and_marked() -> TestResult {
+    let dir = temp_dir("edit-removed-clip")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let wide = "x".repeat(300);
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[
+            ("path", json!("w.txt")),
+            ("content", json!(format!("a\nb\n{wide}\nd\n"))),
+        ]),
+        &context,
+    );
+    let tag = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[("patch", json!(format!("[w.txt#{tag}]\nCUT 3.=3\n")))]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    let row = reply
+        .lines()
+        .find(|line| line.starts_with("-before 3:"))
+        .ok_or_else(|| format!("no removed row: {reply}"))?;
+    assert!(row.ends_with('\u{2026}'), "{row}");
+    assert!(!reply.contains(&"x".repeat(121)), "{reply}");
+    assert!(reply.contains("1 of 1 removed rows clipped"), "{reply}");
+    assert!(reply.contains("EDIT_REMOVED_CLIP 120"), "{reply}");
+    assert!(reply.contains("details.patch"), "{reply}");
+    Ok(())
+}
+
+/// The clipped-row count is over the removed rows the reply printed, not over every removed
+/// row, and it reads in the one loud-cut shape the row cap uses (#1522).
+#[test]
+fn clipped_removed_rows_are_counted_over_the_printed_rows() -> TestResult {
+    let dir = temp_dir("edit-removed-clip-count")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let wide = "x".repeat(300);
+    let content: String = (1..=20)
+        .map(|line| match line {
+            2 | 4 => format!("{wide}\n"),
+            _ => format!("line {line}\n"),
+        })
+        .collect();
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[("path", json!("c.txt")), ("content", json!(content))]),
+        &context,
+    );
+    let tag = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[("patch", json!(format!("[c.txt#{tag}]\nCUT 1.=20\n")))]),
+        &context,
+    );
+    let reply = output_text(&edit);
+    assert!(!edit.is_error, "{reply}");
+    assert!(
+        reply.lines().any(|line| line
+            == "[\u{2026} 2 of 8 removed rows clipped (EDIT_REMOVED_CLIP 120); the rest: details.patch]"),
+        "{reply}"
+    );
+    Ok(())
+}
+/// The rows an edit authored stay anchors under the tag it minted, though the reply never
+/// reprinted them (#1522).
+#[test]
+fn a_follow_up_edit_anchors_on_an_authored_unprinted_row() -> TestResult {
+    let dir = temp_dir("edit-authored-anchor")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let written = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    }
+    .execute(
+        args(&[("path", json!("a.txt")), ("content", json!("a\nb\nc\n"))]),
+        &context,
+    );
+    let tag = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    };
+    let first = edit.execute(
+        args(&[(
+            "patch",
+            json!(format!("[a.txt#{tag}]\nPUT <1:\n+x0\n+x1\n+x2\n")),
+        )]),
+        &context,
+    );
+    let first_text = output_text(&first);
+    assert!(!first.is_error, "{first_text}");
+    assert!(
+        !first_text.contains("x1"),
+        "authored row reprinted: {first_text}"
+    );
+    let next = tag_of(&first_text).ok_or("no edit tag")?;
+    let second = edit.execute(
+        args(&[("patch", json!(format!("[a.txt#{next}]\nPUT 2.=2:\n+X1\n")))]),
+        &context,
+    );
+    assert!(!second.is_error, "{}", output_text(&second));
+    assert_eq!(
+        fs::read_to_string(dir.join("a.txt"))?,
+        "x0\nX1\nx2\na\nb\nc\n"
+    );
+    Ok(())
+}
+
+fn tag_of(text: &str) -> Option<String> {
+    text.lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .and_then(|(_, tail)| {
+            yi_tools::hashline::format::FileTag::parse(tail.trim_end_matches(']'))
+        })
+        .map(|tag| tag.to_string())
+}
+
+fn numbered_row_len(line: u64, text: &str) -> usize {
+    yi_tools::hashline::format::format_numbered_line(line, text).len() + 1
+}
+
+fn removed_rows(text: &str) -> usize {
+    text.lines().filter(|line| line.starts_with('-')).count()
 }
 
 /// Incident: 11 of 179 F0e bash failures were a bashism refused by dash, 10 of them process
@@ -5025,5 +5386,24 @@ fn a_spill_past_the_read_limit_is_named_not_skipped() -> TestResult {
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn non_ascii_hashline_paths_and_rows_parse_without_byte_boundary_panics() -> TestResult {
+    use yi_tools::hashline::input::Patch;
+    use yi_tools::hashline::tokenizer::{tokenize_all, try_parse_header};
+
+    let header = try_parse_header("[crates/tui/src/cell-✱.rs#ABCD]").ok_or("Unicode header")?;
+    assert_eq!(header.path, "crates/tui/src/cell-✱.rs");
+    assert_eq!(tokenize_all("PUT 1.=1:\n+↳ done\n").len(), 2);
+    let source = include_str!("../../tui/src/cell.rs");
+    let row = source
+        .lines()
+        .find(|line| line.contains("alt-↓"))
+        .ok_or("the real TUI source lost its non-ASCII reply hint")?;
+    let patch = Patch::parse(&format!("[crates/tui/src/cell-✱.rs#ABCD]\n{row}\n"), None)
+        .map_err(|error| format!("Unicode patch refused: {error}"))?;
+    assert_eq!(patch.sections.len(), 1);
     Ok(())
 }
