@@ -21,7 +21,8 @@ Cells split on an unescaped ` | `; a literal pipe is `\\|`, as the table writes 
 100 conflicted main merges touched a ledger row, a 2-4 KB line every feature appends to.
 scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
 diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
-import functools, os, pathlib, re, sys
+import functools, os, pathlib, re, sys, types
+from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail, fork, git, no_fork, row_key, scratch_repo, table_rows
 
@@ -222,15 +223,36 @@ def ledger_lines(was, now):
     return out
 
 
+def merged_row_edits(before, pr, main, current):
+    maps = [{row_key(row): row for row in rows} for rows in (before, pr, main, current)]
+    expected = {}
+    for key in set().union(*(rows.keys() for rows in maps)):
+        old, ours, theirs = (rows.get(key) for rows in maps[:3])
+        if ours == theirs:
+            want = ours
+        elif ours == old:
+            want = theirs
+        elif theirs == old:
+            want = ours
+        else:
+            return False
+        if want is not None:
+            expected[key] = want
+    return expected == maps[3]
+
+
 def old_row_edits(base):
     """Whether every row edit on this branch predates LEDGER_FROM. Commit by commit, so a new PR
     batched with an old one on a candidate does not inherit its exemption."""
-    rows = lambda rev: table_rows(at(rev, "docs/ARCHITECTURE.md") or "", LEDGER)
-    if rows("HEAD") != table_rows((ROOT / "docs/ARCHITECTURE.md").read_text(), LEDGER):
-        return False
-    log = git("log", "--no-merges", "--format=%H %cs", f"{base}..HEAD", "--", "docs/ARCHITECTURE.md").stdout
+    arch = "docs/ARCHITECTURE.md"
+    rows = lambda rev: table_rows(at(rev, arch) or "", LEDGER)
+    current = table_rows((ROOT / arch).read_text(), LEDGER)
+    if rows("HEAD") != current:
+        ancestor = git("merge-base", "HEAD", "MERGE_HEAD")
+        if ancestor.returncode or not merged_row_edits(rows(ancestor.stdout.strip()), rows("HEAD"), rows("MERGE_HEAD"), current):
+            return False
+    log = git("log", "--no-merges", "--format=%H %cs", f"{base}..HEAD", "--", arch).stdout
     return not any(date >= LEDGER_FROM and rows(sha) != rows(f"{sha}^") for sha, date in map(str.split, log.splitlines()))
-
 
 def view_edits(was, now, old_rows=False):
     """What a PR changed in the recorder's views. `was` and `now` map path -> text (None: absent)."""
@@ -350,6 +372,23 @@ def ledger_cases():
     """Each op on the rows it is for, below a blank line in the table and through an escaped pipe, and
     the two real edits of the 3 KB context row that #1890 and #1870 made, as lines."""
     bad = []
+    pr = LEDGER_FIXTURE.replace("first core", "first core; old PR")
+    main = LEDGER_FIXTURE.replace("has \\| pipe", "has \\| pipe; main")
+    merged = pr.replace("has \\| pipe", "has \\| pipe; main")
+    texts = {"ancestor": LEDGER_FIXTURE, "HEAD": pr, "MERGE_HEAD": main, "deadbeef": pr, "deadbeef^": LEDGER_FIXTURE}
+    def fake_git(*args):
+        if args[0] == "merge-base":
+            return types.SimpleNamespace(returncode=0, stdout="ancestor\n")
+        if args[0] == "log":
+            return types.SimpleNamespace(stdout="deadbeef 2026-10-31\n")
+        raise AssertionError(args)
+    def merged_case(current):
+        with mock.patch(__name__ + ".git", fake_git), mock.patch(__name__ + ".at", lambda rev, path: texts[rev]), mock.patch("pathlib.Path.read_text", return_value=current):
+            return old_row_edits("base")
+    if not merged_case(merged):
+        bad.append("a mid-merge resolution of old PR rows was refused")
+    if merged_case(merged.replace("old PR", "new edit")):
+        bad.append("a new mid-merge row edit inherited the old PR exemption")
     lines = parse("---\nledger~: two – § | has \\| pipe | no pipe\nledger+: two – § | c \\| d\nledger=: new | 3 | gated | M | L | n\n---\nx\n")
     if lines[1] or len(lines[0]["ledger"]) != 3:
         bad.append(f"a line with an escaped pipe read as {lines}")

@@ -528,13 +528,16 @@ fn run(
     cancelled: &CancelFlag,
 ) -> Result<String, Converted> {
     let command = command_for(documents, converter, dir, source.path, staging, pages);
-    let deadline = Instant::now() + documents.timeout;
-    let caller = Arc::clone(cancelled);
-    let stop: CancelFlag = Arc::new(move || caller() || Instant::now() > deadline);
     // The bytes the read gate judged, never the name again (#890); the name gives the extension.
     let bytes = Some(source.bytes.to_vec());
-    let capture = crate::process::run_captured(command, bytes, &stop, 8 * 1024)
-        .map_err(Converted::Refused)?;
+    let capture = crate::process::run_captured_until(
+        command,
+        bytes,
+        Some(cancelled),
+        documents.timeout,
+        8 * 1024,
+    )
+    .map_err(Converted::Refused)?;
     if capture.cancelled {
         return Err(Converted::Refused(format!(
             "conversion stopped (cancelled, or past {}s)",

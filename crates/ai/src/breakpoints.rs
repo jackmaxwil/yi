@@ -9,6 +9,21 @@ use yi_types::message::AgentMessage;
 pub use yi_types::model::Ttl;
 use yi_types::model::{Model, Reuse};
 
+#[cfg(test)]
+thread_local! {
+    static SERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_serializations() {
+    SERIALIZATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn serializations() -> usize {
+    SERIALIZATIONS.with(std::cell::Cell::get)
+}
+
 /// Where a breakpoint sits. A message position is an index into the transformed
 /// `messages`; `transient` has none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,16 +124,18 @@ pub struct CachePolicy {
     pub stable_ttl: Ttl,
     /// The history breakpoints; never above `stable_ttl`, so the order along the prompt holds.
     pub history_ttl: Ttl,
+    /// Whether the moving tail is marked (`LlmContext::cache_tail`).
+    pub tail: bool,
 }
 
 impl CachePolicy {
-    pub fn of(model: &Model, stable_ttl: Ttl, history_ttl: Ttl) -> Self {
-        Self::new(Engine::of(model), stable_ttl, history_ttl)
+    pub fn of(model: &Model, stable_ttl: Ttl, history_ttl: Ttl, tail: bool) -> Self {
+        Self::new(Engine::of(model), stable_ttl, history_ttl, tail)
     }
 
     /// `history_ttl` is the caller's (`LlmContext::cache_ttl`, D315); `stable_ttl` may ask more
     /// (an interactive session, D116). An hour is kept only where the engine prices one.
-    pub fn new(engine: Engine, stable_ttl: Ttl, history_ttl: Ttl) -> Self {
+    pub fn new(engine: Engine, stable_ttl: Ttl, history_ttl: Ttl, tail: bool) -> Self {
         let cap = match engine {
             Engine::Breakpoint { hour: true, .. } => Ttl::Hour1,
             _ => Ttl::Min5,
@@ -127,6 +144,7 @@ impl CachePolicy {
             engine,
             stable_ttl: stable_ttl.max(history_ttl).min(cap),
             history_ttl: history_ttl.min(cap),
+            tail,
         }
     }
 }
@@ -183,7 +201,7 @@ impl Breakpoints {
                         .rposition(|message| is_tail_kind(message.borrow()))
                 });
             // A read-only request writes no tail of its own; its previous tail is the read.
-            tail = last.filter(|_| reuse == Reuse::Loop);
+            tail = last.filter(|_| reuse == Reuse::Loop && policy.tail);
         }
         let history = [
             tail.map(Position::Tail),
@@ -239,6 +257,8 @@ impl Deref for Encoded {
 
 impl fmt::Display for Encoded {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[cfg(test)]
+        SERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
         self.0.fmt(f)
     }
 }
@@ -249,6 +269,38 @@ impl Encoded {
     pub fn provider_prefix(mut params: Value, list: &str, transient: Vec<Value>) -> Self {
         append(&mut params, list, transient);
         Self(params)
+    }
+
+    /// The same body with cache fields removed only where the request encoder writes them (#748).
+    pub fn without(&self, fields: &[&str]) -> Self {
+        fn unmark(items: &mut [Value]) {
+            for item in items {
+                if let Some(object) = item.as_object_mut() {
+                    object.remove("cache_control");
+                }
+            }
+        }
+        let mut value = self.0.clone();
+        if let Some(object) = value.as_object_mut() {
+            object.retain(|key, _| !fields.contains(&key.as_str()));
+            if fields.contains(&"cache_control") {
+                for key in ["system", "tools"] {
+                    if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
+                        unmark(items);
+                    }
+                }
+                if let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) {
+                    for message in messages {
+                        if let Some(parts) =
+                            message.get_mut("content").and_then(Value::as_array_mut)
+                        {
+                            unmark(parts);
+                        }
+                    }
+                }
+            }
+        }
+        Self(value)
     }
 
     /// For inspection; the request paths never take a bare body back.

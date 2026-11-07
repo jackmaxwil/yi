@@ -4,6 +4,8 @@
 //! `autotests = false`, so a new file here runs only once it has a line below.
 #[path = "support/checker.rs"]
 mod checker;
+#[path = "support/faux_model.rs"]
+mod faux_model;
 #[path = "support/own.rs"]
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
@@ -67,6 +69,7 @@ mod kernel_lane;
 mod kernel_sandbox;
 mod kernel_tools;
 mod lanes;
+mod lease_e2e;
 mod levers;
 mod memory_inject;
 mod memory_journal;

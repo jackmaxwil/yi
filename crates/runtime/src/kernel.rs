@@ -342,6 +342,13 @@ impl KernelService {
         })
     }
 
+    /// A kernel whose namespace its snapshot cannot hold whole; a replacement would lose it.
+    pub fn lossy(&self) -> bool {
+        self.manager.try_lock().map_or(true, |slot| {
+            slot.as_ref().is_some_and(|kernel| kernel.lossy())
+        })
+    }
+
     pub fn take_death(&self) -> bool {
         self.died.swap(false, std::sync::atomic::Ordering::SeqCst)
     }

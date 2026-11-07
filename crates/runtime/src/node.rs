@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use yi_types::config::NodeConfig;
@@ -29,11 +29,8 @@ fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, String
     let here = std::path::PathBuf::from(".");
     let mut command = yi_tools::host_command(program, &here).map_err(|error| error.to_string())?;
     command.args(args);
-    let deadline = Instant::now().checked_add(timeout);
-    let cancelled: yi_tools::CancelFlag =
-        Arc::new(move || deadline.is_some_and(|at| Instant::now() >= at));
     let shown = format!("{program} {}", args.join(" "));
-    let capture = yi_tools::run_captured(command, None, &cancelled, 16_384)
+    let capture = yi_tools::run_captured_until(command, None, None, timeout, 16_384)
         .map_err(|error| format!("`{shown}`: {error}"))?;
     match capture.exit_code {
         Some(0) => Ok(capture.stdout),

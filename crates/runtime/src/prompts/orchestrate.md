@@ -115,9 +115,10 @@ session, not a stateless call: it can send you a line mid-run, and you can
 message it again after it reports.
 
     from yi import Plan, Writer, contract, cmd, fork_join
+    api_notes = "the new API's migration rules"
     plan = await Plan.create("port foo and bar to the new API")
     for name in ("foo", "bar"):
-        brief = f"Port crates/{name} to the new API. Scope: crates/{name}/** only. Read kernel://main/api_notes."
+        brief = f"Port crates/{name} to the new API. Scope: crates/{name}/** only. API notes: {api_notes}"
         await plan.todo(key=name, delegate=Writer(accept=contract(cmd(f"cargo test -p {name}", critical=True)),
                                                   deny_write=["docs/"], note=brief))
     run = await plan.run(shape=fork_join, budget="8m")
@@ -131,7 +132,7 @@ the acceptance instrument so a child reports a mismatch instead of editing
 the standard. While children run, keep working the tasks you kept.
 
 Context reaches a child four ways: `context_keys` for what you computed
-(the brief), `kernel://main/<var>` for what is live, `family://<name>`
+(the brief), `kernel://main/<var>` for what is live (a child reads it only while you are idle: during an `rlm.wait` it answers busy, so `rlm.put` the value first), `family://<name>`
 for what was `put` (a member with a kernel reads it with `rlm.get`; a reader or worker sees only its sidecar and a partition refuses it, so pass a computed value through `context_keys`), `tree://<name>/<path>` for a file in a worktree.
 
 When a child fails or `rlm.status()` says `stuck`, read its tail

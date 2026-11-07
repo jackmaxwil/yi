@@ -80,6 +80,13 @@ pub(crate) fn preview(text: &str, name: &str) -> String {
     crate::mailbox::clamp(&compact, PREVIEW_CHARS, "PREVIEW_CHARS", &next)
 }
 
+/// One incarnation's spend: its fresh fold and whether its lease is crossed.
+#[derive(Default)]
+pub(crate) struct Billing {
+    pub(crate) tokens: u64,
+    pub(crate) crossed: bool,
+}
+
 pub(crate) struct ChildRows {
     session_id: Option<String>,
     role: String,
@@ -104,7 +111,21 @@ impl ChildRows {
 
 impl ChildRecord {
     pub(crate) fn token_count(&self) -> u64 {
-        self.token_count
+        self.spent.tokens
+    }
+
+    /// Invariant: a child is stopped at the reply that crosses its lease, so no turn runs unpriced.
+    pub(super) fn charge(&mut self, usage: &yi_types::message::Usage) {
+        self.spent.tokens = self.spent.tokens.saturating_add(usage.fresh());
+        self.enforce();
+    }
+
+    pub(super) fn enforce(&mut self) {
+        if self.spent.crossed || self.lease.tokens.is_none_or(|cap| self.spent.tokens <= cap) {
+            return;
+        }
+        self.spent.crossed = true;
+        self.session.abort();
     }
 
     pub(crate) fn finish(&mut self) {
@@ -124,7 +145,7 @@ impl ChildRecord {
             id: ChildId(child_id.to_owned()),
             exit,
             error: self.error.clone(),
-            tokens: self.token_count,
+            tokens: self.token_count(),
             elapsed_ms: self.rows.elapsed_ms,
             cost: self.cost(),
             answer_preview: self.answer_preview.clone(),
@@ -136,7 +157,6 @@ impl ChildRecord {
     pub(crate) fn billable<'a>(&self, messages: &'a [AgentMessage]) -> &'a [AgentMessage] {
         messages.get(self.billed_from..).unwrap_or_default()
     }
-
     pub(crate) fn update(&self, child_id: &str) -> ChildUpdate {
         ChildUpdate {
             id: ChildId(child_id.to_owned()),
@@ -144,7 +164,7 @@ impl ChildRecord {
             status: crate::family::read_exit(self.exit).status,
             activity: self.activity,
             tool_use_count: self.tool_use_count,
-            token_count: self.token_count,
+            token_count: self.spent.tokens,
             cost: self.cost(),
             answer_preview: self.answer_preview.clone(),
             error: self.error.clone(),
@@ -187,7 +207,8 @@ impl ChildRecord {
                 (self.exit, self.error, self.replied, self.rows.elapsed_ms) =
                     (None, None, false, None);
                 // The lease was returned on the last incarnation's count and drawn again.
-                (self.token_count, self.tool_use_count, self.cost) = (0, 0, 0.0);
+                (self.tool_use_count, self.cost) = (0, 0.0);
+                self.spent = Billing::default();
                 self.activity = ChildActivity::Waiting;
                 true
             }
@@ -262,8 +283,7 @@ impl ChildRecord {
             AgentEvent::MessageEnd {
                 message: AgentMessage::Assistant { usage, content, .. },
             } => {
-                let tokens = u64::try_from(usage.total_tokens).unwrap_or(0);
-                self.token_count = self.token_count.saturating_add(tokens);
+                self.charge(usage);
                 self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.activity = ChildActivity::Waiting;
                 let text: String = yi_types::message::join_text(content, "\n");

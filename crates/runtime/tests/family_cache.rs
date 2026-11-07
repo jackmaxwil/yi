@@ -7,7 +7,7 @@
 //! | `siblings_carry_the_root_id_and_the_second_marks_the_shared_partition` | T1 | Two readers over one partition, spawned by the production wiring on an OpenRouter Claude route, both send `session_id` = the root id; the second one's partition message is the first one's, byte for byte, plus one `cache_control`. | `ProviderStream::for_child` keeps the family key; `Breakpoints` honours `shared_through`. | The key is `None` on every request and `shared_through` is read by no encoder: each sibling may land on another upstream and writes nothing a sibling reads. |
 //! | `a_fan_out_marks_the_partition_on_its_first_reader_too` | T1 | Two readers spawned as one fan-out (`readers: 2`, what `rlm.run` sends when gathered calls share a partition) both mark the partition, the first's byte for byte the second's. | `reader::share` gives `Some(0)` to every reader of a fan-out. | Only a repeat got `Some(0)`: nobody wrote the entry, and the second sibling paid the write. |
 //! | `a_child_of_an_hour_long_root_writes_five_minute_marks` | T1 | Under a root that holds its stable prefix for an hour, the root's request carries `"ttl":"1h"` and its reader child's carries none. | `for_child` clears the long cache. | The child shares the root's `ProviderStream` and writes its own prompt at the 1h price. |
-//! | `a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its_child_none` | T1 | Replies whose starts sit half an hour apart, folded by `cache_miss::attach` as in production, make the root's next OpenRouter request carry `"ttl":"1h"` on every `cache_control`, and its worker child's (a loop) on none. | `attach` hands `TtlEstimate` to `ProviderStream::set_ttl_estimate`; the loop asks `StreamFn::cache_ttl`; `for_child` has no estimate (D315). | `attach` never feeds the provider and every pause past five minutes rewrites the prompt; or a child inherits the root's estimate and writes its own prompt at the 1h price. |
+//! | `a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its_child_none` | T1 | Replies whose starts sit half an hour apart, folded by `cache_miss::attach` as in production, make the root's next OpenRouter request carry `"ttl":"1h"` on every `cache_control`, and its worker child's (a loop) on none. | `attach` hands `TtlEstimate` to `ProviderStream::set_cache_advice`; the loop asks `StreamFn::cache_ttl`; `for_child` has no estimate (D315). | `attach` never feeds the provider and every pause past five minutes rewrites the prompt; or a child inherits the root's estimate and writes its own prompt at the 1h price. |
 
 use crate::compaction_faux::{faux_model, sse_reply};
 use crate::scratch::Scratch;
@@ -277,7 +277,7 @@ async fn a_resumed_root_holds_its_history_an_hour_from_its_first_request() -> Te
         "{marks:?}"
     );
     // The live reply re-derives the estimate from the tracker alone; an empty one says five.
-    session.provider().set_ttl_estimate(None);
+    session.provider().set_cache_advice(None);
     session
         .events_sender()
         .send(yi_types::event::AgentEvent::MessageEnd {

@@ -40,6 +40,8 @@ pub enum FailClass {
     KernelDeath,
     RedCheck,
     Deadline,
+    /// The run stopped because it spent the token lease its parent drew for it.
+    LeaseSpent,
     /// A class a newer host named; the ending it rides on still reads as a failure.
     #[serde(other)]
     Other,
@@ -114,6 +116,8 @@ pub struct ChildUpdate {
     pub status: ChildStatus,
     pub activity: ChildActivity,
     pub tool_use_count: u64,
+    /// This incarnation's fresh spend: the cache-excluded fold of its replies, so a cached
+    /// prefix is not charged to the child again on every turn.
     pub token_count: u64,
     /// Dollars this incarnation's replies were billed; absent before its first priced reply,
     /// and from a host older than the field.

@@ -5,35 +5,12 @@ use yi_ai::openai::{self, OpenAiOptions};
 use yi_ai::openai_responses;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::model::{
-    ForcedTool, FreeformFormat, LlmContext, Model, ModelCost, ToolChoice, ToolChoiceError, ToolDef,
+    ForcedTool, FreeformFormat, LlmContext, ToolChoice, ToolChoiceError, ToolDef,
 };
 
-type TestResult = Result<(), Box<dyn Error>>;
+use crate::plain::plain as model;
 
-fn model() -> Model {
-    let zero = || serde_json::Number::from(0);
-    Model {
-        id: "m".to_owned(),
-        name: "m".to_owned(),
-        api: "a".to_owned(),
-        provider: "p".to_owned(),
-        base_url: "https://example.invalid".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 1_000,
-        max_tokens: 100,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
+type TestResult = Result<(), Box<dyn Error>>;
 
 fn tool(name: &str, freeform: Option<FreeformFormat>) -> ToolDef {
     ToolDef {
@@ -47,6 +24,7 @@ fn tool(name: &str, freeform: Option<FreeformFormat>) -> ToolDef {
 fn bodies(choice: Option<ToolChoice>, tools: Vec<ToolDef>) -> [Value; 3] {
     let context = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "s".to_owned(),
         messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),
@@ -150,6 +128,7 @@ fn a_forced_tool_switches_extended_thinking_off_for_that_turn() -> TestResult {
     };
     let context = |choice| LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "s".to_owned(),
         messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),

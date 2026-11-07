@@ -433,6 +433,11 @@ impl SubagentHost {
                 Delivery::Inboxed,
                 "never: its lease is revoked, and its inbox keeps the message",
             ),
+            // A spent lease admits no new work; its inbox still keeps the message.
+            Some(record) if record.spent.crossed && envelope.kind != Kind::Cancel => (
+                Delivery::Inboxed,
+                "never: its token lease is spent, and its inbox keeps the message",
+            ),
             // A cancel starts no turn: the flag ends a live one at its next message boundary.
             Some(record) => {
                 if envelope.kind == Kind::Cancel {
