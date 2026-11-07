@@ -20,8 +20,8 @@ LABEL, CANDIDATE = "queue", "queue/candidate"
 # Sessions sign in as `jack` too, so an enqueue only when the owner asked stays a rule of conduct.
 MERGERS = {"jack"}
 K = 4
-# Invariant: the slowest green gate lane is about an hour on a loaded runner, and a run that has not
-# reported by then is lost, because a candidate whose pr.yml runs no lanes has no statuses at all.
+# Invariant: the candidate's three lanes run back to back on one runner, at most 3 x 20 minutes, and a run that
+# has not reported by then is lost, because a candidate whose candidate.yml runs no lanes has no statuses at all.
 STALE_MINUTES = 80
 # Invariant: past the lanes' 80 minutes, and longer than the 100-minute `database is locked` fault of 2026-11-02.
 CLOSE_PATIENCE = 240
@@ -903,7 +903,12 @@ def record_cases():
         race = root / ".git/hooks/pre-push"
         race.write_text(f"#!/bin/sh\nenv -u GIT_DIR git -C '{other}' push -q origin HEAD:main\n")
         race.chmod(0o755)
-        if record_main(root) is not False:
+        real_git = git
+        def race_git(*args, **kwargs):
+            return real_git("-c", "core.hooksPath=.git/hooks", *args, **kwargs)
+        with mock.patch.object(sys.modules[__name__], "git", race_git):
+            moved = record_main(root)
+        if moved is not False:
             bad.append("main moved under the push and the tick read it as recorded")
         race.unlink()
     return bad

@@ -8,6 +8,8 @@ PYTHONPATH=python/yi_runtime/src python3 -m unittest discover -q -s python/yi_ru
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 import inspect
 import json
 import pathlib
@@ -580,6 +582,31 @@ class FindModelsTests(unittest.IsolatedAsyncioTestCase):
             models = await rlm.find_models()
         self.assertEqual([model.cost for model in models], [{"input": 0.8, "output": 1.6}, None])
         self.assertEqual([model.selector for model in models], ["openrouter/a/b", "faux/faux-1"])
+
+    async def test_a_search_that_matched_more_prints_the_hosts_cut_row(self) -> None:
+        """Dies when the shim drops the host's ``cut`` row, which is the only place the model is
+        told how many matches ``limit`` held back and the call that lists them all."""
+        row = ("[… 1 of 31 matching models (limit 1); the rest: await rlm.find_models(\"\", limit=31)]")
+        priced = {"provider": "openrouter", "id": "a/b", "name": "B", "selector": "openrouter/a/b"}
+
+        async def cut_host_request(kind, payload):
+            return {"models": [priced], "cut": row}
+
+        async def whole_host_request(kind, payload):
+            return {"models": [priced]}
+
+        with mock.patch.object(rlm, "host_request", cut_host_request):
+            whole = io.StringIO()
+            with contextlib.redirect_stdout(whole):
+                models = await rlm.find_models("", limit=1)
+        self.assertEqual(len(models), 1)
+        self.assertEqual(whole.getvalue().strip(), row)
+
+        with mock.patch.object(rlm, "host_request", whole_host_request):
+            uncut = io.StringIO()
+            with contextlib.redirect_stdout(uncut):
+                await rlm.find_models()
+        self.assertEqual(uncut.getvalue(), "")
 
 
 class HopLimitTests(unittest.IsolatedAsyncioTestCase):
