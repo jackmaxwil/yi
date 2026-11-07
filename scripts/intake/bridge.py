@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import dataclasses
 import functools
 import hashlib
@@ -7,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -554,6 +556,17 @@ def branch_name(case: Case) -> str:
 def signer_lines(contributor: dict[str, Any], registry: str) -> list[str]:
     return [raw for raw in registry.splitlines() if raw and not raw.startswith("#") and raw.split(maxsplit=1)[0] in contributor["emails"]]
 
+def key_fingerprint(key: str) -> str:
+    fields = key.split()
+    if len(fields) < 2:
+        raise ValueError(f"allowed_signers key {key[:40]!r} carries no keytype and blob")
+    keytype, body = fields[0], fields[1]
+    blob = base64.b64decode(body, validate=True)
+    size = struct.unpack(">I", blob[:4])[0] if len(blob) >= 4 else 0
+    if blob[4:4 + size] != keytype.encode():
+        raise ValueError(f"allowed_signers keytype {keytype} is not the type its blob declares")
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).rstrip(b"=").decode()
+
 
 def commit_verified(repo: pathlib.Path, signers: pathlib.Path, sha: str) -> bool:
     return git(["-C", str(repo), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", sha], check=False).returncode == 0
@@ -564,18 +577,14 @@ def validate_registry(allowed_path: Optional[pathlib.Path] = None, signers_path:
     actual: dict[str, list[str]] = {login: [] for login in allowed}
     emails = {email: login for login, row in allowed.items() for email in row["emails"]}
     registry = (signers_path or ROOT / "scripts/intake/allowed_signers").read_text()
-    with tempfile.TemporaryDirectory(prefix="intake-fingerprints-") as temp:
-        for number, raw in enumerate(registry.splitlines(), 1):
-            if not raw or raw.startswith("#"):
-                continue
-            principal, key = raw.split(maxsplit=1)
-            login = emails.get(principal)
-            if login is None:
-                raise ValueError(f"allowed_signers:{number}: principal {principal} is not pinned")
-            path = pathlib.Path(temp) / f"key-{number}.pub"
-            path.write_text(key + "\n")
-            out = subprocess.run(["ssh-keygen", "-lf", str(path)], capture_output=True, text=True, check=True).stdout.split()
-            actual[login].append(out[1])
+    for number, raw in enumerate(registry.splitlines(), 1):
+        if not raw or raw.startswith("#"):
+            continue
+        principal, key = raw.split(maxsplit=1)
+        login = emails.get(principal)
+        if login is None:
+            raise ValueError(f"allowed_signers:{number}: principal {principal} is not pinned")
+        actual[login].append(key_fingerprint(key))
     for login, row in allowed.items():
         if sorted(actual[login]) != sorted(row["fingerprints"]):
             raise ValueError(f"allowed.json fingerprints do not match allowed_signers for {login}")
