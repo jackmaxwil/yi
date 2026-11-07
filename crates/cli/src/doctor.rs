@@ -44,12 +44,13 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 15] = [
+const ROWS: [(&str, Check); 16] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
     ("classifier", classifier_answers),
     ("catalog", catalog_age),
+    ("providers", custom_providers),
     ("python-runtime", python_runtime_present),
     ("kernel-toolchain", kernel_toolchain),
     ("kernel-boot", kernel_boot),
@@ -151,6 +152,48 @@ fn catalog_age(site: &Site) -> Finding {
             "{} older than {hours}h or an older schema; `yi catalog refresh`",
             stale.join(", ")
         ))
+    }
+}
+
+/// A custom provider whose key resolves nowhere is a session that would refuse at its first turn.
+fn custom_providers(site: &Site) -> Finding {
+    let Ok((config, _)) = read_config(&site.home) else {
+        return ok("see config");
+    };
+    let Some(providers) = config.providers else {
+        return ok("none declared; `providers` in config.json adds one");
+    };
+    let (mut rows, mut missing) = (Vec::new(), false);
+    for (id, provider) in providers.iter() {
+        let from = if let Some(variable) = (provider.api_key_env.as_deref())
+            .filter(|variable| std::env::var(variable).is_ok_and(|value| !value.is_empty()))
+        {
+            format!("key from {variable}")
+        } else if provider
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.is_empty())
+        {
+            "key from apiKey".to_owned()
+        } else if yi_runtime::auth::stored_key(&site.home, id).is_some() {
+            "key from the yi-oauth store in ~/.yi/providers/tokens".to_owned()
+        } else {
+            missing = true;
+            match provider.api_key_env.as_deref() {
+                Some(variable) => format!("no key (export {variable})"),
+                None => "no key (set apiKeyEnv)".to_owned(),
+            }
+        };
+        rows.push(format!(
+            "{id} {} model(s) at {}, {from}",
+            provider.models.len(),
+            provider.base_url
+        ));
+    }
+    if missing {
+        fail(rows.join("; "))
+    } else {
+        ok(rows.join("; "))
     }
 }
 
