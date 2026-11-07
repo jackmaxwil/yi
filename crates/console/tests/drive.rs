@@ -2417,10 +2417,10 @@ pub(crate) fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
     editor_script(path, "", rest)
 }
 
-/// Splits first so the chat pane survives beside the editor and the transcript still shows
-/// what the agent did.
+/// Opening a file keeps the chat pane beside the editor, so the transcript still shows what the
+/// agent did.
 fn split_editor_script(path: &std::path::Path, rest: &str) -> String {
-    editor_script(path, "key alt-v\n", rest)
+    editor_script(path, "", rest)
 }
 
 fn editor_script(path: &std::path::Path, split: &str, rest: &str) -> String {
@@ -2586,15 +2586,15 @@ fn cmd_u_undoes_the_chat_draft() -> TestResult {
 #[test]
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
-    // The sidebar fits `s-alpha` to its ten-column floor, 18 wide: border at x=18, one padding
-    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=3 under the tab strip.
+    // The chat keeps the left half after the file opens. The editor's gutter shifts the input
+    // cells two columns right of their visible text, so `c` is x=64 and `a` is x=62.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 24 4\nmouse up 24 4\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 22 4\nmouse drag 24 4\nmouse up 24 4\n\
+            "wait-frame 3000 abcdef\nmouse down 64 4\nmouse up 64 4\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 62 4\nmouse drag 64 4\nmouse up 64 4\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;
@@ -2750,8 +2750,8 @@ fn the_editor_shows_a_scroll_bar_and_the_wheel_moves_it() -> TestResult {
         script.push_str("mouse scrolldown 60 8\n");
     }
     script.push_str(
-        "wait-frame 3000 line 40\nwait-frame 3000 !the header comment\n\
-         wait-frame 3000 \u{2503}\nquit\n",
+        "wait-frame 3000 40    still inside\nwait-frame 3000 !the header comment\n\
+         wait-frame 3000 ┃\nquit\n",
     );
     run(
         "editor-scroll",

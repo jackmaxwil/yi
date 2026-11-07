@@ -69,10 +69,7 @@ fn the_v1_record_fixture_migrates_and_keeps_unknown_fields() -> TestResult {
 }
 
 fn recorded() -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../tui/tests/fixtures/sessions/01a0d6e4.jsonl"
-    );
+    let path = crate::workspace_root()?.join("crates/tui/tests/fixtures/sessions/01a0d6e4.jsonl");
     let mut records = Vec::new();
     for line in std::fs::read_to_string(path)?.lines() {
         let row: Value = serde_json::from_str(line)?;
