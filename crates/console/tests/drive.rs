@@ -4921,18 +4921,92 @@ fn prompt_committed(frame: &Value) -> Vec<Value> {
         .and_then(Value::as_str)
         .unwrap_or("");
     let asked = entry("e3", Some("e2"), 3, &user_message(prompt));
-    let answered = entry("e4", Some("e3"), 4, &assistant("streamed answer"));
-    for saved in [asked, answered] {
-        frames.push(update(
-            "s-alpha",
-            json!({"sessionUpdate": "_yi/committed", "entry": saved}),
-        ));
+    let changed = json!({
+        "type": "model_change", "id": "e4", "provider": "faux", "modelId": "faux-1",
+        "parentId": "e3", "seq": 4, "timestamp": 4
+    });
+    let mut call_message = assistant("");
+    if let AgentMessage::Assistant {
+        content,
+        stop_reason,
+        ..
+    } = &mut call_message
+    {
+        *content = vec![Content::ToolCall {
+            id: "call-1".to_owned(),
+            name: "bash".to_owned(),
+            arguments: serde_json::Map::from_iter([("command".to_owned(), json!("echo hidden"))]),
+            thought_signature: None,
+            namespace: None,
+        }];
+        *stop_reason = StopReason::ToolUse;
     }
+    let call = entry("e5", Some("e4"), 5, &call_message);
+    let tool_result = json!({
+        "type": "message", "id": "e6",
+        "message": {
+            "role": "toolResult", "toolCallId": "call-1", "toolName": "bash",
+            "content": [{"type": "text", "text": "hidden tool output"}], "isError": false, "timestamp": 6
+        },
+        "parentId": "e5", "seq": 6, "timestamp": 6
+    });
+    let answered = entry("e7", Some("e6"), 7, &assistant("streamed answer"));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": asked}),
+    ));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": call, "ancestors": [changed]}),
+    ));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/committed", "entry": answered, "ancestors": [tool_result]}),
+    ));
     frames
 }
 
-/// A reply that streamed in live is in no replay; the worker's committed notice is what lets
-/// its menu reach the ledger, so Inspect opens the entry the notice named.
+/// The session tree keeps a live tool call on the active path through hidden ancestors.
+fn rewind_live_tool_call(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e5"}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]["entryId"]));
+    }
+    vec![
+        replay("s-alpha", &[], 0, None),
+        ok(
+            frame,
+            json!({"leafId": "e2", "unsent": "again", "summarizing": false}),
+        ),
+    ]
+}
+
+#[test]
+fn a_live_tool_call_with_hidden_ancestors_rewinds_to_itself() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("session/prompt", prompt_committed));
+    steps.push(Step::Expect("_yi/rewind", rewind_live_tool_call));
+    let dir = Scratch::new("yi-console-frames-menu-live-rewind")?;
+    run_opts(
+        "menu-live-rewind",
+        Some(steps),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         type again\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\n\
+         key esc\nkey esc\nkey up\nwait-frame 3000 › ● assistant: ⚙ bash\n\
+         key enter\nwait-idle 5000\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let active_tool_row = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .any(|frame| frame.contains("› ● assistant: ⚙ bash"));
+    assert!(active_tool_row, "tool-call row is not on the active path");
+    Ok(())
+}
+
+/// A live reply is available for Inspect after its committed notice names its ledger entry.
 #[test]
 fn a_live_reply_is_inspectable_once_committed() -> TestResult {
     let mut steps = opened_unicode();
@@ -4943,7 +5017,7 @@ fn a_live_reply_is_inspectable_once_committed() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          type again\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\n\
          mouse right 25 13\nwait-frame 3000 Inspect\nkey up\nkey enter\n\
-         wait-frame 3000 entry e4\nquit\n",
+         wait-frame 3000 entry e7\nquit\n",
     )
 }
 

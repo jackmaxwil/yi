@@ -274,9 +274,13 @@ impl App {
                 );
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.as_ref().clone()]));
             }
-            Decoded::Committed(entry) => {
+            Decoded::Committed(committed) => {
                 for chat in self.state.chats_mut(id) {
-                    chat.port.commit((*entry).clone());
+                    chat.port
+                        .commit(committed.entry.clone(), committed.ancestors.clone());
+                }
+                if let Some(notice) = &committed.ancestors_notice {
+                    self.fan_out(id, || UiEvent::Reply(Reply::Notice(notice.clone())));
                 }
             }
             Decoded::Replaced => {
