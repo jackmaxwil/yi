@@ -1,4 +1,5 @@
 ---
+version: 0.958.0
 issue: Closes #2038
 growth: +203 the skill-uptake scan, CLI surfaces and regression coverage; weighed for deletion: invalid catalog reads and unemitted start-note/nudge counters were removed, and the existing scan, fetch records and stats output were reused
 raise: crate cli +27, crate runtime +176, tests +244, comments +3
