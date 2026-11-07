@@ -2392,3 +2392,60 @@ fn a_kernel_cancel_frame_is_an_unknown_method() -> TestResult {
     client.finish()?;
     Ok(())
 }
+
+/// The worker's half of a replacement: a live permission ask refuses the swap by name, and the
+/// worker that answered still serves the session it refused to give up.
+#[test]
+fn a_worker_with_a_live_ask_refuses_replacement_and_keeps_serving() -> TestResult {
+    let dir = temp_dir("refuse-replace")?;
+    let note = json!({"path": "note.txt", "content": "tidy\n"});
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "write", "args": note}),
+            json!({"text": "wrote the note"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    let ask = json!({"sessionId": session_id, "configId": "mode", "type": "id", "value": "ask"});
+    client.request("mode", "session/set_config_option", ask)?;
+    prompt(
+        &mut client,
+        "p",
+        &session_id,
+        json!([{"type": "text", "text": "tidy the note"}]),
+    )?;
+    let asked = client.read_until(|frame| frame["method"] == "session/request_permission")?;
+    let ask_id = asked.last().ok_or("no ask")?["id"].clone();
+
+    let refused = client.request(
+        "w",
+        "_yi/prepare_replace",
+        json!({"replacementId": 1, "generation": 1}),
+    )?;
+    let refused = refused.last().ok_or("no answer")?;
+    assert_eq!(
+        refused["result"]["prepared"], false,
+        "a live ask did not refuse the swap: {refused}"
+    );
+    let blockers = refused["result"]["blockers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        blockers.iter().any(|row| row
+            .as_str()
+            .is_some_and(|text| text.contains("permission ask is in flight"))),
+        "the ask is not named among the blockers: {refused}"
+    );
+
+    client.send(&json!({
+        "jsonrpc": "2.0",
+        "id": ask_id,
+        "result": {"outcome": {"outcome": "selected", "optionId": "reject_once"}},
+    }))?;
+    read_allowing(&mut client, is_idle)?;
+    client.finish()?;
+    Ok(())
+}
