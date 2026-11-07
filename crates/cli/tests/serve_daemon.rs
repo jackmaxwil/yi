@@ -637,6 +637,40 @@ fn saved_defaults_land_in_the_order_they_were_sent() -> TestResult {
     outcome
 }
 
+/// The project order the console saves reaches config.json as a list, in the order sent, and a
+/// later save replaces it whole rather than appending.
+#[test]
+fn a_saved_project_order_lands_in_config_json_as_a_list() -> TestResult {
+    let dir = Scratch::new("yi-project-order")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let config = dir.join("home/.yi/config.json");
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        for (id, order) in [
+            ("p1", json!(["/work/a", "/work/b"])),
+            ("p2", json!(["/work/b", "/work/a"])),
+        ] {
+            client.send(
+                id,
+                "_yi/set_default",
+                json!({"id": "console.projectOrder", "value": order}),
+            )?;
+            client.read_until(|frame| frame["id"] == id)?;
+        }
+        let saved: Value = std::fs::read_to_string(&config)?.parse()?;
+        assert_eq!(
+            saved["console"]["projectOrder"],
+            json!(["/work/b", "/work/a"]),
+            "{saved}"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// A client that leaves mid-turn is owed one unseen mark for the idle it missed, not one
 /// per streamed event, and the client that comes back gets the branch verbatim.
 #[test]
