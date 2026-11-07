@@ -985,8 +985,7 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     """Block until a child reports or finishes; returns what moved since ``cursor``.
 
     The reply carries ``cursor`` (pass it back on the next call and no other
-    waiter can steal your updates), ``changed`` and its one-release alias
-    ``updated`` (the names that moved), ``causes`` (why each moved, by name:
+    waiter can steal your updates), ``changed`` (the names that moved), ``causes`` (why each moved, by name:
     ``mail``, ``finished``, ``asked``, ``reaped`` and the like), ``counts`` (the whole
     roster's totals by state), and ``states`` and ``notes`` for the members named by
     ``causes``: ``running``, ``finished``, ``failed``, ``needs_you`` or ``stuck``.

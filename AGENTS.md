@@ -193,7 +193,7 @@ report to another agent) and to a user who asks, and never soften one in a reply
 - Every baseline has a reader (check_orphans.py). A new baseline seeds with its gate in one
   commit — the carve-out check_commit_style already grants — and goes when its gate goes.
 - A new YI_* env var is a row in scripts/guardrails/baselines/env_vars.json first (hard cap 40).
-- The dist profile is what binary-size and startup budgets measure — never release.
+- The dist profile is what the startup budget measures — never release.
 - No tracking check runs offline. A green `just check` says nothing about whether the work is
   registered, sized or dated — it cannot reach the forge and never tries. The PR job
   (check_pr_metadata.py) and the weekly hygiene job are where that is enforced.
@@ -307,8 +307,7 @@ enforced by deny.toml. default-features = false everywhere; enable the minimum. 
 inside a wrapped dependency's own tree (rmcp→chrono, zeromq→rand) get a scoped deny.toml
 wrapper exception, never a repo-wide unban. `regex` left the banned list for grep v2 and is a
 direct dependency; `syntect` left it for the highlighter, on `regex-fancy` only. Budgets are
-whatever baselines/deps_budget.json currently reads; dist binary ≤ 9 MiB, a hard cap independent
-of the baseline (D249), `yi --version` ≤ 5 ms.
+whatever baselines/deps_budget.json currently reads; `yi --version` ≤ 5 ms.
 
 
 
