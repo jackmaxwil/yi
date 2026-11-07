@@ -15,6 +15,15 @@ impl App {
             Some(files) if files.focused => self.state.files = None,
             Some(files) => files.focused = true,
             None => {
+                if self
+                    .hits
+                    .as_ref()
+                    .is_some_and(|hits| hits.screen_width < 60)
+                {
+                    self.note("files needs at least 60 columns");
+                    self.dirty = true;
+                    return;
+                }
                 let root = self.session_dir();
                 self.state.files = Some(Files::open(&root));
             }
@@ -22,7 +31,7 @@ impl App {
         self.dirty = true;
     }
 
-    pub(super) fn files_focused(&self) -> bool {
+    pub(crate) fn files_focused(&self) -> bool {
         self.state.files.as_ref().is_some_and(|files| files.focused)
     }
 
@@ -62,7 +71,7 @@ impl App {
         self.open_editor(&path, workdir, true);
     }
 
-    pub(super) fn files_key(&mut self, key: KeyEvent) {
+    pub(crate) fn files_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Enter {
             self.files_activate();
             return;

@@ -2,7 +2,6 @@
 //! session", a session row or a pane title lights the zone under the pointer and drops there.
 
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use yi_tui::colors::Theme;
@@ -233,52 +232,6 @@ fn drop_label(drag: &Drag) -> &'static str {
 }
 
 impl App {
-    /// Panels have the keys while a drag is up (any key cancels it) and while the tree is focused.
-    /// Keys while the inline search is up. True when it took the key.
-    pub(super) fn search_key(
-        &mut self,
-        outbound: &crate::client::Outbound,
-        key: ratatui::crossterm::event::KeyEvent,
-    ) -> bool {
-        use ratatui::crossterm::event::KeyCode;
-        let Some(query) = self.state.side.query.as_mut() else {
-            return false;
-        };
-        match key.code {
-            KeyCode::Esc => self.state.side.query = None,
-            KeyCode::Char(c) if !c.is_control() => query.push(c),
-            KeyCode::Backspace => {
-                query.pop();
-            }
-            KeyCode::Up | KeyCode::Down => self.state.move_cursor(key.code == KeyCode::Down),
-            KeyCode::Enter => {
-                self.state.side.query = None;
-                self.state.settle_visible();
-                self.open_selected(outbound);
-            }
-            _ => return true,
-        }
-        self.state.side.scroll = None;
-        self.state.settle_visible();
-        self.dirty = true;
-        true
-    }
-
-    pub(super) fn keys_held(&self) -> bool {
-        self.state.snap.is_some() || self.state.side.query.is_some() || self.files_focused()
-    }
-
-    pub(super) fn held_key(&mut self, outbound: &Outbound, key: KeyEvent) {
-        if self.search_key(outbound, key) {
-            return;
-        }
-        if self.state.snap.take().is_some() {
-            self.dirty = true;
-            return;
-        }
-        self.files_key(key);
-    }
-
     /// The focused panel moves to `snap`; a lone panel has nowhere to go.
     pub(super) fn snap_focused(&mut self, snap: Snap) {
         let moved = self.state.focused_pane_id().is_some_and(|id| {
@@ -423,95 +376,14 @@ impl App {
         self.dirty = true;
     }
 
-    /// ⌥⇧↑↓: the project under the cursor swaps with its neighbour.
-    fn shift_project(&mut self, step: isize) -> bool {
-        let roots: Vec<String> = self
-            .state
-            .groups()
-            .into_iter()
-            .filter_map(|group| group.root)
-            .collect();
-        let here = self.state.header.clone().or_else(|| {
-            self.state
-                .selected_id()
-                .and_then(|id| self.state.sessions.get(id))
-                .map(|row| row.root.clone())
-        });
-        let neighbour = here.as_ref().and_then(|root| {
-            let at = roots.iter().position(|known| known == root)?;
-            roots.get(at.checked_add_signed(step)?)
-        });
-        let (Some(root), Some(other)) = (here, neighbour) else {
-            return false;
-        };
-        crate::sidebar::move_group(&mut self.state, &root, other);
-        self.dirty = true;
-        true
-    }
-
     /// A new empty panel on the screen's `snap` edge, focused.
-    fn new_pane_at(&mut self, snap: Snap) -> Option<PaneId> {
+    pub(super) fn new_pane_at(&mut self, snap: Snap) -> Option<PaneId> {
         let ids = &mut self.state.pane_ids;
         let tab = self.state.tabs.get_mut(self.state.active_tab)?;
         tab.zoomed = false;
         let pane = tab.layout.snap_new(ids, snap);
         self.state.panes.insert(pane, Pane::empty_session());
         Some(pane)
-    }
-
-    /// The file at tab `index`, out of its panel; a lone file takes its panel with it.
-    fn extract_tab(&mut self, from: PaneId, index: usize) -> Option<crate::model::Editor> {
-        let many = self.tabs_of(from).map(|tabs| tabs.len() > 1)?;
-        if many {
-            return self.tabs_of(from)?.take(index);
-        }
-        self.focus_pane(from);
-        match self.state.close_focused_pane()?.content {
-            crate::model::PaneContent::Editor(tabs) => Some((*tabs).into_shown()),
-            _ => None,
-        }
-    }
-
-    fn drop_tab(&mut self, from: PaneId, index: usize, drop: Drop) {
-        let Some(file) = self.extract_tab(from, index) else {
-            return;
-        };
-        let target = match drop {
-            Drop::Onto(pane) => pane,
-            Drop::Edge(snap) => {
-                let Some(pane) = self.new_pane_at(snap) else {
-                    return;
-                };
-                if let Some(slot) = self.state.panes.get_mut(&pane) {
-                    slot.content = crate::model::PaneContent::Editor(Box::new(
-                        crate::editor_view::Tabs::new(file),
-                    ));
-                }
-                return self.state.focus_panes();
-            }
-        };
-        if let Some(tabs) = self.tabs_of(target) {
-            tabs.open(file);
-        }
-        self.focus_pane(target);
-        self.state.focus_panes();
-    }
-
-    /// The project order as the sidebar lists it, written to config so the next console starts in it.
-    fn save_order(&mut self, outbound: &Outbound) {
-        let roots: Vec<String> = self
-            .state
-            .groups()
-            .into_iter()
-            .filter_map(|group| group.root)
-            .collect();
-        let params = serde_json::json!({"id": "console.projectOrder", "value": roots});
-        self.send_request(
-            outbound,
-            super::RequestKind::Sidebar,
-            "_yi/set_default",
-            params,
-        );
     }
 
     pub(super) fn layout_action(&mut self, outbound: &Outbound, action: Action) {

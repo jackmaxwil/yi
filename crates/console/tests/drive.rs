@@ -391,6 +391,30 @@ fn run_frames_sized(
     last_frame(&dir)
 }
 
+fn run_frames_ordered(
+    name: &str,
+    fixture: Vec<Step>,
+    script: &str,
+    project_order: Vec<String>,
+) -> Result<String, Box<dyn Error>> {
+    let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
+    run_console(
+        name,
+        Some(fixture),
+        script,
+        (
+            false,
+            SidebarMode::Full,
+            Vec::new(),
+            yi_types::config::FollowMode::Page,
+        ),
+        project_order,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    last_frame(&dir)
+}
+
 fn last_frame(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
     let mut names: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)
@@ -628,7 +652,7 @@ fn run_opts(
         Vec::new(),
         yi_types::config::FollowMode::Page,
     );
-    run_console(name, fixture, script, console, frames, size)
+    run_console(name, fixture, script, console, Vec::new(), frames, size)
 }
 
 /// `console` is (autostart, sidebar, Open in apps, terminal-text follow mode).
@@ -642,6 +666,7 @@ fn run_console(
         Vec<String>,
         yi_types::config::FollowMode,
     ),
+    project_order: Vec<String>,
     frames: Option<PathBuf>,
     size: (u16, u16),
 ) -> TestResult {
@@ -665,7 +690,7 @@ fn run_console(
             follow,
             browser: None,
             chrome_pin: None,
-            project_order: Vec::new(),
+            project_order,
             home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
@@ -2162,6 +2187,17 @@ fn other_root_ledger(frame: &Value) -> Vec<Value> {
     )]
 }
 
+fn other_and_hidden_roots_ledger(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [
+            {"sessionId": "s-gamma", "title": "s-gamma", "cwd": "/tmp/other-root",
+             "_meta": {"yi": {"attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1}}},
+            {"sessionId": "s-hidden", "title": "quiet", "cwd": "/tmp/hidden-root",
+             "_meta": {"yi": {"attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1}}},
+        ]}),
+    )]
+}
 fn subagent_push() -> Vec<Value> {
     vec![update(
         "s-alpha",
@@ -2282,20 +2318,24 @@ fn the_sidebars_new_row_starts_a_session() -> TestResult {
 }
 
 fn project_order_saved(frame: &Value) -> Vec<Value> {
-    let two = frame["params"]["value"]
-        .as_array()
-        .is_some_and(|roots| roots.len() == 2);
-    if frame["params"]["id"] != "console.projectOrder" || !two {
+    let moved = json!(["/tmp/other-root", "/tmp/demo-root"]);
+    if frame["params"]["id"] != "console.projectOrder" || frame["params"]["value"] != moved {
         return vec![];
     }
     vec![ok(frame, json!({"rows": []}))]
 }
 
-/// Moving a project with ⌥⇧↓ asks the daemon to save the order as a list of both projects, so the
-/// next console starts in it: the fixture only answers a `console.projectOrder` save of two roots.
+fn filtered_project_order_saved(frame: &Value) -> Vec<Value> {
+    let moved = json!(["/tmp/other-root", "/tmp/demo-root", "/tmp/hidden-root"]);
+    if frame["params"]["id"] != "console.projectOrder" || frame["params"]["value"] != moved {
+        return vec![];
+    }
+    vec![ok(frame, json!({"rows": []}))]
+}
+
 #[test]
-fn moving_a_project_saves_the_order_to_config() -> TestResult {
-    run(
+fn moving_a_project_saves_the_exact_order_and_swaps_the_sidebar() -> TestResult {
+    let frame = run_frames(
         "project-order",
         vec![
             Step::Expect("initialize", init_reply),
@@ -2308,6 +2348,45 @@ fn moving_a_project_saves_the_order_to_config() -> TestResult {
          key alt-shift-down\n\
          wait-idle 3000\n\
          quit\n",
+    )?;
+    let at = sidebar_order(&frame, &["other-root 1 ▾", "demo-root 2 ▾"])?;
+    assert!(at.is_sorted(), "{at:?}\n{frame}");
+    Ok(())
+}
+
+#[test]
+fn the_console_starts_with_the_saved_project_order() -> TestResult {
+    let frame = run_frames_ordered(
+        "project-order-startup",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_root_ledger),
+        ],
+        "wait-frame 5000 other-root 1 ▾\nquit\n",
+        vec!["/tmp/other-root".to_owned(), "/tmp/demo-root".to_owned()],
+    )?;
+    let at = sidebar_order(&frame, &["other-root 1 ▾", "demo-root 2 ▾"])?;
+    assert!(at.is_sorted(), "{at:?}\n{frame}");
+    Ok(())
+}
+
+#[test]
+fn a_filtered_project_drag_saves_every_root() -> TestResult {
+    run(
+        "project-order-filtered",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_and_hidden_roots_ledger),
+            Step::Expect("_yi/set_default", filtered_project_order_saved),
+        ],
+        "wait-frame 5000 s-beta\n\
+         mouse down 3 1\nmouse up 3 1\ntype s-\n\
+         wait-frame 3000 !hidden-root\n\
+         mouse down 3 2\nmouse drag 3 5\nmouse up 3 5\n\
+         wait-idle 3000\nkey esc\n\
+         wait-frame 3000 hidden-root 1 ▾\nquit\n",
     )
 }
 
@@ -4284,6 +4363,7 @@ fn still_page_down_and_submit_work_through_the_console_key_path() -> TestResult 
             Vec::new(),
             yi_types::config::FollowMode::Still,
         ),
+        Vec::new(),
         None,
         (100, 30),
     )
@@ -4602,9 +4682,9 @@ fn a_press_on_a_settings_row_saves_the_control_it_names() -> TestResult {
          key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
          wait-frame 3000 Open Review beside\n\
          mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\n\
-         mouse down 110 9\nmouse up 110 9\nwait-frame 3000 ▌\n\
+         mouse down 110 10\nmouse up 110 10\nwait-frame 3000 ▌\n\
          type firefox\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
-         mouse down 110 11\nmouse up 110 11\nwait-frame 3000 ▌\n\
+         mouse down 110 12\nmouse up 110 12\nwait-frame 3000 ▌\n\
          type 40\nkey enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
          mouse down 116 3\nmouse up 116 3\nwait-frame 3000 Permissions\n\
          mouse down 110 5\nmouse up 110 5\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
@@ -5264,6 +5344,7 @@ fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
             apps,
             yi_types::config::FollowMode::Page,
         ),
+        Vec::new(),
         None,
         (100, 30),
     )

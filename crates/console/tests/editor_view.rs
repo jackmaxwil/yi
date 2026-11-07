@@ -27,6 +27,7 @@ fn commented_file(rows: usize) -> Editor {
         mtime: None,
         stale: false,
         scroll_top: 0,
+        widest: None,
         scroll_left: 0,
         primed: None,
         last_cursor: (0, 0),
@@ -339,5 +340,28 @@ fn a_sideways_wheel_slides_a_long_line_and_stops_at_its_end() -> TestResult {
         "the slide back stopped short"
     );
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn hidden_workspace_tabs_offer_no_editor_controls() -> TestResult {
+    use yi_console::render::Hit;
+    let dir = crate::scratch::Scratch::new("yi-hidden-editor-controls")?;
+    let path = dir.join("one.txt");
+    std::fs::write(&path, "one\n")?;
+    let (mut app, outbound) = console();
+    palette(&mut app, &outbound, &format!("e {}", path.display()));
+    let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let hidden = app.state.focused_pane_id().ok_or("no editor pane")?;
+    app.state.new_tab();
+    draw(&mut app, &mut terminal)?;
+    let stale = app.hits.as_ref().is_some_and(|hits| {
+        hits.controls.iter().any(|(_, hit)| {
+            matches!(hit, Hit::EditorTab(pane, _) | Hit::EditorClose(pane, _) if *pane == hidden)
+        })
+    });
+    assert!(!stale, "the hidden editor kept its click targets");
+    outbound.shutdown();
     Ok(())
 }

@@ -1802,3 +1802,32 @@ fn the_new_session_row_asks_which_project_when_there_are_several() -> TestResult
     assert!(items >= 2, "the chooser lists {items} directories");
     Ok(())
 }
+
+#[test]
+fn files_never_stays_focused_where_it_has_no_width() -> TestResult {
+    let (mut app, outbound) = crate::editor_view::console();
+    crate::editor_view::key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+    );
+    assert!(app.state.files.is_some(), "the tree did not open");
+    let mut terminal = Terminal::new(TestBackend::new(59, 30))?;
+    draw(&mut app, &mut terminal)?;
+    assert!(app.state.files.is_none(), "an invisible tree kept focus");
+    crate::editor_view::key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+    );
+    assert!(app.state.files.is_none(), "an invisible tree opened");
+    assert!(
+        app.state
+            .banner
+            .as_ref()
+            .is_some_and(|note| note.contains("60")),
+        "the refusal does not name the minimum width"
+    );
+    outbound.shutdown();
+    Ok(())
+}

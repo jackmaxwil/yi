@@ -184,7 +184,7 @@ impl App {
         }
     }
 
-    fn send_request(
+    pub(crate) fn send_request(
         &mut self,
         outbound: &Outbound,
         kind: RequestKind,
@@ -211,7 +211,7 @@ impl App {
         self.dirty = true;
     }
 
-    fn note(&mut self, text: &str) {
+    pub(crate) fn note(&mut self, text: &str) {
         match self.focused_chat() {
             Some(chat) => chat.app.notice(text),
             None => self.state.banner = Some(text.to_owned()),
@@ -792,7 +792,7 @@ impl App {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Notebook { .. }))
     }
 
-    fn open_selected(&mut self, outbound: &Outbound) {
+    pub(crate) fn open_selected(&mut self, outbound: &Outbound) {
         if !self.connected() {
             self.note("not connected");
             return;

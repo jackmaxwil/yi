@@ -5,6 +5,7 @@ use std::time::{Instant, SystemTime};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use tui_textarea::{CursorMove, TextArea};
 
+use super::snap::Drop as SnapDrop;
 use crate::client::Outbound;
 use crate::editor_view::Tabs;
 use crate::keys::Action;
@@ -52,6 +53,7 @@ pub(super) fn load(path: &str, workdir: String) -> Result<Editor, String> {
         mtime: mtime_of(path),
         stale: false,
         scroll_top: 0,
+        widest: None,
         scroll_left: 0,
         primed: None,
         last_cursor: (0, 0),
@@ -110,6 +112,7 @@ impl Editor {
     fn reload(&mut self) -> Result<(), String> {
         let fresh = load(&self.path, self.workdir.clone())?;
         let (row, col) = self.text.cursor();
+        self.widest = None;
         self.text = fresh.text;
         self.crlf = fresh.crlf;
         self.final_newline = fresh.final_newline;
@@ -149,6 +152,7 @@ impl Editor {
         }
         let before = self.text.cursor().0;
         if yi_tui::composer::edit_key(&mut self.text, key) {
+            self.widest = None;
             self.dirty = true;
             // Only an edit above the viewport can change what the visible rows sit inside.
             let touched = before.min(self.text.cursor().0);
@@ -204,6 +208,40 @@ impl Editor {
 }
 
 impl App {
+    fn extract_tab(&mut self, from: PaneId, index: usize) -> Option<Editor> {
+        let many = self.tabs_of(from).map(|tabs| tabs.len() > 1)?;
+        if many {
+            return self.tabs_of(from)?.take(index);
+        }
+        self.focus_pane(from);
+        match self.state.close_focused_pane()?.content {
+            PaneContent::Editor(tabs) => Some((*tabs).into_shown()),
+            _ => None,
+        }
+    }
+
+    pub(super) fn drop_tab(&mut self, from: PaneId, index: usize, drop: SnapDrop) {
+        let Some(file) = self.extract_tab(from, index) else {
+            return;
+        };
+        let target = match drop {
+            SnapDrop::Onto(pane) => pane,
+            SnapDrop::Edge(snap) => {
+                let Some(pane) = self.new_pane_at(snap) else {
+                    return;
+                };
+                if let Some(slot) = self.state.panes.get_mut(&pane) {
+                    slot.content = PaneContent::Editor(Box::new(Tabs::new(file)));
+                }
+                return self.state.focus_panes();
+            }
+        };
+        if let Some(tabs) = self.tabs_of(target) {
+            tabs.open(file);
+        }
+        self.focus_pane(target);
+        self.state.focus_panes();
+    }
     /// The editor panel a file joins as a tab: the focused one, and for the Files tree (`beside`)
     /// else the first in the layout; `None` when there is none.
     fn editor_group(&mut self, beside: bool) -> Option<PaneId> {
@@ -340,6 +378,7 @@ impl App {
             _ => return false,
         };
         if matches!(action, Action::Undo | Action::Redo) && note.is_none() {
+            editor.widest = None;
             editor.dirty = true;
         }
         if let Some(note) = note {

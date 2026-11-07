@@ -76,12 +76,7 @@ impl App {
 
     /// The New session row: with one project it starts there, with several it asks which.
     pub(super) fn new_session_menu(&mut self, outbound: &Outbound, at: (u16, u16)) {
-        let roots: Vec<String> = self
-            .state
-            .groups()
-            .into_iter()
-            .filter_map(|group| group.root)
-            .collect();
+        let roots = self.state.ordered_roots();
         match (roots.len(), self.state.focused_pane_id()) {
             (0 | 1, Some(pane)) => {
                 let root = roots

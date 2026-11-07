@@ -94,9 +94,9 @@ pub struct ReviewUi {
 
 /// A review as drawn: a header pinned above the pane's scroll, and the diff that scrolls under it.
 pub struct Review {
-    pub(crate) title: String,
-    pub(crate) head: Vec<Line<'static>>,
-    pub(crate) body: Vec<Line<'static>>,
+    pub title: String,
+    pub head: Vec<Line<'static>>,
+    pub body: Vec<Line<'static>>,
     /// Each scope chip's column, width and scope, from the pane's left edge.
     pub(crate) scopes: Vec<(u16, u16, crate::model::ReviewScope)>,
     /// Each drawn file row's place in `head`, and which file it is.
@@ -184,6 +184,17 @@ pub fn review_parts(
     (width, room): (usize, usize),
     theme: &Theme,
 ) -> Review {
+    review_parts_reusing(diff, scope, note, (width, room), theme, None)
+}
+
+pub(crate) fn review_parts_reusing(
+    diff: Option<&crate::model::SessionDiff>,
+    scope: crate::model::ReviewScope,
+    note: &str,
+    (width, room): (usize, usize),
+    theme: &Theme,
+    reused: Option<(Vec<Line<'static>>, Vec<usize>)>,
+) -> Review {
     use crate::model::ReviewScope;
     let unbased = scope == ReviewScope::Branch && diff.is_none_or(|diff| diff.branch.is_none());
     let scope = if unbased { ReviewScope::Session } else { scope };
@@ -248,12 +259,34 @@ pub fn review_parts(
         (false, ReviewScope::Turn) => format!("the last turn's edits{untracked}"),
         (false, ReviewScope::Session) => format!("this session's edits{untracked}"),
     };
-    // The chips: each scope and how many files it holds, the live one lit.
-    let mut chips: Vec<Span<'static>> = Vec::new();
+    let chips = [ReviewScope::Branch, ReviewScope::Turn, ReviewScope::Session];
+    let current = chips.iter().position(|chip| *chip == scope).unwrap_or(0);
+    let labels: Vec<String> = chips
+        .iter()
+        .map(|chip| format!(" {} {} ", chip.label(), scope_count(diff, *chip)))
+        .collect();
+    let sums = format!("+{added} −{removed} ");
+    let (first, last) = crate::settings::tab_window(
+        chips.len(),
+        current,
+        width.saturating_sub(sums.chars().count()),
+        |from, to| {
+            (from..=to)
+                .map(|index| labels.get(index).map_or(0, |label| label.chars().count()))
+                .sum::<usize>()
+                .saturating_add(to.saturating_sub(from))
+        },
+    );
+    let mut chip_lines: Vec<Span<'static>> = Vec::new();
     let mut scopes = Vec::new();
     let mut at = 0_u16;
-    for chip in [ReviewScope::Branch, ReviewScope::Turn, ReviewScope::Session] {
-        let label = format!(" {} {} ", chip.label(), scope_count(diff, chip));
+    for (index, chip) in chips
+        .into_iter()
+        .enumerate()
+        .skip(first)
+        .take(last - first + 1)
+    {
+        let label = labels.get(index).cloned().unwrap_or_default();
         let span = u16::try_from(label.chars().count()).unwrap_or(0);
         let style = if chip == scope {
             Style::default()
@@ -263,26 +296,27 @@ pub fn review_parts(
         } else {
             theme.muted_style()
         };
-        chips.push(Span::styled(label, style));
-        chips.push(Span::raw(" "));
+        chip_lines.push(Span::styled(label, style));
+        chip_lines.push(Span::raw(" "));
         scopes.push((at, span, chip));
         at = at.saturating_add(span).saturating_add(1);
     }
-    let sums = format!("+{added} −{removed} ");
     let pad = width
         .saturating_sub(usize::from(at))
         .saturating_sub(sums.chars().count());
-    chips.push(Span::raw(" ".repeat(pad)));
-    chips.push(Span::styled(
+    chip_lines.push(Span::raw(" ".repeat(pad)));
+    chip_lines.push(Span::styled(
         format!("+{added} "),
         Style::default().fg(theme.success),
     ));
-    chips.push(Span::styled(
+    chip_lines.push(Span::styled(
         format!("−{removed} "),
         Style::default().fg(theme.error),
     ));
-    let mut head: Vec<Line<'static>> =
-        vec![Line::from(chips), Line::styled(base, theme.dim_style())];
+    let mut head: Vec<Line<'static>> = vec![
+        Line::from(chip_lines),
+        Line::styled(base, theme.dim_style()),
+    ];
     if let Some(title) = diff.and_then(|diff| diff.land_armed.as_deref()) {
         head.push(Line::styled(
             format!("l again to /land {title} · any other key cancels"),
@@ -368,48 +402,55 @@ pub fn review_parts(
         "s scope · ↑/↓ file · w why each hunk · l land under the session's title",
         theme.dim_style(),
     ));
-    let mut body: Vec<Line<'static>> = Vec::new();
-    let mut heads = Vec::new();
-    if patches.is_empty() {
-        let others: Vec<String> = [ReviewScope::Branch, ReviewScope::Turn, ReviewScope::Session]
-            .iter()
-            .map(|other| format!("{} {}", other.label(), scope_count(diff, *other)))
-            .collect();
-        body.push(Line::default());
-        body.push(Line::styled(
-            "nothing changed in this scope",
-            theme.dim_style(),
-        ));
-        body.push(Line::styled(
-            format!("{} · click a scope above", others.join(" · ")),
-            theme.dim_style(),
-        ));
-    }
-    for (index, (path, patch)) in patches.iter().enumerate() {
-        let (add, rem, tracked) = counts.get(index).copied().unwrap_or((0, 0, true));
-        let status = status_of(patch, tracked);
-        heads.push(body.len());
-        body.push(
-            Line::from(vec![
-                Span::styled(format!("{status} "), status_style(status, theme)),
-                Span::styled(
-                    path.clone(),
-                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("  +{add} −{rem}"), theme.dim_style()),
-            ])
-            .style(Style::default().bg(theme.selection_bg())),
-        );
-        if let Some(chain) = diff.and_then(|diff| diff.why.get(path)) {
-            body.extend(
-                chain
-                    .iter()
-                    .map(|row| Line::styled(row.clone(), theme.muted_style())),
-            );
+    let (body, heads) = match reused {
+        Some(parts) => parts,
+        None => {
+            let mut body: Vec<Line<'static>> = Vec::new();
+            let mut heads = Vec::new();
+            if patches.is_empty() {
+                let others: Vec<String> =
+                    [ReviewScope::Branch, ReviewScope::Turn, ReviewScope::Session]
+                        .iter()
+                        .map(|other| format!("{} {}", other.label(), scope_count(diff, *other)))
+                        .collect();
+                body.push(Line::default());
+                body.push(Line::styled(
+                    "nothing changed in this scope",
+                    theme.dim_style(),
+                ));
+                body.push(Line::styled(
+                    format!("{} · click a scope above", others.join(" · ")),
+                    theme.dim_style(),
+                ));
+            }
+            for (index, (path, patch)) in patches.iter().enumerate() {
+                let (add, rem, tracked) = counts.get(index).copied().unwrap_or((0, 0, true));
+                let status = status_of(patch, tracked);
+                heads.push(body.len());
+                body.push(
+                    Line::from(vec![
+                        Span::styled(format!("{status} "), status_style(status, theme)),
+                        Span::styled(
+                            path.clone(),
+                            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("  +{add} −{rem}"), theme.dim_style()),
+                    ])
+                    .style(Style::default().bg(theme.selection_bg())),
+                );
+                if let Some(chain) = diff.and_then(|diff| diff.why.get(path)) {
+                    body.extend(
+                        chain
+                            .iter()
+                            .map(|row| Line::styled(row.clone(), theme.muted_style())),
+                    );
+                }
+                body.extend(diffview::render(patch, width, theme, DiffBudget::FULL));
+                body.push(Line::default());
+            }
+            (body, heads)
         }
-        body.extend(diffview::render(patch, width, theme, DiffBudget::FULL));
-        body.push(Line::default());
-    }
+    };
     Review {
         title,
         head,
@@ -457,20 +498,6 @@ pub(crate) fn offer_review(app: &mut crate::app::App) {
     }
 }
 
-/// The review as one column of text: header rows, then the diff.
-pub fn review_view(
-    diff: Option<&crate::model::SessionDiff>,
-    scope: crate::model::ReviewScope,
-    note: &str,
-    width: usize,
-    theme: &Theme,
-) -> (String, Vec<Line<'static>>) {
-    let review = review_parts(diff, scope, note, (width, FILE_ROWS), theme);
-    let mut lines = review.head;
-    lines.extend(review.body);
-    (review.title, lines)
-}
-
 pub(crate) fn cached<K: PartialEq, V>(
     drawn: &mut crate::model::Drawn<K, V>,
     key: K,
@@ -479,6 +506,22 @@ pub(crate) fn cached<K: PartialEq, V>(
     let fresh = match drawn.take() {
         Some((at, rows)) if at == key => (at, rows),
         _ => (key, draw()),
+    };
+    &drawn.insert(fresh).1
+}
+
+pub(crate) fn cached_review(
+    drawn: &mut crate::model::Drawn<crate::model::ReviewKey, Review>,
+    key: crate::model::ReviewKey,
+    draw: impl FnOnce(Option<(Vec<Line<'static>>, Vec<usize>)>) -> Review,
+) -> &Review {
+    let fresh = match drawn.take() {
+        Some((at, review)) if at == key => (at, review),
+        Some((at, review)) => {
+            let same_body = at.0 == key.0 && at.2 == key.2 && at.3 == key.3 && at.4 == key.4;
+            (key, draw(same_body.then_some((review.body, review.heads))))
+        }
+        None => (key, draw(None)),
     };
     &drawn.insert(fresh).1
 }

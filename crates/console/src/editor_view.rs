@@ -38,6 +38,9 @@ impl DerefMut for Tabs {
 }
 
 impl Tabs {
+    pub(crate) fn clear_drawn(&mut self) {
+        self.drawn.clear();
+    }
     pub fn new(file: Editor) -> Self {
         Self {
             before: Vec::new(),
@@ -180,17 +183,9 @@ fn strip(tabs: &mut Tabs, area: Rect, theme: &Theme) -> Line<'static> {
     } else {
         room.saturating_sub(10)
     };
-    let (mut lo, mut hi, mut used) = (here, here, width(here));
-    loop {
-        let right = (hi.saturating_add(1) < total).then(|| width(hi.saturating_add(1)));
-        let left = lo.checked_sub(1).map(width);
-        match (right, left) {
-            (Some(w), _) if used.saturating_add(w) <= budget => hi = hi.saturating_add(1),
-            (_, Some(w)) if used.saturating_add(w) <= budget => lo = lo.saturating_sub(1),
-            _ => break,
-        }
-        used = (lo..=hi).map(width).sum();
-    }
+    let (lo, hi) = crate::settings::tab_window(total, here, budget, |first, last| {
+        (first..=last).map(width).sum()
+    });
     let on = Style::default()
         .fg(theme.text)
         .bg(theme.selection_bg())
@@ -273,10 +268,20 @@ fn crop(spans: Vec<Span<'static>>, skip: usize) -> Vec<Span<'static>> {
     let mut left = skip;
     let mut out = Vec::new();
     for span in spans {
+        if left == 0 {
+            out.push(span);
+            continue;
+        }
         let mut kept = String::new();
         for c in span.content.chars() {
             if left > 0 {
-                left = left.saturating_sub(c.width().unwrap_or(0));
+                let width = c.width().unwrap_or(0);
+                if left < width {
+                    kept.push(' ');
+                    left = 0;
+                } else {
+                    left = left.saturating_sub(width);
+                }
             } else {
                 kept.push(c);
             }
@@ -289,14 +294,16 @@ fn crop(spans: Vec<Span<'static>>, skip: usize) -> Vec<Span<'static>> {
 }
 
 /// The widest line in drawn columns: how far the text can slide left.
-pub(crate) fn widest(editor: &Editor) -> usize {
-    editor
-        .text
-        .lines()
-        .iter()
-        .map(|line| expand(line, 0).width())
-        .max()
-        .unwrap_or(0)
+pub(crate) fn widest(editor: &mut Editor) -> usize {
+    *editor.widest.get_or_insert_with(|| {
+        editor
+            .text
+            .lines()
+            .iter()
+            .map(|line| expand(line, 0).width())
+            .max()
+            .unwrap_or(0)
+    })
 }
 
 pub(crate) fn cursor_cell(tabs: &Tabs, area: Rect) -> Option<(u16, u16)> {
@@ -411,8 +418,10 @@ pub(crate) fn view(
             }
             (None, None) => spans.push(Span::styled(expand(line, 0), base)),
         }
-        let content = spans.split_off(1);
-        spans.extend(crop(content, editor.scroll_left));
+        if editor.scroll_left > 0 {
+            let content = spans.split_off(1);
+            spans.extend(crop(content, editor.scroll_left));
+        }
         out.push(Line::from(spans));
     }
     if editor.stale {
@@ -441,6 +450,7 @@ mod tests {
             mtime: None,
             stale: false,
             scroll_top: 0,
+            widest: None,
             scroll_left: 0,
             lang: None,
             primed: None,
@@ -510,5 +520,15 @@ mod tests {
         );
         assert!(tabs.take(0).is_none(), "the only tab was taken");
         assert_eq!(tabs.len(), 1);
+    }
+
+    #[test]
+    fn cropping_half_a_wide_glyph_keeps_the_following_columns() {
+        let spans = vec![Span::raw("a界bc")];
+        let cropped = crop(spans, 2);
+        assert_eq!(
+            cropped.first().map(|span| span.content.as_ref()),
+            Some(" bc")
+        );
     }
 }

@@ -926,13 +926,15 @@ mod tests {
         ));
         let reply = serde_json::json!({"path": "src/a.rs", "cap": 8, "unasked": [90, 120], "answers": answers});
         app.absorb_why(&session, &reply);
-        let (_, lines) = crate::render::review_view(
+        let review = crate::panes::review_parts(
             app.state.diffs.get(&session),
             ReviewScope::Session,
             "",
-            200,
+            (200, 8),
             &theme,
         );
+        let mut lines = review.head;
+        lines.extend(review.body);
         let rows: Vec<String> = lines.iter().map(ToString::to_string).collect();
         for row in [
             "  ↳ L2 not committed yet, so no chain",
