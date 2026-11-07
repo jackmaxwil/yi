@@ -153,6 +153,15 @@ impl Checker {
         crate::claude_hooks::guard_shell(self.hooks.as_deref(), command, cwd)
     }
 
+    /// Invariant: a check placed in a container is judged there, so its first word is not on the
+    /// host's PATH and the host probe would refuse a program the image has.
+    pub(crate) fn probe(&self, command: &str, cwd: &std::path::Path) -> Option<String> {
+        if self.wall.container.is_some() {
+            return None;
+        }
+        probe(command, cwd)
+    }
+
     /// Incident: a check ran on the host, so `cargo test` as one ran a child's `build.rs` outside
     /// the sandbox the same command met in bash. Yolo keeps its promise and contains nothing.
     fn profile(&self, cwd: &std::path::Path) -> Option<yi_tools::Sandbox> {

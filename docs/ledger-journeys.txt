@@ -202,6 +202,10 @@ plan tree panel (`/plantree`) | `plantree::panel_renders_every_state_glyph_and_t
 todo tool + loop coupling | `todo::two_long_todos_sharing_a_head_keep_distinct_labels`
 todo tool + loop coupling | `todo_e2e::a_label_the_renderer_cut_names_its_item_back`
 todo tool + loop coupling | `todo_e2e::two_todos_sharing_a_long_head_are_named_whole_and_resent_as_they_are`
+todo tool + loop coupling | `todo_check::a_red_check_keeps_the_row_running_and_a_passing_one_closes_it` (T0)
+todo tool + loop coupling | `todo_check::a_start_refuses_a_check_whose_program_is_missing_before_it_writes` (T0)
+todo tool + loop coupling | `todo_check::rm_and_a_set_omitting_a_red_row_are_refused_naming_drop` (T0)
+todo tool + loop coupling | `todo_check::arms_carry_the_command_a_start_and_a_done_will_run` (T0)
 final answer (`answer`) | `answer_turn::a_refused_answer_is_patched_with_edit_and_shown_once` (T1)
 final answer (`answer`) | `answer_turn::a_text_stop_with_open_work_is_sent_back_once` (T1)
 final answer (`answer`) | `answer_turn::a_host_note_queued_on_the_answer_turn_is_dropped` (T1)
@@ -715,3 +719,4 @@ TUI | `tui_unit::status_labels_the_worktree_branch_and_session_and_keeps_a_lane_
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::the_index_serves_every_bundled_skill_whole_and_only_where_it_applies`
 skills: catalog ladder, `$name`, Yi's triggered skills | `reader_e2e::a_child_that_can_read_is_pointed_at_the_catalog_and_the_skills_its_parent_loaded`
 cross-session stats, observed prices and plan-op counters | `cli_surfaces::stats_counts_a_followed_skill_pointer_in_one_session_and_the_fold`
+cache marks and TTL from the session ledger | `family_cache::two_upstream_switches_put_the_reading_host_first_in_the_next_request` (T1)

@@ -17,6 +17,69 @@ pub const TODO_LIST_FORMAT: u32 = 2;
 pub const TODO_INTERCEPT_ENTRY_TYPE: &str = "todo_intercept";
 pub const PHASE_NAME_MAX: usize = 80;
 
+/// The key a row's check rides under in its `extra`.
+pub const CHECK_KEY: &str = "check";
+
+/// What a check last did, as one wire word: `unrun`, `green`, `red:<digest of its output>`, or a
+/// tag another version wrote, kept verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CheckLast(String);
+
+impl CheckLast {
+    pub const UNRUN: &'static str = "unrun";
+    pub const GREEN: &'static str = "green";
+
+    pub fn green() -> Self {
+        Self(Self::GREEN.to_owned())
+    }
+
+    pub fn red(digest: &str) -> Self {
+        Self(format!("red:{digest}"))
+    }
+
+    pub fn is_green(&self) -> bool {
+        self.0 == Self::GREEN
+    }
+
+    /// The digest of the output a red produced; `None` for any other state.
+    pub fn digest(&self) -> Option<&str> {
+        self.0.strip_prefix("red:")
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for CheckLast {
+    fn default() -> Self {
+        Self(Self::UNRUN.to_owned())
+    }
+}
+
+/// A row's check: the command `done` runs, and what it last did. Stored once and never
+/// replaced, so a row's contract cannot be rewritten under a red it already earned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowCheck {
+    pub command: String,
+    #[serde(default)]
+    pub last: CheckLast,
+}
+
+impl RowCheck {
+    pub fn of(item: &Todo) -> Option<Self> {
+        serde_json::from_value(item.extra.get(CHECK_KEY)?.clone()).ok()
+    }
+
+    pub fn put(&self, item: &mut Todo) {
+        if let Ok(value) = serde_json::to_value(self) {
+            item.extra.insert(CHECK_KEY.to_owned(), value);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct PhaseName(String);
@@ -389,7 +452,15 @@ impl TodoList {
         let mut rows: Vec<String> = self
             .items()
             .filter(|item| !item.state.is_terminal())
-            .map(|item| format!("{}={}", item.label, TodoStateName::of(&item.state)))
+            .map(|item| match RowCheck::of(item) {
+                Some(check) => format!(
+                    "{}={}[{}]",
+                    item.label,
+                    TodoStateName::of(&item.state),
+                    check.last.as_str()
+                ),
+                None => format!("{}={}", item.label, TodoStateName::of(&item.state)),
+            })
             .collect();
         rows.sort();
         rows.join("\n")

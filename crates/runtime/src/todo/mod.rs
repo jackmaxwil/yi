@@ -1,16 +1,22 @@
 use std::sync::{Arc, Mutex};
 
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, DocError, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState,
-    TodoStateName,
+    AgentId, BlockedOn, DocError, Note, PlanId, Todo, TodoLabel, TodoState, TodoStateName,
 };
-use yi_types::todo::{PhaseName, TodoId, TodoList, TodoPhase, TodoProgress, TodoRecord};
+use yi_types::todo::{
+    CheckLast, PhaseName, RowCheck, TodoId, TodoList, TodoPhase, TodoProgress, TodoRecord,
+};
 
 use crate::goal::StoreHandle;
 
+pub(crate) use names::locate;
+use names::{known_labels, known_phases, named, rows};
+
+pub mod check;
 pub mod claims;
 pub mod coupling;
 pub mod mirror;
+pub mod names;
 pub mod text;
 pub mod tool;
 
@@ -42,6 +48,12 @@ pub enum Op {
     },
     Start {
         label: TodoLabel,
+        check: Option<String>,
+    },
+    /// A check's last run, written by the tool that ran it and by nothing the model sends.
+    MarkCheck {
+        label: TodoLabel,
+        last: CheckLast,
     },
     Done {
         target: Target,
@@ -74,6 +86,7 @@ impl Op {
             Self::Init { .. } => "init",
             Self::Append { .. } => "append",
             Self::Start { .. } => "start",
+            Self::MarkCheck { .. } => "check",
             Self::Done { .. } => "done",
             Self::Drop { .. } => "drop",
             Self::Block { .. } => "block",
@@ -89,9 +102,10 @@ impl Op {
 
     fn label(&self) -> Option<&TodoLabel> {
         match self {
-            Self::Start { label } | Self::Block { label, .. } | Self::Unblock { label, .. } => {
+            Self::Start { label, .. } | Self::Block { label, .. } | Self::Unblock { label, .. } => {
                 Some(label)
             }
+            Self::MarkCheck { label, .. } => Some(label),
             Self::Done {
                 target: Target::Label(label),
                 ..
@@ -157,6 +171,16 @@ pub enum TodoError {
         "the list is plan {plan}; the plan tool changes it (append, block, drop, start and done on your own todos; the engine steps delegated todos)"
     )]
     Mirrored { plan: String },
+    #[error(
+        "{label:?} carries a check that has not passed (`check {command}`); `drop {label}` with a reason is the move that keeps the red visible"
+    )]
+    CheckNotPassed { label: String, command: String },
+    #[error(
+        "{label:?} carries check {stored:?}: a check is set once at `start`, and a set or an edit may not change or blank it"
+    )]
+    CheckRewritten { label: String, stored: String },
+    #[error("start refused: {reason}")]
+    Check { reason: String },
     #[error(transparent)]
     Doc(#[from] DocError),
     #[error(transparent)]
@@ -177,12 +201,15 @@ impl TodoError {
             | Self::ParentOpen { .. }
             | Self::NoEvidence { .. }
             | Self::SetClosed { .. }
+            | Self::CheckNotPassed { .. }
+            | Self::CheckRewritten { .. }
             | Self::Doc(DocError::LabelTooLong { .. })
             | Self::Unanswered(_) => ToolErrorKind::Verdict,
             Self::Ambiguous { .. }
             | Self::ManyRunning { .. }
             | Self::Empty
             | Self::Doc(_)
+            | Self::Check { .. }
             | Self::Checklist { .. }
             | Self::TooDeep { .. }
             | Self::Mirrored { .. } => ToolErrorKind::InvalidArgs,
@@ -458,82 +485,8 @@ impl TodoStore {
             });
         }
         let before = state.list.clone();
-        let mirrored = mirror::plan_of(&before).map(str::to_owned);
-        let mut list = match &mirrored {
-            Some(plan) => {
-                let own = mirror::own(&before);
-                let whole = matches!(op, Op::Set { .. } | Op::Init { .. } | Op::Append { .. });
-                if !whole
-                    && op
-                        .label()
-                        .is_none_or(|label| locate(&own, label.as_str()).is_err())
-                {
-                    if let Some(label) = op.label() {
-                        locate(&before, label.as_str())?;
-                    }
-                    return Err(TodoError::Mirrored { plan: plan.clone() });
-                }
-                own
-            }
-            None => before.clone(),
-        };
-        let label = op.label().cloned();
-        let name = op.name();
-        let (prior, whole_set) = (list.clone(), matches!(op, Op::Set { .. }));
-        step(&mut list, op, &mut notes)?;
-        if stale.is_some() && whole_set {
-            let kept = keep_omitted(&prior, &mut list);
-            if !kept.is_empty() {
-                notes.push(format!(
-                    "rows your set left out were kept: {}",
-                    kept.join(", ")
-                ));
-            }
-        }
-        if mirrored.is_some() {
-            let planned: Vec<TodoId> = before
-                .items()
-                .filter(|item| item.extra.contains_key(mirror::PLAN_KEY))
-                .filter_map(|item| item.id.clone())
-                .collect();
-            list.for_each_mut(|item| {
-                if item.id.as_ref().is_some_and(|id| planned.contains(id)) {
-                    item.id = None;
-                }
-            });
-            list.next_id = list.next_id.max(before.next_id);
-        }
-        mint(&mut list);
-        normalize(&mut list, mirrored.is_none());
-        if mirrored.is_some() {
-            list = mirror::rejoin(&before, list);
-        }
-        // Invariant: an op adds no row whose label another row holds. A repeat an older binary
-        // wrote is not this op's, so that list still takes the moves that repair it.
-        let rows = |list: &TodoList, label: &TodoLabel| {
-            list.items().filter(|item| item.label == *label).count()
-        };
-        if let Some(label) = list
-            .duplicates()
-            .into_iter()
-            .find(|label| rows(&list, label) > rows(&before, label))
-        {
-            // A finished plan's leftover rows keep their `plan` key; only an open plan owns them.
-            let plan = mirrored.as_ref().and_then(|_| {
-                before
-                    .items()
-                    .filter(|item| item.label == *label)
-                    .find_map(mirror::row_plan)
-            });
-            let label = label.to_string();
-            return Err(match plan {
-                Some(plan) => TodoError::DuplicateOfPlanRow {
-                    label,
-                    plan: plan.to_string(),
-                },
-                None => TodoError::Duplicate { label },
-            });
-        }
+        let (label, name) = (op.label().cloned(), op.name());
+        let list = next(&before, op, stale.is_some(), &mut notes)?;
         state.list = list.clone();
         state.touched = state.touched.saturating_add(1);
         let touched = state.touched;
@@ -547,6 +500,13 @@ impl TodoStore {
             changed: true,
             notes,
         })
+    }
+
+    /// Whether `op` would apply to the list as it stands, so a check is not run for a refused call.
+    pub fn admits(&self, op: Op) -> Result<(), TodoError> {
+        self.resync();
+        let state = self.state.lock().map_err(|_| TodoError::Empty)?;
+        next(&state.list, op, false, &mut Vec::new()).map(drop)
     }
 
     /// Invariant: projected from the list under the lock, so no owner-row write is undone.
@@ -598,46 +558,95 @@ impl TodoStore {
     }
 }
 
+/// The list `op` makes of `before`, or the refusal it meets; nothing is written.
+fn next(
+    before: &TodoList,
+    op: Op,
+    stale: bool,
+    notes: &mut Vec<String>,
+) -> Result<TodoList, TodoError> {
+    let mirrored = mirror::plan_of(before).map(str::to_owned);
+    let mut list = match &mirrored {
+        Some(plan) => {
+            let own = mirror::own(before);
+            let whole = matches!(op, Op::Set { .. } | Op::Init { .. } | Op::Append { .. });
+            if !whole
+                && op
+                    .label()
+                    .is_none_or(|label| locate(&own, label.as_str()).is_err())
+            {
+                if let Some(label) = op.label() {
+                    locate(before, label.as_str())?;
+                }
+                return Err(TodoError::Mirrored { plan: plan.clone() });
+            }
+            own
+        }
+        None => before.clone(),
+    };
+    let (prior, whole_set) = (list.clone(), matches!(op, Op::Set { .. }));
+    step(&mut list, op, notes)?;
+    if stale && whole_set {
+        let kept = keep_omitted(&prior, &mut list);
+        if !kept.is_empty() {
+            notes.push(format!(
+                "rows your set left out were kept: {}",
+                kept.join(", ")
+            ));
+        }
+    }
+    if mirrored.is_some() {
+        let planned: Vec<TodoId> = before
+            .items()
+            .filter(|item| item.extra.contains_key(mirror::PLAN_KEY))
+            .filter_map(|item| item.id.clone())
+            .collect();
+        list.for_each_mut(|item| {
+            if item.id.as_ref().is_some_and(|id| planned.contains(id)) {
+                item.id = None;
+            }
+        });
+        list.next_id = list.next_id.max(before.next_id);
+    }
+    mint(&mut list);
+    normalize(&mut list, mirrored.is_none());
+    if mirrored.is_some() {
+        list = mirror::rejoin(before, list);
+    }
+    // Invariant: an op adds no row whose label another row holds. A repeat an older binary
+    // wrote is not this op's, so that list still takes the moves that repair it.
+    let rows = |list: &TodoList, label: &TodoLabel| {
+        list.items().filter(|item| item.label == *label).count()
+    };
+    if let Some(label) = list
+        .duplicates()
+        .into_iter()
+        .find(|label| rows(&list, label) > rows(before, label))
+    {
+        // A finished plan's leftover rows keep their `plan` key; only an open plan owns them.
+        let plan = mirrored.as_ref().and_then(|_| {
+            before
+                .items()
+                .filter(|item| item.label == *label)
+                .find_map(mirror::row_plan)
+        });
+        let label = label.to_string();
+        return Err(match plan {
+            Some(plan) => TodoError::DuplicateOfPlanRow {
+                label,
+                plan: plan.to_string(),
+            },
+            None => TodoError::Duplicate { label },
+        });
+    }
+    Ok(list)
+}
+
 pub fn latest_record(session: &yi_session::SharedSession) -> Option<TodoRecord> {
     yi_session::lock_session(session)
         .custom_records(yi_session::EntryOrder::NewestFirst, Some(1))
         .pop()
 }
-
-fn named(item: &Todo) -> String {
-    match &item.id {
-        Some(id) => format!("{id} {:?}", item.label.as_str()),
-        None => format!("{:?}", item.label.as_str()),
-    }
-}
-
-fn rows(names: &[String], what: &str) -> String {
-    let view = "todo {\"op\": \"view\"}";
-    crate::listed::listed(names, what, "LIST_ROWS", LIST_ROWS, view)
-}
-
-fn known_labels(list: &TodoList) -> String {
-    let labels: Vec<String> = list.items().map(named).collect();
-    if labels.is_empty() {
-        "nothing".to_owned()
-    } else {
-        rows(&labels, "todos")
-    }
-}
-
-fn known_phases(list: &TodoList) -> String {
-    let names: Vec<String> = list
-        .phases
-        .iter()
-        .map(|phase| format!("{:?}", phase.name.as_str()))
-        .collect();
-    if names.is_empty() {
-        "nothing".to_owned()
-    } else {
-        rows(&names, "phases")
-    }
-}
-
 fn nth_mut(list: &mut TodoList, index: usize) -> Option<&mut Todo> {
     let mut at = 0_usize;
     for phase in &mut list.phases {
@@ -659,97 +668,6 @@ fn nth_mut(list: &mut TodoList, index: usize) -> Option<&mut Todo> {
 
 /// Incident: the renderer marks a cut label with an ellipsis and models retype one without
 /// its backticks; both name one item, so both sides normalise before comparison (#474).
-fn normalized(text: &str) -> String {
-    let stripped = text
-        .trim()
-        .trim_end_matches('…')
-        .trim_end_matches("...")
-        .trim();
-    stripped
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace('`', "")
-        .to_lowercase()
-}
-
-/// Exact label; label or id with backticks stripped; an id and its own label (`t1 read the
-/// spec`); the same label [`normalized`]; a unique case-insensitive prefix of [`PREFIX_MIN`].
-fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
-    let items: Vec<&Todo> = list.items().collect();
-    // A cut row is also named by the text it was cut from, whose head its label may not be.
-    fn text(item: &Todo) -> &str {
-        (item.note.as_ref().filter(|_| item.is_cut())).map_or(item.label.as_str(), |n| n.as_str())
-    }
-    if let Some(index) = items.iter().position(|item| item.label.as_str() == needle) {
-        return Ok(index);
-    }
-    let bare = needle.trim().trim_matches('`').trim();
-    if let Some(index) = items.iter().position(|item| {
-        item.label.as_str() == bare || item.id.as_ref().is_some_and(|id| id.as_str() == bare)
-    }) {
-        return Ok(index);
-    }
-    if let Some((id, rest)) = bare.split_once(' ')
-        && let Some(index) = items.iter().position(|item| {
-            let (label, rest) = (normalized(text(item)), normalized(rest));
-            let same = !rest.is_empty() && (label.starts_with(&rest) || rest.starts_with(&label));
-            same && item.id.as_ref().is_some_and(|own| own.as_str() == id)
-        })
-    {
-        return Ok(index);
-    }
-    let wanted = normalized(needle);
-    if !wanted.is_empty() {
-        let same: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| {
-                [item.label.as_str(), text(item)]
-                    .map(normalized)
-                    .contains(&wanted)
-            })
-            .map(|(index, _)| index)
-            .collect();
-        if let [one] = same.as_slice() {
-            return Ok(*one);
-        }
-    }
-    // A whole text whose digest named no row (retyped in another case) still names it by head.
-    let digest = |tail: &str| tail.len() == 8 && tail.bytes().all(|byte| byte.is_ascii_hexdigit());
-    let long = bare.chars().count() > TODO_LABEL_MAX.saturating_sub(9);
-    let tail = bare
-        .rsplit_once(' ')
-        .filter(|(_, tail)| long && digest(tail));
-    let bare = tail.map_or(bare, |(head, _)| head);
-    let prefix = bare.to_lowercase();
-    let hits: Vec<usize> = if bare.chars().count() >= PREFIX_MIN {
-        items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| text(item).to_lowercase().starts_with(&prefix))
-            .map(|(index, _)| index)
-            .collect()
-    } else {
-        Vec::new()
-    };
-    match hits.as_slice() {
-        [one] => Ok(*one),
-        [] => Err(TodoError::NoSuchLabel {
-            label: needle.to_owned(),
-            known: known_labels(list),
-        }),
-        many => {
-            let hits = many.iter().filter_map(|index| items.get(*index));
-            let names: Vec<String> = hits.map(|item| named(item)).collect();
-            Err(TodoError::Ambiguous {
-                needle: needle.to_owned(),
-                candidates: rows(&names, "todos"),
-            })
-        }
-    }
-}
-
 fn resolve<'a>(list: &'a mut TodoList, needle: &TodoLabel) -> Result<&'a mut Todo, TodoError> {
     let index = locate(list, needle.as_str())?;
     let known = known_labels(list);
@@ -824,9 +742,26 @@ fn block(
     Ok(())
 }
 
-fn abandon(list: &mut TodoList, target: &Target, reason: &Note) -> Result<(), TodoError> {
+fn abandon(
+    list: &mut TodoList,
+    target: &Target,
+    reason: &Note,
+    notes: &mut Vec<String>,
+) -> Result<(), TodoError> {
     each_target(list, target, |item| {
         if !matches!(item.state, TodoState::Done { .. }) {
+            if let Some(stored) = RowCheck::of(item).filter(|check| !check.last.is_green()) {
+                notes.push(format!("dropped while red: {}", stored.command));
+                let reason = Note::new(format!(
+                    "{} (dropped while red: {})",
+                    reason.as_str(),
+                    stored.command
+                ))
+                .unwrap_or_else(|_| reason.clone());
+                item.state = TodoState::Abandoned;
+                item.note = Some(reason);
+                return Ok(());
+            }
             item.state = TodoState::Abandoned;
             item.note = Some(reason.clone());
         }
@@ -834,6 +769,8 @@ fn abandon(list: &mut TodoList, target: &Target, reason: &Note) -> Result<(), To
     })
 }
 
+/// Invariant: a set may not quietly drop a row's red or rewrite its watch command: both are
+/// what `done` and the stop ladder judge it by, so `drop` with a reason is the only way out.
 fn illegal(op: &'static str, item: &Todo) -> TodoError {
     let from = TodoStateName::of(&item.state);
     TodoError::Illegal {
@@ -962,6 +899,34 @@ fn keep_omitted(prior: &TodoList, list: &mut TodoList) -> Vec<String> {
     kept
 }
 
+/// `rm` is the one op that takes rows away with no reason given, so its scope rules live here.
+fn remove(list: &mut TodoList, target: &Target) -> Result<(), TodoError> {
+    check::keeps_reds(list, target)?;
+    match target {
+        Target::Label(needle) => {
+            let row = resolve(list, needle)?.clone();
+            // A list an older binary wrote may repeat a label; only the named row goes.
+            let other = |item: &Todo| item.label != row.label || item.id != row.id;
+            for phase in &mut list.phases {
+                phase.items.retain(other);
+                for item in &mut phase.items {
+                    item.children.retain(other);
+                }
+            }
+            Ok(())
+        }
+        Target::Phase(name) => {
+            phase_mut(list, name)?;
+            list.phases.retain(|phase| phase.name != *name);
+            Ok(())
+        }
+        Target::All => {
+            list.phases.clear();
+            Ok(())
+        }
+    }
+}
+
 fn step(list: &mut TodoList, op: Op, notes: &mut Vec<String>) -> Result<(), TodoError> {
     let done = |item: &Todo| matches!(item.state, TodoState::Done { .. });
     match op {
@@ -991,6 +956,7 @@ fn step(list: &mut TodoList, op: Op, notes: &mut Vec<String>) -> Result<(), Todo
                 });
                 notes.push(format!("{} kept open: done needs evidence, so `done <label>` with the command and its output line closes a row", closed.join(", ")));
             }
+            check::survive(list, &merged)?;
             // A list that kept no label is a new list: its ids start at t1 like an init's.
             let survived = merged.items().any(|item| item.id.is_some());
             *list = merged;
@@ -1013,14 +979,19 @@ fn step(list: &mut TodoList, op: Op, notes: &mut Vec<String>) -> Result<(), Todo
             }
             add_items(list, phase, under, items)
         }
-        Op::Start { label } => {
+        Op::Start { label, check } => {
             let item = resolve(list, &label)?;
+            check::assign(item, check.as_deref())?;
             item.state = TodoState::Running {
                 by: AgentId::owner(),
             };
             item.note = None;
             let started = (item.label.clone(), item.id.clone());
             list.for_each_mut(|other| demote(other, &started));
+            Ok(())
+        }
+        Op::MarkCheck { label, last } => {
+            check::mark(resolve(list, &label)?, last);
             Ok(())
         }
         Op::Done { target, evidence } => {
@@ -1065,7 +1036,7 @@ fn step(list: &mut TodoList, op: Op, notes: &mut Vec<String>) -> Result<(), Todo
                 Ok(())
             })
         }
-        Op::Drop { target, reason } => abandon(list, &target, &Note::new(reason)?),
+        Op::Drop { target, reason } => abandon(list, &target, &Note::new(reason)?, notes),
         Op::Block {
             label,
             on,
@@ -1087,29 +1058,7 @@ fn step(list: &mut TodoList, op: Op, notes: &mut Vec<String>) -> Result<(), Todo
             }
             Ok(())
         }
-        Op::Rm { target } => match target {
-            Target::Label(needle) => {
-                let row = resolve(list, &needle)?.clone();
-                // A list an older binary wrote may repeat a label; only the named row goes.
-                let other = |item: &Todo| item.label != row.label || item.id != row.id;
-                for phase in &mut list.phases {
-                    phase.items.retain(other);
-                    for item in &mut phase.items {
-                        item.children.retain(other);
-                    }
-                }
-                Ok(())
-            }
-            Target::Phase(name) => {
-                phase_mut(list, &name)?;
-                list.phases.retain(|phase| phase.name != name);
-                Ok(())
-            }
-            Target::All => {
-                list.phases.clear();
-                Ok(())
-            }
-        },
+        Op::Rm { target } => remove(list, &target),
     }
 }
 

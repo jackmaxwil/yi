@@ -506,7 +506,8 @@ fn wire_plan_engine(
         tool = tool.confirming(crate::plan::authority::Confirming { broker, store });
     }
     tools.push(Arc::new(tool));
-    let todo = crate::todo::tool::TodoTool::new(Arc::clone(&todos));
+    let todo = crate::todo::tool::TodoTool::new(Arc::clone(&todos))
+        .with_checker(session.checker(&wiring.cwd));
     tools.push(Arc::new(todo));
     session.set_todos(Arc::clone(&todos));
     if let Some(clock) = session.heartbeat_service() {

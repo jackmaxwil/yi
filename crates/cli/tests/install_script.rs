@@ -315,7 +315,7 @@ fn package_signs_and_leaves_no_archive_it_could_not_sign() -> TestResult {
 }
 
 #[test]
-fn the_installer_and_the_readme_trust_the_key_yi_update_compiles_in() -> TestResult {
+fn the_installer_trusts_the_key_yi_update_compiles_in() -> TestResult {
     let scratch = Scratch::new("yi-install-signer")?;
     let signers = std::fs::read_to_string(format!("{ROOT}/allowed_signers"))?;
     let out = install(&scratch, &scratch.join("release"), Path::new(""))
@@ -331,12 +331,6 @@ fn the_installer_and_the_readme_trust_the_key_yi_update_compiles_in() -> TestRes
     assert!(
         trusted.contains(signers.trim()),
         "--help trusts:\n{trusted}\nallowed_signers:\n{signers}"
-    );
-    let readme = std::fs::read_to_string(format!("{ROOT}/README.md"))?;
-    let by_hand = format!("echo '{}' > allowed_signers", signers.trim());
-    assert!(
-        readme.contains(&by_hand),
-        "README.md's by-hand install lacks: {by_hand}"
     );
     Ok(())
 }

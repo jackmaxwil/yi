@@ -343,6 +343,36 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
 }
 
 #[test]
+fn an_answer_does_not_run_a_rows_check() -> TestResult {
+    let r = rig("answer-no-check")?;
+    open_list(&r.todos)?;
+    let work = spec_scratch("answer-no-check")?;
+    let marker = work.join("ran");
+    r.todos.apply(
+        Op::Start {
+            label: TodoLabel::new("first")?,
+            check: Some(format!("touch '{}'", marker.display())),
+        },
+        None,
+    )?;
+    let hooks = coupling(
+        &r.session,
+        Arc::clone(&r.todos),
+        Options {
+            deadline: None,
+            eager: Eager::Prelude,
+            children_running: Arc::new(|| false),
+            inner: None,
+        },
+    );
+    let message = stop("Done");
+    let answered = vec![result("a1", "answer", false)];
+    (hooks.intercept_stop)(&snap(&message, &answered));
+    assert!(!marker.exists(), "answer ran the row's check");
+    Ok(())
+}
+
+#[test]
 fn only_a_state_suppresses_the_interception() -> TestResult {
     let r = rig("suppress")?;
     open_list(&r.todos)?;
