@@ -1,4 +1,6 @@
 ---
+version: 0.965.0
+decisions: D559
 issue: Refs #748
 raise: crate ai +201, crate runtime +66, crate types +14, tests +421, comments +11
 growth: +288 (measured against the fork): the tail drill in `cache_miss`, the strip-retry and its record in `request`, the tail flag through `LlmContext`/`CachePolicy`/`Breakpoints`, and their regression tests; weighed for deletion: `TtlEstimate` and its `estimate()` accessor are replaced by `CacheAdvice`/`advice()`, and upstream routing is left unchanged
