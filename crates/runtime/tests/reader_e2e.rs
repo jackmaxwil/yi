@@ -61,6 +61,7 @@ pub(crate) struct Setup {
     pub(crate) parent: Option<yi_session::SharedSession>,
     pub(crate) provider: Option<Arc<ProviderStream>>,
     pub(crate) model: Option<Model>,
+    pub(crate) kernel: Option<Hook>,
 }
 
 impl Default for Setup {
@@ -73,6 +74,7 @@ impl Default for Setup {
             parent: None,
             provider: None,
             model: None,
+            kernel: None,
         }
     }
 }
@@ -95,6 +97,7 @@ pub(crate) fn family_with(
         parent,
         provider,
         model,
+        kernel,
     } = setup;
     let model = model.unwrap_or_else(|| faux_model(window));
     let fresh = || Arc::new(ProviderStream::new(None));
@@ -149,7 +152,12 @@ pub(crate) fn family_with(
                 provider,
                 build,
                 &reader,
-                yi_tools::builtin_tools(),
+                (yi_tools::builtin_tools, |_| {
+                    if let Some(kernel) = &kernel {
+                        kernel();
+                    }
+                    None
+                }),
                 (cwd.clone(), &home),
                 broker.clone(),
                 rules.clone(),
@@ -846,7 +854,35 @@ async fn a_worker_writes_where_a_reader_is_walled_and_holds_a_worker_slot() -> T
 }
 
 #[tokio::test]
-async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
+async fn a_one_turn_worker_naming_ipython_builds_no_kernel() -> TestResult {
+    let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sink = Arc::clone(&builds);
+    let kernel: Hook = Arc::new(move || {
+        sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    let family = family_with(
+        1,
+        Arc::new(Mutex::new(vec![reply("done")])),
+        Setup {
+            kernel: Some(kernel),
+            ..Setup::default()
+        },
+    )?;
+    family.host.spawn(
+        "Answer once".to_owned(),
+        kwargs(json!({"name": "once", "role": "worker", "tools": ["ipython"], "turns": 1})),
+    )?;
+    let rows = transcript(&family, "once").await?;
+    assert_eq!(
+        builds.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "a one-turn worker built a kernel it cannot call: {rows:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_worker_is_refused_a_fork_a_check_and_a_tool_it_may_not_call() -> TestResult {
     let family = family(4, Arc::default())?;
     let refused = |args: Value| family.host.spawn("w".to_owned(), kwargs(args)).err();
     let fork = refused(json!({"role": "worker", "fork": "all"})).ok_or("fork admitted")?;
@@ -860,11 +896,10 @@ async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
         check.contains("a worker answers once and runs no check"),
         "{check}"
     );
-    let kernel =
-        refused(json!({"role": "worker", "tools": ["ipython"]})).ok_or("ipython admitted")?;
+    let spawn = refused(json!({"role": "worker", "tools": ["answer"]})).ok_or("answer admitted")?;
     assert_eq!(
-        kernel,
-        "a worker may call read, grep, edit, write, bash and get_context, not ipython; \
+        spawn,
+        "a worker may call read, grep, edit, write, bash, get_context and ipython, not answer; \
          role=\"root\" spawns a full child"
     );
     let turns = refused(json!({"role": "worker", "turns": 41})).ok_or("41 turns admitted")?;

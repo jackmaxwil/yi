@@ -64,15 +64,21 @@ async fn wait_for_status(host: &Arc<SubagentHost>, name: &str, status: &str) -> 
     false
 }
 
-#[tokio::test]
-async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
+async fn child_kernel_answer(
+    role: &str,
+    tools: Option<&str>,
+    code: &str,
+    expected: &str,
+    extra: Map<String, Value>,
+) -> TestResult {
     let root = Scratch::new("yi-kernel-across")?;
+    std::fs::write(root.join("walled.txt"), "42")?;
     let provider = Arc::new(ProviderStream::new(None));
-    let mut code = Map::new();
-    code.insert("code".to_owned(), Value::String("answer = 42".to_owned()));
+    let mut call = Map::new();
+    call.insert("code".to_owned(), Value::String(code.to_owned()));
     provider.queue_faux(vec![
         faux_assistant_message(
-            vec![faux_tool_call("call-1", "ipython", code)],
+            vec![faux_tool_call("call-1", "ipython", call)],
             StopReason::ToolUse,
         ),
         faux_assistant_message(vec![faux_text("bound it")], StopReason::Stop),
@@ -120,16 +126,38 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
             kernels: Arc::clone(&kernels),
         },
     );
+    let parent_kernel = parent
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    printed(&parent_kernel, "parent_answer = 42").await?;
+    let contained = extra.contains_key("deny_read");
 
-    let mut kwargs = Map::new();
+    let mut kwargs = extra;
     kwargs.insert("name".to_owned(), Value::String("helper".to_owned()));
-    kwargs.insert("role".to_owned(), Value::String("root".to_owned()));
+    kwargs.insert("role".to_owned(), Value::String(role.to_owned()));
+    if let Some(tools) = tools {
+        kwargs.insert(
+            "tools".to_owned(),
+            Value::Array(vec![Value::String(tools.to_owned())]),
+        );
+    }
     host.spawn("bind the answer".to_owned(), kwargs)?;
     assert!(
         wait_for_status(&host, "helper", "completed").await,
         "the child never finished its cell: {:?}",
         host.list()
     );
+    if contained && !yi_tools::Sandbox::available() {
+        let store = host
+            .transcript("helper")
+            .ok_or("the worker has no transcript")?;
+        let transcript = serde_json::to_string(&yi_runtime::family::recent_entries(&store))?;
+        assert!(
+            transcript.contains("ipython is unavailable to a walled session here"),
+            "{transcript}"
+        );
+        return Ok(());
+    }
 
     let family = root.join("family");
     let resolver = Arc::new(
@@ -140,8 +168,11 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     let url: yi_types::url::Url = "kernel://helper/answer".parse()?;
     let reader = Arc::clone(&resolver);
     let fetched = tokio::task::spawn_blocking(move || reader.fetch(&url)).await??;
-    assert_eq!(fetched.text, "42");
+    assert_eq!(fetched.text, expected);
     assert_eq!(fetched.served_by, "kernel-namespace helper");
+    if contained {
+        return Ok(());
+    }
     // D164: the same variable as an object, dilled by the child's own kernel.
     let object: yi_types::url::Url = "kernel://helper/answer".parse()?;
     let dumper = Arc::clone(&resolver);
@@ -152,6 +183,47 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     assert_eq!(path, family.join("helper.answer.dill"));
     assert!(bytes > 0 && path.is_file(), "{path:?} {bytes}");
     Ok(())
+}
+
+#[tokio::test]
+async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
+    child_kernel_answer("root", None, "answer = 42", "42", Map::new()).await
+}
+
+#[tokio::test]
+async fn a_worker_naming_ipython_holds_its_own_kernel() -> TestResult {
+    child_kernel_answer("worker", Some("ipython"), "answer = 42", "42", Map::new()).await
+}
+
+#[tokio::test]
+async fn a_worker_fetches_a_parent_kernel_value() -> TestResult {
+    child_kernel_answer(
+        "worker",
+        Some("ipython"),
+        "answer = await rlm.fetch('kernel://main/parent_answer')",
+        "42",
+        Map::new(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_walled_worker_naming_ipython_keeps_the_kernel_boundary() -> TestResult {
+    let code = concat!(
+        "from pathlib import Path\n",
+        "try:\n",
+        "    Path('walled.txt').read_text()\n",
+        "except OSError:\n",
+        "    answer = True\n",
+        "else:\n",
+        "    answer = False",
+    );
+    let mut wall = Map::new();
+    wall.insert(
+        "deny_read".to_owned(),
+        Value::Array(vec!["walled.txt".into()]),
+    );
+    child_kernel_answer("worker", Some("ipython"), code, "True", wall).await
 }
 
 /// One root session wired as `build_session` wires it once the session id is known.

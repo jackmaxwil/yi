@@ -69,7 +69,7 @@ fn rig(answer: &'static str) -> Result<Rig, Box<dyn Error>> {
                     provider,
                     build,
                     &reader,
-                    yi_tools::builtin_tools(),
+                    (yi_tools::builtin_tools, |_| None),
                     (cwd.clone(), &home),
                     None,
                     None,
