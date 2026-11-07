@@ -1,4 +1,5 @@
 ---
+version: 0.991.0
 issue: Closes #1542
 raise: crate cli +157, crate types +8, tests +462, comments +1
 growth: +159 the rpc command enum beside its served-name table, so the compiler refuses a name without an arm and an arm without a name, and the per-cause record rows in yi stats; weighed a macro that writes both lists from one and kept the plain enum, and the hand-kept name array it replaces is gone
