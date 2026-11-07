@@ -832,7 +832,7 @@ impl App {
         );
     }
 
-    fn apply_action(&mut self, outbound: &Outbound, action: Action) {
+    pub(super) fn apply_action(&mut self, outbound: &Outbound, action: Action) {
         match action {
             Action::SplitRight => self.split_share(Direction::Horizontal, 0.5),
             Action::SplitDown => self.split_share(Direction::Vertical, 0.5),

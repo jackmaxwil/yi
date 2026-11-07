@@ -207,9 +207,8 @@ impl Editor {
 }
 
 impl App {
-    /// The editor panel a file joins as a tab: the focused one, and for the Files tree (`beside`)
-    /// else the first in the layout; `None` when there is none.
-    fn editor_group(&mut self, beside: bool) -> Option<PaneId> {
+    /// The editor panel a file joins as a tab: the focused one, else the first in the layout.
+    fn editor_group(&mut self) -> Option<PaneId> {
         let tab = self.state.tabs.get_mut(self.state.active_tab)?;
         let is_editor = |id: &PaneId| {
             matches!(
@@ -220,10 +219,8 @@ impl App {
         let focused = tab.layout.focused();
         let found = if is_editor(&focused) {
             Some(focused)
-        } else if beside {
-            tab.layout.pane_ids().into_iter().find(is_editor)
         } else {
-            None
+            tab.layout.pane_ids().into_iter().find(is_editor)
         };
         if let Some(id) = found {
             tab.layout.focus_pane(id);
@@ -232,9 +229,9 @@ impl App {
         found
     }
 
-    /// A file opens as a tab that stays until it is closed: in the focused editor panel, else in the
-    /// first one the Files tree finds, else in the focused pane or a new split beside it.
-    pub(super) fn open_editor(&mut self, path: &str, workdir: String, beside: bool) {
+    /// A file opens as a tab that stays until it is closed: in an editor panel, else in a new split
+    /// beside the focused pane, so a file never takes the screen from what was there.
+    pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
         let file = match load(path, workdir) {
             Ok(file) => file,
             Err(error) => {
@@ -242,7 +239,7 @@ impl App {
                 return self.note(&error);
             }
         };
-        match self.editor_group(beside) {
+        match self.editor_group() {
             Some(id) => {
                 if let Some(PaneContent::Editor(tabs)) =
                     self.state.panes.get_mut(&id).map(|pane| &mut pane.content)
@@ -251,10 +248,8 @@ impl App {
                 }
             }
             None => {
-                if beside {
-                    self.state
-                        .split_focused(ratatui::layout::Direction::Horizontal);
-                }
+                self.state
+                    .split_focused(ratatui::layout::Direction::Horizontal);
                 if let Some(pane) = self.state.focused_pane_mut() {
                     pane.content = PaneContent::Editor(Box::new(Tabs::new(file)));
                     pane.scroll_from_bottom = 0;

@@ -356,9 +356,10 @@ impl Files {
     }
 }
 
-/// The sidebar's rectangle on `area`'s right edge; empty when closed or where the panes would starve.
-pub(crate) fn side(area: Rect, open: bool) -> Rect {
-    let width = if open && area.width >= 60 {
+/// The tree's rectangle on `area`'s right edge; empty where the panes beside the session sidebar
+/// would starve, so one function states where the tree may live and how wide it may be.
+pub(crate) fn side(area: Rect, sidebar_width: u16) -> Rect {
+    let width = if area.width.saturating_sub(sidebar_width) >= 60 {
         (area.width / 4).clamp(24, 44)
     } else {
         0
@@ -368,6 +369,12 @@ pub(crate) fn side(area: Rect, open: bool) -> Rect {
         width,
         ..area
     }
+}
+
+/// The tree's rectangle this frame: nothing while the tree is closed or where the panes would starve.
+pub(crate) fn side_of(app: &crate::app::App, area: Rect, sidebar_width: u16) -> Option<Rect> {
+    app.state.files.as_ref()?;
+    Some(side(area, sidebar_width)).filter(|rect| rect.width > 0)
 }
 
 pub(crate) fn draw(app: &mut crate::app::App, frame: &mut Frame<'_>, theme: &Theme) {

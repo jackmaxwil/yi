@@ -225,24 +225,25 @@ fn strip(tabs: &mut Tabs, area: Rect, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Each tab and ✕ the last draw laid out is a control the press and the hover walk.
+/// Each tab and ✕ the last draw laid out is a control the press walks, for this frame's panels only.
 pub(crate) fn offer_tabs(app: &mut crate::app::App) {
     let mut found = Vec::new();
-    for (id, pane) in &app.state.panes {
+    for id in crate::hit::drawn(app) {
+        let Some(pane) = app.state.panes.get(&id) else {
+            continue;
+        };
         if let crate::model::PaneContent::Editor(tabs) = &pane.content {
             for (rect, index, close) in &tabs.drawn {
                 let hit = if *close {
-                    crate::hit::Hit::EditorClose(*id, *index)
+                    crate::hit::Hit::EditorClose(id, *index)
                 } else {
-                    crate::hit::Hit::EditorTab(*id, *index)
+                    crate::hit::Hit::EditorTab(id, *index)
                 };
                 found.push((*rect, hit));
             }
         }
     }
-    if let Some(hits) = app.hits.as_mut() {
-        hits.controls.extend(found);
-    }
+    crate::hit::offer(app, found);
 }
 
 fn drawn_col(line: &str, index: usize) -> usize {
@@ -525,5 +526,31 @@ mod tests {
         let spans = crop(vec![Span::raw("界x")], 1);
         let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text, " x");
+    }
+
+    /// Dies with a click meant for the visible pane opening a file tab of a panel this frame never
+    /// drew: a zoomed-away or other-tab panel keeps the rectangles of its last draw.
+    #[test]
+    fn a_panel_this_frame_did_not_draw_offers_no_tab_controls()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = crate::app::App::new("/repo".to_owned(), theme);
+        let id = app.state.focused_pane_id().ok_or("a pane")?;
+        let mut tabs = Tabs::new(file("a"));
+        tabs.drawn.push((Rect::new(40, 3, 4, 1), 0, false));
+        if let Some(pane) = app.state.panes.get_mut(&id) {
+            pane.content = crate::model::PaneContent::Editor(Box::new(tabs));
+        }
+        app.hits = Some(crate::render::Hits::default());
+        offer_tabs(&mut app);
+        let undrawn = app.hits.as_ref().map_or(0, |hits| hits.controls.len());
+        assert_eq!(undrawn, 0, "a panel no frame drew still offered its tabs");
+        if let Some(hits) = app.hits.as_mut() {
+            hits.panes = vec![(id, Rect::new(30, 2, 40, 8))];
+        }
+        offer_tabs(&mut app);
+        let drawn = app.hits.as_ref().map_or(0, |hits| hits.controls.len());
+        assert_eq!(drawn, 1, "the panel this frame drew offered no tab");
+        Ok(())
     }
 }

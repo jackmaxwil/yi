@@ -124,7 +124,7 @@ impl App {
             return true;
         }
         if let Some(("e", path)) = query.split_once(' ') {
-            self.open_editor(&resolve(path.trim()), dir, false);
+            self.open_editor(&resolve(path.trim()), dir);
             return true;
         }
         let (kind, path) = match query.split_once(' ') {
@@ -134,27 +134,114 @@ impl App {
         };
         match std::fs::read_to_string(&path) {
             Ok(source) => {
-                if let Some(pane) = self.state.focused_pane_mut() {
-                    pane.content = if kind {
-                        PaneContent::Markdown {
-                            path,
-                            source,
-                            workdir: dir,
-                            drawn: None,
-                        }
-                    } else {
-                        PaneContent::Diff {
-                            path,
-                            source,
-                            workdir: dir,
-                            drawn: None,
-                        }
-                    };
-                    pane.scroll_from_bottom = crate::panes::TOP;
-                }
+                self.show_viewer(if kind {
+                    PaneContent::Markdown {
+                        path,
+                        source,
+                        workdir: dir,
+                        drawn: None,
+                    }
+                } else {
+                    PaneContent::Diff {
+                        path,
+                        source,
+                        workdir: dir,
+                        drawn: None,
+                    }
+                });
             }
             Err(error) => self.note(&format!("{path}: {error}")),
         }
         true
+    }
+
+    /// A viewer joins the tab's first panel of its kind, else a new split beside the focused pane,
+    /// so `md` and `diff` never take the screen from a lone chat.
+    fn show_viewer(&mut self, content: PaneContent) {
+        let kind = std::mem::discriminant(&content);
+        let found = {
+            let state = &self.state;
+            state.tabs.get(state.active_tab).and_then(|tab| {
+                tab.layout.pane_ids().into_iter().find(|id| {
+                    state
+                        .panes
+                        .get(id)
+                        .is_some_and(|pane| std::mem::discriminant(&pane.content) == kind)
+                })
+            })
+        };
+        let target = match found {
+            Some(id) => {
+                if let Some(tab) = self.state.tabs.get_mut(self.state.active_tab) {
+                    tab.layout.focus_pane(id);
+                    tab.zoomed = false;
+                }
+                Some(id)
+            }
+            None => {
+                self.state
+                    .split_focused(ratatui::layout::Direction::Horizontal);
+                self.state.focused_pane_id()
+            }
+        };
+        if let Some(pane) = target.and_then(|id| self.state.panes.get_mut(&id)) {
+            pane.content = content;
+            pane.scroll_from_bottom = crate::panes::TOP;
+        }
+        self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Dies with `e <path>` taking the whole screen: a file opens in a panel beside the chat.
+    #[test]
+    fn e_opens_a_file_in_a_panel_beside_the_chat() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = crate::app::App::new("/r".to_owned(), theme);
+        let chat = app.state.focused_pane_id().ok_or("a pane")?;
+        let path = std::env::temp_dir().join(format!("yi-navigator-{}.txt", std::process::id()));
+        std::fs::write(&path, "tide\n")?;
+        app.run_navigator_command(&format!("e {}", path.display()));
+        let kept =
+            app.state.panes.get(&chat).is_some_and(|pane| {
+                matches!(pane.content, crate::model::PaneContent::Session { .. })
+            });
+        assert!(kept, "the chat kept the screen");
+        assert_eq!(app.state.panes.len(), 2, "the file opened in its own panel");
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
+
+    /// Dies with `md`/`diff` taking the whole screen: a viewer opens in a panel beside the chat.
+    #[test]
+    fn md_reuses_a_viewer_panel_instead_of_the_chat() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = crate::app::App::new("/r".to_owned(), theme);
+        let chat = app.state.focused_pane_id().ok_or("a pane")?;
+        let first = std::env::temp_dir().join(format!("yi-md-a-{}.md", std::process::id()));
+        let second = std::env::temp_dir().join(format!("yi-md-b-{}.md", std::process::id()));
+        std::fs::write(&first, "# tide\n")?;
+        std::fs::write(&second, "# ebb\n")?;
+        assert!(app.run_navigator_command(&format!("md {}", first.display())));
+        let kept =
+            app.state.panes.get(&chat).is_some_and(|pane| {
+                matches!(pane.content, crate::model::PaneContent::Session { .. })
+            });
+        assert!(kept, "the chat kept the screen");
+        assert_eq!(
+            app.state.panes.len(),
+            2,
+            "the viewer opened in its own panel"
+        );
+        assert!(app.run_navigator_command(&format!("md {}", second.display())));
+        assert_eq!(
+            app.state.panes.len(),
+            2,
+            "a second markdown joins the viewer panel"
+        );
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&second);
+        Ok(())
     }
 }

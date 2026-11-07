@@ -440,21 +440,22 @@ pub(crate) fn review_hits(
     chips.chain(rows).collect()
 }
 
-/// Each chip and file row the last draw laid out is a control the press and the hover walk.
+/// Each chip and file row the last draw laid out is a control, for this frame's panels only.
 pub(crate) fn offer_review(app: &mut crate::app::App) {
     let mut found = Vec::new();
-    for (id, pane) in &app.state.panes {
+    for id in crate::hit::drawn(app) {
+        let Some(pane) = app.state.panes.get(&id) else {
+            continue;
+        };
         if let crate::model::PaneContent::SessionDiff { ui, .. } = &pane.content {
             found.extend(
                 ui.hits
                     .iter()
-                    .map(|(rect, pick)| (*rect, crate::hit::Hit::Review(*id, *pick))),
+                    .map(|(rect, pick)| (*rect, crate::hit::Hit::Review(id, *pick))),
             );
         }
     }
-    if let Some(hits) = app.hits.as_mut() {
-        hits.controls.extend(found);
-    }
+    crate::hit::offer(app, found);
 }
 
 /// The review as one column of text: header rows, then the diff.

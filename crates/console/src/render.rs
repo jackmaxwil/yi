@@ -213,9 +213,8 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     };
     let gear_rows = crate::chrome::gear_height(sidebar_width, app.kitty);
     let (sidebar, gear) = split_off_bottom(sidebar, gear_rows);
-    let files_open = app.state.files.is_some() && area.width.saturating_sub(sidebar_width) >= 60;
-    let files = crate::files::side(area, files_open);
-    let reserved = sidebar_width.saturating_add(files.width);
+    let files = crate::files::side_of(app, area, sidebar_width);
+    let reserved = sidebar_width.saturating_add(files.map_or(0, |rect| rect.width));
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
         width: area.width.saturating_sub(reserved),
@@ -322,7 +321,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         tabs: tab_hits,
         settings_targets: crate::settings::hits(app, &panes),
         gear: (gear.height > 0).then_some(gear),
-        files: (files.width > 0).then_some(files),
+        files,
         header_buttons: header_buttons(header, taken),
         ..Hits::default()
     });

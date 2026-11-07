@@ -820,37 +820,12 @@ impl App {
         self.dirty = true;
     }
 
-    /// Panels have the keys while a drag is up (any key cancels it) and while the tree is focused.
     /// Keys while the inline search is up. True when it took the key.
     pub(super) fn search_key(
         &mut self,
         outbound: &crate::client::Outbound,
         key: ratatui::crossterm::event::KeyEvent,
     ) -> bool {
-        if self.state.side.query.is_some()
-            && matches!(
-                key.code,
-                ratatui::crossterm::event::KeyCode::Up | ratatui::crossterm::event::KeyCode::Down
-            )
-            && key
-                .modifiers
-                .contains(ratatui::crossterm::event::KeyModifiers::ALT)
-            && key
-                .modifiers
-                .contains(ratatui::crossterm::event::KeyModifiers::SHIFT)
-        {
-            if self.shift_project(if key.code == ratatui::crossterm::event::KeyCode::Down {
-                1
-            } else {
-                -1
-            }) {
-                self.save_order(outbound);
-            }
-            self.state.side.scroll = None;
-            self.state.settle_visible();
-            self.dirty = true;
-            return true;
-        }
         use ratatui::crossterm::event::KeyCode;
         let Some(query) = self.state.side.query.as_mut() else {
             return false;
@@ -879,7 +854,18 @@ impl App {
         self.state.snap.is_some() || self.state.side.query.is_some() || self.files_focused()
     }
 
+    /// Panels have the keys while a drag is up (any key cancels it), the search is up or the tree
+    /// is focused. A chord the keys table binds stays the table's reader while the search is up.
     pub(super) fn held_key(&mut self, outbound: &Outbound, key: KeyEvent) {
+        if self.state.side.query.is_some()
+            && let Some(action @ (Action::Shift(_) | Action::Snap(_))) = keys::direct(&key)
+        {
+            self.apply_action(outbound, action);
+            self.state.side.scroll = None;
+            self.state.settle_visible();
+            self.dirty = true;
+            return;
+        }
         if self.search_key(outbound, key) {
             return;
         }
