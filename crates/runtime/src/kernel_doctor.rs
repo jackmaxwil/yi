@@ -116,12 +116,10 @@ pub fn sandbox_listeners() -> String {
     if !cfg!(target_os = "macos") {
         return "no sandbox on this platform".to_owned();
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let cancelled: yi_tools::CancelFlag =
-        std::sync::Arc::new(move || std::time::Instant::now() >= deadline);
     let mut lsof = yi_tools::command("/usr/sbin/lsof");
     lsof.args(["-nP", "+c", "0", "-iTCP", "-sTCP:LISTEN"]);
-    match yi_tools::run_captured(lsof, None, &cancelled, 1 << 20) {
+    match yi_tools::run_captured_until(lsof, None, None, std::time::Duration::from_secs(2), 1 << 20)
+    {
         Ok(capture) if capture.cancelled || capture.truncated => {
             "listeners not listed: lsof was cut at 2 s or 1 MiB".to_owned()
         }

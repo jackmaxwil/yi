@@ -440,7 +440,8 @@ fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
     fs::write(dir.join("not-executable.txt"), "ignored")?;
 
-    let tools = discover_exec_tools(&dir);
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
     assert_eq!(tools.len(), 1);
     let tool = &tools[0];
     assert_eq!(tool.name(), "greet");
@@ -465,7 +466,8 @@ fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  printf '{\"name\":\"count\",\"description\":\"counts\",\"input_schema\":{\"type\":\"object\"},\"kind\":\"read\"}'\n  exit 0\nfi\nprintf '{\"files\": 3}'\n",
     )?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-    let tools = discover_exec_tools(&dir);
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(skipped.is_empty(), "{skipped:?}");
     let tool = tools.first().ok_or("no exec tool found")?;
     let mut context = ToolContext::new(dir.to_path_buf());
     assert_eq!(
@@ -477,6 +479,39 @@ fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
     assert_eq!(
         tool.execute(Map::new(), &context).value,
         Some(json!({"files": 3}))
+    );
+    Ok(())
+}
+
+/// One hanging schema probe cannot stall discovery or hide the healthy tools beside it.
+#[cfg(unix)]
+#[test]
+fn a_hung_exec_tool_is_skipped_and_the_others_load() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("exec-hung")?;
+    let hang = dir.join("hang");
+    fs::write(&hang, "#!/bin/sh\nsleep 30\n")?;
+    fs::set_permissions(&hang, fs::Permissions::from_mode(0o755))?;
+    let good = dir.join("good");
+    fs::write(
+        &good,
+        "#!/bin/sh\nprintf '{\"name\":\"good\",\"input_schema\":{\"type\":\"object\"}}'\n",
+    )?;
+    fs::set_permissions(&good, fs::Permissions::from_mode(0o755))?;
+    let started = std::time::Instant::now();
+    let (tools, skipped) = discover_exec_tools(&dir);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name(), "good");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].path, hang);
+    assert!(
+        skipped[0].reason.contains("timed out after 2s"),
+        "{skipped:?}"
     );
     Ok(())
 }
@@ -5351,5 +5386,24 @@ fn a_spill_past_the_read_limit_is_named_not_skipped() -> TestResult {
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn non_ascii_hashline_paths_and_rows_parse_without_byte_boundary_panics() -> TestResult {
+    use yi_tools::hashline::input::Patch;
+    use yi_tools::hashline::tokenizer::{tokenize_all, try_parse_header};
+
+    let header = try_parse_header("[crates/tui/src/cell-✱.rs#ABCD]").ok_or("Unicode header")?;
+    assert_eq!(header.path, "crates/tui/src/cell-✱.rs");
+    assert_eq!(tokenize_all("PUT 1.=1:\n+↳ done\n").len(), 2);
+    let source = include_str!("../../tui/src/cell.rs");
+    let row = source
+        .lines()
+        .find(|line| line.contains("alt-↓"))
+        .ok_or("the real TUI source lost its non-ASCII reply hint")?;
+    let patch = Patch::parse(&format!("[crates/tui/src/cell-✱.rs#ABCD]\n{row}\n"), None)
+        .map_err(|error| format!("Unicode patch refused: {error}"))?;
+    assert_eq!(patch.sections.len(), 1);
     Ok(())
 }
