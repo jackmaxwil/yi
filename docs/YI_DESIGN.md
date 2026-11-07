@@ -629,12 +629,24 @@ journey is `web_search_offline_citations_and_cost`.
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
 
 - Modes `Ask`, `Auto`, `Yolo`; default `permissions.mode`, else `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
-  fragment each. Order: catastrophic (every mode), configured deny, session rule or grant,
-  configured allow/ask, hold, mode. `Auto` allows reads, in-tree writes and provably safe
+  fragment each. Order: catastrophic (every mode), write scope (every mode), configured deny, session
+  rule or grant, configured allow/ask, hold, mode. `Auto` allows reads, in-tree writes and provably safe
   commands, contains the unproven, asks for destructive and egress segments. Commands are
   decided per segment; an unparseable command is its own input.
 - `git_dirs` reads `.git`, `gitdir:` and `commondir` with bounded reads, trusting a pointer only
   to a `HEAD`; catastrophic matching covers every spelling and reads through wrappers.
+- `yi ask --scope GLOB` (repeatable, relative to the working directory) keeps a command rule per glob,
+  never journaled, so a child inherits it and `--continue` opens unscoped. A call that writes inside
+  the tree must name only paths a glob names, itself or by a directory above it, else it is denied in
+  every mode, yolo too, naming scope and path. Judged: `write`, `edit` (`MV` destinations too),
+  `grep` with `apply`, and the unquoted redirects of a shell command. A relative redirect after a
+  `cd`, `pushd` or `popd` is refused, the shell's directory never interpreted; the word is assembled
+  as a shell assembles it, quotes and escapes folded into it, and read at command position. The same
+  `wraps` vocabulary as the other command checks reads past wrappers, keywords, flags, assignments
+  and numbers, never inside a longer word or in argument position. An absolute redirect target is
+  judged as written.
+  Not judged: what a program writes (`sed -i`, `tee`, `cp`, `cargo`, a kernel
+  cell), one in quotes or built by expansion, and paths outside the tree, which the sandbox bounds.
 - A contained failure is remembered by the path the sandbox denied, and a later write under its
   directory asks (in home, any mention); with no path, `refused_scopes` remembers the program and
   verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
@@ -1170,7 +1182,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | Verb | What |
 |---|---|
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask`. A lone word one edit from a verb (four or five letters; two edits from six) is refused with the verb and `yi ask <word>`, and a verb that reads no words (`version`, `rpc`, `acp`, `doctor`, `gc`, `serve`, `console`; `undo` reads only `list`) refuses trailing ones; `console` and `serve` refuse `--thinking`, `--system`, `--schema` and `--deadline` (a headless console drive reads `--deadline`), which never reach their sessions |
-| `ask`, `rpc`, `acp`, `serve` | One headless run (plain text puts a blank line between one turn's text and the next; `--json` prints each event as a JSON line, and `--no-deltas` leaves out the `message_update` ones); `--allow-write DIR` and `permissions.allowWrite` make a directory writable to contained commands and write tools, and each `permissions.allow` entry (`TOOL PATTERN`, a glob over the call) lets a matching call run unasked; a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
+| `ask`, `rpc`, `acp`, `serve` | One headless run (plain text puts a blank line between one turn's text and the next; `--json` prints each event as a JSON line, and `--no-deltas` leaves out the `message_update` ones); `--allow-write DIR` and `permissions.allowWrite` make a directory writable to contained commands and write tools, `--scope GLOB` (repeatable) confines the run's writes in the tree to what a glob names (§8), and each `permissions.allow` entry (`TOOL PATTERN`, a glob over the call) lets a matching call run unasked; a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog; `stats --by plan` counts every applied plan-engine op by kind and actor class from the sessions' `plan_op` entries and the plans directory's `ops.jsonl` journals, with totals for delegations, acceptances, `done_refused` and retries |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
@@ -1187,7 +1199,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `TOOL PATTERN`) or refused build; 3 an answer failing `--schema`; 4 a headless `ask` whose last tool
   call was refused with no one to ask: stderr names it, `--json` ends with `{"type": "denied", "tool",
   "args", "reason"}`, and the tool result already carried the `permissions.allow` entry that would run
-  that exact call. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
+  that exact call (a `--scope` refusal carries none: no rule lifts it). Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed strictly before dispatch and read again as each
   session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
@@ -1228,8 +1240,10 @@ an unknown method −32601, bad JSON −32700.
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, at most 512 entries and 8 MiB per frame; a root's
 last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
-`_yi/committed{entry}` (`AcpCommitted`: each user or assistant message as saved, so a client can act on a reply it
-watched stream), `_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
+`_yi/committed{entry, ancestors, ancestors_notice}` (`AcpCommitted`: each user or assistant message as saved, with
+the newest ordered active-main ancestry suffix since the prior commit cursor, bounded by the replay limits;
+a cut names kept/total and `session/resume` with `replayFrom: 0` as the full-branch call), `_yi/config`,
+`_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 
 `yi serve` is a supervisor on `~/.yi/daemon.sock` (mode 0600): one `yi acp --cwd <root>` worker

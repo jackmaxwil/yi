@@ -27,8 +27,21 @@ impl Shadow {
     }
 }
 
+impl crate::fetch::CheckpointShow for Shadow {
+    fn show(&self, tree: &str, path: &str) -> Result<String, String> {
+        let Some(checkpoints) = self.get() else {
+            return Err(crate::fetch::CHECKPOINT_MISSING.to_owned());
+        };
+        crate::fetch::CheckpointShow::show(checkpoints, tree, path)
+    }
+}
+
 /// Best-effort: without git there is no shadow gitdir and no capture, and nothing else changes.
-pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
+pub fn wire_turn_checkpoints(
+    session: &AgentSession,
+    home: &Path,
+    cwd: &Path,
+) -> Arc<dyn crate::fetch::CheckpointShow> {
     let shadow = Arc::new(Shadow {
         root: checkpoint_root(home),
         cwd: cwd.to_path_buf(),
@@ -50,7 +63,12 @@ pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
         Arc::clone(&shadow),
         CheckpointAt::TurnStart,
     ));
-    session.set_turn_end_hook(capture_hook(session, shadow, CheckpointAt::TurnEnd));
+    session.set_turn_end_hook(capture_hook(
+        session,
+        Arc::clone(&shadow),
+        CheckpointAt::TurnEnd,
+    ));
+    shadow
 }
 
 fn capture_hook(
