@@ -199,6 +199,8 @@ pub enum Decoded {
         lane: Option<String>,
     },
     Notice(String),
+    /// The root's worker was swapped for a new binary; the session resumes from the ledger.
+    Replaced,
     Committed(Box<Entry>),
     Other,
 }
@@ -345,6 +347,7 @@ pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
         "_yi/notice" => Ok(Decoded::Notice(
             string(fields.get("text")).ok_or(Malformed)?,
         )),
+        "_yi/worker_replaced" => Ok(Decoded::Replaced),
         "_yi/subagent_update" => {
             serde_json::from_value::<ChildUpdate>(Value::Object(fields.into_iter().collect()))
                 .map(|child| Decoded::Child(Box::new(child)))
@@ -369,6 +372,7 @@ pub fn writes_transcript(update: &AcpSessionUpdate) -> bool {
                 | "_yi/claims"
                 | "_yi/plan_progress"
                 | "_yi/name"
+                | "_yi/worker_replaced"
         ),
         _ => true,
     }
