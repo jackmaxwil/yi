@@ -69,6 +69,7 @@ mod kernel_tools;
 mod lanes;
 mod lease_e2e;
 mod levers;
+mod memory_inject;
 mod memory_journal;
 mod merge_tree;
 mod node;
