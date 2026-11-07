@@ -71,7 +71,7 @@ pub fn refusal_rows(display: &[u64], anchors: &[u64], lines: &[impl AsRef<str>])
     }
 }
 
-/// What the rows unlock: whole, the retry; cut at the cap, nothing; a clipped anchor, never.
+/// What the rows unlock: whole, the retry; cut at the cap, nothing; a clipped anchor, gaps only.
 pub fn refusal_footer(
     section_path: &str,
     tag: FileTag,
@@ -99,9 +99,9 @@ Read them whole with `read` on {section_path} with {}, then re-issue the edit wi
         .collect();
     if !wide.is_empty() {
         return format!(
-            "Line(s) {} exceed {SEEN_LINE_REVEAL_MAX_COLUMNS} columns, and a read or a refusal never anchors one: \
+            "Line(s) {} exceed {SEEN_LINE_REVEAL_MAX_COLUMNS} columns, and a replacement cannot anchor one: \
 change them with `grep` on this file (path={section_path}, `replace` shows the rewrite, `apply` then writes it), \
-or rewrite the file with `write` (`sed -n 'Np' {section_path}` shows a whole line).",
+or rewrite the file with `write` (`sed -n 'Np' {section_path}` shows a whole line). Inserts beside the line are allowed.",
             format_line_ranges(&wide)
         );
     }
@@ -623,7 +623,7 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
         }
         // Invariant: the prior seen set rebases onto the new tag (#473), and the rows the
         // model authored are seen though the reply never reprints them: both stay anchors.
-        let (mut seen, program) = snapshots
+        let (mut seen, carried_clipped, program) = snapshots
             .by_lines(&result.canonical_path, &result.before)
             .map_or_else(Default::default, |prior| {
                 let rebased = |lines: &mut dyn Iterator<Item = &u64>| -> Vec<u64> {
@@ -631,11 +631,13 @@ pub fn section_reply(result: &PatchSectionResult, snapshots: &mut SnapshotStore)
                 };
                 (
                     rebased(&mut prior.seen_lines.iter().flatten()),
+                    rebased(&mut prior.clipped_lines.iter()),
                     rebased(&mut prior.program_lines.iter()),
                 )
             });
         seen.extend(map.authored().iter().copied());
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
+        snapshots.record_clipped_lines(&result.canonical_path, result.file_hash, &carried_clipped);
         snapshots.record_program_lines(&result.canonical_path, result.file_hash, &program);
     }
     for warning in &result.warnings {
