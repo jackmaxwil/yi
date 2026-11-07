@@ -103,15 +103,17 @@ def status_line(meter, pr_total, day_total, what):
 
 
 def rows(comments):
-    """Every bot meta line in `comments`, as fields, with the comment's PR and time."""
+    """Every bot meta line in `comments`, as fields, with the comment's PR and time. A gate rerun row
+    counts whoever posted it: `just pr retry` writes its own ledger under the owner's forge login."""
     out = []
     for comment in comments:
-        if (comment.get("user") or {}).get("login") != BOT:
-            continue
+        bot = (comment.get("user") or {}).get("login") == BOT
         for line in (comment.get("body") or "").splitlines()[:3]:
             for marker in MARKERS:
                 if line.startswith(marker) and line.endswith(" -->"):
                     fields = dict(p.split("=", 1) for p in line[len(marker):-4].split() if "=" in p)
+                    if not bot and fields.get("verdict") != "rerun":
+                        continue
                     url = comment.get("pull_request_url") or comment.get("issue_url") or ""
                     out.append({**fields, "kind": marker[5:].split("-meta")[0], "at": comment.get("created_at", ""), "id": comment.get("id", 0),
                                 "pr": fields.get("pr") or url.rsplit("/", 1)[-1]})

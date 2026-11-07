@@ -256,7 +256,7 @@ def check_task_discovery():
     assert len(calls) == 2, calls
 
 
-def check_retry_flow():
+def check_retry_flow(login="jack"):
     number = 7
     sha = "a" * 40
     pr = {"number": number, "head": {"sha": sha}}
@@ -273,7 +273,7 @@ def check_retry_flow():
             return notes if "page=1" in path else []
         assert method == "POST", (method, path)
         posts.append(payload)
-        notes.append({"id": len(posts), "body": payload["body"], "user": {"login": bot_meter.BOT}})
+        notes.append({"id": len(posts), "body": payload["body"], "user": {"login": login}})
         return {"id": len(posts)}
 
     def run(run_id, **kwargs):
@@ -300,7 +300,7 @@ def check_retry_flow():
             codes = [cmd_retry(argparse.Namespace(number=str(number))) for _ in range(3)]
             logs[6] = CODE_LOGS[0][1]
             code = cmd_retry(argparse.Namespace(number=str(number)))
-        assert codes == [0, 0, 1], codes
+        assert codes == [0, 0, 1], f"the {MAX_RETRIES}-per-head cap read {codes} as {login}'s own rows"
         assert len(posts) == 2 and runs == [17842, 17842], (posts, runs)
         notes.clear()
         posts.clear()
@@ -330,15 +330,16 @@ def check_ledger():
     sha = "a" * 40
     page1 = [{"id": n, "body": "other"} for n in range(50)]
     row = f"<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=7 kind=gate from={sha[:12]} verdict=rerun -->"
-    old = [{"id": n, "body": row, "user": {"login": bot_meter.BOT}} for n in (50, 51)]
+    old = [{"id": n, "body": row, "user": {"login": login}}
+           for n, login in ((50, bot_meter.BOT), (51, bot_meter.BOT), (52, "jack"))]
 
     def api(method, path, payload=None):
         return [*page1, *old] if "page=1" in path else []
 
     with mock.patch.object(forge_pr, "fgj_api", api):
         notes = pr_review.comments("o/r", 7)
-    assert len(notes) == 52, len(notes)
-    assert len(pr_autofix.head_rows(notes, sha, "rerun")) == 2, notes
+    assert len(notes) == 53, len(notes)
+    assert len(pr_autofix.head_rows(notes, sha, "rerun")) == 3, notes
 
 
 
@@ -458,6 +459,7 @@ def selfcheck():
         if not any(name in reason for reason in classifier_cases(name)):
             bad.append(f"signature {name} disabled and every classifier case still passes")
     for name, check in (("task discovery", check_task_discovery), ("retry flow", check_retry_flow),
+                        ("retry flow under the bot's login", lambda: check_retry_flow(bot_meter.BOT)),
                         ("ledger", check_ledger), ("run id", check_workflow_run_id),
                         ("rerun command", check_rerun_command), ("log command", check_log_command),
                         ("retry verb", check_retry_verb), ("status hint", check_status_hint),
