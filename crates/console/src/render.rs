@@ -17,7 +17,7 @@ use yi_tui::diffview::{self, DiffBudget};
 use crate::app::App;
 use crate::header::{header_buttons, render_header, tab_hits};
 use crate::keys;
-use crate::layout::{PaneId, SplitBorder, pane_margin};
+use crate::layout::{PaneId, SplitBorder, pane_margin, split_off_bottom, split_off_top};
 use crate::model::{Mode, Pane, PaneContent, SessionStatus, Zone};
 
 pub(crate) const NAME_WIDTH: usize = 20;
@@ -39,6 +39,7 @@ pub use crate::hit::Hit;
 #[derive(Default)]
 pub struct Hits {
     pub sidebar_width: u16,
+    pub sidebar_height: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
     /// (column, row, session) of every avatar cell on screen; the kitty pass places there.
     pub avatars: Vec<crate::avatar::Placement>,
@@ -53,6 +54,7 @@ pub struct Hits {
     pub overlays: Vec<Rect>,
     pub dismiss: Option<Rect>,
     pub gear: Option<Rect>,
+    pub files: Option<Rect>,
     pub hint_buttons: Vec<(Rect, keys::Action)>,
     pub header_buttons: Vec<(Rect, keys::Action)>,
 }
@@ -191,31 +193,6 @@ fn pane_hue(app: &App, id: PaneId, theme: &Theme) -> Color {
     })
 }
 
-fn split_off_bottom(area: Rect, height: u16) -> (Rect, Rect) {
-    let height = height.min(area.height);
-    let top = Rect {
-        height: area.height.saturating_sub(height),
-        ..area
-    };
-    let bottom = Rect {
-        y: area.y.saturating_add(top.height),
-        height,
-        ..area
-    };
-    (top, bottom)
-}
-
-fn split_off_top(area: Rect, height: u16) -> (Rect, Rect) {
-    let height = height.min(area.height);
-    let top = Rect { height, ..area };
-    let rest = Rect {
-        y: area.y.saturating_add(height),
-        height: area.height.saturating_sub(height),
-        ..area
-    };
-    (top, rest)
-}
-
 pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     let sidebar_width = if area.width >= 50 {
         crate::sidebar::width(app)
@@ -228,9 +205,11 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     };
     let gear_rows = crate::chrome::gear_height(sidebar_width, app.kitty);
     let (sidebar, gear) = split_off_bottom(sidebar, gear_rows);
+    let files = crate::files::side(area, app.state.files.is_some());
+    let reserved = sidebar_width.saturating_add(files.width);
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
-        width: area.width.saturating_sub(sidebar_width),
+        width: area.width.saturating_sub(reserved),
         ..area
     };
     let (transcript_area, banner) = split_off_bottom(main, 1);
@@ -262,7 +241,6 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     }
 
     let panes_zone = app.state.zone == Zone::Panes;
-    let close_hint = keys::chord_for(keys::Action::ToggleNotebook, app.cmd_hints);
     let mut panes = Vec::new();
     let mut editor_cursor = None;
     let notes = session_notes(app);
@@ -283,7 +261,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
                     cmd: app.cmd_hints,
                     kitty: app.kitty,
                 };
-                pane_view_content(pane, &view, inner, theme, close_hint)
+                pane_view_content(pane, &view, inner, theme)
             }
             None => ("empty".to_owned(), Vec::new(), None),
         };
@@ -325,6 +303,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         .map_or(0, |(rect, _)| rect.right().saturating_sub(header.x));
     app.hits = Some(Hits {
         sidebar_width,
+        sidebar_height: sidebar.height,
         sidebar_rows,
         avatars,
         controls,
@@ -333,9 +312,12 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         tabs: tab_hits,
         settings_targets: crate::settings::hits(app, &panes),
         gear: (gear.height > 0).then_some(gear),
+        files: (files.width > 0).then_some(files),
         header_buttons: header_buttons(header, taken),
         ..Hits::default()
     });
+    crate::editor_view::offer_tabs(app);
+    crate::panes::offer_review(app);
 
     ViewState {
         sidebar,
@@ -488,7 +470,6 @@ fn pane_view_content(
     view: &PaneData<'_>,
     inner: Rect,
     theme: &Theme,
-    close_hint: &str,
 ) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
     let (diffs, sessions) = (view.diffs, view.sessions);
     let (visible, width) = (usize::from(inner.height), usize::from(inner.width));
@@ -546,18 +527,25 @@ fn pane_view_content(
             session,
             scope,
             drawn,
+            ui,
         } => {
             let note = view.notes.get(session).map_or("", String::as_str);
             let diff = diffs.get(session);
-            let key = (
-                width,
-                *scope,
-                note.to_owned(),
-                diff.map_or(0, |diff| diff.rev),
-            );
-            let (title, all) = cached(drawn, key, || review_view(diff, *scope, note, width, theme));
-            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
-            (title.clone(), lines, scroll)
+            let room = visible / 3;
+            let rev = diff.map_or(0, |diff| diff.rev);
+            let key = (width, room, *scope, note.to_owned(), rev);
+            let review = cached(drawn, key, || {
+                crate::panes::review_parts(diff, *scope, note, (width, room), theme)
+            });
+            if let Some(row) = ui.jump.take().and_then(|file| review.heads.get(file)) {
+                pane.scroll_from_bottom = crate::panes::TOP.saturating_sub(*row);
+            }
+            let rows = visible.saturating_sub(review.head.len());
+            let (body, scroll) = windowed(&review.body, &mut pane.scroll_from_bottom, rows);
+            ui.hits = crate::panes::review_hits(review, inner);
+            let mut lines = review.head.clone();
+            lines.extend(body);
+            (review.title.clone(), lines, scroll)
         }
         PaneContent::Notebook {
             session,
@@ -572,7 +560,7 @@ fn pane_view_content(
                 let cells = session.as_ref().map_or(&[][..], |id| {
                     crate::model::notebook_cells(view.notebooks, id)
                 });
-                crate::panes::notebook_lines(cells, width, *full, theme, close_hint)
+                crate::panes::notebook_lines(cells, width, *full, theme)
             });
             let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
@@ -637,9 +625,11 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
             paint_chat_pane(app, pane, inner, frame.buffer_mut(), dim, framed, theme);
             continue;
         }
-        let body = Paragraph::new(pane.lines.clone());
-        let dim_style = Style::default().add_modifier(Modifier::DIM);
-        frame.render_widget(if dim { body.style(dim_style) } else { body }, inner);
+        frame.render_widget(Paragraph::new(pane.lines.clone()), inner);
+        if dim {
+            crate::chrome::soften(frame.buffer_mut(), inner, theme);
+        }
+        crate::start::notebook(app, frame.buffer_mut(), pane.id, inner, theme);
     }
     if view.framed {
         render_borders(app, frame, view, theme);
@@ -655,8 +645,9 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     {
         lift(frame.buffer_mut(), rect, theme);
     }
+    crate::files::draw(app, frame, theme);
+    crate::app::snap::overlay(app, frame.buffer_mut(), theme);
     let popup = match &app.state.mode {
-        Mode::Files(files) => Some(crate::files::render(files, frame, view.panes_area, theme)),
         Mode::Navigator { .. } => crate::palette::render_navigator(app, frame, view, theme),
         Mode::Menu(menu) => {
             let rects = crate::menu::rects(menu, frame.area());
@@ -741,7 +732,10 @@ fn paint_chat_pane(
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![
             tile,
-            Span::styled(format!(" {} ", status.glyph()), status_style(theme, status)),
+            Span::styled(
+                crate::chrome::title_mark(status),
+                status_style(theme, status),
+            ),
             Span::styled(
                 label,
                 Style::default().fg(view.hue).add_modifier(Modifier::BOLD),
@@ -758,18 +752,13 @@ fn paint_chat_pane(
     let goal = chat.port.goal();
     let mut scroll = pane.scroll_from_bottom;
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
+    let blank = chat.app.blank_above();
     pane.scroll_from_bottom = scroll;
     let runs = chat.app.run_chips();
     crate::hit::offer_runs(app, view.id, runs);
+    crate::start::chat(app, buffer, inner, view.id, blank, theme);
     if dim {
-        for y in inner.top()..inner.bottom() {
-            for x in inner.left()..inner.right() {
-                if let Some(cell) = buffer.cell_mut((x, y)) {
-                    let style = cell.style().add_modifier(Modifier::DIM);
-                    cell.set_style(style);
-                }
-            }
-        }
+        crate::chrome::soften(buffer, inner, theme);
     }
 }
 
@@ -902,7 +891,7 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             .and_then(|s| app.state.sessions.get(s))
             .map(|row| row.status);
         let text = match status {
-            Some(status) => format!(" {} {} ", status.glyph(), pane.title),
+            Some(status) => format!("{}{} ", crate::chrome::title_mark(status), pane.title),
             None => format!(" {} ", pane.title),
         };
         let mut right = r.right().saturating_sub(1);

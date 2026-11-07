@@ -153,3 +153,29 @@ fn terminal_environments_share_graphics_support_but_not_chord_support() {
         );
     }
 }
+
+/// Dies when a panel-move chord decodes to the wrong zone, or when one Ghostty keeps (⌘⌥ arrows,
+/// which it binds to `goto_split`, and ⌘D/F/G) reaches the console as a move.
+#[test]
+fn the_panel_move_chords_decode_and_leave_ghosttys_own_alone() {
+    use yi_console::keys::Action;
+    use yi_console::layout::Snap;
+    let cmd_alt = KeyModifiers::SUPER | KeyModifiers::ALT;
+    let with_shift = cmd_alt | KeyModifiers::SHIFT;
+    let cases = [
+        (KeyCode::Left, with_shift, Some(Snap::Left)),
+        (KeyCode::Right, with_shift, Some(Snap::Right)),
+        (KeyCode::Up, with_shift, Some(Snap::Top)),
+        (KeyCode::Down, with_shift, Some(Snap::Bottom)),
+        (KeyCode::Char('d'), cmd_alt, Some(Snap::LeftThird)),
+        (KeyCode::Char('f'), cmd_alt, Some(Snap::MiddleThird)),
+        (KeyCode::Char('g'), cmd_alt, Some(Snap::RightThird)),
+        (KeyCode::Left, cmd_alt, None),
+        (KeyCode::Up, cmd_alt, None),
+        (KeyCode::Char('d'), KeyModifiers::SUPER, None),
+    ];
+    for (code, modifiers, want) in cases {
+        let got = direct(&KeyEvent::new(code, modifiers));
+        assert_eq!(got, want.map(Action::Snap), "{code:?} {modifiers:?}");
+    }
+}

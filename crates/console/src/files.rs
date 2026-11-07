@@ -1,5 +1,6 @@
 //! The Files button's tree: the workspace's files, folded by folder.
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
@@ -7,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use yi_tui::colors::Theme;
 use yi_tui::popup::Ignore;
 
@@ -35,6 +36,10 @@ pub struct Files {
     cursor: usize,
     scroll: usize,
     notice: Option<String>,
+    /// Keys go to the tree while true; a press outside it hands them back to the panes.
+    pub focused: bool,
+    /// The row under the pointer, so a mouse user sees what a click will take.
+    hover: Option<usize>,
 }
 
 /// A hidden path the tree never shows: git's own object store would drown everything else.
@@ -53,7 +58,8 @@ struct Walk {
     cap: usize,
 }
 
-/// Paths in the order a folded tree draws them: each folder's entries sorted, its subtree after.
+/// Paths in the order a folded tree draws them: each folder's folders then files, each by name,
+/// its subtree right after it.
 fn descend(root: &Path, rel: &Path, depth: usize, ignore: &mut Ignore, walk: &mut Walk) {
     if depth > MAX_DEPTH || walk.stopped {
         return;
@@ -69,7 +75,7 @@ fn descend(root: &Path, rel: &Path, depth: usize, ignore: &mut Ignore, walk: &mu
             Some((entry.file_name(), meta.is_dir()))
         })
         .collect();
-    names.sort();
+    names.sort_by(|a, b| (!a.1).cmp(&!b.1).then_with(|| a.0.cmp(&b.0)));
     ignore.push_dir(&dir);
     for (name, is_dir) in names {
         walk.visited = walk.visited.saturating_add(1);
@@ -172,6 +178,8 @@ impl Files {
             cursor: 0,
             scroll: 0,
             notice,
+            focused: true,
+            hover: None,
         }
     }
 
@@ -305,7 +313,7 @@ impl Files {
         };
     }
 
-    /// The node drawn at `row` of the tree's own rows, below the popup's border.
+    /// The node drawn at `row` of the tree's own rows, below the sidebar's border.
     fn node_at(&self, row: usize, rows: usize) -> Option<usize> {
         if row >= rows {
             return None;
@@ -315,83 +323,158 @@ impl Files {
             .nth(self.scroll.saturating_add(row))
     }
 
-    pub(crate) fn pointed(&self, popup: Rect, x: u16, y: u16, height: u16) -> Option<usize> {
-        let rows = tree_rows(self, height);
-        self.node_at(row_at(popup, x, y, rows)?, rows)
+    pub(crate) fn pointed(&self, side: Rect, x: u16, y: u16) -> Option<usize> {
+        let rows = tree_rows(self, side);
+        self.node_at(row_at(side, x, y, rows)?, rows)
+    }
+
+    /// A fresh walk that keeps which folders were open and the row the cursor was on.
+    pub(crate) fn refresh(&mut self) {
+        let was: HashMap<PathBuf, bool> = (self.nodes.iter())
+            .filter(|node| node.dir)
+            .map(|node| (node.path.clone(), node.open))
+            .collect();
+        let at = self.current().map(|node| node.path.clone());
+        let (root, focused) = (self.root.clone(), self.focused);
+        *self = Self::open(&root);
+        for node in &mut self.nodes {
+            node.open = was.get(&node.path).copied().unwrap_or(node.open);
+        }
+        self.cursor = at
+            .and_then(|path| self.nodes.iter().position(|node| node.path == path))
+            .unwrap_or(0);
+        self.focused = focused;
+    }
+
+    pub(crate) fn collapse_all(&mut self) {
+        self.nodes.iter_mut().for_each(|node| node.open = false);
+        (self.cursor, self.scroll) = (0, 0);
+    }
+
+    pub(crate) fn hover(&mut self, to: Option<usize>) -> bool {
+        std::mem::replace(&mut self.hover, to) != to
     }
 }
 
-fn popup(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(8).clamp(40, 64).min(area.width);
-    let height = area.height.saturating_sub(4).clamp(5, 30).min(area.height);
-    crate::palette::popup_in(area, width, height)
+/// The sidebar's rectangle on `area`'s right edge; empty when closed or where the panes would starve.
+pub(crate) fn side(area: Rect, open: bool) -> Rect {
+    let width = if open && area.width >= 60 {
+        (area.width / 4).clamp(24, 44)
+    } else {
+        0
+    };
+    Rect {
+        x: area.right().saturating_sub(width),
+        width,
+        ..area
+    }
 }
 
-/// The tree's own rows above the notice row, for a popup `height` cells tall.
-pub(crate) fn tree_rows(files: &Files, height: u16) -> usize {
-    usize::from(height.saturating_sub(2)).saturating_sub(usize::from(files.notice.is_some()))
+pub(crate) fn draw(app: &crate::app::App, frame: &mut Frame<'_>, theme: &Theme) {
+    let side = app.hits.as_ref().and_then(|hits| hits.files);
+    if let (Some(files), Some(side)) = (&app.state.files, side) {
+        render(files, frame, side, theme);
+    }
 }
 
-pub(crate) fn render(files: &Files, frame: &mut Frame<'_>, area: Rect, theme: &Theme) -> Rect {
-    let popup = popup(area);
-    frame.render_widget(Clear, popup);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(theme.muted_style())
-        .title(format!(
-            " Files · {} ",
-            crate::render::short_path(&files.root)
-        ))
-        .title_top(Line::from(crate::palette::DISMISS).right_aligned());
-    let rows = tree_rows(files, popup.height);
-    let width = usize::from(popup.width.saturating_sub(2));
-    let mut lines: Vec<Line<'static>> = Vec::new();
+/// Invariant: the notice wraps rather than clips, so a cap's name and value are never cut off.
+pub(crate) fn tree_rows(files: &Files, side: Rect) -> usize {
+    let width = usize::from(side.width.saturating_sub(1)).max(1);
+    let notice = files
+        .notice
+        .as_ref()
+        .map_or(0, |notice| notice.chars().count().div_ceil(width));
+    usize::from(side.height.saturating_sub(1)).saturating_sub(notice)
+}
+
+/// Header buttons ↻ ⊟ ✕, each a three-cell chip with a gap between and one cell in from the edge.
+const BUTTONS: [&str; 3] = [" ↻ ", " ⊟ ", " ✕ "];
+pub(crate) const BUTTONS_WIDTH: usize = 12;
+
+pub(crate) fn render(files: &Files, frame: &mut Frame<'_>, side: Rect, theme: &Theme) {
+    let width = usize::from(side.width.saturating_sub(1));
+    let bar = if files.focused {
+        Style::default().fg(theme.text)
+    } else {
+        theme.muted_style()
+    };
+    let leaf = Path::new(&files.root)
+        .file_name()
+        .map_or_else(
+            || files.root.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+        .to_uppercase();
+    let room = width.saturating_sub(" EXPLORER: ".len() + BUTTONS_WIDTH + 1);
+    let leaf = if leaf.chars().count() > room {
+        let head: String = leaf.chars().take(room.saturating_sub(1)).collect();
+        format!("{head}…")
+    } else {
+        leaf
+    };
+    let title = format!(" EXPLORER: {leaf}");
+    let gap = width.saturating_sub(title.chars().count() + BUTTONS_WIDTH);
+    let mut header = vec![
+        Span::styled(title, theme.muted_style().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".repeat(gap)),
+    ];
+    let chip = Style::default().fg(theme.text).bg(theme.selection_bg());
+    for glyph in BUTTONS {
+        header.push(Span::styled(glyph, chip));
+        header.push(Span::raw(" "));
+    }
+    let mut lines: Vec<Line<'static>> = vec![Line::from(header)];
+    let rows = tree_rows(files, side);
     for (index, node) in walk(&files.nodes).skip(files.scroll).take(rows) {
-        let picked = index == files.cursor;
-        let indent = "  ".repeat(node.depth);
+        let tint = if index == files.cursor || files.hover == Some(index) {
+            Style::default().bg(theme.selection_bg())
+        } else {
+            Style::default()
+        };
+        let name_style = if index == files.cursor {
+            tint.fg(theme.text).add_modifier(Modifier::BOLD)
+        } else {
+            tint.fg(theme.text)
+        };
         let glyph = match (node.dir, node.open) {
             (true, true) => "▾ ",
             (true, false) => "▸ ",
             (false, _) => "  ",
         };
-        let base = if node.dir {
-            Style::default().fg(theme.muted)
-        } else {
-            Style::default().fg(theme.text)
-        };
-        let style = if picked {
-            base.bg(theme.selection_bg()).add_modifier(Modifier::BOLD)
-        } else {
-            base
-        };
-        let text = format!(" {indent}{glyph}{}", node.name);
-        let pad = width.saturating_sub(text.chars().count());
-        lines.push(Line::from(vec![
-            Span::styled(text, style),
-            Span::styled(" ".repeat(pad), style),
-        ]));
+        let used = 1 + 2 * node.depth + 2;
+        let name: String = node.name.chars().take(width.saturating_sub(used)).collect();
+        let pad = width.saturating_sub(used + name.chars().count());
+        let mut spans = vec![Span::styled(" ", tint)];
+        spans.extend((0..node.depth).map(|_| Span::styled("│ ", tint.fg(theme.dim))));
+        spans.push(Span::styled(glyph, tint.fg(theme.muted)));
+        spans.push(Span::styled(name, name_style));
+        spans.push(Span::styled(" ".repeat(pad), tint));
+        lines.push(Line::from(spans));
     }
     if files.nodes.is_empty() {
         lines.push(Line::styled(
-            "  nothing to list — r reloads",
+            " nothing to list · r reloads",
             theme.dim_style(),
         ));
     }
     if let Some(notice) = &files.notice {
-        lines.truncate(rows);
-        lines.push(Line::styled(
-            notice.clone(),
-            Style::default().fg(theme.warning),
-        ));
+        lines.truncate(rows.saturating_add(1));
+        let chars: Vec<char> = notice.chars().collect();
+        for chunk in chars.chunks(width.max(1)) {
+            lines.push(Line::styled(
+                chunk.iter().collect::<String>(),
+                Style::default().fg(theme.warning),
+            ));
+        }
     }
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
-    popup
+    let block = Block::new().borders(Borders::LEFT).border_style(bar);
+    frame.render_widget(Paragraph::new(lines).block(block), side);
 }
 
 /// Invariant: a drawn row is the node under it, so a click and the frame agree.
-fn row_at(popup: Rect, x: u16, y: u16, rows: usize) -> Option<usize> {
-    let inside = popup.contains(Position::new(x, y));
-    let row = y.checked_sub(popup.y.saturating_add(1)).map(usize::from)?;
+fn row_at(side: Rect, x: u16, y: u16, rows: usize) -> Option<usize> {
+    let inside = side.contains(Position::new(x, y));
+    let row = y.checked_sub(side.y.saturating_add(1)).map(usize::from)?;
     (inside && row < rows).then_some(row)
 }
 
@@ -411,6 +494,8 @@ mod tests {
             cursor: 0,
             scroll: 0,
             notice: None,
+            focused: true,
+            hover: None,
         }
     }
 
@@ -672,5 +757,54 @@ mod tests {
         assert!(leaf, "the linked folder's subtree is missing the tree");
         std::fs::remove_dir_all(&root)?;
         Ok(())
+    }
+
+    #[test]
+    fn a_folders_entries_list_its_folders_before_its_files() -> std::io::Result<()> {
+        let root = scratch("order")?;
+        std::fs::create_dir_all(root.join("zeta"))?;
+        std::fs::write(root.join("zeta/inner.rs"), "")?;
+        std::fs::write(root.join("alpha.rs"), "")?;
+        std::fs::write(root.join(".hidden"), "")?;
+        let files = Files::opened(&root.display().to_string(), 100);
+        let names: Vec<&str> = files.nodes.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["zeta", "inner.rs", ".hidden", "alpha.rs"],
+            "a folder sorted among the files by name"
+        );
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_refresh_lists_a_new_file_and_keeps_what_the_user_unfolded() -> std::io::Result<()> {
+        let root = scratch("refresh")?;
+        std::fs::create_dir_all(root.join("a/b"))?;
+        std::fs::write(root.join("a/b/y.rs"), "")?;
+        let mut files = Files::opened(&root.display().to_string(), 100);
+        files.cursor = 1;
+        files.expand();
+        std::fs::write(root.join("a/new.rs"), "")?;
+        files.refresh();
+        let shown: Vec<&str> = walk(&files.nodes)
+            .map(|(_, node)| node.name.as_str())
+            .collect();
+        assert_eq!(shown, ["a", "b", "y.rs", "new.rs"], "{shown:?}");
+        assert_eq!(files.current().map(|node| node.name.as_str()), Some("b"));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn collapse_all_folds_every_folder_and_returns_to_the_top() {
+        let mut files = tree(&["a/x.rs", "a/b/y.rs", "top.rs"]);
+        files.cursor = 3;
+        files.collapse_all();
+        let shown: Vec<&str> = walk(&files.nodes)
+            .map(|(_, node)| node.name.as_str())
+            .collect();
+        assert_eq!(shown, ["a", "top.rs"]);
+        assert_eq!(files.cursor, 0);
     }
 }

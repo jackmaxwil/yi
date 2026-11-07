@@ -27,6 +27,7 @@ pub mod render;
 pub mod select;
 pub mod settings;
 pub mod sidebar;
+mod start;
 mod title;
 
 use std::io::Stdout;
@@ -382,6 +383,7 @@ fn run_interactive(
             scheduler.request();
         }
         let mut out = std::io::stdout();
+        app.flush_osc(&mut out);
         if step_frame(
             app,
             terminal,
@@ -412,10 +414,7 @@ fn step_frame<B: Backend>(
         let start = Instant::now();
         present(app, terminal, theme, orb_owners, out)?;
         set_window_title(app);
-        for sequence in app.osc_out.drain(..) {
-            let _ = out.write_all(sequence.as_bytes());
-            let _ = out.flush();
-        }
+        app.flush_osc(out);
         scheduler.mark_drawn(start, Instant::now());
     } else if app.kitty {
         let _ = yi_tui::term::framed(out, |out| {

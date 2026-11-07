@@ -50,7 +50,7 @@ impl App {
             Target::Message { pane, .. } => self.state.panes.get(pane).is_some_and(|pane| {
                 matches!(&pane.content, PaneContent::Session { chat: Some(chat), .. } if chat.app.is_running())
             }),
-            Target::Pane(_) | Target::Session(_) => false,
+            Target::Pane(_) | Target::Session(_) | Target::NewSession(_) => false,
         };
         let pinned = match &target {
             Target::Session(index) => self
@@ -59,7 +59,7 @@ impl App {
                 .get(*index)
                 .and_then(|id| self.state.sessions.get(id))
                 .is_some_and(|row| row.pinned.is_some()),
-            Target::Message { .. } | Target::Pane(_) => false,
+            Target::Message { .. } | Target::Pane(_) | Target::NewSession(_) => false,
         };
         let tab = self.state.tab();
         let facts = Facts {
@@ -72,6 +72,26 @@ impl App {
         };
         self.state.mode = Mode::Menu(Menu::new(target, at, &facts));
         self.dirty = true;
+    }
+
+    /// The New session row: with one project it starts there, with several it asks which.
+    pub(super) fn new_session_menu(&mut self, outbound: &Outbound, at: (u16, u16)) {
+        let roots: Vec<String> = self
+            .state
+            .groups()
+            .into_iter()
+            .filter_map(|group| group.root)
+            .collect();
+        match (roots.len(), self.state.focused_pane_id()) {
+            (0 | 1, Some(pane)) => {
+                let root = roots
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| self.state.root.clone());
+                self.new_session_into(outbound, pane, root);
+            }
+            _ => self.open_menu(Target::NewSession(roots), at),
+        }
     }
 
     pub(super) fn right_click(&mut self, x: u16, y: u16) {
@@ -214,7 +234,7 @@ impl App {
     fn run_verb(&mut self, outbound: &Outbound, target: Target, verb: Verb) {
         let pane = match &target {
             Target::Message { pane, .. } | Target::Pane(pane) => Some(*pane),
-            Target::Session(_) => None,
+            Target::Session(_) | Target::NewSession(_) => None,
         };
         let here = |pane| {
             self.state
@@ -266,6 +286,12 @@ impl App {
             (Target::Pane(pane), Verb::Act(action)) => {
                 self.focus_pane(pane);
                 self.apply_action(outbound, action);
+            }
+            (Target::NewSession(roots), Verb::NewIn(at)) => {
+                let root = roots.get(at).cloned();
+                if let (Some(root), Some(pane)) = (root, self.state.focused_pane_id()) {
+                    self.new_session_into(outbound, pane, root);
+                }
             }
             (Target::Session(index), Verb::Open) => {
                 self.state.selected = index;

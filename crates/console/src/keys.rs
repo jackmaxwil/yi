@@ -3,6 +3,8 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::layout::Snap;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     SplitRight,
@@ -42,6 +44,18 @@ pub enum Action {
     Menu,
     Settings,
     Pin,
+    /// Move the focused panel to a zone of the screen.
+    Snap(crate::layout::Snap),
+    /// ⌥⇧ with an arrow: the editor panel's other file, or the project's other place in the sidebar.
+    Shift(Shift),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shift {
+    FileBack,
+    FileForward,
+    ProjectUp,
+    ProjectDown,
 }
 
 /// The prefix key: ctrl+b, held as a one-shot armed state by the caller.
@@ -66,6 +80,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
             _ => None,
         };
     }
+    let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::Char('j' | 'J') if key.modifiers.contains(KeyModifiers::SHIFT) => {
             Some(Action::ToggleNotebook)
@@ -74,6 +89,10 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('s') => Some(Action::SplitDown),
         KeyCode::Char('x') => Some(Action::ClosePane),
         KeyCode::Char('z') => Some(Action::Zoom),
+        KeyCode::Left if shifted => Some(Action::Shift(Shift::FileBack)),
+        KeyCode::Right if shifted => Some(Action::Shift(Shift::FileForward)),
+        KeyCode::Up if shifted => Some(Action::Shift(Shift::ProjectUp)),
+        KeyCode::Down if shifted => Some(Action::Shift(Shift::ProjectDown)),
         KeyCode::Left => Some(Action::FocusLeft),
         KeyCode::Right => Some(Action::FocusRight),
         KeyCode::Up => Some(Action::FocusUp),
@@ -103,7 +122,29 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
     }
 }
 
+/// ⌘⌥⇧ with an arrow takes a half and ⌘⌥ with d, f or g a third, as Rectangle does with ⌃⌥. Ghostty
+/// keeps ⌘⌥ arrows (`goto_split`) and ⌘D/F/G, so the arrows add ⇧ and the letters add ⌥.
+fn snap_chord(key: &KeyEvent) -> Option<Snap> {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match (key.code, shift) {
+        (KeyCode::Left, true) => Some(Snap::Left),
+        (KeyCode::Right, true) => Some(Snap::Right),
+        (KeyCode::Up, true) => Some(Snap::Top),
+        (KeyCode::Down, true) => Some(Snap::Bottom),
+        (KeyCode::Char(c), false) => match c.to_ascii_lowercase() {
+            'd' => Some(Snap::LeftThird),
+            'f' => Some(Snap::MiddleThird),
+            'g' => Some(Snap::RightThird),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn super_chord(key: &KeyEvent) -> Option<Action> {
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        return snap_chord(key).map(Action::Snap);
+    }
     let KeyCode::Char(c) = key.code else {
         return None;
     };
@@ -197,7 +238,7 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 26] = [
+pub const CHORDS: [Chord; 30] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
     chord("jump to rail slot 1..9", "⌥1..9", "⌥1..9", "", None),
@@ -280,6 +321,16 @@ pub const CHORDS: [Chord; 26] = [
         Some(Action::Pin),
     ),
     chord("all keys, in settings", "⌥?", "⌘/", "", Some(Action::Keys)),
+    chord("move panel to a half", "⌘⌥⇧←→↑↓", "⌘⌥⇧←→↑↓", "", None),
+    chord(
+        "move panel to a third",
+        "⌘⌥D ⌘⌥F ⌘⌥G",
+        "⌘⌥D ⌘⌥F ⌘⌥G",
+        "",
+        None,
+    ),
+    chord("previous or next file tab", "⌥⇧←→", "⌥⇧←→", "", None),
+    chord("move a project up or down", "⌥⇧↑↓", "⌥⇧↑↓", "", None),
     chord(
         "chat: cycle normal · thinking · verbose",
         "ctrl+o",

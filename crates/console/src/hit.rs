@@ -18,6 +18,11 @@ pub enum Hit {
     Session(usize),
     /// A chat pane's run chip: the answer cell and the ordinal of the shell block it stands for.
     Run(PaneId, usize, usize),
+    /// An editor panel's tab, and its ✕: the panel and the tab's place in the strip.
+    EditorTab(PaneId, usize),
+    /// A scope chip or file row in a review pane's pinned header.
+    Review(PaneId, crate::panes::ReviewPick),
+    EditorClose(PaneId, usize),
 }
 
 /// Each run chip a chat pane drew this frame is a control the press and the hover walk.

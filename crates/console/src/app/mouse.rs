@@ -1,4 +1,4 @@
-use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::client::Outbound;
@@ -19,7 +19,33 @@ pub enum MouseKind {
     ScrollDown,
 }
 
+/// Columns one sideways wheel notch slides a file.
+const SIDEWAYS: isize = 6;
+
 impl App {
+    /// The editor under the pointer slides by `delta` columns, until its widest line ends at the
+    /// pane's right edge.
+    fn scroll_sideways(&mut self, x: u16, y: u16, delta: isize) {
+        let Some((pane, rect)) = self.hits.as_ref().and_then(|hits| {
+            let pane = hits.pane_at(x, y)?;
+            Some((pane, hits.panes.iter().find(|(id, _)| *id == pane)?.1))
+        }) else {
+            return;
+        };
+        let Some(crate::model::Pane {
+            content: PaneContent::Editor(editor),
+            ..
+        }) = self.state.panes.get_mut(&pane)
+        else {
+            return;
+        };
+        let inner = rect.inner(crate::layout::pane_margin(true, false));
+        let room = usize::from(inner.width).saturating_sub(editor.gutter());
+        let most = crate::editor_view::widest(editor).saturating_sub(room);
+        editor.scroll_left = editor.scroll_left.saturating_add_signed(delta).min(most);
+        self.dirty = true;
+    }
+
     /// A key or click while the title covers the screen only ends it: the hit map and the key
     /// handlers under the cover would otherwise act on a screen nobody can see.
     pub(super) fn skip_title(&mut self) -> bool {
@@ -34,6 +60,21 @@ impl App {
             if matches!(mouse.kind, MouseEventKind::Down(_)) {
                 self.skip_title();
             }
+            return;
+        }
+        let sideways = match mouse.kind {
+            MouseEventKind::ScrollLeft => Some(-SIDEWAYS),
+            MouseEventKind::ScrollRight => Some(SIDEWAYS),
+            MouseEventKind::ScrollUp if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(-SIDEWAYS)
+            }
+            MouseEventKind::ScrollDown if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(SIDEWAYS)
+            }
+            _ => None,
+        };
+        if let Some(delta) = sideways {
+            self.scroll_sideways(mouse.column, mouse.row, delta);
             return;
         }
         let kind = match mouse.kind {
@@ -77,6 +118,13 @@ impl App {
     }
 
     fn scroll_pane_under(&mut self, x: u16, y: u16, delta: isize) {
+        if self
+            .hits
+            .as_ref()
+            .is_some_and(|hits| x < hits.sidebar_width)
+        {
+            return self.scroll_sidebar(delta);
+        }
         let Some(pane_id) = self.hits.as_ref().and_then(|hits| hits.pane_at(x, y)) else {
             return;
         };
@@ -109,17 +157,23 @@ impl App {
         let PaneContent::Editor(editor) = &self.state.panes.get(&pane_id)?.content else {
             return None;
         };
-        let row = usize::from(y.checked_sub(inner.y)?).saturating_add(editor.scroll_top);
-        let col = usize::from(x.checked_sub(inner.x)?).checked_sub(editor.gutter())?;
+        let row = usize::from(
+            y.checked_sub(inner.y)?
+                .checked_sub(crate::editor_view::TAB_ROWS)?,
+        )
+        .saturating_add(editor.scroll_top);
+        let col = usize::from(x.checked_sub(inner.x)?)
+            .checked_sub(editor.gutter())?
+            .saturating_add(editor.scroll_left);
         let line = editor.text.lines().get(row).map_or("", String::as_str);
         Some((row, crate::editor_view::char_at(line, col)))
     }
 
-    fn closer_at(&self, x: u16, y: u16) -> Option<PaneId> {
+    pub(super) fn closer_at(&self, x: u16, y: u16) -> Option<PaneId> {
         self.hits.as_ref()?.closer_at(x, y).map(|(pane, _)| pane)
     }
 
-    fn press(&mut self, outbound: &Outbound, x: u16, y: u16) {
+    pub(super) fn press(&mut self, outbound: &Outbound, x: u16, y: u16) {
         // Any new click drops the last drag's highlight.
         if self.selection.take().is_some() {
             self.dirty = true;
@@ -150,6 +204,10 @@ impl App {
                 self.dirty = true;
                 return self.apply_action(outbound, Action::ClosePane);
             }
+            Some((_, crate::render::Hit::New(None))) => {
+                self.new_session_menu(outbound, (x, y));
+                return;
+            }
             Some((_, crate::render::Hit::New(root))) => {
                 let root = root.unwrap_or_else(|| self.state.root.clone());
                 if let Some(pane) = self.state.focused_pane_id() {
@@ -158,9 +216,16 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            Some((_, crate::render::Hit::Search)) => {
-                return self.apply_action(outbound, Action::Navigator);
+            Some((_, crate::render::Hit::EditorTab(pane, index))) => {
+                return self.show_tab(pane, index);
             }
+            Some((_, crate::render::Hit::EditorClose(pane, index))) => {
+                return self.close_tab(outbound, pane, index);
+            }
+            Some((_, crate::render::Hit::Review(pane, pick))) => {
+                return self.review_pick(pane, pick);
+            }
+            Some((_, crate::render::Hit::Search)) => return self.begin_search(),
             Some((_, crate::render::Hit::Run(pane, cell, ordinal))) => {
                 self.pending_close = None;
                 let looking = self.state.focused_pane_id();
@@ -232,7 +297,7 @@ impl App {
         }
     }
 
-    fn mark_focused_seen(&mut self, outbound: &Outbound) {
+    pub(super) fn mark_focused_seen(&mut self, outbound: &Outbound) {
         if let Some(session) = self.state.focused_session()
             && self
                 .state
@@ -262,9 +327,64 @@ impl App {
         true
     }
 
+    /// Incident: a pointer shape asked for by a mouse move waited in the queue for the next frame,
+    /// and a move that changes nothing on screen draws none, so it arrived about a second late.
+    pub fn flush_osc(&mut self, out: &mut impl std::io::Write) {
+        for sequence in self.osc_out.drain(..) {
+            let _ = out.write_all(sequence.as_bytes());
+        }
+        let _ = out.flush();
+    }
+
+    /// The shape the pointer takes over what is under it, as a CSS cursor name for OSC 22.
+    fn pointer_shape(&self, x: u16, y: u16) -> &'static str {
+        let Some(hits) = &self.hits else {
+            return "default";
+        };
+        let at = Position::new(x, y);
+        if self.state.snap.as_ref().is_some_and(|drag| drag.dragging()) {
+            return "grabbing";
+        }
+        if hits.titles.iter().any(|(_, rect)| rect.contains(at)) {
+            return "grab";
+        }
+        if let Some(border) = hits.split_at(x, y) {
+            return match border.direction {
+                ratatui::layout::Direction::Horizontal => "ew-resize",
+                ratatui::layout::Direction::Vertical => "ns-resize",
+            };
+        }
+        let on_tree = hits.files.is_some_and(|side| {
+            side.contains(at)
+                && (y == side.y
+                    || self
+                        .state
+                        .files
+                        .as_ref()
+                        .is_some_and(|files| files.pointed(side, x, y).is_some()))
+        });
+        if on_tree || hits.hover_at(x, y).is_some() || self.closer_at(x, y).is_some() {
+            return "pointer";
+        }
+        let on_editor = hits
+            .pane_at(x, y)
+            .and_then(|id| self.state.panes.get(&id))
+            .is_some_and(|pane| matches!(pane.content, PaneContent::Editor(_)));
+        if on_editor { "text" } else { "default" }
+    }
+
     /// Clicks and drags resolve against the last draw's hit table, so the
     /// mouse can never disagree with what was on screen.
     pub fn handle_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
+        self.dispatch_mouse(outbound, kind, x, y);
+        let shape = self.pointer_shape(x, y);
+        if shape != self.state.pointer {
+            self.state.pointer = shape;
+            self.osc_out.push(format!("\x1b]22;{shape}\x1b\\"));
+        }
+    }
+
+    fn dispatch_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
         match self.state.mode {
             Mode::Menu(_) => {
                 self.release_browser_presses();
@@ -275,11 +395,14 @@ impl App {
                 self.overlay_press(kind, x, y);
                 return;
             }
-            Mode::Files(_) => {
-                self.release_browser_presses();
-                return self.files_mouse(kind, x, y);
-            }
             Mode::Normal | Mode::Prefix => {}
+        }
+        if self.files_mouse(kind, x, y) {
+            self.release_browser_presses();
+            return;
+        }
+        if self.snap_mouse(outbound, kind, x, y) {
+            return;
         }
         if self.browser_mouse(kind, x, y) {
             return;

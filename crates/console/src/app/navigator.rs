@@ -124,7 +124,7 @@ impl App {
             return true;
         }
         if let Some(("e", path)) = query.split_once(' ') {
-            self.open_editor(&resolve(path.trim()), dir);
+            self.open_editor(&resolve(path.trim()), dir, false);
             return true;
         }
         let (kind, path) = match query.split_once(' ') {

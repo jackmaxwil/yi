@@ -1,39 +1,45 @@
 use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::{Position, Rect};
 
 use crate::files::{Files, tree_rows};
-use crate::model::Mode;
 
 use super::App;
 use super::MouseKind;
 
 impl App {
-    pub(super) fn open_files(&mut self) {
-        let root = self.session_dir();
-        self.state.mode = Mode::Files(Files::open(&root));
+    /// Closed opens and focuses the tree, open and unfocused takes its keys, open and focused closes.
+    pub(super) fn toggle_files(&mut self) {
+        match &mut self.state.files {
+            Some(files) if files.focused => self.state.files = None,
+            Some(files) => files.focused = true,
+            None => {
+                let root = self.session_dir();
+                self.state.files = Some(Files::open(&root));
+            }
+        }
         self.dirty = true;
     }
 
-    fn overlay_height(&self) -> u16 {
+    pub(super) fn files_focused(&self) -> bool {
+        self.state.files.as_ref().is_some_and(|files| files.focused)
+    }
+
+    fn files_rect(&self) -> Rect {
         self.hits
             .as_ref()
-            .and_then(|hits| hits.overlays.first())
-            .map_or(20, |rect| rect.height)
+            .and_then(|hits| hits.files)
+            .unwrap_or(Rect::new(0, 0, 0, 20))
     }
 
-    fn close_files(&mut self) {
-        self.state.mode = Mode::Normal;
-        self.dirty = true;
-    }
-
-    /// A folder row folds; a file hands its path to the editor and closes the tree.
+    /// A folder row folds; a file opens in a panel beside the panes and the tree stays up.
     fn files_activate(&mut self) {
-        let height = self.overlay_height();
+        let side = self.files_rect();
         let mut opening: Option<(PathBuf, String)> = None;
-        if let Mode::Files(files) = &mut self.state.mode {
+        if let Some(files) = &mut self.state.files {
             if files.toggle() {
-                let rows = tree_rows(files, height);
+                let rows = tree_rows(files, side);
                 files.scrolled(rows);
                 self.dirty = true;
                 return;
@@ -49,9 +55,11 @@ impl App {
             self.note("[cannot open this file: its name is not valid UTF-8]");
             return;
         };
-        self.state.mode = Mode::Normal;
+        if let Some(files) = &mut self.state.files {
+            files.focused = false;
+        }
         self.state.focus_panes();
-        self.open_editor(&path, workdir);
+        self.open_editor(&path, workdir, true);
     }
 
     pub(super) fn files_key(&mut self, key: KeyEvent) {
@@ -59,13 +67,17 @@ impl App {
             self.files_activate();
             return;
         }
-        let height = self.overlay_height();
-        let Mode::Files(files) = &mut self.state.mode else {
+        let side = self.files_rect();
+        let Some(files) = &mut self.state.files else {
             return;
         };
-        let rows = tree_rows(files, height);
+        let rows = tree_rows(files, side);
         match key.code {
-            KeyCode::Esc => return self.close_files(),
+            KeyCode::Esc => {
+                self.state.files = None;
+                self.dirty = true;
+                return;
+            }
             KeyCode::Up => files.step(false),
             KeyCode::Down => files.step(true),
             KeyCode::Left => files.collapse(),
@@ -74,54 +86,57 @@ impl App {
             KeyCode::PageDown => files.page(rows, true),
             KeyCode::Home => files.edge(false),
             KeyCode::End => files.edge(true),
-            KeyCode::Char('r') => {
-                let root = files.root().to_owned();
-                *files = Files::open(&root);
-            }
+            KeyCode::Char('r') => files.refresh(),
             _ => {}
         }
         files.scrolled(rows);
         self.dirty = true;
     }
 
-    pub(super) fn files_mouse(&mut self, kind: MouseKind, x: u16, y: u16) {
-        if self.overlay_press(kind, x, y) {
-            return;
+    /// True when the pointer is over the sidebar and it took the event; a press anywhere else
+    /// only hands the keys back to the panes and goes on to whatever it landed on.
+    pub(super) fn files_mouse(&mut self, kind: MouseKind, x: u16, y: u16) -> bool {
+        let Some(side) = self.hits.as_ref().and_then(|hits| hits.files) else {
+            return false;
+        };
+        let Some(files) = &mut self.state.files else {
+            return false;
+        };
+        if !side.contains(Position::new(x, y)) {
+            let press = matches!(kind, MouseKind::Down | MouseKind::RightDown);
+            self.dirty |= files.hover(None) || (press && std::mem::take(&mut files.focused));
+            return false;
         }
-        let Some(popup) = self
-            .hits
-            .as_ref()
-            .and_then(|hits| hits.overlays.first().copied())
-        else {
-            return;
-        };
-        let height = self.overlay_height();
-        let clicked = match &self.state.mode {
-            Mode::Files(files) if kind == MouseKind::Down => files.pointed(popup, x, y, height),
-            Mode::Normal
-            | Mode::Prefix
-            | Mode::Navigator { .. }
-            | Mode::Files(_)
-            | Mode::Menu(_) => None,
-        };
         match kind {
-            MouseKind::ScrollUp | MouseKind::ScrollDown => {
-                let down = kind == MouseKind::ScrollDown;
-                if let Mode::Files(files) = &mut self.state.mode {
-                    let rows = tree_rows(files, height);
-                    files.wheel(down, rows);
-                }
-                self.dirty = true;
-            }
             MouseKind::Down => {
-                let Some(index) = clicked else { return };
-                if let Mode::Files(files) = &mut self.state.mode {
-                    files.select(index);
+                if y == side.y {
+                    match side.right().saturating_sub(x) {
+                        10..=12 => files.refresh(),
+                        6..=8 => files.collapse_all(),
+                        2..=4 => self.state.files = None,
+                        _ => {}
+                    }
+                    self.dirty = true;
+                    return true;
                 }
-                self.dirty = true;
-                self.files_activate();
+                files.focused = true;
+                if let Some(index) = files.pointed(side, x, y) {
+                    files.select(index);
+                    self.files_activate();
+                }
             }
-            MouseKind::Moved | MouseKind::Up | MouseKind::Drag | MouseKind::RightDown => {}
+            MouseKind::ScrollUp | MouseKind::ScrollDown => {
+                let rows = tree_rows(files, side);
+                files.wheel(kind == MouseKind::ScrollDown, rows);
+            }
+            MouseKind::Moved => {
+                let over = files.pointed(side, x, y);
+                self.dirty |= files.hover(over);
+                return true;
+            }
+            MouseKind::Up | MouseKind::Drag | MouseKind::RightDown => {}
         }
+        self.dirty = true;
+        true
     }
 }

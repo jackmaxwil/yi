@@ -31,7 +31,9 @@ impl App {
             return;
         }
         if let Some(pane) = self.state.focused_pane_mut() {
-            pane.content = PaneContent::Browser(Box::new(BrowserPane::new(url)));
+            pane.content = PaneContent::Browser(Box::new(BrowserPane::new(
+                url.or_else(|| Some(crate::browser::HOME_URL.to_owned())),
+            )));
         }
         self.state.focus_panes();
     }

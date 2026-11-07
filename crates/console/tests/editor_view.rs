@@ -27,6 +27,7 @@ fn commented_file(rows: usize) -> Editor {
         mtime: None,
         stale: false,
         scroll_top: 0,
+        scroll_left: 0,
         primed: None,
         last_cursor: (0, 0),
         lang: Some("rs".to_owned()),
@@ -283,5 +284,60 @@ fn find_wraps_to_a_match_earlier_on_the_cursors_line() -> TestResult {
     assert_eq!(editor(&app).map(|e| e.text.cursor()), Some((0, 4)));
     assert_eq!(app.state.banner, None);
     outbound.shutdown();
+    Ok(())
+}
+
+/// Dies when a sideways wheel notch leaves a long line cut at the pane's edge, when the slide goes
+/// past the widest line, or when sliding back does not return to its start.
+#[test]
+fn a_sideways_wheel_slides_a_long_line_and_stops_at_its_end() -> TestResult {
+    use ratatui::crossterm::event::{Event, MouseEvent, MouseEventKind};
+    let (mut app, outbound) = console();
+    let dir = std::env::temp_dir().join(format!("yi-sideways-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("wide.txt");
+    std::fs::write(&path, format!("HEAD{}TAIL\nshort\n", ".".repeat(150)))?;
+    palette(&mut app, &outbound, &format!("e {}", path.display()));
+    let mut terminal = Terminal::new(TestBackend::new(60, 20))?;
+    draw(&mut app, &mut terminal)?;
+    let (y, at, row) = find_row(&terminal, "HEAD").ok_or("no long row")?;
+    assert!(!row.contains("TAIL"), "the line was drawn past the pane");
+    let notch = |app: &mut yi_console::app::App, kind| {
+        let event = MouseEvent {
+            kind,
+            column: at + 8,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_event(&outbound, Event::Mouse(event));
+    };
+    notch(&mut app, MouseEventKind::ScrollRight);
+    draw(&mut app, &mut terminal)?;
+    let (_, _, slid) = find_row(&terminal, "......").ok_or("the line vanished")?;
+    assert!(
+        !slid.contains("HEAD"),
+        "the start of the line is still drawn: {slid:?}"
+    );
+    for _ in 0..100 {
+        notch(&mut app, MouseEventKind::ScrollRight);
+    }
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        find_row(&terminal, "TAIL").is_some(),
+        "the end of the line is out of reach"
+    );
+    assert!(
+        find_row(&terminal, "short").is_none(),
+        "a shorter line still shows at the far slide"
+    );
+    for _ in 0..100 {
+        notch(&mut app, MouseEventKind::ScrollLeft);
+    }
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        find_row(&terminal, "HEAD").is_some(),
+        "the slide back stopped short"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

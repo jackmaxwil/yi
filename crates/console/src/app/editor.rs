@@ -5,7 +5,10 @@ use std::time::{Instant, SystemTime};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use tui_textarea::{CursorMove, TextArea};
 
+use crate::client::Outbound;
+use crate::editor_view::Tabs;
 use crate::keys::Action;
+use crate::layout::PaneId;
 use crate::model::{Editor, PaneContent};
 
 use super::App;
@@ -49,6 +52,7 @@ pub(super) fn load(path: &str, workdir: String) -> Result<Editor, String> {
         mtime: mtime_of(path),
         stale: false,
         scroll_top: 0,
+        scroll_left: 0,
         primed: None,
         last_cursor: (0, 0),
         lang: Path::new(path)
@@ -200,17 +204,108 @@ impl Editor {
 }
 
 impl App {
-    pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
-        match load(path, workdir) {
-            Ok(editor) => {
+    /// The editor panel a file joins as a tab: the focused one, and for the Files tree (`beside`)
+    /// else the first in the layout; `None` when there is none.
+    fn editor_group(&mut self, beside: bool) -> Option<PaneId> {
+        let tab = self.state.tabs.get_mut(self.state.active_tab)?;
+        let is_editor = |id: &PaneId| {
+            matches!(
+                self.state.panes.get(id).map(|pane| &pane.content),
+                Some(PaneContent::Editor(_))
+            )
+        };
+        let focused = tab.layout.focused();
+        let found = if is_editor(&focused) {
+            Some(focused)
+        } else if beside {
+            tab.layout.pane_ids().into_iter().find(is_editor)
+        } else {
+            None
+        };
+        if let Some(id) = found {
+            tab.layout.focus_pane(id);
+            tab.zoomed = false;
+        }
+        found
+    }
+
+    /// A file opens as a tab that stays until it is closed: in the focused editor panel, else in the
+    /// first one the Files tree finds, else in the focused pane or a new split beside it.
+    pub(super) fn open_editor(&mut self, path: &str, workdir: String, beside: bool) {
+        let file = match load(path, workdir) {
+            Ok(file) => file,
+            Err(error) => {
+                self.dirty = true;
+                return self.note(&error);
+            }
+        };
+        match self.editor_group(beside) {
+            Some(id) => {
+                if let Some(PaneContent::Editor(tabs)) =
+                    self.state.panes.get_mut(&id).map(|pane| &mut pane.content)
+                {
+                    tabs.open(file);
+                }
+            }
+            None => {
+                if beside {
+                    self.state
+                        .split_focused(ratatui::layout::Direction::Horizontal);
+                }
                 if let Some(pane) = self.state.focused_pane_mut() {
-                    pane.content = PaneContent::Editor(editor);
+                    pane.content = PaneContent::Editor(Box::new(Tabs::new(file)));
                     pane.scroll_from_bottom = 0;
                 }
             }
-            Err(error) => self.note(&error),
         }
         self.dirty = true;
+    }
+
+    pub(super) fn tabs_of(&mut self, pane: PaneId) -> Option<&mut Tabs> {
+        match &mut self.state.panes.get_mut(&pane)?.content {
+            PaneContent::Editor(tabs) => Some(tabs),
+            _ => None,
+        }
+    }
+
+    pub(super) fn show_tab(&mut self, pane: PaneId, index: usize) {
+        self.focus_pane(pane);
+        if let Some(tabs) = self.tabs_of(pane) {
+            tabs.show(index);
+        }
+        self.dirty = true;
+    }
+
+    /// A tab goes; the last one of a panel takes the panel with it.
+    pub(super) fn close_tab(&mut self, outbound: &Outbound, pane: PaneId, index: usize) {
+        self.focus_pane(pane);
+        if self
+            .tabs_of(pane)
+            .and_then(|tabs| tabs.take(index))
+            .is_none()
+        {
+            self.apply_action(outbound, Action::ClosePane);
+        }
+        self.dirty = true;
+    }
+
+    pub(super) fn file_tab(&mut self, delta: isize) {
+        if let Some(PaneContent::Editor(tabs)) =
+            self.state.focused_pane_mut().map(|pane| &mut pane.content)
+        {
+            tabs.step(delta);
+        }
+    }
+
+    /// ⌥x on an editor with other tabs closes the showing tab; the pane goes with the last one.
+    pub(super) fn close_tab_or_pane(&mut self) -> Option<crate::model::Pane> {
+        if let Some(PaneContent::Editor(tabs)) =
+            self.state.focused_pane_mut().map(|pane| &mut pane.content)
+            && tabs.take(tabs.shown_index()).is_some()
+        {
+            return Some(crate::model::Pane::empty_session());
+        }
+        self.state.close_focused_pane()
     }
 
     pub(super) fn editor_mut(&mut self) -> Option<&mut Editor> {
@@ -301,11 +396,14 @@ impl App {
     pub(super) fn editors_touched(&mut self, path: Option<&str>) {
         let mut notes = Vec::new();
         for pane in self.state.panes.values_mut() {
-            if let PaneContent::Editor(editor) = &mut pane.content
-                && path.is_none_or(|path| path == editor.path)
-                && let Err(error) = editor.check_disk()
-            {
-                notes.push(error);
+            if let PaneContent::Editor(tabs) = &mut pane.content {
+                for editor in tabs.files_mut() {
+                    if path.is_none_or(|path| path == editor.path)
+                        && let Err(error) = editor.check_disk()
+                    {
+                        notes.push(error);
+                    }
+                }
             }
         }
         for note in notes {

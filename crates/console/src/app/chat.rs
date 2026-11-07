@@ -861,6 +861,7 @@ mod tests {
                 session: session.clone(),
                 scope: ReviewScope::Session,
                 drawn: None,
+                ui: crate::panes::ReviewUi::default(),
             };
         }
         let diff = app.state.diffs.entry(session.clone()).or_default();

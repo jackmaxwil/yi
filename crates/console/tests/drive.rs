@@ -1351,6 +1351,7 @@ fn mouse_focuses_opens_and_drags() -> TestResult {
         // pane, then prove focus moved there by submitting into it.
         "wait-frame 5000 s-alpha\n\
          mouse down 2 3\n\
+         mouse up 2 3\n\
          wait-frame 5000 replayed world\n\
          key alt-v\n\
          wait-frame 3000 no session\n\
@@ -2193,10 +2194,12 @@ fn a_click_on_a_workspace_header_folds_it() -> TestResult {
         "wait-frame 5000 s-beta\n\
          wait-frame 3000 demo-root 2 ▾\n\
          mouse down 3 2\n\
+         mouse up 3 2\n\
          wait-frame 3000 demo-root 2 ▸\n\
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 s-gamma\n\
          mouse down 3 2\n\
+         mouse up 3 2\n\
          wait-frame 3000 s-alpha\n\
          wait-frame 3000 demo-root 2 ▾\n\
          quit\n",
@@ -2248,6 +2251,7 @@ fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
         ],
         "wait-frame 5000 s-beta\n\
          mouse down 16 5\n\
+         mouse up 16 5\n\
          wait-frame 3000 SN  untitled\n\
          quit\n",
     )?;
@@ -2269,14 +2273,16 @@ fn the_sidebars_new_row_starts_a_session() -> TestResult {
         ],
         "wait-frame 5000 s-beta\n\
          mouse down 3 0\n\
+         mouse up 3 0\n\
          wait-frame 3000 SN  s-new\n\
          quit\n",
     )
 }
 
-/// A press on the sidebar's Search row opens the command palette.
+/// A press on the sidebar's Search row turns it into an input that filters the sessions in place:
+/// the palette stays shut, a typed name hides the rest, and esc brings them back.
 #[test]
-fn the_sidebars_search_row_opens_the_palette() -> TestResult {
+fn the_sidebars_search_row_filters_the_sessions_in_place() -> TestResult {
     run(
         "search",
         vec![
@@ -2286,7 +2292,14 @@ fn the_sidebars_search_row_opens_the_palette() -> TestResult {
         ],
         "wait-frame 5000 s-beta\n\
          mouse down 3 1\n\
-         wait-frame 3000 Command Palette\n\
+         mouse up 3 1\n\
+         type beta\n\
+         wait-frame 3000 ⌕ beta\n\
+         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 s-beta\n\
+         wait-frame 3000 !Command Palette\n\
+         key esc\n\
+         wait-frame 3000 s-alpha\n\
          quit\n",
     )
 }
@@ -2574,14 +2587,14 @@ fn cmd_u_undoes_the_chat_draft() -> TestResult {
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
     // The sidebar fits `s-alpha` to its ten-column floor, 18 wide: border at x=18, one padding
-    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=2 under the header row.
+    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=3 under the tab strip.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 24 3\nmouse up 24 3\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 22 3\nmouse drag 24 3\nmouse up 24 3\n\
+            "wait-frame 3000 abcdef\nmouse down 24 4\nmouse up 24 4\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 22 4\nmouse drag 24 4\nmouse up 24 4\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;
@@ -5657,9 +5670,10 @@ fn a_resumed_sessions_edit_and_reads_fill_review() -> TestResult {
         .find_map(|line| line.strip_prefix("+++ b/"))
         .ok_or("no path")?;
     let (added, removed) = (&details["added"], &details["removed"]);
-    assert_eq!(
-        row_holding(&frame, "▸ ")?,
-        format!("▸ {path}  +{added} −{removed}")
+    let file_row = row_holding(&frame, "▸ ")?;
+    assert!(
+        file_row.starts_with("▸ ") && file_row.contains(&format!("{path}  +{added} −{removed}")),
+        "{file_row}"
     );
     let reads = results("read").len();
     assert_eq!(
@@ -5769,7 +5783,10 @@ fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestRe
     let row = row_holding(&frame, "Review · turn")?;
     assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
     let file = row_holding(&frame, "▸ ")?;
-    assert!(file.contains("▸ b.py  +2 −2"), "{file}");
+    assert!(
+        file.starts_with("▸ ") && file.contains("b.py  +2 −2"),
+        "{file}"
+    );
     Ok(())
 }
 
@@ -5912,5 +5929,65 @@ fn pressing_a_shell_blocks_run_chip_opens_a_terminal_and_the_label_does_not() ->
         !terminal(&label),
         "the fence label opened a terminal: {label}"
     );
+    Ok(())
+}
+
+/// Dies when an empty chat is a blank rectangle above its composer, or when a session that already
+/// has a transcript still wears the start screen over the words it replays.
+#[test]
+fn an_empty_chat_shows_the_start_screen_and_a_replayed_one_does_not() -> TestResult {
+    let marker = ready_marker(SidebarMode::Full);
+    let blank = format!(
+        "wait-frame 5000 {marker}\nkey enter\nwait-frame 5000 0.0% / 128K\n\
+         wait-frame 3000 ask below, or start with\nwait-frame 3000 command palette\nquit\n"
+    );
+    let frame = run_frames_sized(
+        "start-blank",
+        replayed_session(resume_blank),
+        &blank,
+        SidebarMode::Full,
+        (120, 40),
+    )?;
+    let rows: Vec<&str> = frame.lines().collect();
+    let at = rows
+        .iter()
+        .position(|row| row.contains("ask below, or start with"))
+        .ok_or("no start screen subtitle")?;
+    let col = rows
+        .get(at)
+        .and_then(|row| row.find("ask below"))
+        .unwrap_or(0);
+    let above: String = rows
+        .get(at.saturating_sub(1))
+        .map_or("", |row| row.get(col..).unwrap_or(""))
+        .to_owned();
+    assert!(
+        above.trim_matches([' ', '"']).is_empty(),
+        "a title still sits above the subtitle: {above:?}"
+    );
+    if let Some(heading) = rows.iter().position(|row| {
+        row.get(col..)
+            .is_some_and(|rest| rest.starts_with("recent"))
+    }) {
+        let first = rows
+            .get(heading + 1)
+            .and_then(|row| row.get(col..))
+            .unwrap_or("");
+        assert!(
+            !first.starts_with(' '),
+            "a recent session is indented: {first:?}"
+        );
+    }
+    let busy = format!(
+        "wait-frame 5000 {marker}\nkey enter\nwait-frame 5000 third message\n\
+         wait-frame 2000 !ask below, or start with\nquit\n"
+    );
+    run_frames_sized(
+        "start-replayed",
+        replayed_session(resume_three_messages),
+        &busy,
+        SidebarMode::Full,
+        (120, 40),
+    )?;
     Ok(())
 }
