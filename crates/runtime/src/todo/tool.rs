@@ -560,23 +560,7 @@ impl TodoTool {
     fn commands_for(&self, target: &Target) -> Vec<(TodoLabel, String)> {
         self.store.resync();
         let list = self.store.list();
-        let rows: Vec<&Todo> = match target {
-            Target::Label(label) => super::locate(&list, label.as_str())
-                .ok()
-                .and_then(|at| list.items().nth(at))
-                .into_iter()
-                .collect(),
-            Target::Phase(name) => (list.phases.iter().find(|phase| phase.name == *name))
-                .map(|phase| {
-                    phase
-                        .items
-                        .iter()
-                        .flat_map(|item| std::iter::once(item).chain(item.children.iter()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Target::All => list.items().collect(),
-        };
+        let rows = super::check::targeted(&list, target).unwrap_or_default();
         (rows.into_iter())
             .filter(|item| !item.state.is_terminal())
             .filter_map(|item| {
@@ -592,7 +576,7 @@ impl TodoTool {
             Op::Start {
                 check: Some(command),
                 ..
-            } => match super::check::refused(command, &context.cwd, &self.checker) {
+            } => match self.checker.probe(command, &context.cwd) {
                 Some(reason) => Err(TodoError::Check { reason }.into()),
                 None => Ok(None),
             },
@@ -601,6 +585,11 @@ impl TodoTool {
                 if rows.is_empty() {
                     return Ok(None);
                 }
+                let passed = evidence.clone().or_else(|| Some("check passed".to_owned()));
+                self.store.admits(Op::Done {
+                    target: target.clone(),
+                    evidence: passed,
+                })?;
                 let mut red: Option<String> = None;
                 for (label, command) in &rows {
                     let ran =

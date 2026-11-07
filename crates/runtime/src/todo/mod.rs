@@ -485,82 +485,8 @@ impl TodoStore {
             });
         }
         let before = state.list.clone();
-        let mirrored = mirror::plan_of(&before).map(str::to_owned);
-        let mut list = match &mirrored {
-            Some(plan) => {
-                let own = mirror::own(&before);
-                let whole = matches!(op, Op::Set { .. } | Op::Init { .. } | Op::Append { .. });
-                if !whole
-                    && op
-                        .label()
-                        .is_none_or(|label| locate(&own, label.as_str()).is_err())
-                {
-                    if let Some(label) = op.label() {
-                        locate(&before, label.as_str())?;
-                    }
-                    return Err(TodoError::Mirrored { plan: plan.clone() });
-                }
-                own
-            }
-            None => before.clone(),
-        };
-        let label = op.label().cloned();
-        let name = op.name();
-        let (prior, whole_set) = (list.clone(), matches!(op, Op::Set { .. }));
-        step(&mut list, op, &mut notes)?;
-        if stale.is_some() && whole_set {
-            let kept = keep_omitted(&prior, &mut list);
-            if !kept.is_empty() {
-                notes.push(format!(
-                    "rows your set left out were kept: {}",
-                    kept.join(", ")
-                ));
-            }
-        }
-        if mirrored.is_some() {
-            let planned: Vec<TodoId> = before
-                .items()
-                .filter(|item| item.extra.contains_key(mirror::PLAN_KEY))
-                .filter_map(|item| item.id.clone())
-                .collect();
-            list.for_each_mut(|item| {
-                if item.id.as_ref().is_some_and(|id| planned.contains(id)) {
-                    item.id = None;
-                }
-            });
-            list.next_id = list.next_id.max(before.next_id);
-        }
-        mint(&mut list);
-        normalize(&mut list, mirrored.is_none());
-        if mirrored.is_some() {
-            list = mirror::rejoin(&before, list);
-        }
-        // Invariant: an op adds no row whose label another row holds. A repeat an older binary
-        // wrote is not this op's, so that list still takes the moves that repair it.
-        let rows = |list: &TodoList, label: &TodoLabel| {
-            list.items().filter(|item| item.label == *label).count()
-        };
-        if let Some(label) = list
-            .duplicates()
-            .into_iter()
-            .find(|label| rows(&list, label) > rows(&before, label))
-        {
-            // A finished plan's leftover rows keep their `plan` key; only an open plan owns them.
-            let plan = mirrored.as_ref().and_then(|_| {
-                before
-                    .items()
-                    .filter(|item| item.label == *label)
-                    .find_map(mirror::row_plan)
-            });
-            let label = label.to_string();
-            return Err(match plan {
-                Some(plan) => TodoError::DuplicateOfPlanRow {
-                    label,
-                    plan: plan.to_string(),
-                },
-                None => TodoError::Duplicate { label },
-            });
-        }
+        let (label, name) = (op.label().cloned(), op.name());
+        let list = next(&before, op, stale.is_some(), &mut notes)?;
         state.list = list.clone();
         state.touched = state.touched.saturating_add(1);
         let touched = state.touched;
@@ -574,6 +500,13 @@ impl TodoStore {
             changed: true,
             notes,
         })
+    }
+
+    /// Whether `op` would apply to the list as it stands, so a check is not run for a refused call.
+    pub fn admits(&self, op: Op) -> Result<(), TodoError> {
+        self.resync();
+        let state = self.state.lock().map_err(|_| TodoError::Empty)?;
+        next(&state.list, op, false, &mut Vec::new()).map(drop)
     }
 
     /// Invariant: projected from the list under the lock, so no owner-row write is undone.
@@ -623,6 +556,90 @@ impl TodoStore {
         let _a_ledger_write_never_fails_an_op =
             yi_session::lock_session(&session).append_custom_record(&record);
     }
+}
+
+/// The list `op` makes of `before`, or the refusal it meets; nothing is written.
+fn next(
+    before: &TodoList,
+    op: Op,
+    stale: bool,
+    notes: &mut Vec<String>,
+) -> Result<TodoList, TodoError> {
+    let mirrored = mirror::plan_of(before).map(str::to_owned);
+    let mut list = match &mirrored {
+        Some(plan) => {
+            let own = mirror::own(before);
+            let whole = matches!(op, Op::Set { .. } | Op::Init { .. } | Op::Append { .. });
+            if !whole
+                && op
+                    .label()
+                    .is_none_or(|label| locate(&own, label.as_str()).is_err())
+            {
+                if let Some(label) = op.label() {
+                    locate(before, label.as_str())?;
+                }
+                return Err(TodoError::Mirrored { plan: plan.clone() });
+            }
+            own
+        }
+        None => before.clone(),
+    };
+    let (prior, whole_set) = (list.clone(), matches!(op, Op::Set { .. }));
+    step(&mut list, op, notes)?;
+    if stale && whole_set {
+        let kept = keep_omitted(&prior, &mut list);
+        if !kept.is_empty() {
+            notes.push(format!(
+                "rows your set left out were kept: {}",
+                kept.join(", ")
+            ));
+        }
+    }
+    if mirrored.is_some() {
+        let planned: Vec<TodoId> = before
+            .items()
+            .filter(|item| item.extra.contains_key(mirror::PLAN_KEY))
+            .filter_map(|item| item.id.clone())
+            .collect();
+        list.for_each_mut(|item| {
+            if item.id.as_ref().is_some_and(|id| planned.contains(id)) {
+                item.id = None;
+            }
+        });
+        list.next_id = list.next_id.max(before.next_id);
+    }
+    mint(&mut list);
+    normalize(&mut list, mirrored.is_none());
+    if mirrored.is_some() {
+        list = mirror::rejoin(before, list);
+    }
+    // Invariant: an op adds no row whose label another row holds. A repeat an older binary
+    // wrote is not this op's, so that list still takes the moves that repair it.
+    let rows = |list: &TodoList, label: &TodoLabel| {
+        list.items().filter(|item| item.label == *label).count()
+    };
+    if let Some(label) = list
+        .duplicates()
+        .into_iter()
+        .find(|label| rows(&list, label) > rows(before, label))
+    {
+        // A finished plan's leftover rows keep their `plan` key; only an open plan owns them.
+        let plan = mirrored.as_ref().and_then(|_| {
+            before
+                .items()
+                .filter(|item| item.label == *label)
+                .find_map(mirror::row_plan)
+        });
+        let label = label.to_string();
+        return Err(match plan {
+            Some(plan) => TodoError::DuplicateOfPlanRow {
+                label,
+                plan: plan.to_string(),
+            },
+            None => TodoError::Duplicate { label },
+        });
+    }
+    Ok(list)
 }
 
 pub fn latest_record(session: &yi_session::SharedSession) -> Option<TodoRecord> {

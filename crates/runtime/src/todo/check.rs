@@ -6,19 +6,12 @@ use yi_types::todo::{CheckLast, RowCheck, TodoList};
 
 use super::names::{known_labels, known_phases, locate};
 
-/// A check is a cold build's worth of work at most, and never longer than the turn it holds.
-pub const CHECK_TIMEOUT_MS: u64 = 600_000;
-
 /// A check's last run: whether it passed, the wire word it leaves on the row, and what a red
 /// printed.
 pub struct Ran {
     pub green: bool,
     pub last: CheckLast,
     pub view: String,
-}
-
-pub fn refused(command: &str, cwd: &Path, checker: &crate::goal::Checker) -> Option<String> {
-    checker.probe(command, cwd)
 }
 
 /// Invariant: a check runs in a cleared environment like a goal's, so a green here means the
@@ -30,7 +23,7 @@ pub fn run(
     checker: &crate::goal::Checker,
 ) -> Result<Ran, String> {
     let deadline = Instant::now()
-        .checked_add(Duration::from_millis(CHECK_TIMEOUT_MS))
+        .checked_add(Duration::from_millis(crate::goal::DEFAULT_CHECK_TIMEOUT_MS))
         .unwrap_or_else(Instant::now);
     let capture =
         crate::goal::run_check_in(cwd, command, &[], None, deadline, Some(cancel), checker)?;
@@ -89,33 +82,37 @@ pub(super) fn keeps_reds(list: &TodoList, target: &super::Target) -> Result<(), 
                 command: check.command,
             })
     };
-    match target {
-        super::Target::Label(label) => red(list
-            .items()
-            .nth(locate(list, label.as_str())?)
-            .ok_or_else(|| super::TodoError::NoSuchLabel {
-                label: label.to_string(),
-                known: known_labels(list),
-            })?)
-        .map_or(Ok(()), Err),
-        super::Target::Phase(name) => {
-            let phase = list
-                .phases
-                .iter()
-                .find(|phase| phase.name == *name)
-                .ok_or_else(|| super::TodoError::NoSuchPhase {
-                    phase: name.to_string(),
-                    known: known_phases(list),
-                })?;
-            phase
-                .items
-                .iter()
-                .flat_map(|item| std::iter::once(item).chain(item.children.iter()))
-                .find_map(red)
-                .map_or(Ok(()), Err)
-        }
-        super::Target::All => (list.items().find_map(red)).map_or(Ok(()), Err),
-    }
+    (targeted(list, target)?.into_iter().find_map(red)).map_or(Ok(()), Err)
+}
+
+/// The rows `target` names on `list`: a label's row, a phase's rows with their children, or all.
+pub(super) fn targeted<'a>(
+    list: &'a TodoList,
+    target: &super::Target,
+) -> Result<Vec<&'a Todo>, super::TodoError> {
+    Ok(match target {
+        super::Target::Label(label) => vec![
+            list.items()
+                .nth(locate(list, label.as_str())?)
+                .ok_or_else(|| super::TodoError::NoSuchLabel {
+                    label: label.to_string(),
+                    known: known_labels(list),
+                })?,
+        ],
+        super::Target::Phase(name) => list
+            .phases
+            .iter()
+            .find(|phase| phase.name == *name)
+            .ok_or_else(|| super::TodoError::NoSuchPhase {
+                phase: name.to_string(),
+                known: known_phases(list),
+            })?
+            .items
+            .iter()
+            .flat_map(|item| std::iter::once(item).chain(item.children.iter()))
+            .collect(),
+        super::Target::All => list.items().collect(),
+    })
 }
 
 /// Invariant: a row's check is written once, at `start`, and no later call may replace it: the

@@ -431,3 +431,55 @@ fn done_evidence_names_the_command_that_ran() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_done_the_list_refuses_runs_no_check() -> TestResult {
+    let (root, session) = session("refused-done")?;
+    let tool = TodoTool::new(store_for(&session));
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    let (error, text) = call(
+        &tool,
+        &cwd,
+        json!({"op": "set", "list": "- [ ] ship it\n  - [ ] write it"}),
+    );
+    assert!(!error, "{text}");
+    let (error, text) = call(
+        &tool,
+        &cwd,
+        json!({"op": "start", "label": "ship it", "check": "touch ran.txt"}),
+    );
+    assert!(!error, "{text}");
+    let (error, text) = call(&tool, &cwd, json!({"op": "done", "label": "ship it"}));
+    assert!(error, "{text}");
+    assert!(text.contains("write it"), "{text}");
+    assert!(
+        !cwd.join("ran.txt").exists(),
+        "the refused done ran its check"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_second_start_naming_another_check_is_refused_and_keeps_the_first() -> TestResult {
+    let (root, session) = session("rewrite-start")?;
+    let tool = TodoTool::new(store_for(&session));
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    call(&tool, &cwd, json!({"op": "set", "list": "- [ ] ship it"}));
+    call(
+        &tool,
+        &cwd,
+        json!({"op": "start", "label": "ship it", "check": "test -s out.txt"}),
+    );
+    let (error, text) = call(
+        &tool,
+        &cwd,
+        json!({"op": "start", "label": "ship it", "check": "true"}),
+    );
+    assert!(error, "{text}");
+    assert!(text.contains("test -s out.txt"), "{text}");
+    let check = yi_types::todo::RowCheck::of(&row(&session, "ship it")?).ok_or("the check went")?;
+    assert_eq!(check.command, "test -s out.txt");
+    Ok(())
+}

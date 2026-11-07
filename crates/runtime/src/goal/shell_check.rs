@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::{CHECKER_ENV_BASE, Checker, captured, lease_env, probe};
+use super::{CHECKER_ENV_BASE, Checker, captured, lease_env};
 
 /// Who a check's child sees: nothing of the host's, or the names its manifest declares.
 pub(crate) enum Env<'a> {
@@ -79,11 +79,8 @@ impl<'a> ShellCheck<'a> {
 
     pub(crate) fn guard(&self) -> Result<(), String> {
         self.checker.guard(self.command, self.cwd)?;
-        // Invariant: a check placed in a container is judged there, so its first word is not on the
-        // host's PATH and the host probe would refuse a program the image has.
         if self.probe
-            && self.checker.wall.container.is_none()
-            && let Some(refusal) = probe(self.command, self.cwd)
+            && let Some(refusal) = self.checker.probe(self.command, self.cwd)
         {
             return Err(refusal);
         }
