@@ -205,8 +205,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D352).
 - Reclaim runs inside the run's `convert_to_llm`, before compaction is ever due: a tool result
   at least 1,200 chars long and 5 requests old (never `ask_user`, `plan`, `todo`, or the newest
-  `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the tokens dropped × cache-read price × requests so far beat the
-  tokens after the first cut × (write − read price), or the cache lapsed; at least 2,000 tokens.
+  `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the
+  tokens dropped × requests so far beat ten reads of the tokens after the first cut, or the cache
+  lapsed; at least 2,000 tokens, on every route whatever its price.
   A `custom{reclaim}` entry names the cut results, which render from then on as one
   `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
 - `annotate` writes `custom{annotation}`: `pin` keeps the newest result whose call contains
@@ -269,9 +270,12 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
-  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s. A
+  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter. A
   server wait past 60 s or `x-should-retry: false` ends the turn stamped `retry refused:`, which
   the loop reads as final; `x-should-retry: true` retries any status.
+- A read timeout is the model's `readTimeoutSecs` (default 60 s) and bounds one read, so an idle
+  gap between chunks and not the whole body; a timeout is neither retried nor resent, and its
+  refusal names the field, the default and the attempts that ran.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
   outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
   into `ToolUse`.
@@ -379,6 +383,13 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   `check_request_budget.py` prices system block plus tool table against a shrink-only baseline
   and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
+- `yi tool import just [recipe ...]` writes one exec tool per recipe of the project's justfile
+  into `~/.yi/tools`, from just's own `--dump --dump-format json`: the schema is the recipe's
+  parameters (a default makes one optional, `*` and `+` a variadic array) and its doc comment the
+  description. Every recipe stays `exec`; `yi: skip` and a `[private]` recipe are left out, and a
+  built-in's name is refused by name. Each wrapper's marker line names its justfile and recipe, so
+  a rerun rewrites only what changed and removes the wrappers it wrote for recipes the justfile
+  dropped, never a hand-written tool. A name another justfile's wrapper holds refuses the import.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `annotate`, `answer`, `get_context`, `plan`, `todo` and `ask_user`
   carry a summary, their full schema (`plan` without field prose below the top level) and
@@ -1168,6 +1179,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `models [recommend [--role R]\|refresh]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); model suggestions per role (§5); session invariants checked, safe ones repaired |
 | `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member, or with an empty member the download itself, published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree, and the `agent-browser` plugin's daemon is the other thing that starts it. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model. A `Host` is a program the model runs that drives this machine: `add --all` and the eval containers skip it, so `agent-desktop` arrives only by name. The sandbox refuses it, and `yi_permission`'s desktop table lets only its plain name out: one yes per app per session, read from `--app` or from the app a ref's snapshot record names; a terminal, an editor, settings or a password app, and any verb or flag the table does not name, ask every time and keep nothing; a browser is refused in every mode; what it prints returns in a `yi-external` fence `agent-browser` is the second `Host`: its daemon cannot run in the sandbox, which bans unix sockets, and a Chrome outside it would read every file while any contained program drives it over its loopback debug port, so `add` also installs `chrome` and writes a script that runs it inside a sandbox with its own sandbox off (the two cannot nest), reading what a contained command reads, writing only temp. Unlike the others it has no route through a program on PATH: the gate refuses the plain name in every mode until the pinned program, its config and that script all stand, so a copy on PATH or an interrupted `add` starts no Chrome outside the box. The default session's Chrome has loopback alone and needs no question; `--session web` adds the internet by address, and one yes covers it for the session. `yi_permission`'s browser table lets only the plain name out, asks every time for what the daemon itself would do, and refuses real logins and a visible window in every mode. |
+| `tool import just [recipe ...]` | One exec tool per recipe of the project's justfile, under `~/.yi/tools`, its schema the recipe's parameters (§7.1) |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills`, each top-level directory the release ships (`yi/`) replaced whole so a skill it dropped goes (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
@@ -1424,14 +1436,13 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 |---|---|---|---|
 | direct deps | 23 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 176 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 8,521,200 bytes on macOS arm64, a measured ratchet that passes growth up to a fixed 16,384-byte jitter allowance past it, under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) that moves only with a `decision:` line | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json`; on Linux `baselines/binary_size_budget_linux.json` (13,220,280 at the first forge build) under its own 14 MiB cap |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 | `yi ask --model faux/faux-1 hi` | 178.0 ms | the same, under a scratch HOME (kernel prewarm off) in an empty cwd under `target/` with `GIT_CEILING_DIRECTORIES` above it, so no lane is claimed | same; `--selfcheck` proves each entry can fail on a stand-in binary |
 
-The binary and startup gates run only after a dist build; a failed build fails both. Under
-`--fast` both are skipped by a printed line. When `CI` is set startup is skipped (D68), and the
-dist build and the binary gate run only on a Linux host, against the Linux baseline: the forge's
-guardrails lane measures every pull request (revises D70 and D91).
+The startup gate runs only after a dist build; a failed build fails it. Under `--fast` both are
+skipped by a printed line. When `CI` is set, startup and the dist build are skipped because a
+shared runner cannot resolve the wall-clock budget (D68). Local full guardrails build the dist
+binary and measure startup.
 
 ## 19. Code style (HAR)
 The enforced rules for Rust in `crates/`; production lines are those no `#[cfg(test)]` attribute
@@ -1478,7 +1489,7 @@ format is 1 and migrates on read (D282); kernel venv `BOOTSTRAP_SCHEMA = 1` (§9
 ## 21. Guardrails
 `scripts/guardrails/check_guardrails.sh` runs every gate below in parallel and prints the reports
 in launch order. `just check` is `lint`, `guardrails` and `test`; the pre-commit hook runs
-`--fast`, which skips the dist build, `binary_size`, `startup`, `growth`, `cargo doc`, `machete`
+`--fast`, which skips the dist build, `startup`, `growth`, `cargo doc`, `machete`
 and `deny`. The size ceilings (crate, test, comments, growth) are measured at the branch's fork point
 (`git merge-base origin/main HEAD`) and raised by a `raise:` line in its change file; every other
 baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` records its growth.
@@ -1490,7 +1501,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field or enum variant field (a literal sets, only a read or a pattern binding reads, a test is no reader), no yi-types shape production code never names, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
-| `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json` (`binary_size_budget_linux.json` on Linux), `startup_ms_budget.json` |
+| `check_deps_budget`, `check_startup` | §18.6 | `deps_budget.json`, `startup_ms_budget.json` |
 | `check_file_size`, `check_fn_size`, `check_crate_size` | a `src/` file ≤ 1,200 production lines (§19), and one past 1,000 may not grow past its fork-point count; a function ≤ 150 lines, counted by braces; per-crate `src/` lines ≤ the fork point's plus `raise: crate <name> +N` | the fork point |
 | `check_duplication` | no 15-line normalized window repeated across production `.rs`, and no 6-line one across `crates/*/src/**/*.md` and shipped `SKILL.md` files, `yi:schema` blocks skipped; in `crates/*/tests` no 15-line window copied more often than at the fork point | the fork point |
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines plus inline `#[cfg(test)]` lines in `src/` ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |

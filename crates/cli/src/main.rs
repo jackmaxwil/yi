@@ -21,11 +21,13 @@ mod sessions;
 mod setup;
 mod stats;
 mod todo;
+mod tool_import;
 mod trace_sink;
 mod tty;
 mod update;
 mod user_config;
 mod why;
+mod worker;
 
 use std::sync::Arc;
 use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};
@@ -951,6 +953,15 @@ fn run_acp(args: &Args) -> i32 {
         }),
     };
     yi_acp::run_acp(options, runtime)
+}
+
+fn run_sessions(args: &Args) -> i32 {
+    let options = sessions::Options {
+        session_dir: default_session_dir(args),
+        cwd: effective_cwd(args).display().to_string(),
+        json: args.json,
+    };
+    sessions::run(&args.prompt, &options)
 }
 
 fn run_stats(args: &Args) -> i32 {

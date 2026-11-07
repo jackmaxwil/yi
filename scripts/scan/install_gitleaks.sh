@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 version=$(cat "$(dirname "$0")/gitleaks.version")
-dest=/usr/local/bin
+dest="${TMPDIR:-/tmp}/yi-gitleaks-$(id -u)-$version"
+mkdir -p "$dest"
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) asset=linux_x64
     hash=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb

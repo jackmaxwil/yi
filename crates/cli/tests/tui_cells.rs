@@ -127,10 +127,7 @@ fn real_tool_results_drive_read_grep_and_edit_cards() -> TestResult {
     );
     assert!(!grep_body.contains("sample.rs:"), "{grep_body}");
 
-    assert_eq!(
-        edit.digest.as_deref(),
-        Some("updated; first change at line 2")
-    );
+    assert_eq!(edit.digest.as_deref(), Some("updated; +2 -1 at line 2"));
     let edit_body = rendered(&edit, 100, TranscriptMode::Verbose).join("\n");
     assert!(edit_body.contains("changed"), "{edit_body}");
     Ok(())

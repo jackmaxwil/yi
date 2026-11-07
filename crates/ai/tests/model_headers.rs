@@ -4,7 +4,8 @@ use std::net::TcpListener;
 use serde_json::json;
 use yi_types::model::{LlmContext, Model};
 
-type Res = Result<(), Box<dyn std::error::Error>>;
+type Res = crate::harness::Res;
+use crate::harness::drain;
 
 fn serve_once() -> Result<(u16, std::thread::JoinHandle<String>), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -44,30 +45,7 @@ fn model(
 }
 
 fn context() -> LlmContext {
-    LlmContext {
-        cache_ttl: yi_types::model::Ttl::Min5,
-        system_prompt: String::new(),
-        messages: vec![],
-        transient: Vec::new(),
-        schema: None,
-        shared_through: None,
-        reuse: yi_types::model::Reuse::Loop,
-        tools: None,
-        tool_choice: None,
-    }
-}
-
-fn drain(
-    open: impl FnOnce() -> tokio::sync::mpsc::Receiver<yi_types::event::AssistantMessageEvent>,
-) -> Res {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(async {
-        let mut receiver = open();
-        while receiver.recv().await.is_some() {}
-    });
-    Ok(())
+    crate::harness::empty_context()
 }
 
 /// A gateway that wants its own auth header had no way to ask for one: `headers` was

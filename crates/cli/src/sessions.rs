@@ -8,17 +8,6 @@ use yi_runtime::session_store::{
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, UserContent};
 
-use crate::{Args, default_session_dir, effective_cwd};
-
-pub fn command(args: &Args) -> i32 {
-    let options = Options {
-        session_dir: default_session_dir(args),
-        cwd: effective_cwd(args).display().to_string(),
-        json: args.json,
-    };
-    run(&args.prompt, &options)
-}
-
 pub struct Options {
     pub session_dir: PathBuf,
     pub cwd: String,

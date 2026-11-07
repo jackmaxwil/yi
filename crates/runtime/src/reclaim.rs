@@ -12,6 +12,8 @@ use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 pub(crate) const KEEP_TURNS: u64 = 5;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
 const MIN_DROPPED: u64 = 2_000;
+/// A cut rewrites the cached prefix after it, which costs as many tokens as this many cache reads.
+const REWRITE_READS: u64 = 10;
 const MIN_RESULT_CHARS: usize = 1_200;
 const PLACEHOLDER_TOKENS: u64 = 40;
 /// Results that carry the user's own words or live plan state, which a cut would hide.
@@ -40,9 +42,11 @@ pub(crate) struct Sections(Mutex<BTreeMap<u64, Vec<String>>>);
 impl Sections {
     pub(crate) fn paths(&self, content: &[Content]) -> Vec<String> {
         self.memo(content, |text| {
-            let patch = yi_tools::hashline::input::Patch::parse(text, None);
-            let sections = patch.map(|patch| patch.sections).unwrap_or_default();
-            sections.into_iter().map(|section| section.path).collect()
+            text.lines()
+                .filter_map(yi_tools::hashline::tokenizer::try_parse_header)
+                .filter(|header| header.file_hash.is_some())
+                .map(|header| header.path)
+                .collect()
         })
     }
 
@@ -210,10 +214,6 @@ fn name_entries(store: &yi_session::SessionStore, items: &mut [Reclaimed]) {
                 .for_each(|item| item.entry_id = Some(id.clone()));
         }
     }
-}
-
-fn price(number: &serde_json::Number) -> f64 {
-    number.as_f64().unwrap_or(0.0)
 }
 
 fn texts(content: &[Content]) -> impl Iterator<Item = &str> {
@@ -385,9 +385,6 @@ pub(crate) fn decide(
             .filter_map(|index| sizes.get(*index))
             .map(|size| size.saturating_sub(PLACEHOLDER_TOKENS))
             .fold(0, u64::saturating_add);
-        if dropped < MIN_DROPPED {
-            return None;
-        }
         let rewritten = sizes
             .get(first..)
             .unwrap_or_default()
@@ -420,8 +417,8 @@ pub(crate) fn decide(
     None
 }
 
-/// Why a cut pays now, if it does: the cache lapsed, or the reads it saves over as many more
-/// requests as were sent so far outweigh the next request's rewrite of everything after it.
+/// Why a cut pays now, if it does: the cache lapsed, or the tokens it saves over as many more
+/// requests as were sent so far outweigh ten reads of everything after the first cut result.
 fn reason(
     messages: &[AgentMessage],
     model: &Model,
@@ -441,10 +438,13 @@ fn reason(
         _ => None,
     });
     let replies: Vec<_> = replies.collect();
-    let input = price(&model.cost.input);
-    let read_rate = price(&model.cost.cache_read);
+    let priced = model
+        .cost
+        .cache_read
+        .as_f64()
+        .is_some_and(|rate| rate > 0.0);
     let reads_seen = replies.iter().any(|(usage, _, _)| usage.cache_read > 0);
-    let caches = read_rate > 0.0 || reads_seen;
+    let caches = priced || reads_seen;
     let lapsed = replies.first().is_some_and(|(_, at, diagnostics)| {
         let hour = (diagnostics.iter().flatten())
             .find(|note| note.diagnostic_type == CACHE_DIAGNOSTIC)
@@ -453,21 +453,15 @@ fn reason(
         caches && now.saturating_sub(*at) > if hour { HOUR_MS } else { FIVE_MINUTES_MS }
     });
     if lapsed {
-        return Some("expired");
+        return (dropped >= MIN_DROPPED).then_some("expired");
     }
+    // An hour-cache write costs twice a five-minute one.
     let hour = replies
         .first()
         .is_some_and(|(usage, _, _)| usage.cache_write1h.unwrap_or(0) > 0);
-    let write_rate = price(&model.cost.cache_write);
-    // A route that caches at a rate its catalog omits reads at zero, so no cut ever pays there.
-    let read = if caches { read_rate } else { input };
-    let write = match (hour, write_rate > 0.0) {
-        (true, _) => 2.0 * input,
-        (false, true) => write_rate,
-        (false, false) => input,
-    };
-    #[expect(clippy::cast_precision_loss, reason = "token counts far below 2^52")]
-    let pays = dropped as f64 * read * turns as f64 > rewritten as f64 * (write - read);
+    let reads = REWRITE_READS * if hour { 2 } else { 1 };
+    let pays = dropped >= MIN_DROPPED
+        && (!caches || dropped.saturating_mul(turns) > rewritten.saturating_mul(reads));
     pays.then_some("breakeven")
 }
 
@@ -627,10 +621,7 @@ mod tests {
                 named += usize::from(!paths.is_empty());
             }
         }
-        assert_eq!(
-            named, 10,
-            "the edit and nine of ten reads name a file; one read past the end prints none"
-        );
+        assert_eq!(named, 11, "the edit and all ten reads name a file");
         Ok(())
     }
 
@@ -673,6 +664,33 @@ mod tests {
         );
         assert_eq!(sections.paths(&text("[src/main.rs#11AA]")), ["src/main.rs"]);
         assert_eq!(sections.paths(&text("[src/lib.rs#BDF3]")), ["src/lib.rs"]);
+        Ok(())
+    }
+
+    #[test]
+    fn read_notices_are_not_patch_sections() -> Fallible {
+        use yi_tools::Tool;
+
+        let dir = crate::scratch::Scratch::new("yi-reclaim-read-notices")?;
+        let body: String = (1..=2_001)
+            .map(|line| format!("pub fn row{line}() {{}}\n"))
+            .collect();
+        std::fs::write(dir.join("lib.rs"), body)?;
+        let read = yi_tools::hashline::tool::HashlineReadTool::new(
+            yi_tools::hashline::tool::shared_hashline_state(),
+        )
+        .execute(
+            serde_json::Map::from_iter([("path".to_owned(), json!("lib.rs"))]),
+            &yi_tools::ToolContext::new(dir.to_path_buf()),
+        );
+        assert!(!read.is_error);
+        let text = yi_types::message::join_text(&read.result.content, "");
+        assert!(text.contains("[showing lines 1-2000 of 2001"));
+        assert!(text.contains("[skeleton:"));
+        assert_eq!(
+            super::Sections::default().paths(&read.result.content),
+            ["lib.rs"]
+        );
         Ok(())
     }
 
@@ -741,14 +759,15 @@ mod tests {
         messages
     }
 
-    /// The replay that set the rule: cutting every turn lost money on Opus, where a cached token
-    /// costs a tenth of input, so ten requests in a cut does not pay and thirty does.
+    /// The replay that set the rule: cutting every turn rewrote the cache each time, so the
+    /// tokens a cut drops must outweigh ten reads of everything after it: fourteen requests in
+    /// that does not hold, thirty does.
     #[test]
-    fn a_cut_waits_until_the_reads_it_saves_beat_the_rewrite() -> Fallible {
+    fn a_cut_waits_until_the_tokens_it_saves_beat_ten_reads_of_the_rewrite() -> Fallible {
         let model = opus()?;
-        let now = 60_000 * 9 + 1_000;
+        let now = 60_000 * 13 + 1_000;
         assert_eq!(
-            decide(&bash_session(10), &Cut::default(), &model, now),
+            decide(&bash_session(14), &Cut::default(), &model, now),
             None
         );
         let now = 60_000 * 29 + 1_000;
@@ -853,8 +872,8 @@ mod tests {
     /// folds the ledger, must send the same placeholder or the cache is rewritten each time.
     #[test]
     fn a_cut_renders_the_same_bytes_live_and_after_a_resume() -> Fallible {
-        let messages = bash_session(10);
-        let late = 60_000 * 9 + 6 * 60_000;
+        let messages = bash_session(14);
+        let late = 60_000 * 13 + 6 * 60_000;
         let mut record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
         if let Some(first) = record.items.first_mut() {
             first.entry_id = Some("e-17".to_owned());
@@ -877,10 +896,10 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(
             first,
-            "[reclaimed: bash `cargo build -p crate0` → none of 9990 chars kept; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them (cut at request 10); get it: read(\"history://self/e-17\")]"
+            "[reclaimed: bash `cargo build -p crate0` → none of 9990 chars kept; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them (cut at request 14); get it: read(\"history://self/e-17\")]"
         );
         let kept = shown
-            .get(12)
+            .get(26)
             .map(AgentMessage::plain_text)
             .unwrap_or_default();
         assert!(kept.starts_with("build output line"), "{kept}");
@@ -892,7 +911,7 @@ mod tests {
     #[test]
     fn a_repeated_call_id_cuts_only_the_old_result_and_a_synthesized_reply_is_no_lapse() -> Fallible
     {
-        let mut messages = bash_session(9);
+        let mut messages = bash_session(14);
         let leak = |text: &str| AgentMessage::ToolResult {
             tool_call_id: "leak-0".to_owned(),
             tool_name: "bash".to_owned(),
@@ -913,21 +932,21 @@ mod tests {
             )
         };
         messages.splice(1..1, [call(1), leak("old ")]);
-        messages.extend([call(60_000 * 9), leak("new ")]);
+        messages.extend([call(60_000 * 14), leak("new ")]);
         let mut aborted =
             yi_ai::faux::faux_assistant_message(vec![], yi_types::message::StopReason::Aborted);
         if let AgentMessage::Assistant { timestamp, .. } = &mut aborted {
             *timestamp = 0;
         }
         messages.push(aborted);
-        let now = 60_000 * 9 + 1_000;
+        let now = 60_000 * 14 + 1_000;
         let model = opus()?;
         let record = decide(&messages, &Cut::default(), &model, now);
         assert_ne!(
             record.as_ref().map(|record| record.reason.as_str()),
             Some("expired")
         );
-        let late = 60_000 * 9 + 6 * 60_000;
+        let late = 60_000 * 14 + 6 * 60_000;
         let record = decide(&messages, &Cut::default(), &model, late).ok_or("no cut")?;
         let mut cut = Cut::default();
         cut.add(&record);
@@ -949,32 +968,86 @@ mod tests {
         Ok(())
     }
 
-    /// A route that reads cache at a rate its catalog entry omits would price every cut as free,
-    /// the per-turn watermark again; an image result would lose its image to a text-only notice.
-    #[test]
-    fn an_unpriced_cached_route_waits_for_a_lapse_and_an_image_result_stays() -> Fallible {
-        let mut model = opus()?;
-        model.cost.cache_read = serde_json::Number::from(0u64);
-        model.cost.cache_write = serde_json::Number::from(0u64);
-        let mut messages = bash_session(30);
+    fn with_usage(turns: usize, set: impl Fn(&mut yi_types::message::Usage)) -> Vec<AgentMessage> {
+        let mut messages = bash_session(turns);
         for message in &mut messages {
             if let AgentMessage::Assistant { usage, .. } = message {
-                usage.cache_read = 500;
+                set(usage);
             }
         }
-        assert_eq!(
-            decide(&messages, &Cut::default(), &model, 60_000 * 29 + 1_000),
-            None
-        );
+        messages
+    }
+
+    /// Seen red under `let caches = priced;`: a $0 route that has read its cache waits for the
+    /// token rule, while the same session with no cache reads cuts as soon as it clears the floor.
+    #[test]
+    fn a_zero_priced_route_waits_only_while_its_cache_is_read() -> Fallible {
+        let mut model = opus()?;
+        model.cost.input = serde_json::Number::from(0u64);
+        model.cost.cache_read = serde_json::Number::from(0u64);
+        model.cost.cache_write = serde_json::Number::from(0u64);
+        let now = 60_000 * 13 + 1_000;
+        let read = with_usage(14, |usage| usage.cache_read = 500);
+        assert_eq!(decide(&read, &Cut::default(), &model, now), None);
+        let cold = with_usage(14, |_| {});
+        assert!(decide(&cold, &Cut::default(), &model, now).is_some());
+        Ok(())
+    }
+
+    /// A warm cache still cuts in the original 2,000-token band, with or without cache reads.
+    #[test]
+    fn a_warm_cache_or_no_cache_cuts_above_two_thousand_tokens() -> Fallible {
+        let mut model = opus()?;
+        model.cost.input = serde_json::Number::from(0u64);
+        model.cost.cache_read = serde_json::Number::from(0u64);
+        model.cost.cache_write = serde_json::Number::from(0u64);
+        for cache_read in [500, 0] {
+            let mut messages = with_usage(17, |usage| usage.cache_read = cache_read);
+            for message in &mut messages {
+                if let AgentMessage::ToolResult { content, .. } = message {
+                    *content = vec![Content::Text {
+                        text: "build output line\n".repeat(70),
+                        text_signature: None,
+                    }];
+                }
+            }
+            let now = 60_000 * 16 + 1_000;
+            let record = decide(&messages, &Cut::default(), &model, now).ok_or("no cut")?;
+            assert_eq!(record.reason, "breakeven");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_hour_cache_waits_twice_as_long_for_its_rewrite() -> Fallible {
+        let model = opus()?;
+        let now = 60_000 * 21 + 1_000;
+        let five = with_usage(22, |_| {});
+        assert!(decide(&five, &Cut::default(), &model, now).is_some());
+        let hour = with_usage(22, |usage| usage.cache_write1h = Some(1_000));
+        assert_eq!(decide(&hour, &Cut::default(), &model, now), None);
+        Ok(())
+    }
+
+    /// #1762: a route whose catalog prices cache at $0 (a subscription) still reads and rewrites
+    /// tokens, so it cuts on the same rule as a priced one; an image result would lose its image
+    /// to a text-only notice.
+    #[test]
+    fn a_route_priced_at_zero_cuts_by_tokens_and_an_image_result_stays() -> Fallible {
+        let mut model = opus()?;
+        model.cost.input = serde_json::Number::from(0u64);
+        model.cost.cache_read = serde_json::Number::from(0u64);
+        model.cost.cache_write = serde_json::Number::from(0u64);
+        let mut messages = with_usage(30, |usage| usage.cache_read = 500);
         if let Some(AgentMessage::ToolResult { content, .. }) = messages.get_mut(2) {
             content.push(Content::Image {
                 data: "aGk=".to_owned(),
                 mime_type: "image/png".to_owned(),
             });
         }
-        let late = 60_000 * 29 + 6 * 60_000;
-        let record = decide(&messages, &Cut::default(), &model, late).ok_or("no cut")?;
-        assert_eq!(record.reason, "expired");
+        let now = 60_000 * 29 + 1_000;
+        let record = decide(&messages, &Cut::default(), &model, now).ok_or("no cut")?;
+        assert_eq!(record.reason, "breakeven");
         assert!(
             !record
                 .items
@@ -982,6 +1055,7 @@ mod tests {
                 .any(|item| item.tool_call_id == "call-0"),
             "{record:?}"
         );
+        assert_eq!(record.items.len(), 24, "{record:?}");
         Ok(())
     }
 
