@@ -11,7 +11,10 @@ entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_fi
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
+Pi RPC mode | `rpc_protocol::a_command_in_flight_does_not_starve_the_event_stream`
+Pi RPC mode | `rpc_protocol::a_compact_in_flight_reports_compacting`
 context P1–P19; prefix-aligned P7 | `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2)
+context P1–P19; prefix-aligned P7 | `compaction_faux::a_second_compaction_keeps_the_values_the_first_recorded`
 context P1–P19; prefix-aligned P7 | `primitives::a_demoted_brief_names_what_was_kept_the_cap_and_the_read_that_restores_it` (T0)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_kept_tail_over_the_ceiling_compacts_once_not_on_every_request` (T1)
 context P1–P19; prefix-aligned P7 | `compaction_faux::a_summary_quote_the_addressed_message_lacks_is_marked_unverified`
@@ -26,8 +29,19 @@ hashline edit (+ registers, instrumented) | `tools::a_grep_apply_carries_the_syn
 hashline edit (+ registers, instrumented) | `tools::a_write_through_a_symlink_is_refused`
 hashline edit (+ registers, instrumented) | `tools::a_changed_contract_names_the_callers_that_still_call_the_old_one`
 hashline edit (+ registers, instrumented) | `toolcells::an_edit_cell_shows_the_check_rows_the_model_read_under_its_diff`
+hashline edit (+ registers, instrumented) | `hashline_patcher::mv_onto_an_existing_file_is_refused_without_changing_either_file`
+hashline edit (+ registers, instrumented) | `hashline_patcher::a_latin1_file_reports_not_utf8_instead_of_inviting_an_overwrite`
+hashline edit (+ registers, instrumented) | `hashline_patcher::a_clipped_row_anchors_an_adjacent_insert_but_not_its_replacement`
+hashline edit (+ registers, instrumented) | `hashline_patcher::unseen_gap_anchors_are_refused_without_changing_the_file`
+hashline edit (+ registers, instrumented) | `hashline_patcher::an_anchor_past_the_end_is_not_called_unseen`
+hashline edit (+ registers, instrumented) | `tools::a_twelve_row_edit_replies_with_counts_not_the_new_text`
+hashline edit (+ registers, instrumented) | `tools::an_edit_that_drops_a_kept_line_shows_it`
+hashline edit (+ registers, instrumented) | `tools::nine_removed_rows_report_the_cap_and_the_read_that_shows_the_rest`
+hashline edit (+ registers, instrumented) | `tools::a_follow_up_edit_anchors_on_an_authored_unprinted_row`
+hashline edit (+ registers, instrumented) | `hashline_patcher::a_missing_path_names_the_read_file_with_its_tag_and_writes_nothing`
+hashline edit (+ registers, instrumented) | `write_atomic::readers_polling_during_rewrites_never_read_a_short_file`
 first-run setup (`yi setup`) | `journeys::setup_saves_the_answered_steps_and_keeps_every_other_key`
-first-run setup (`yi setup`) | `journeys::setup_saves_jev_as_the_classifier_only_with_an_openrouter_key` (T2)
+first-run setup (`yi setup`) | `journeys::setup_takes_the_key_of_the_provider_picked` (T2)
 Claude Code tool hooks | `claude_hooks::a_hook_allow_never_lifts_a_configured_deny_rule`
 Claude Code tool hooks | `claude_hooks::gates::a_hook_allow_never_answers_a_rule_a_hold_or_a_credential_read`
 Claude Code tool hooks | `claude_hooks::edits::an_edit_reaches_its_hooks_as_claude_codes_edit_input_per_file`
@@ -60,6 +74,12 @@ kernel + ipython + rlm() subagents | `reader_retry::an_anthropic_retry_over_tool
 kernel + ipython + rlm() subagents | `reader_retry::a_follow_up_restores_tools_and_gets_its_own_repair`
 kernel + ipython + rlm() subagents | `reader_retry::ordinary_mail_preserves_the_schema_answer_and_its_repair`
 kernel + ipython + rlm() subagents | `child_transcript::a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land` (T2)
+kernel + ipython + rlm() subagents | `lease_e2e::a_child_is_stopped_after_the_reply_that_crosses_its_lease`
+kernel + ipython + rlm() subagents | `lease_e2e::a_child_is_charged_for_its_fresh_tokens_not_its_cached_prefix`
+kernel + ipython + rlm() subagents | `kernel_across_sessions::a_worker_naming_ipython_holds_its_own_kernel`
+kernel + ipython + rlm() subagents | `kernel_across_sessions::a_worker_fetches_a_parent_kernel_value`
+kernel + ipython + rlm() subagents | `kernel_across_sessions::a_walled_worker_naming_ipython_keeps_the_kernel_boundary`
+kernel + ipython + rlm() subagents | `reader_e2e::a_one_turn_worker_naming_ipython_builds_no_kernel`
 kernel + ipython + rlm() subagents | `child_trail::a_child_lives_inside_its_parent_and_the_parent_points_at_it`
 kernel + ipython + rlm() subagents | `reader_e2e::a_reader_brief_carries_its_partition_numbered_and_fenced`
 kernel + ipython + rlm() subagents | `reader_e2e::held_readers_fill_the_family_cap`
@@ -92,12 +112,14 @@ mail between sessions | `session_mail::a_child_a_request_call_and_an_oversized_l
 mail between sessions | `session_mail::an_open_todo_does_not_hold_the_next_request`
 mail between sessions | `session_mail::an_inform_makes_a_todo_and_waits_for_the_next_turn`
 mail between sessions | `session_mail::a_letter_waits_for_a_session_no_process_holds_and_outlives_a_heartbeat_clear`
+mail between sessions | `serve_daemon::a_request_in_a_stopped_sessions_mailbox_starts_it_and_is_read`
 loud caps on runtime lists and echoes | `caps_runtime::find_models_says_how_many_matches_the_limit_left_out` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_children_row_names_the_members_it_left_out` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::todo_error_lists_stop_at_the_cap_and_name_the_view_call` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::a_phase_list_stops_at_the_cap_and_names_the_view_call` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::a_refused_answer_echoes_a_bounded_view_naming_the_held_file` (T1)
 loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_lists_a_bounded_number_of_names` (T0)
+loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_cuts_a_long_list_of_names_it_could_not_restore` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_memory_index_names_what_it_did_not_load` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_files_line_names_the_cap_and_the_hidden_names_it_skipped` (T0)
 kernel tool calls (`yi.tools`) | `kernel_tools::a_cell_writes_and_reads_through_the_sessions_own_gated_tools`
@@ -108,6 +130,7 @@ kernel tool calls (`yi.tools`) | `kernel_tools::a_console_cell_running_while_the
 kernel tool calls (`yi.tools`) | `kernel_tools::a_program_gets_whole_values_and_edits_a_line_the_view_never_showed`
 kernel tool calls (`yi.tools`) | `kernel_tools::every_tool_hands_a_program_its_typed_value`
 dill snapshot | `snapshot_e2e::session_dir_snapshot_revives_through_the_service`
+dill snapshot | `snapshot_skips::a_name_the_snapshot_skipped_comes_back_named_at_resume`
 dill snapshot | `snapshot_e2e::post_compaction_sync_reports_only_the_models_names`
 heartbeats: clock subscriptions | `serve_daemon::workers_do_not_lose_heartbeats_or_tear_the_job_ledger` (T2)
 heartbeats: clock subscriptions | `schedule_e2e::a_heartbeat_due_mid_compaction_is_deferred`
@@ -152,6 +175,7 @@ cross-session stats, observed prices and plan-op counters | `cli_surfaces::stats
 cross-session stats, observed prices and plan-op counters | `cli_surfaces::stats_by_plan_names_the_rows_it_cut`
 cross-session stats, observed prices and plan-op counters | `cli_surfaces::the_rollup_flags_belong_to_stats_alone_and_refuse_a_session_id`
 cross-session stats, observed prices and plan-op counters | `cli_surfaces::a_flag_name_that_is_another_options_value_is_a_value` (T2)
+cross-session stats, observed prices and plan-op counters | `stats::stats_bills_a_sessions_usage_records_as_its_ledger_does`
 goals + autonomous | `journeys::a_red_goal_check_refuses_the_completion_claim_and_the_plan_surface_mints_no_principal` (T2)
 plan ledger: op stream, `yi plan`, `yi why` | `journeys::a_hand_written_plan_lints_resolves_and_answers_why` (T2)
 plan ledger: op stream, `yi plan`, `yi why` | `plan_cli::a_cli_set_keeps_unnamed_rows_drops_struck_ones_and_reads_string_todos` (T2)
@@ -184,6 +208,8 @@ final answer (`answer`) | `answer_turn::a_host_note_queued_on_the_answer_turn_is
 identity + doctrine: the comprehensive prompt | `prompt_drift::identity_names_every_tool_the_session_registers`
 identity + doctrine: the comprehensive prompt | `prompt_drift::doctrine_names_only_ops_the_todo_tool_accepts`
 identity + doctrine: the comprehensive prompt | `evals/prose.py --gate` (run by `check_guardrails.sh`)
+identity + doctrine: the comprehensive prompt | `answer_turn::the_summary_heads_the_reply_the_user_reads`
+identity + doctrine: the comprehensive prompt | `answer_turn::done_is_refused_while_an_item_is_blocked`
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::a_skill_within_a_repository_is_listed_only_there`
 skills: catalog ladder, `$name`, Yi's triggered skills | `cli_surfaces::a_run_with_nobody_attached_is_told_it_is_alone`
 skills: catalog ladder, `$name`, Yi's triggered skills | `rpc_protocol::an_rpc_session_is_not_told_it_is_alone`
@@ -227,7 +253,7 @@ loud caps on model-facing text | `ext_e2e::an_instruction_file_over_its_budget_n
 trigger rules (gate + remind) | `rules_e2e::result_scope_fires_on_the_output_not_the_args`
 trigger rules (gate + remind) | `rules_e2e::the_lane_fixture_runs_through_the_engine`
 trigger rules (gate + remind) | `recursion_e2e::a_rule_promoted_after_the_spawn_still_stops_the_check_at_result` (T1)
-host-written memory (one file per fact, hook index) | `ext_e2e::the_memory_block_is_present_at_zero_notes` (T1)
+host-written memory (one file per fact, hook index) | `ext_e2e::the_memory_block_waits_for_the_first_prompt_at_zero_notes` (T1)
 host-written memory (one file per fact, hook index) | `skills_e2e::save_read_forget_through_the_kernel` (T1)
 host-written memory (one file per fact, hook index) | `cli_surfaces::memory_imports_lists_checks_and_forgets` (T2)
 host-written memory (one file per fact, hook index) | `cli_surfaces::yi_memory_list_changes_no_file` (T2)
@@ -238,6 +264,7 @@ advisor (LlmReviewer only) | `advisor_e2e::promotion_writes_a_rule_the_discovery
 ACP v2 server | `acp_protocol::a_strict_client_accepts_every_frame_of_a_faux_session`
 ACP v2 server | `acp_protocol::v2_client_drives_a_session_end_to_end`
 ACP v2 server | `acp_protocol::resume_replays_the_stored_branch` (T2)
+ACP v2 server | `acp_protocol::committed_updates_include_ordered_model_and_tool_entries`
 rewind while a turn runs | `rewind_branch::a_rewind_while_a_turn_streams_is_refused_until_it_ends` (T1)
 rewind while a turn runs | `acp_protocol::a_rewind_is_refused_while_a_turn_runs_a_tool`
 rewind while a turn runs | `tui_drive::rewinding_removes_the_exchange_and_restores_the_message`
@@ -283,6 +310,7 @@ console right-click menu and pane close mark | `drive::fork_here_opens_the_answe
 console right-click menu and pane close mark | `drive::re_ask_puts_the_prompt_back_in_a_session_before_it`
 console right-click menu and pane close mark | `drive::a_repeated_prompt_rewinds_to_its_own_turn`
 console right-click menu and pane close mark | `drive::a_live_reply_is_inspectable_once_committed`
+console right-click menu and pane close mark | `drive::a_live_tool_call_with_hidden_ancestors_rewinds_to_itself`
 console right-click menu and pane close mark | `acp_protocol::a_committed_answer_forks_into_a_session_that_ends_at_it` (T2)
 console right-click menu and pane close mark | `drive::open_in_sends_the_reply_to_the_app_picked`
 console right-click menu and pane close mark | `serve_daemon::open_in_runs_the_configured_app_on_the_saved_message` (T2)
@@ -352,7 +380,14 @@ console notebook pane | `app::notebook::tests::a_wrapped_code_row_hangs_deeper_t
 console notebook pane | `app::notebook::tests::only_the_newest_figure_keeps_its_bytes_across_two_hundred_cells`
 console notebook pane | `app::notebook::tests::the_newest_image_of_the_newest_cell_is_the_one_placed`
 console notebook pane | `tests::v_on_the_notebook_shows_the_code_rows_its_cap_cut` (T0)
+console notebook pane | `app::notebook::tests::a_markdown_result_draws_its_blocks_as_the_chat_does`
+console notebook pane | `app::notebook::tests::a_json_result_draws_pretty_and_names_the_cap_it_collapsed_past`
+console notebook pane | `app::notebook::tests::a_code_result_is_highlighted_by_the_language_its_mime_names`
+console notebook pane | `app::notebook::tests::a_cells_details_hand_its_mime_to_the_pane`
+console notebook pane | `drive::a_replayed_sessions_values_draw_by_their_mime` (T2)
 console notebook pane | `drive::notebook_pane_shows_cells_and_image_placeholder` (T2)
+kitty terminal capabilities | `keys::terminal_environments_share_graphics_support_but_not_chord_support` (T0)
+kitty terminal capabilities | `kitty::base64_payloads_leave_in_bounded_chunks` (T0)
 console notebook pane | `app::notebook::tests::a_recorded_traceback_dims_its_frames_and_lexes_what_each_ran`
 console notebook pane | `pycell::a_tracebacks_frames_dim_and_the_rows_they_ran_keep_their_colour`
 console sidebar | `sessions::a_quiet_session_draws_one_row` (T0)
@@ -375,6 +410,13 @@ extension system + yard + native voice/method | `ext_e2e::the_yard_is_a_third_bl
 extension system + yard + native voice/method | `session_faux::an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone`
 extension system + yard + native voice/method | `ext_e2e::a_search_over_many_files_escalates_without_a_nudge`
 structured output `--schema` | `cli_surfaces::schema_validates_the_answer`
+`yi ask --check CMD` | `ask_check::every_re_prompt_re_runs_the_check`
+`yi ask --check CMD` | `ask_check::an_ended_first_turn_skips_the_check`
+`yi ask --check CMD` | `ask_check::a_lane_ask_checks_the_lane_worktree`
+`yi ask --check CMD` | `ask_check::a_lane_ask_probes_the_check_in_the_lane_worktree`
+`yi ask --check CMD` | `ask_check::a_check_that_stays_red_releases_at_the_cap`
+`yi ask --check CMD` | `ask_check::a_check_that_passes_on_the_first_run_prompts_once`
+`yi ask --check CMD` | `ask_check::a_check_never_holds_the_run_past_its_deadline`
 `yi ask` turn gaps and `--no-deltas` | `cli_surfaces::a_turn_that_said_text_ends_with_a_blank_line_before_the_next_turns_text`
 `yi ask` turn gaps and `--no-deltas` | `cli_surfaces::no_deltas_drops_the_message_update_lines_and_only_those`
 verb table, `yi --help` and completions | `cli_surfaces::help_prints_the_command_table_and_an_unknown_flag_still_exits_two`
@@ -451,6 +493,7 @@ catastrophic-path denylist M10 | `decide::a_catastrophic_target_in_any_segment_i
 `yi plugin` | `plugin::tests::a_tampered_download_or_a_target_with_no_build_installs_nothing`
 `yi plugin` | `pinned::tests::sixteen_threads_installing_one_pin_publish_it_once_and_leave_no_staging`
 `yi plugin` | `kernel::tests::the_kernel_puts_an_installed_plugin_first_on_its_path`
+`yi plugin` | `kernel_lane::a_plugin_added_after_the_kernel_booted_is_on_the_next_cells_path`
 `yi plugin` | `skills_e2e::the_ripwire_index_is_the_one_line_for_an_installed_plugins_skills`
 `yi plugin` | `skills_e2e::the_ripwire_index_names_every_published_skill_and_no_other`
 `yi plugin` | `fetch_session::a_plugin_skill_and_its_files_are_read_by_address`
@@ -459,6 +502,11 @@ catastrophic-path denylist M10 | `decide::a_catastrophic_target_in_any_segment_i
 `yi plugin` | `plugin_tree::a_tampered_zip_an_escaping_entry_or_a_wrong_member_installs_nothing`
 `yi plugin` | `plugin_tree::eight_threads_adding_one_new_tree_end_with_one_valid_install`
 `yi plugin` | `plugin_tree::every_chrome_asset_names_the_pinned_version_s_headless_shell`
+`yi doctor` | `cli_surfaces::doctor_judges_the_socket_named_on_the_command_line`
+`yi doctor` | `cli_surfaces::doctor_judges_only_the_configured_lane_slots`
+`yi doctor` | `cli_surfaces::doctor_names_each_skipped_exec_tool_and_its_reason`
+`yi doctor` | `tools::a_hung_exec_tool_is_skipped_and_the_others_load`
+`yi doctor` | `exec::tests::exec_tool_probes_stop_at_their_own_deadline`
 `yi gc` and the retention sweep | `cli_surfaces::gc_fix_takes_the_checkpoints_of_a_deleted_project`
 `yi gc` and the retention sweep | `retention::only_an_orphan_past_seven_days_is_removed`
 `yi gc` and the retention sweep | `retention::a_trim_keeps_every_capture_inside_the_window`
@@ -590,6 +638,25 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+custom OpenAI-compatible providers | `custom_providers::a_declared_provider_streams_through_its_own_base_url_and_key` (T2)
+custom OpenAI-compatible providers | `custom_providers::a_declared_provider_with_no_key_is_refused_before_any_request` (T2)
+custom OpenAI-compatible providers | `custom_providers::a_custom_provider_named_like_a_built_in_one_is_refused_at_load` (T2)
+custom OpenAI-compatible providers | `custom_providers::a_catalog_cache_leaves_the_declared_models_in_place` (T2)
+custom OpenAI-compatible providers | `custom_providers::a_literal_api_key_is_the_bearer` (T2)
+cache marks and TTL from the session ledger | `cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes` (T0)
+cache marks and TTL from the session ledger | `cache_miss::an_upstream_pin_needs_two_switch_misses_inside_half_an_hour` (T0)
+cache marks and TTL from the session ledger | `cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour` (T0)
+cache marks and TTL from the session ledger | `openrouter::a_pinned_upstream_rides_the_provider_order` (T0)
+cache marks and TTL from the session ledger | `openrouter::a_suspended_tail_mark_keeps_the_marks_before_it_only` (T0)
+cache marks and TTL from the session ledger | `strip::a_400_naming_a_cache_field_is_resent_once_without_it` (T0)
+cache marks and TTL from the session ledger | `strip::the_reply_records_the_field_the_route_refused` (T0)
+model read deadline | `read_timeout::a_gateway_silent_past_the_models_deadline_names_the_field_and_runs_once` (T0)
+model read deadline | `a_run_that_ends_on_a_provider_error_exits_non_zero_in_json_too` (T0)
+fetch: one addressable read path | `kernel_across_sessions::a_read_of_a_busy_kernel_gives_up_within_its_deadline`
+host-written memory (one file per fact, hook index) | `memory_inject::the_focused_block_scores_against_the_saved_labels` (T1)
+daemon (ACP-router supervisor + worker/root) | `serve_daemon::replacing_a_worker_keeps_the_session_and_the_daemon_serving_it` (T2)
+kernel + ipython + rlm() subagents | `requests_e2e::a_final_text_over_the_body_cap_points_at_the_childs_transcript`
+kernel + ipython + rlm() subagents | `recursion_e2e::a_high_discovery_with_no_goal_is_delivered_as_a_note`
 kernel + ipython + rlm() subagents | `tools::tests::a_large_cell_result_names_the_file_write_one_liner` (T0)
 fetch: one addressable read path | `kernel_sandbox::a_parent_kernel_loads_no_pickle_a_contained_child_wrote`
 fetch: one addressable read path | `kernel_sandbox::a_contained_childs_kernel_creates_no_board_file`
@@ -616,6 +683,7 @@ lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an e
 lanes: worktree-first sessions, pooled slots, hand-back by move, landing as an event, contained warmer (absorbs B11) | `lanes::a_worktree_spawn_names_the_edits_its_child_starts_without`
 web_search (OpenRouter server search) | `web_search_offline_citations_and_cost` (T2)
 web_search (OpenRouter server search) | `invalid_web_search_config_is_refused_with_an_actionable_reason` (T2)
+`yi tool import just` | `tool_import::a_space_and_a_quote_survive_as_one_argv_element`
 console settings pane | `drive::a_press_on_a_settings_row_saves_the_control_it_names`
 `agent-desktop` plugin | `cli_surfaces::the_gate_says_what_a_desktop_command_would_do`
 `agent-desktop` plugin | `permission_scope::a_yes_for_one_desktop_app_covers_that_app_alone_and_runs_outside`
@@ -643,3 +711,7 @@ heartbeats: clock subscriptions | `channel_e2e::a_file_wait_holds_until_the_file
 `agent-browser` plugin | `kept_rules::what_a_browser_command_prints_comes_back_inside_the_external_fence`
 `agent-browser` plugin | `sandbox::the_browser_box_holds_credentials_writes_sockets_and_all_but_the_web_session_s_internet`
 `agent-browser` plugin | `skills_e2e::the_agent_browser_pointer_is_listed_only_when_its_plugin_is_installed`
+TUI | `tui_unit::status_labels_the_worktree_branch_and_session_and_keeps_a_lane_branch_head` (T0)
+skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::the_index_serves_every_bundled_skill_whole_and_only_where_it_applies`
+skills: catalog ladder, `$name`, Yi's triggered skills | `reader_e2e::a_child_that_can_read_is_pointed_at_the_catalog_and_the_skills_its_parent_loaded`
+cross-session stats, observed prices and plan-op counters | `cli_surfaces::stats_counts_a_followed_skill_pointer_in_one_session_and_the_fold`

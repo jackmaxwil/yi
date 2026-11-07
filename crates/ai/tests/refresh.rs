@@ -105,6 +105,52 @@ fn a_bundled_id_keeps_its_compat_through_a_refresh() -> TestResult {
     Ok(())
 }
 
+/// Incident: a refresh replaced the whole provider file, so a `readTimeoutSecs` an author set by
+/// hand vanished within a day; the cache overlay is what carries it into the next file.
+#[test]
+fn a_refresh_keeps_a_deadline_an_author_set_by_hand() -> TestResult {
+    let models_dev: Value = serde_json::from_str(MODELS_DEV)?;
+    let dir = Scratch::new("yi-refresh-timeout")?;
+    let mut hand = catalog_from(&models_dev, "openai", None, &Catalog::bundled());
+    hand["openai-responses"]["gpt-5.6-sol"]["readTimeoutSecs"] = json!(600);
+    std::fs::write(dir.join("openai.json"), hand.to_string())?;
+    let written = catalog_from(
+        &models_dev,
+        "openai",
+        None,
+        &Catalog::bundled().with_cache(&dir),
+    );
+    assert_eq!(
+        written["openai-responses"]["gpt-5.6-sol"]["readTimeoutSecs"],
+        600
+    );
+    Ok(())
+}
+
+/// Invariant: a cursor-agent wire waits on its own connect and header bounds, so a field it
+/// cannot honour is refused at load rather than accepted and dropped.
+#[test]
+fn a_cursor_entry_carrying_a_read_deadline_is_refused() -> TestResult {
+    let dir = Scratch::new("yi-cursor-timeout")?;
+    let mut model = yi_ai::cursor::model_for("composer-1");
+    model.read_timeout_secs = Some(600);
+    std::fs::write(
+        dir.join("cursor.json"),
+        json!({"cursor-agent": {"composer-1": model}, "schema": 2}).to_string(),
+    )?;
+    let catalog = Catalog::bundled().with_cache(&dir);
+    assert!(catalog.get("cursor", "composer-1").is_none());
+    assert!(
+        catalog
+            .rejected()
+            .iter()
+            .any(|line| line.contains("readTimeoutSecs")),
+        "{:?}",
+        catalog.rejected()
+    );
+    Ok(())
+}
+
 /// The bundle's Opus 5 row before the temperature option went, as an older session's refresh
 /// left it in the cache: `supportsTemperature` is a key nothing reads now.
 const STALE_OPUS_ROW: &str = r#"{"id":"claude-opus-5","name":"Claude Opus 5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":6.25},"contextWindow":1000000,"maxTokens":128000,"thinkingLevelMap":{"xhigh":"xhigh","max":"max"},"compat":{"supportsTemperature":false}}"#;
@@ -305,7 +351,7 @@ fn a_cursor_account_list_becomes_one_catalog_entry() -> TestResult {
 #[test]
 fn a_cursor_refresh_http_error_keeps_its_cause() -> TestResult {
     let body = r#"{"error":{"message":"the model or engine was not found; out of credits"}}"#;
-    let reply = crate::kimi_wire::json_reply("404 remote instructions", body);
+    let reply = crate::loopback::reply("404 remote instructions", "application/json", body);
     let (port, _, served) = crate::loopback_server::serve([reply])?;
     let result = yi_ai::request::post_json(
         &format!("http://127.0.0.1:{port}/aiserver.v1.AiService/AvailableModels"),

@@ -583,7 +583,7 @@ fn swap(dest: &Path, new_bin: &Path, target: &Path, new_skills: &Path) -> Result
     }
 }
 
-fn write_exec(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_exec(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(io(path))?;
     #[cfg(unix)]
     {

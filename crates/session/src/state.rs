@@ -211,13 +211,7 @@ impl SessionState {
                     }
                     _ => {}
                 }
-                // A `cause: "assistant"` usage record mirrors an assistant entry that already
-                // carries the same usage (pi import convention); counting both doubles it.
-                let mirrors_entry = matches!(
-                    record,
-                    LaneRecord::Usage { cause, .. } if cause == "assistant"
-                );
-                if let Some(usage) = record.usage().filter(|_| !mirrors_entry) {
+                if let Some(usage) = record.billed_usage() {
                     self.absorb_usage(usage);
                 }
             }

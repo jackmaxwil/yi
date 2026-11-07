@@ -8,15 +8,39 @@ use super::types::{
     Anchor, BlockMode, BlockResolver, BlockSpan, Cursor, Edit, ParsedRange, PasteTarget,
 };
 
+#[derive(Clone, Copy)]
+pub enum BraceSyntax {
+    Rust,
+    JavaScript,
+    CStyle,
+    Plain,
+}
+
+impl BraceSyntax {
+    fn rust_lifetimes(self) -> bool {
+        matches!(self, Self::Rust)
+    }
+
+    fn block_comments(self) -> bool {
+        !matches!(self, Self::Plain)
+    }
+
+    fn regex_literals(self) -> bool {
+        matches!(self, Self::JavaScript)
+    }
+}
+
 /// The block opening at `line` spans to where the scanner returns to its prior depth. None
 /// when the anchor opens nothing, or when the delimiters never balance.
-pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
+pub fn brace_block_resolver(text: &str, line: u64, syntax: BraceSyntax) -> Option<BlockSpan> {
     let lines: Vec<&str> = text.split('\n').collect();
     let anchor_index = usize::try_from(line.checked_sub(1)?).ok()?;
     let anchor = lines.get(anchor_index)?;
     let mut depth: i64 = 0;
+    let mut in_block_comment = false;
     let mut opened = false;
-    for byte in strip_line_noise(anchor) {
+    let mut carry = strip_line_noise(anchor, syntax, &mut in_block_comment, &[]);
+    for &byte in &carry {
         match byte {
             b'{' | b'[' | b'(' => {
                 depth += 1;
@@ -30,7 +54,8 @@ pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
         return None;
     }
     for (offset, candidate) in lines.iter().enumerate().skip(anchor_index + 1) {
-        for byte in strip_line_noise(candidate) {
+        let out = strip_line_noise(candidate, syntax, &mut in_block_comment, &carry);
+        for &byte in &out {
             match byte {
                 b'{' | b'[' | b'(' => depth += 1,
                 b'}' | b']' | b')' => {
@@ -44,6 +69,9 @@ pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
                 }
                 _ => {}
             }
+        }
+        if !blank(&out) {
+            carry = out;
         }
     }
     None
@@ -59,8 +87,13 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
         return None;
     }
     let depth = indent_width(anchor);
+    let mut signature_depth = delimiter_delta(anchor);
     let mut end: Option<usize> = None;
     for (index, candidate) in lines.iter().enumerate().skip(anchor_index.checked_add(1)?) {
+        if signature_depth > 0 {
+            signature_depth = signature_depth.saturating_add(delimiter_delta(candidate));
+            continue;
+        }
         if candidate.trim().is_empty() {
             continue;
         }
@@ -73,20 +106,49 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     Some(BlockSpan { start: line, end })
 }
 
-fn indent_width(line: &str) -> usize {
+pub(crate) const INDENT_LEVEL: usize = 4;
+
+fn delimiter_delta(line: &str) -> i64 {
+    let mut in_block_comment = false;
+    strip_line_noise(line, BraceSyntax::Plain, &mut in_block_comment, &[])
+        .into_iter()
+        .fold(0_i64, |depth, byte| match byte {
+            b'{' | b'[' | b'(' => depth.saturating_add(1),
+            b'}' | b']' | b')' => depth.saturating_sub(1),
+            _ => depth,
+        })
+}
+
+pub(crate) fn indent_width(line: &str) -> usize {
     line.bytes()
         .take_while(|byte| matches!(byte, b' ' | b'\t'))
-        .map(|byte| if byte == b'\t' { 4 } else { 1 })
+        .map(|byte| if byte == b'\t' { INDENT_LEVEL } else { 1 })
         .sum()
+}
+
+fn blank(out: &[u8]) -> bool {
+    out.iter().all(u8::is_ascii_whitespace)
 }
 
 /// Delimiters inside string/char literals and line comments do not count. A lexical pass, not
 /// a parser: multi-line strings and block comments fail closed via unbalanced depth.
-fn strip_line_noise(line: &str) -> Vec<u8> {
+fn strip_line_noise(
+    line: &str,
+    syntax: BraceSyntax,
+    in_block_comment: &mut bool,
+    carry: &[u8],
+) -> Vec<u8> {
     let bytes = line.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     let mut in_string: Option<u8> = None;
+    if *in_block_comment {
+        let Some(end) = bytes.windows(2).position(|pair| pair == b"*/") else {
+            return out;
+        };
+        index = end.saturating_add(2);
+        *in_block_comment = false;
+    }
     while index < bytes.len() {
         let byte = bytes[index];
         if let Some(quote) = in_string {
@@ -101,6 +163,41 @@ fn strip_line_noise(line: &str) -> Vec<u8> {
             continue;
         }
         match byte {
+            b'\''
+                if syntax.rust_lifetimes()
+                    && bytes
+                        .get(index + 1)
+                        .is_some_and(|next| next.is_ascii_alphabetic() || *next == b'_')
+                    && bytes.get(index + 2) != Some(&b'\'') =>
+            {
+                out.push(byte)
+            }
+            b'/' if syntax.regex_literals()
+                && regex_can_start(if blank(&out) { carry } else { &out })
+                && bytes
+                    .get(index + 1)
+                    .is_some_and(|next| *next != b'/' && *next != b'*') =>
+            {
+                if let Some(end) = regex_literal_end(bytes, index.saturating_add(1)) {
+                    index = end;
+                    continue;
+                }
+                out.push(byte);
+            }
+            b'/' if syntax.block_comments() && bytes.get(index + 1) == Some(&b'*') => {
+                let Some(rest) = bytes.get(index.saturating_add(2)..) else {
+                    break;
+                };
+                let Some(end) = rest.windows(2).position(|pair| pair == b"*/") else {
+                    *in_block_comment = true;
+                    break;
+                };
+                index = index
+                    .saturating_add(2)
+                    .saturating_add(end)
+                    .saturating_add(2);
+                continue;
+            }
             b'"' | b'\'' | b'`' => in_string = Some(byte),
             b'/' if bytes.get(index + 1) == Some(&b'/') => break,
             b'#' if index == 0 || bytes[index - 1].is_ascii_whitespace() => break,
@@ -109,6 +206,90 @@ fn strip_line_noise(line: &str) -> Vec<u8> {
         index += 1;
     }
     out
+}
+
+fn regex_can_start(out: &[u8]) -> bool {
+    let Some((index, previous)) = out
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, byte)| !byte.is_ascii_whitespace())
+    else {
+        return false;
+    };
+    if matches!(
+        *previous,
+        b'(' | b'['
+            | b'{'
+            | b'='
+            | b':'
+            | b','
+            | b';'
+            | b'!'
+            | b'?'
+            | b'&'
+            | b'|'
+            | b'+'
+            | b'-'
+            | b'*'
+            | b'%'
+            | b'^'
+            | b'~'
+            | b'<'
+            | b'>'
+    ) {
+        return true;
+    }
+    let Some(tail) = out.get(..=index) else {
+        return false;
+    };
+    [
+        b"return".as_slice(),
+        b"throw".as_slice(),
+        b"case".as_slice(),
+        b"delete".as_slice(),
+        b"void".as_slice(),
+        b"typeof".as_slice(),
+        b"instanceof".as_slice(),
+        b"yield".as_slice(),
+        b"await".as_slice(),
+        b"else".as_slice(),
+        b"do".as_slice(),
+        b"in".as_slice(),
+        b"of".as_slice(),
+    ]
+    .into_iter()
+    .any(|keyword| {
+        if !tail.ends_with(keyword) {
+            return false;
+        }
+        let boundary = tail
+            .len()
+            .checked_sub(keyword.len())
+            .and_then(|start| start.checked_sub(1))
+            .and_then(|before| tail.get(before));
+        boundary.is_none_or(|byte| !byte.is_ascii_alphanumeric() && !matches!(*byte, b'_' | b'$'))
+    })
+}
+
+fn regex_literal_end(bytes: &[u8], mut cursor: usize) -> Option<usize> {
+    let mut in_class = false;
+    while let Some(byte) = bytes.get(cursor) {
+        match *byte {
+            b'\\' => cursor = cursor.saturating_add(2),
+            b'[' => {
+                in_class = true;
+                cursor = cursor.saturating_add(1);
+            }
+            b']' => {
+                in_class = false;
+                cursor = cursor.saturating_add(1);
+            }
+            b'/' if !in_class => return cursor.checked_add(1),
+            _ => cursor = cursor.saturating_add(1),
+        }
+    }
+    None
 }
 
 fn is_closer_line(text: &str, line: u64) -> bool {

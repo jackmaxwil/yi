@@ -1,7 +1,8 @@
 # Guardrails
 
 Run `just check` (fmt-check + clippy -D warnings + scripts/guardrails/check_guardrails.sh)
-before claiming any task done; quote failures verbatim, do not paraphrase them.
+before claiming any task done; quote failures verbatim in saved work (a PR, commit, issue or
+report to another agent) and to a user who asks, and never soften one in a reply.
 
 - The size ceilings — net src growth, per-crate src lines, test LOC, comment volume and
   over-cap count — are measured at the fork point (`git merge-base origin/main HEAD`), not stored:
@@ -30,7 +31,7 @@ before claiming any task done; quote failures verbatim, do not paraphrase them.
 - Every baseline has a reader (check_orphans.py). A new baseline seeds with its gate in one
   commit — the carve-out check_commit_style already grants — and goes when its gate goes.
 - A new YI_* env var is a row in scripts/guardrails/baselines/env_vars.json first (hard cap 40).
-- The dist profile is what binary-size and startup budgets measure — never release.
+- The dist profile is what the startup budget measures — never release.
 - No tracking check runs offline. A green `just check` says nothing about whether the work is
   registered, sized or dated — it cannot reach the forge and never tries. The PR job
   (check_pr_metadata.py) and the weekly hygiene job are where that is enforced.

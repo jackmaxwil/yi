@@ -103,8 +103,8 @@ pub struct ToolCall<'a> {
     pub command: Option<&'a str>,
 }
 
-/// Invariant: catastrophic denylist (every mode, yolo included) > configured deny > session
-/// rule > configured allow/ask > hold > mode fallback. ponytail: memoize when decide() profiles.
+/// Invariant: catastrophic denylist (every mode, yolo included) > write scope > configured deny >
+/// session rule > configured allow/ask > hold > mode fallback. ponytail: memoize if decide profiles.
 pub fn decide(
     call: &ToolCall<'_>,
     mode: PermissionMode,
@@ -139,6 +139,12 @@ pub fn decide(
                 "command targets a protected path ({hit}); this is denied in every mode."
             ),
         };
+    }
+
+    if !session_rules.state().rules.is_empty()
+        && let Some(reason) = crate::scope::outside(session_rules, call, catastrophic_context)
+    {
+        return Decision::Deny { reason };
     }
 
     if let Some(why) = call.command.and_then(crate::desktop::refused) {

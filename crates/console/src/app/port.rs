@@ -41,7 +41,7 @@ pub struct RemotePort {
     /// [`RemotePort::drawn`] read every entry.
     entries: Vec<Entry>,
     leaf: Option<String>,
-    /// Messages the worker saved since the last replay, in order: all on the current branch.
+    /// Entries from the active branch committed since the last replay, in ancestry order.
     committed: Vec<Entry>,
     goal: Option<GoalView>,
     todos: Option<TodoList>,
@@ -64,7 +64,11 @@ impl RemotePort {
         }
     }
 
-    pub fn commit(&mut self, entry: Entry) {
+    pub fn commit(&mut self, entry: Entry, ancestors: Vec<Entry>) {
+        self.committed.extend(ancestors);
+        if !self.entries.iter().any(|seen| seen.id() == entry.id()) {
+            self.leaf = Some(entry.id().to_owned());
+        }
         self.committed.push(entry);
     }
 
@@ -104,7 +108,7 @@ impl SessionPort for RemotePort {
 
     fn entries(&mut self) -> Answer {
         Answer::now(Reply::Entries {
-            entries: self.entries.clone(),
+            entries: self.drawn().into_iter().cloned().collect(),
             leaf: self.leaf.clone(),
         })
     }
@@ -193,13 +197,15 @@ pub enum Decoded {
     Name(String),
     Plan(Option<yi_tui::hud::PlanProgress>),
     Config(Config),
-    Child(ChildUpdate),
+    Child(Box<ChildUpdate>),
     Workdir {
         cwd: String,
         lane: Option<String>,
     },
     Notice(String),
-    Committed(Box<Entry>),
+    /// The root's worker was swapped for a new binary; the session resumes from the ledger.
+    Replaced,
+    Committed(Box<yi_types::acp::AcpCommitted>),
     Other,
 }
 
@@ -340,14 +346,15 @@ pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
         "_yi/committed" => serde_json::from_value::<yi_types::acp::AcpCommitted>(Value::Object(
             fields.into_iter().collect(),
         ))
-        .map(|committed| Decoded::Committed(Box::new(committed.entry)))
+        .map(|committed| Decoded::Committed(Box::new(committed)))
         .map_err(|_| Malformed),
         "_yi/notice" => Ok(Decoded::Notice(
             string(fields.get("text")).ok_or(Malformed)?,
         )),
+        "_yi/worker_replaced" => Ok(Decoded::Replaced),
         "_yi/subagent_update" => {
             serde_json::from_value::<ChildUpdate>(Value::Object(fields.into_iter().collect()))
-                .map(Decoded::Child)
+                .map(|child| Decoded::Child(Box::new(child)))
                 .map_err(|_| Malformed)
         }
         _ => Ok(Decoded::Other),
@@ -369,6 +376,7 @@ pub fn writes_transcript(update: &AcpSessionUpdate) -> bool {
                 | "_yi/claims"
                 | "_yi/plan_progress"
                 | "_yi/name"
+                | "_yi/worker_replaced"
         ),
         _ => true,
     }

@@ -68,6 +68,144 @@ pub struct UserConfig {
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
     pub open: Option<Vec<OpenApp>>,
     pub browser: Option<BrowserConfig>,
+    /// `providers`: OpenAI-compatible endpoints the user declares, each addressed `<id>/<model>`.
+    pub providers: Option<Providers>,
+}
+
+/// Ids a custom provider may not take beside the catalog's: the classifier's bearer, the script.
+const RESERVED_PROVIDERS: [&str; 2] = ["laya", "faux"];
+
+/// Invariant: no id is a built-in provider's, empty, or holds `/`, which splits `provider/id`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "std::collections::BTreeMap<String, CustomProvider>")]
+pub struct Providers(std::collections::BTreeMap<String, CustomProvider>);
+
+impl TryFrom<std::collections::BTreeMap<String, CustomProvider>> for Providers {
+    type Error = String;
+
+    fn try_from(map: std::collections::BTreeMap<String, CustomProvider>) -> Result<Self, String> {
+        let builtin = crate::CATALOG_PROVIDERS.iter().chain(&RESERVED_PROVIDERS);
+        if let Some(taken) = map
+            .keys()
+            .find(|id| builtin.clone().any(|known| known == id))
+        {
+            return Err(format!(
+                "providers: `{taken}` is a built-in provider id; name the custom one otherwise"
+            ));
+        }
+        if let Some(bad) = map.keys().find(|id| id.is_empty() || id.contains('/')) {
+            return Err(format!(
+                "providers: `{bad}` is not a provider id (empty, or holds `/`)"
+            ));
+        }
+        for (id, provider) in &map {
+            let url = &provider.base_url;
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Err(format!(
+                    "providers.{id}.baseUrl: `{url}` is not an http(s) URL"
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            if provider.models.is_empty() {
+                return Err(format!("providers.{id}.models: declares no model"));
+            }
+            if let Some(bad) = (provider.models.iter())
+                .find(|model| !seen.insert(&model.id) || model.id.is_empty())
+            {
+                return Err(format!(
+                    "providers.{id}.models: `{}` is empty or declared twice",
+                    bad.id
+                ));
+            }
+        }
+        Ok(Self(map))
+    }
+}
+
+impl Providers {
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &CustomProvider)> {
+        self.0.iter().map(|(id, provider)| (id.as_str(), provider))
+    }
+}
+
+/// Speaks OpenAI chat completions; the key is `apiKeyEnv`'s variable, else the literal `apiKey`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomProvider {
+    pub base_url: String,
+    pub api_key_env: Option<String>,
+    pub api_key: Option<String>,
+    pub models: Vec<CustomModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomModel {
+    pub id: String,
+    pub name: Option<String>,
+    pub reasoning: Option<bool>,
+    pub input: Option<Vec<CustomInput>>,
+    pub context_window: Option<u64>,
+    pub max_tokens: Option<u64>,
+    pub cost: Option<CustomCost>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CustomInput {
+    Text,
+    Image,
+}
+
+/// Dollars per million tokens; an unset rate is 0.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomCost {
+    pub input: Option<serde_json::Number>,
+    pub output: Option<serde_json::Number>,
+    pub cache_read: Option<serde_json::Number>,
+    pub cache_write: Option<serde_json::Number>,
+}
+
+impl CustomProvider {
+    /// The catalog entries this provider declares under `id`.
+    pub fn catalog(&self, id: &str) -> Vec<crate::model::Model> {
+        let rate = |set: Option<&serde_json::Number>| set.cloned().unwrap_or_else(|| 0u64.into());
+        let base_url = self.base_url.trim_end_matches('/').to_owned();
+        (self.models.iter())
+            .map(|model| {
+                let cost = model.cost.clone().unwrap_or_default();
+                let input = model.input.as_deref().unwrap_or(&[CustomInput::Text]);
+                crate::model::Model {
+                    id: model.id.clone(),
+                    name: model.name.clone().unwrap_or_else(|| model.id.clone()),
+                    api: "openai-completions".to_owned(),
+                    provider: id.to_owned(),
+                    base_url: base_url.clone(),
+                    reasoning: model.reasoning.unwrap_or(false),
+                    input: (input.iter())
+                        .map(|kind| match kind {
+                            CustomInput::Text => "text".to_owned(),
+                            CustomInput::Image => "image".to_owned(),
+                        })
+                        .collect(),
+                    cost: crate::model::ModelCost {
+                        input: rate(cost.input.as_ref()),
+                        output: rate(cost.output.as_ref()),
+                        cache_read: rate(cost.cache_read.as_ref()),
+                        cache_write: rate(cost.cache_write.as_ref()),
+                        tiers: None,
+                    },
+                    context_window: model.context_window.unwrap_or(128_000),
+                    max_tokens: model.max_tokens.unwrap_or(16_384),
+                    compat: Some(serde_json::json!({"plainMaxTokens": true})),
+                    thinking_level_map: None,
+                    headers: None,
+                    read_timeout_secs: None,
+                }
+            })
+            .collect()
+    }
 }
 
 /// `webSearch.engine`: the OpenRouter server-search engine; unset is `exa`.
@@ -315,6 +453,8 @@ pub struct ConsoleConfig {
     pub title_intro: Option<bool>,
     pub title_weights: Option<std::collections::BTreeMap<String, u32>>,
     pub sidebar: Option<SidebarState>,
+    /// Project directories in the order the sidebar lists them; one with no sessions is ignored.
+    pub project_order: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

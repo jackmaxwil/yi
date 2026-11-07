@@ -2,16 +2,17 @@
 //! was told, and a store the lease journal lands in.
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub(crate) use crate::faux_model::faux_model;
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::{
     AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions, Wall,
 };
 use yi_types::lease::LeaseRecord;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
 
 /// The `details.errorKind` a tool's refusal names, `untagged` when it names none: what the
 /// tool-failure census reads.
@@ -75,6 +76,7 @@ pub struct Family {
     /// Set, the parent has no transcript: every lease journal write is refused.
     pub unplugged: Arc<std::sync::atomic::AtomicBool>,
     pub events: tokio::sync::broadcast::Sender<yi_types::event::AgentEvent>,
+    pub scripts: Arc<Mutex<VecDeque<Vec<AgentMessage>>>>,
 }
 
 /// How many usage rows the store booked under a cause `wanted` accepts.
@@ -120,31 +122,6 @@ pub async fn wait_for_path(path: &Path, message: &str) -> Result<(), Box<dyn std
     Err(message.into())
 }
 
-pub fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
-
 /// `hold` makes every child run that shell command first, so its turn stays open; each
 /// reply bills 120 tokens and costs a quarter dollar.
 pub fn family(
@@ -153,7 +130,7 @@ pub fn family(
     store: yi_session::SharedSession,
     hold: Option<&'static str>,
 ) -> Family {
-    family_with_slots(dir, cwd, store, hold, 2)
+    family_with_slots(dir, cwd, store, hold, 2, 0, 1)
 }
 
 pub fn family_with_slots(
@@ -162,8 +139,24 @@ pub fn family_with_slots(
     store: yi_session::SharedSession,
     hold: Option<&'static str>,
     lane_slots: u8,
+    depth: u8,
+    max_depth: u8,
+) -> Family {
+    family_build(dir, cwd, store, hold, lane_slots, depth, max_depth)
+}
+
+fn family_build(
+    dir: PathBuf,
+    cwd: PathBuf,
+    store: yi_session::SharedSession,
+    hold: Option<&'static str>,
+    lane_slots: u8,
+    depth: u8,
+    max_depth: u8,
 ) -> Family {
     let built: Arc<Mutex<Vec<Built>>> = Arc::default();
+    let scripts: Arc<Mutex<VecDeque<Vec<AgentMessage>>>> = Arc::default();
+    let queued = Arc::clone(&scripts);
     let notices: Arc<Mutex<Vec<String>>> = Arc::default();
     let (seen, told, journal) = (Arc::clone(&built), Arc::clone(&notices), store.clone());
     let unplugged = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -171,15 +164,15 @@ pub fn family_with_slots(
     let (events, _keep) = tokio::sync::broadcast::channel(256);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
+        depth,
+        max_depth,
         max_children: 8,
         parent_session_dir: dir.join("children"),
         plans_dir: cwd.join(".yi/plans"),
         cwd,
         home: dir.join("home"),
         lane_slots,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut seen) = seen.lock() {
                 seen.push(Built {
@@ -189,19 +182,27 @@ pub fn family_with_slots(
                 });
             }
             let provider = Arc::new(ProviderStream::new(None));
-            let mut script = Vec::new();
-            if let Some(command) = hold {
-                let mut args = serde_json::Map::new();
-                args.insert("command".to_owned(), command.into());
-                let call = faux_tool_call("call-1", "bash", args);
-                script.push(faux_assistant_message(vec![call], StopReason::ToolUse));
-            }
-            script.push(priced_reply("ok", 0.25));
+            let scripted = queued.lock().ok().and_then(|mut queue| queue.pop_front());
+            let tools = hold.is_some() || scripted.is_some();
+            let script = match scripted {
+                Some(script) => script,
+                None => {
+                    let mut script = Vec::new();
+                    if let Some(command) = hold {
+                        let mut args = serde_json::Map::new();
+                        args.insert("command".to_owned(), command.into());
+                        let call = faux_tool_call("call-1", "bash", args);
+                        script.push(faux_assistant_message(vec![call], StopReason::ToolUse));
+                    }
+                    script.push(priced_reply("ok", 0.25));
+                    script
+                }
+            };
             provider.queue_faux(script);
             let wall = build.wall.clone();
             let cwd = build.cwd.map_or_else(std::env::temp_dir, PathBuf::from);
             let mut child = child_session(build, provider);
-            if hold.is_some() {
+            if tools {
                 child.set_wall(wall);
                 child.use_tools(yi_tools::builtin_tools(), cwd, None);
             }
@@ -222,6 +223,7 @@ pub fn family_with_slots(
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     Family {
+        scripts,
         host,
         built,
         notices,
@@ -232,6 +234,13 @@ pub fn family_with_slots(
 }
 
 impl Family {
+    pub fn queue(&self, script: Vec<AgentMessage>) -> Result<(), String> {
+        self.scripts
+            .lock()
+            .map(|mut queue| queue.push_back(script))
+            .map_err(|_| "script queue poisoned".to_owned())
+    }
+
     pub fn journal(&self) -> Vec<LeaseRecord> {
         let query = yi_session::EntryQuery {
             custom_type: Some("lease".to_owned()),
