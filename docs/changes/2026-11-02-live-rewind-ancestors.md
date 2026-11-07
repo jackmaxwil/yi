@@ -1,4 +1,5 @@
 ---
+version: 0.976.0
 issue: Refs #1442
 growth: +162 bounded active-main ancestry suffix and ordered console append; weighed deleting the suffix and reconstructing hidden parent IDs in the client, which lacks the worker's saved entries
 raise: crate acp +147, crate console +8, crate types +7

@@ -1,4 +1,6 @@
 ---
+version: 0.975.0
+decisions: D563
 issue: Closes #1674
 growth: +255 over the stacked #1671; weighed for deletion and kept: one shared redirect reader in the safety module, since write_targets read every `>` of a heredoc body, comment or quoted string as a redirect and refused a python file for its `-> bool`; dropped: a cd interpreter (a shell's directory is not modelled at all, so a relative redirect after one is refused), a Wall field (it makes the run a walled one and needs a python-side carry), file-verb targets (sed's script and chmod's mode read as paths), a permissions.scope key, a WallSpec carry
 decision: A write scope is a kept command rule judged inside decide, between the catastrophic denylist and the configured rules | the runs that edited outside their brief were yolo, so only a tier above the mode holds, and a kept rule reaches children through the copy a child already takes, where a wall would make the run a walled one | delete scope.rs, its one line in decide and the flag
