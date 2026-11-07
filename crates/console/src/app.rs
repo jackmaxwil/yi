@@ -511,14 +511,12 @@ impl App {
             }
             RequestKind::ListWorker => {
                 self.merge_worker_list(&result);
-                self.sync_chat_names();
                 if self.state.order.is_empty() {
                     self.note("no sessions for this root — alt+n starts one");
                 }
             }
             RequestKind::ListDaemon => {
                 self.merge_daemon_list(&result);
-                self.sync_chat_names();
             }
             RequestKind::Tracked(session, paths, open) => {
                 self.absorb_tracked(&session, &paths, &result, open)

@@ -988,7 +988,7 @@ fn resume_alpha_on_a_lane(frame: &Value) -> Vec<Value> {
 /// D208: the row named the root the console opened, for a session that ran in a lane.
 #[test]
 fn the_status_row_follows_the_workers_lane() -> TestResult {
-    run(
+    run_frames_with(
         "workdir",
         vec![
             Step::Expect("initialize", init_reply),
@@ -1000,10 +1000,13 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 › yi \n\
+         wait-frame 5000 › worktree yi \n\
          wait-frame 3000 !⎇ lane\n\
          quit\n",
+        SidebarMode::Full,
+        160,
     )
+    .map(drop)
 }
 
 fn lane_dir(name: &str) -> PathBuf {
@@ -3114,7 +3117,7 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
          type fix login\n\
          key enter\n\
          wait-frame 5000 fix login\n\
-         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 ○ fix login\n\
          quit\n",
     )
 }
@@ -3606,7 +3609,7 @@ fn the_status_row_shows_model_effort_cost_and_context() -> TestResult {
 }
 
 /// Dies with `1.0% / 200K` in the left third of a 254-column pane: every meter sat in the
-/// left group and the right one, the session name, is hidden in the console.
+/// left group and the right one, the session's id, stood alone.
 #[test]
 fn the_wide_pane_puts_its_meters_on_the_right() -> TestResult {
     let mut fixture = session_fixture();
@@ -3631,9 +3634,10 @@ fn the_wide_pane_puts_its_meters_on_the_right() -> TestResult {
         .split_once("1.0% / 200K")
         .unwrap_or_default();
     let tail = ratatui::text::Line::from(after).width();
-    // The meter's trailing space, the box's corner and the margin either side of it.
+    // The meter's trailing space, the session group after it, the box's corner and the margin.
+    let session = ratatui::text::Line::from(" › session SA s-alpha ").width();
     assert!(
-        tail <= 4,
+        tail <= 4 + session,
         "the context meter ends {tail} cells short of the edge: {row}"
     );
     Ok(())
@@ -3647,7 +3651,7 @@ fn a_routed_model_names_the_router() -> TestResult {
     fixture.push(Step::Push(|| {
         vec![config_frame("openrouter/anthropic/claude-opus-5.5", "high")]
     }));
-    run(
+    run_frames_with(
         "routed-model",
         fixture,
         "wait-frame 5000 s-alpha\n\
@@ -3655,7 +3659,10 @@ fn a_routed_model_names_the_router() -> TestResult {
          wait-frame 5000 replayed world\n\
          wait-frame 3000 claude-opus-5.5 via openrouter\n\
          quit\n",
+        SidebarMode::Full,
+        160,
     )
+    .map(drop)
 }
 
 fn running_push() -> Vec<Value> {
