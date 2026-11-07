@@ -1,4 +1,6 @@
 ---
+version: 0.955.0
+decisions: D555
 issue: Closes #1860
 raise: comments +9, crate runtime +581, tests +500
 growth: +581 the ranking reuses `memory::rank`'s BM25, `store::loaded`'s rows and `listed::cut_row`; a fourth module (`memory/focus.rs`) was weighed and its 40 lines stayed in `ext.rs` instead, while the shared gather and assembly paths replace the duplicate renderer and note indexes replace body clones
