@@ -1,4 +1,6 @@
 ---
+version: 0.992.0
+decisions: D572
 issue: Closes #1546
 growth: +271 the review fixes reuse the venv, probe and skill installers, restore the existing tool and MCP contracts, and add focused regression coverage; no new subsystem was added
 decision: the kernel package ships no harness store: rlm.harness, rlm.get_harness_state and the Harness* types are deleted with the harness.save_global host request and the RLM_GLOBAL_HARNESS_STATE_DIR and RLM_GLOBAL_HARNESS_HOST env (retires D270) | no prompt, skill or Yi code reads the store, and every line of it rebuilt the venv when it changed | restore python/yi_runtime/src/rlm/harness.py, its re-exports and kernel_state::register_harness_save from git
