@@ -24,15 +24,13 @@ fn trailing_phantom_line(file_lines: &[String]) -> u64 {
 }
 
 fn validate_line_bounds(edits: &[Edit], file_lines: &[String]) -> Result<(), String> {
-    let total = file_lines
-        .len()
-        .saturating_sub(usize::from(trailing_phantom_line(file_lines) != 0));
     for edit in edits {
         for anchor in edit_anchors(edit) {
-            if anchor.line < 1 || anchor.line > total as u64 {
+            if anchor.line < 1 || anchor.line > file_lines.len() as u64 {
                 return Err(format!(
                     "Line {} does not exist (file has {} lines)",
-                    anchor.line, total
+                    anchor.line,
+                    file_lines.len()
                 ));
             }
         }

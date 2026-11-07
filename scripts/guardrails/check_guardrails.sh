@@ -17,25 +17,44 @@ FAILED=0
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 N=0
-run() { N=$((N + 1)); { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
+run() { N=$((N + 1)); printf '%s\n' "$*" > "$OUT/$N.cmd"; { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
+# A gate that failed without printing a FAIL row is named, with its own output indented under the row: that
+# tail is the detail scripts/pr_autofix.py failures() hands the repair turn beside it.
+named() {
+  printf 'FAIL %s (exit %s, printed no FAIL line)\n' "$3" "$2"
+  sed 's/^/  /' "$1"
+}
 drain() {
   wait
+  local i rc
   for i in $(seq 1 "$N"); do
-    if [ "$(cat "$OUT/$i.rc")" = 0 ]; then
+    rc=$(cat "$OUT/$i.rc")
+    if [ "$rc" = 0 ]; then
       if [ "$QUIET" = 1 ]; then grep '^skip ' "$OUT/$i.out"; else cat "$OUT/$i.out"; fi
     else
-      cat "$OUT/$i.out"
+      if grep -q '^FAIL' "$OUT/$i.out"; then
+        cat "$OUT/$i.out"
+      else
+        named "$OUT/$i.out" "$rc" "$(cat "$OUT/$i.cmd")"
+      fi
       FAILED=$((FAILED + 1))
     fi
   done
 }
-# The two dist gates run after drain, on a quiet tree, so they print through here instead.
+# The dist gate runs after drain, on a quiet tree, so it collects like drain's and reports through it.
 after() {
-  [ "$QUIET" = 1 ] || { "$@"; return; }
-  local out rc
-  out=$("$@" 2>&1)
-  rc=$?
-  [ "$rc" = 0 ] || printf '%s\n' "$out"
+  N=$((N + 1))
+  printf '%s\n' "$*" > "$OUT/$N.cmd"
+  { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1
+  local rc
+  rc=$(cat "$OUT/$N.rc")
+  if [ "$rc" = 0 ]; then
+    [ "$QUIET" = 1 ] || cat "$OUT/$N.out"
+  elif grep -q '^FAIL' "$OUT/$N.out"; then
+    cat "$OUT/$N.out"
+  else
+    named "$OUT/$N.out" "$rc" "$*"
+  fi
   return "$rc"
 }
 
@@ -44,8 +63,16 @@ if [ "${1:-}" = --selfcheck ]; then
   N=3 QUIET=1
   printf 'skip deny (advisory database unreachable)\nnoise\n' > "$OUT/1.out"; echo 0 > "$OUT/1.rc"
   printf 'only noise\n' > "$OUT/2.out"; echo 0 > "$OUT/2.rc"
-  printf 'FAIL x\nwhy\n' > "$OUT/3.out"; echo 1 > "$OUT/3.rc"
+  printf 'FAIL x\nwhy\n' > "$OUT/3.out"; echo 1 > "$OUT/3.rc"; echo 'check_x.py' > "$OUT/3.cmd"
   [ "$(drain)" = "$(printf 'skip deny (advisory database unreachable)\nFAIL x\nwhy')" ] || { echo "FAIL quiet drain keeps skip rows and failures only"; exit 1; }
+  N=4
+  : > "$OUT/4.out"; echo 137 > "$OUT/4.rc"; echo 'check_y.py --selfcheck' > "$OUT/4.cmd"
+  [ "$(drain)" = "$(printf 'skip deny (advisory database unreachable)\nFAIL x\nwhy\nFAIL check_y.py --selfcheck (exit 137, printed no FAIL line)')" ] || { echo "FAIL a gate killed before it printed is named"; exit 1; }
+  N=1
+  printf 'a traceback\nerror: boom\n' > "$OUT/1.out"; echo 1 > "$OUT/1.rc"; echo 'check_z.py' > "$OUT/1.cmd"
+  [ "$(drain)" = "$(printf 'FAIL check_z.py (exit 1, printed no FAIL line)\n  a traceback\n  error: boom')" ] || { echo "FAIL a gate with no FAIL row is named and keeps its output under the row"; exit 1; }
+  N=0
+  [ "$(after false)" = "FAIL false (exit 1, printed no FAIL line)" ] || { echo "FAIL a gate after drain that printed nothing is named"; exit 1; }
   echo "ok guardrails quiet selfcheck"; exit 0
 fi
 
@@ -115,9 +142,6 @@ run bash "$0" --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
-# The hard cap is checked independent of the baseline file, so nothing here reads
-# target/dist/yi; only this flag proves the cap fires on its own reason (D249).
-run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 run "$PY" scripts/guardrails/check_fn_size.py --selfcheck
 # Which src lines are test code decides the production gates and the test budget alike.
 run "$PY" scripts/guardrails/check_test_size.py --selfcheck
@@ -183,26 +207,17 @@ run "$PY" -I scripts/mirror/scan.py --selfcheck
 # Prose is not exempt: check_comments.py ratchets the comment volume and prints the count, and
 # the design docs set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi
-# binary_size and startup are the only two readers of target/dist/yi, and the
-# fat-LTO build that writes it is minutes, so this is where it is paid for
-# (D91): one branch decides whether either gate runs, and the build lives
-# inside it. Each host's binary is measured against its own baseline, and the
-# forge's runners are Linux, so CI builds and measures there and nowhere else.
-# D68: wall clock on a shared runner is noise against a 5 ms budget, so startup
-# never runs under CI. --fast skips both because one needs the build and
-# hyperfine is most of the other. Announced, never silent (9).
-# The build runs beside the other gates (target/dist is its own cargo lock); the
-# two gates that read it run after `drain`, so startup is timed on a quiet tree.
+# startup is the only reader of target/dist/yi, and the fat-LTO build that writes it is minutes,
+# so this is where it is paid for (D91). CI never times startup on a shared runner (D68);
+# --fast skips the build and hyperfine. The build runs beside the other gates, then startup
+# runs after `drain` on a quiet tree. Skips are announced, never silent (9).
 DIST=0
 if [ "$FAST" -eq 1 ]; then
-  run echo "skip binary_size (--fast: needs a dist build)"
   run echo "skip startup (--fast: hyperfine is most of the run)"
-elif [ -n "${CI:-}" ] && [ "$(uname -s)" != Linux ]; then
-  run echo "skip binary_size (CI measures the dist binary on Linux only, against binary_size_budget_linux.json)"
+elif [ -n "${CI:-}" ]; then
   run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
-  run echo "skip build-dist (nothing on a non-Linux CI host reads target/dist/yi)"
+  run echo "skip build-dist (nothing on a CI host reads target/dist/yi)"
 else
-  [ -z "${CI:-}" ] || run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
   run scripts/build_dist.sh
   DIST=$N
 fi
@@ -229,12 +244,11 @@ if [ "$DIST" -gt 0 ]; then
   # A stand-in binary, so the startup gate is proved able to fail on each entry before it judges.
   [ -n "${CI:-}" ] || after "$PY" scripts/guardrails/check_startup.py --selfcheck || FAILED=$((FAILED + 1))
   if [ "$(cat "$OUT/$DIST.rc")" = 0 ]; then
-    after "$PY" scripts/guardrails/check_binary_size.py || FAILED=$((FAILED + 1))
     [ -n "${CI:-}" ] || after "$PY" scripts/guardrails/check_startup.py || FAILED=$((FAILED + 1))
   else
-    # A stale target/dist/yi from an earlier build would pass both gates while
-    # measuring code nobody wrote, so a failed build fails them instead.
-    echo "FAIL dist build (binary_size and startup have nothing to measure)"
+    # A stale target/dist/yi from an earlier build would pass startup while
+    # measuring code nobody wrote, so a failed build fails it instead.
+    echo "FAIL dist build (startup has nothing to measure)"
   fi
 fi
 

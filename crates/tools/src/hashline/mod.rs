@@ -10,7 +10,6 @@ pub mod normalize;
 pub mod parser;
 pub(crate) mod patcher;
 pub(crate) mod prefixes;
-pub(crate) mod read_args;
 pub(crate) mod rebase;
 pub(crate) mod snapshots;
 pub mod tokenizer;

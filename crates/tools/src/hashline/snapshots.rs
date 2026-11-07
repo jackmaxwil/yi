@@ -8,7 +8,6 @@ pub struct Snapshot {
     pub text: String,
     pub hash: FileTag,
     pub seen_lines: Option<HashSet<u64>>,
-    pub clipped_lines: HashSet<u64>,
     /// Invariant: lines a kernel program's `read` returned, which only a program's edit may
     /// anchor to; the model's own edits still answer to `seen_lines` alone.
     pub program_lines: HashSet<u64>,
@@ -83,6 +82,21 @@ impl SnapshotStore {
             .and_then(|(_, history)| history.iter().find(|version| version.text == full_text))
     }
 
+    /// The version whose lines are `full_text`'s up to trailing whitespace, which the tag
+    /// ignores too: a formatter that strips a trailing space moves no line a view showed.
+    pub fn by_lines(&self, path: &str, full_text: &str) -> Option<&Snapshot> {
+        fn trimmed(text: &str) -> Vec<&str> {
+            text.split('\n').map(str::trim_end).collect()
+        }
+        (self.by_content(path, full_text)).or_else(|| {
+            let (_, history) = self.paths.iter().find(|(name, _)| name == path)?;
+            let wanted = trimmed(full_text);
+            let hash = compute_file_hash(full_text);
+            (history.iter())
+                .find(|version| version.hash == hash && trimmed(&version.text) == wanted)
+        })
+    }
+
     /// Every retained version whose tag equals `hash`, across all paths —
     /// tag-based path recovery for a section naming a path that does not exist.
     pub fn find_by_hash(&self, hash: FileTag) -> Vec<&Snapshot> {
@@ -95,6 +109,11 @@ impl SnapshotStore {
 
     pub fn record(&mut self, path: &str, full_text: &str, seen_lines: Option<&[u64]>) -> FileTag {
         let hash = compute_file_hash(full_text);
+        // Incident: one 20 MiB view outweighed the byte budget alone, and eviction dropped every
+        // other path's tags to keep it; a text past the read cap is never held.
+        if full_text.len() > crate::tool::READ_FILE_CAP {
+            return hash;
+        }
         if self.touch(path).is_none() {
             self.paths.insert(0, (path.to_owned(), Vec::new()));
         }
@@ -118,7 +137,6 @@ impl SnapshotStore {
             hash,
             seen_lines: None,
             program_lines: HashSet::new(),
-            clipped_lines: HashSet::new(),
         };
         merge_seen_lines(&mut snapshot, seen_lines);
         history.insert(0, snapshot);
@@ -136,18 +154,6 @@ impl SnapshotStore {
             && let Some(version) = history.iter_mut().find(|snapshot| snapshot.hash == hash)
         {
             merge_seen_lines(version, Some(lines));
-        }
-    }
-
-    pub fn record_clipped_lines(&mut self, path: &str, hash: FileTag, lines: &[u64]) {
-        if let Some(history) = self
-            .paths
-            .iter_mut()
-            .find(|(name, _)| name == path)
-            .map(|(_, history)| history)
-            && let Some(version) = history.iter_mut().find(|snapshot| snapshot.hash == hash)
-        {
-            version.clipped_lines.extend(lines.iter().copied());
         }
     }
 

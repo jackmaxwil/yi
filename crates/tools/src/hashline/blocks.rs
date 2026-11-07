@@ -10,13 +10,13 @@ use super::types::{
 
 /// The block opening at `line` spans to where the scanner returns to its prior depth. None
 /// when the anchor opens nothing, or when the delimiters never balance.
-pub fn brace_block_resolver(text: &str, line: u64, rust_lifetimes: bool) -> Option<BlockSpan> {
+pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     let lines: Vec<&str> = text.split('\n').collect();
     let anchor_index = usize::try_from(line.checked_sub(1)?).ok()?;
     let anchor = lines.get(anchor_index)?;
     let mut depth: i64 = 0;
     let mut opened = false;
-    for byte in strip_line_noise(anchor, rust_lifetimes) {
+    for byte in strip_line_noise(anchor) {
         match byte {
             b'{' | b'[' | b'(' => {
                 depth += 1;
@@ -30,7 +30,7 @@ pub fn brace_block_resolver(text: &str, line: u64, rust_lifetimes: bool) -> Opti
         return None;
     }
     for (offset, candidate) in lines.iter().enumerate().skip(anchor_index + 1) {
-        for byte in strip_line_noise(candidate, rust_lifetimes) {
+        for byte in strip_line_noise(candidate) {
             match byte {
                 b'{' | b'[' | b'(' => depth += 1,
                 b'}' | b']' | b')' => {
@@ -59,13 +59,8 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
         return None;
     }
     let depth = indent_width(anchor);
-    let mut signature_depth = delimiter_delta(anchor);
     let mut end: Option<usize> = None;
     for (index, candidate) in lines.iter().enumerate().skip(anchor_index.checked_add(1)?) {
-        if signature_depth > 0 {
-            signature_depth = signature_depth.saturating_add(delimiter_delta(candidate));
-            continue;
-        }
         if candidate.trim().is_empty() {
             continue;
         }
@@ -78,16 +73,6 @@ pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     Some(BlockSpan { start: line, end })
 }
 
-fn delimiter_delta(line: &str) -> i64 {
-    strip_line_noise(line, false)
-        .into_iter()
-        .fold(0_i64, |depth, byte| match byte {
-            b'{' | b'[' | b'(' => depth.saturating_add(1),
-            b'}' | b']' | b')' => depth.saturating_sub(1),
-            _ => depth,
-        })
-}
-
 fn indent_width(line: &str) -> usize {
     line.bytes()
         .take_while(|byte| matches!(byte, b' ' | b'\t'))
@@ -97,7 +82,7 @@ fn indent_width(line: &str) -> usize {
 
 /// Delimiters inside string/char literals and line comments do not count. A lexical pass, not
 /// a parser: multi-line strings and block comments fail closed via unbalanced depth.
-fn strip_line_noise(line: &str, rust_lifetimes: bool) -> Vec<u8> {
+fn strip_line_noise(line: &str) -> Vec<u8> {
     let bytes = line.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -116,28 +101,6 @@ fn strip_line_noise(line: &str, rust_lifetimes: bool) -> Vec<u8> {
             continue;
         }
         match byte {
-            b'\''
-                if rust_lifetimes
-                    && bytes
-                        .get(index + 1)
-                        .is_some_and(|next| next.is_ascii_alphabetic() || *next == b'_')
-                    && bytes.get(index + 2) != Some(&b'\'') =>
-            {
-                out.push(byte)
-            }
-            b'/' if bytes.get(index + 1) == Some(&b'*') => {
-                let Some(rest) = bytes.get(index.saturating_add(2)..) else {
-                    break;
-                };
-                let Some(end) = rest.windows(2).position(|pair| pair == b"*/") else {
-                    break;
-                };
-                index = index
-                    .saturating_add(2)
-                    .saturating_add(end)
-                    .saturating_add(2);
-                continue;
-            }
             b'"' | b'\'' | b'`' => in_string = Some(byte),
             b'/' if bytes.get(index + 1) == Some(&b'/') => break,
             b'#' if index == 0 || bytes[index - 1].is_ascii_whitespace() => break,
