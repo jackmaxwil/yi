@@ -52,8 +52,9 @@ pub fn is_read_metadata_line(line: &str) -> bool {
             if let Some(second_digits) = scan_digits(bytes, index)
                 && bytes.get(second_digits) == Some(&b':')
             {
-                let rest = &trimmed[second_digits + 1..];
-                return rest.contains('\u{2026}') || rest.contains("...");
+                return trimmed
+                    .get(second_digits + 1..)
+                    .is_some_and(|rest| rest.contains('\u{2026}') || rest.contains("..."));
             }
         }
     }

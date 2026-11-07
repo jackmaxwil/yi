@@ -278,7 +278,7 @@ async fn a_tree_too_slow_to_capture_stops_trying_and_says_so() -> TestResult {
     )?;
     // nextest gives each test its own process.
     unsafe { std::env::set_var("PATH", joined) };
-    let run = run(&["a", "b"]).await?;
+    let run = run(&["a", "b", "c", "d"]).await?;
     let mut row = None;
     for _ in 0..300 {
         row = yi_runtime::snapshots_off_row(&run.project);
@@ -296,12 +296,63 @@ async fn a_tree_too_slow_to_capture_stops_trying_and_says_so() -> TestResult {
         row.contains("(snapshot.budget_ms 500); t.head() still works]"),
         "{row}"
     );
+    assert!(
+        yi_runtime::snapshots_off_row(&run.project).is_some(),
+        "the getter stops answering once the surface spent the row"
+    );
+    assert!(
+        yi_runtime::take_snapshots_off_row(&run.project).is_none(),
+        "the cut was already spent by the call that printed it"
+    );
+    let mut rows = 0;
+    for _ in 0..300 {
+        rows = tool_results(&run.store)?
+            .iter()
+            .filter(|text| text.contains("[… per-call snapshots off:"))
+            .count();
+        if rows > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        rows, 1,
+        "the cut prints one row, in one tool result: {rows}"
+    );
     Ok(())
 }
 
-/// Dies with `restore` asked for a tree its store lacks, and with the refusal reading "no turn yet".
+fn tool_results(store: &SharedSession) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut texts = Vec::new();
+    for entry in lock_session(store).find_entries(&yi_session::EntryQuery {
+        order: yi_session::EntryOrder::OldestFirst,
+        ..yi_session::EntryQuery::default()
+    })? {
+        let Entry::Message {
+            message: AgentMessage::ToolResult { content, .. },
+            ..
+        } = &entry
+        else {
+            continue;
+        };
+        texts.push(
+            content
+                .iter()
+                .filter_map(|block| match block {
+                    yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    Ok(texts)
+}
+
+/// Dies with an undo across stores reported as "no turn yet": its turn end sits in an older
+/// checkpoint store or is unreadable, so the refusal must say nothing moved or was restored.
 #[tokio::test]
-async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<(), Box<dyn Error>> {
+async fn an_undo_whose_turn_end_is_in_another_store_says_so() -> Result<(), Box<dyn Error>> {
     let run = run(&["a"]).await?;
     let missing = "0123456789abcdef0123456789abcdef01234567";
     let data = yi_types::checkpoint::CheckpointData {
@@ -312,11 +363,14 @@ async fn an_undo_whose_turn_end_is_in_another_store_moves_nothing() -> Result<()
     lock_session(&run.store).append_custom_record(&data)?;
     let outcome = yi_runtime::undo(&run.store, &run.project, &run.home);
     let yi_runtime::UndoOutcome::Failed(why) = outcome else {
-        return Err(
-            "read as no checkpoint, which tells the person this session took no turn".into(),
-        );
+        return Err("an undo across stores reported nothing to restore".into());
     };
-    assert!(why.contains("so nothing moved"), "{why}");
+    assert!(
+        why.contains("older checkpoint store")
+            && why.contains("nothing was restored")
+            && why.contains("so nothing moved"),
+        "{why}"
+    );
     assert!(run.project.join("a").exists(), "the tree stands");
     Ok(())
 }

@@ -70,8 +70,8 @@ pub mod web_search;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row, undo,
-    undo_notes, undo_to, wire_turn_checkpoints,
+    RecordedCheckpoint, UndoOutcome, describe_undo, over_budget, recorded, snapshots_off_row,
+    take_snapshots_off_row, undo, undo_notes, undo_to, wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
 
@@ -191,7 +191,7 @@ pub fn session_tools(
 ) -> Vec<std::sync::Arc<dyn yi_tools::Tool>> {
     let mut tools = builtin_tools_with(freeform_grammar, documents);
     if let Some(dir) = exec_dir {
-        for tool in discover_exec_tools(&dir) {
+        for tool in discover_exec_tools(&dir).0 {
             tools.push(std::sync::Arc::new(tool));
         }
     }
