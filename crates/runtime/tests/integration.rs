@@ -67,6 +67,7 @@ mod kernel_lane;
 mod kernel_sandbox;
 mod kernel_tools;
 mod lanes;
+mod lease_e2e;
 mod levers;
 mod memory_inject;
 mod memory_journal;
