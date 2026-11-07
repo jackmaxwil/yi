@@ -471,15 +471,39 @@ Claude plugin; its own plugins are the ones in [Plugins and skills](#plugins-and
 
 Design: [YI_DESIGN.md §7.9](docs/YI_DESIGN.md).
 
-## Use Yi from programs
+## Embed, script and automate
+
+Yi is one binary with no server to install, so a script, a CI job, an editor or another program
+can all drive the same agent. Pick the way in by how much control you want:
+
+| way in | for |
+|---|---|
+| `yi ask` | a script or CI step: a prompt in, an answer and an exit code out |
+| `yi rpc` | a program that wants the live event stream, and to steer or stop a run |
+| `yi acp`, `yi serve` | an editor, or several clients on one session ([ACP](#use-yi-with-acp)) |
+| `rlm` and `Plan` in the kernel | the agent scripting itself: fan-out, plans that run code |
+| `/heartbeat`, `yi mcp`, `yi tool import just` | work that starts on a clock, or reaches other systems |
+| `~/.yi/sessions/*.jsonl` | analysis afterwards, in [Pi's v4 format](#session-files-and-pi-v4) |
+
+### Script it with `yi ask`
+
+```bash
+git diff main | yi ask - --system "Review this diff for bugs. One line each."   # prompt from stdin
+yi ask --no-tools --thinking low "Name this function in snake_case: $(cat sketch.txt)"
+yi ask --continue "now add a test for it"           # resume the newest session here
+yi ask --yolo --deadline 600 "fix the failing test" # unattended, stopped after 10 minutes
+```
+
+`--json` prints every event as one JSON line, and `--no-deltas` leaves out the per-token ones:
 
 ```console
 $ yi ask --json --no-deltas hello | jq -r .type | tr '\n' ' '
 agent_start turn_start message_start message_end message_start message_end turn_end agent_end final
 ```
 
-`yi ask` exits 0 with an answer, 1 when the run failed, 2 when refused before starting, 3 when the
-answer misses `--schema`, 4 on a denied tool or a quota:
+`--schema` makes the answer a checked contract: the output is the JSON and nothing else, or the
+exit code says it was not. The exit codes are 0 an answer, 1 the run failed, 2 refused before
+starting, 3 the answer misses `--schema`, 4 a tool was denied or a quota ran out:
 
 ```bash
 yi ask --schema '{"type":"object"}' "list the risks as JSON" > risks.json
@@ -491,8 +515,63 @@ case $? in
 esac
 ```
 
-`git diff | yi ask -` reads the prompt from stdin; `--continue` resumes the newest session here.
-With `{"mcp": {"enabled": true}}`, `yi mcp --json` reaches an MCP server once.
+With no one to ask, a denied call exits 4 and its result names the exact `permissions.allow`
+entry that would let that call run, so a CI job can be widened one line at a time. `--allow-write DIR`
+makes a folder writable to commands, and `--confirm`, `--auto` and `--yolo` pick the permission mode.
+
+`yi gate` runs the permission check without running the command, so a script can ask first:
+
+```console
+$ yi gate "rm -rf /"; echo "exit=$?"
+auto: deny
+  command targets a protected path (/); this is denied in every mode.
+  destructive  rm -rf /
+exit=1
+```
+
+### Embed it with `yi rpc`
+
+`yi rpc` speaks Pi's JSON-RPC protocol on stdio: send a command as one JSON line, read events as
+JSON lines. Commands include `prompt`, `steer` (redirect a run in flight), `follow_up` (queue the
+next message) and `abort`. Any language that can start a process can embed Yi:
+
+```python
+import json, subprocess
+
+yi = subprocess.Popen(["yi", "rpc", "--here"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+yi.stdin.write(json.dumps({"id": "1", "type": "prompt", "message": "list the TODOs in src/"}) + "\n")
+yi.stdin.flush()
+
+for line in yi.stdout:
+    event = json.loads(line)
+    if event["type"] == "message_update":
+        delta = event["assistantMessageEvent"]
+        if delta["type"] == "text_delta":
+            print(delta["delta"], end="", flush=True)
+    elif event["type"] == "agent_end":
+        break
+```
+
+The first line back is `{"id":"1","type":"response","command":"prompt","success":true}`; after it
+come the same events `yi ask --json` prints. For an editor, or when several clients share one
+session, use [ACP](#use-yi-with-acp) instead.
+
+### Automate it
+
+- **Fan out from a cell.** `rlm.ask` and `rlm.run` start child agents from Python, so a script of
+  the model's own runs many reviewers at once with `asyncio.gather` ([Subagents](#subagents)).
+- **Plans that run code.** A todo declared with `run=` is an async function the kernel executes,
+  and a todo with a contract only closes when its check passes ([Plans](#plans)).
+- **Work on a clock.** `/heartbeat` wakes a session on a schedule: each tick adds a todo and the
+  agent decides what to run. The default is every 5 minutes; a job can also wait on a command
+  (`exec://`), a file (`file://`) or your own adapter, a program named `yi-adapter-<scheme>`
+  that speaks JSON lines. `spend.alertUsd` and `spend.dayAlertUsd` warn when a session or the day
+  crosses a dollar amount.
+- **Your recipes as tools.** `yi tool import just` turns each recipe of the project's justfile
+  into a tool the model can call, its arguments taken from the recipe's parameters.
+- **Other systems.** [`yi mcp`](#mcp-servers) calls any MCP server from a script or a cell.
+- **Many sessions at once.** Each session works in its own [lane](#lanes), so parallel runs on one
+  repository do not trip over each other.
 
 ## Use Yi with ACP
 
