@@ -4,10 +4,10 @@ use serde_json::json;
 use yi_context::details::FILE_LIST_CAP;
 use yi_context::{
     Attributed, BRIEF_LINE_CHARS, BriefLine, Bytes, CompiledView, EARLIER_CAP, FileOps, KEY_ROWS,
-    OUTSTANDING_CAP, Settings, Tokens, attribute_child_usage, compile_view, compose_summary,
-    context_tokens, convert_to_llm, drop_internal, estimate_context, fit, internal_source,
-    mark_unmatched_quotes, prepare_compaction, project, retain_floor, select_cut,
-    serialize_conversation, should_compact, user_key, wrap_internal,
+    OUTSTANDING_CAP, Settings, Tokens, VALUES_CARRIED_CAP, attribute_child_usage, compile_view,
+    compose_summary, context_tokens, convert_to_llm, drop_internal, estimate_context, fit,
+    internal_source, keep_values, mark_unmatched_quotes, prepare_compaction, project, retain_floor,
+    select_cut, serialize_conversation, should_compact, user_key, wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -1239,6 +1239,107 @@ fn a_prompt_stored_before_attribution_still_reads_as_typed() -> TestResult {
         "{shown:?}"
     );
     Ok(())
+}
+
+const FIRST_SUMMARY: &str = "## Goal\n- user://1\n\n## Critical Context\n- the parser lives in the crate\n\n## Values\n- build id 7f3a9c21 from `cargo build` in /tmp/yi-target/run-4\n- port 48213 (config.toml:12)\n- (none)\n\n## Dropped\n- the full cargo log: history://self";
+
+#[test]
+fn a_summary_that_lost_its_values_section_gets_the_previous_rows_back() {
+    let second = "## Goal\n- user://1\n\n## Dropped\n- nothing";
+    let kept = keep_values(Some(FIRST_SUMMARY), second);
+    assert!(
+        kept.contains("- build id 7f3a9c21 from `cargo build` in /tmp/yi-target/run-4"),
+        "{kept}"
+    );
+    assert_eq!(kept.matches("## Values").count(), 1, "{kept}");
+    assert!(kept.find("## Values") < kept.find("## Dropped"), "{kept}");
+}
+
+#[test]
+fn a_summary_that_lost_its_dropped_section_gets_the_previous_rows_back() {
+    let second = "## Goal\n- user://1\n\n## Values\n- port 48214 (config.toml:12)";
+    let kept = keep_values(Some(FIRST_SUMMARY), second);
+    assert_eq!(
+        kept,
+        format!("{second}\n\n## Dropped\n- the full cargo log: history://self")
+    );
+}
+
+#[test]
+fn an_edited_values_section_is_trusted_not_topped_up() {
+    let second = "## Goal\n- user://1\n\n## Values\n- port 48214 (config.toml:12)\n\n## Dropped\n- the old port";
+    assert_eq!(keep_values(Some(FIRST_SUMMARY), second), second);
+}
+
+#[test]
+fn both_summary_prompts_ask_for_values_and_what_was_dropped() {
+    for previous in [None, Some("## Goal\n- x")] {
+        let prompt = yi_context::prompts::build_summarization_prompt(None, previous);
+        assert!(prompt.contains("## Values\n"), "{prompt}");
+        assert!(prompt.contains("## Dropped\n"), "{prompt}");
+    }
+}
+
+#[test]
+fn a_summary_with_nothing_to_carry_is_left_alone() {
+    assert_eq!(keep_values(None, FIRST_SUMMARY), FIRST_SUMMARY);
+    let none = "## Goal\n- user://1\n\n## Values\n- (none)";
+    assert_eq!(
+        keep_values(Some(none), "## Goal\n- user://1"),
+        "## Goal\n- user://1"
+    );
+}
+
+#[test]
+fn carried_values_past_the_cap_say_how_many_were_left_out() {
+    let rows: Vec<String> = (0..VALUES_CARRIED_CAP + 3)
+        .map(|n| format!("- value {n:03}"))
+        .collect();
+    let previous = format!("## Values\n{}", rows.join("\n"));
+    let kept = keep_values(Some(&previous), "## Goal\n- user://1");
+    let total = VALUES_CARRIED_CAP + 3;
+    let notice = format!(
+        "[… {VALUES_CARRIED_CAP} of {total} earlier value rows carried (VALUES_CARRIED_CAP {VALUES_CARRIED_CAP}); the rest: grep(pattern=\"<value>\", path=\"history://self\")]"
+    );
+    assert!(kept.contains(&notice), "{kept}");
+    assert!(kept.find(&notice) < kept.find("- value 003"), "{kept}");
+    assert!(
+        kept.contains("- value 003")
+            && kept.contains("- value 042")
+            && !kept.contains("- value 002"),
+        "{kept}"
+    );
+    let third = keep_values(Some(&kept), "## Goal\n- user://1");
+    assert!(
+        third.contains("- value 042") && !third.contains("- value 002"),
+        "{third}"
+    );
+}
+
+#[test]
+fn carried_dropped_rows_past_the_cap_keep_the_newest_and_name_the_cut() {
+    let rows: Vec<String> = (0..VALUES_CARRIED_CAP + 3)
+        .map(|n| format!("- dropped {n:03}: history://self/since/{n}"))
+        .collect();
+    let previous = format!("## Dropped\n{}", rows.join("\n"));
+    let kept = keep_values(Some(&previous), "## Values\n- current value");
+    let total = VALUES_CARRIED_CAP + 3;
+    let notice = format!(
+        "[… {VALUES_CARRIED_CAP} of {total} earlier dropped rows carried (DROPPED_CARRIED_CAP {VALUES_CARRIED_CAP}); the rest: grep(pattern=\"## Dropped\", path=\"history://self\")]"
+    );
+    assert!(kept.contains(&notice), "{kept}");
+    assert!(kept.find(&notice) < kept.find("- dropped 003"), "{kept}");
+    assert!(
+        kept.contains("- dropped 003")
+            && kept.contains("- dropped 042")
+            && !kept.contains("- dropped 002"),
+        "{kept}"
+    );
+    let third = keep_values(Some(&kept), "## Values\n- next value");
+    assert!(
+        third.contains("- dropped 042") && !third.contains("- dropped 002"),
+        "{third}"
+    );
 }
 
 fn recorded_branch(session: &str) -> Result<Vec<Entry>, Box<dyn Error>> {
