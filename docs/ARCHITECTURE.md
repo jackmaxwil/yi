@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.971.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.972.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -351,6 +351,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D561 | the edit side is the `[path#TAG]` headers a direct `edit` or `write` prints plus the `ok` `edit` and `write` rows on a cell's `ipython` result, matched by path suffix as before (revises D398) | a program's edit reached the session only in its cell's `calls` rows, so the read whose tags the next edit needs was cut once it aged | delete the `ipython` arm in `reclaim::newest_reads` |
 | D560 | Run test processes under private TMPDIRs, removed by a wrapper | tests that build dirs under temp_dir() by hand, and runs nextest kills before Drop, left ~96,000 entries (20 GiB) in the user TMPDIR | delete the wrapper-scripts block in .config/nextest.toml and the wrapper calls in justfile |
 | D559 | a route's moving tail mark is suspended for an hour after four consecutive unexplained requests that wrote and read nothing back, and a 400 naming a cache field is retried once with only the encoder's cache fields stripped | the session ledger already shows both failures, so no model, probe, stored state or outbound routing change is needed | remove the tail escalation in `cache_miss::MissTracker::escalate` and the strip branch in `request::send_stripping_cache` |
 | D558 | reclaim decides a cut in tokens alone: the tokens a batch drops, times the requests so far, must exceed ten reads (REWRITE_READS) of the tokens after its first result, and the batch must drop 2,000 tokens, the rewrite counted at twenty reads for an hour-cache write, on every route whatever its catalog prices; a lapsed cache still cuts at once (amends the reclaim decision of #1149) | a route whose catalog prices cache at $0 never paid, so a subscription lane cut nothing in 232 sessions at a 218k-token median, while its cache reads and rewrites cost quota the price test could not see | restore the price comparison in yi_runtime's reclaim::reason |
