@@ -771,11 +771,16 @@ const NETWORK_DENIALS: [&str; 3] = [
     "sendto: operation not permitted",
 ];
 
-/// Incident: a bare `transport '` needle read a tool's own message as git's transport refusal.
-fn git_transport_refusal(lower: &str) -> bool {
-    lower.lines().any(|line| {
+/// Incident: bare `transport '` or `' not allowed` needles read a tool's own message as git's
+/// refusal; only one whole fatal line counts.
+fn git_transport_denial(lower: &str) -> Option<usize> {
+    lower.lines().find_map(|line| {
         let line = line.trim();
-        line.starts_with("fatal: transport '") && line.ends_with("' not allowed")
+        if line.starts_with("fatal: transport '") && line.ends_with("' not allowed") {
+            line.find("fatal: transport '")
+        } else {
+            None
+        }
     })
 }
 
@@ -811,7 +816,7 @@ pub fn sandbox_refusal(
     let contains = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
     let refused = code != 0
         && (contains(&NETWORK_DENIALS)
-            || git_transport_refusal(&lower)
+            || git_transport_denial(&lower).is_some()
             || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
     refused.then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
 }
@@ -835,6 +840,7 @@ pub fn exit_zero_note(output: &str, command: &str) -> Option<String> {
         let at = NETWORK_DENIALS
             .iter()
             .filter_map(|needle| lower.find(needle))
+            .chain(git_transport_denial(&lower))
             .min();
         let before = at.and_then(|at| line.get(..at)).unwrap_or_default();
         PROGRAMS.iter().any(|program| {

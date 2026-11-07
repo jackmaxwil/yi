@@ -349,7 +349,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         params["response_format"] = crate::schema::chat(schema);
     }
     if let Some(max_tokens) = options.max_tokens {
-        params["max_completion_tokens"] = json!(max_tokens);
+        params[crate::compat::max_tokens_field(model)] = json!(max_tokens);
     }
     if let Some(tools) = &context.tools
         && !tools.is_empty()

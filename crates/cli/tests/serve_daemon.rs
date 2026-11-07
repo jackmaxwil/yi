@@ -1157,3 +1157,88 @@ fn open_in_runs_the_configured_app_on_the_saved_message() -> TestResult {
     let _ = daemon.wait();
     outcome
 }
+
+/// The owner's dev loop: a root's worker is swapped for a freshly built binary while the
+/// supervisor and the attached client stay up, and the same session resumes from the ledger.
+#[test]
+fn replacing_a_worker_keeps_the_session_and_the_daemon_serving_it() -> TestResult {
+    let dir = Scratch::new("yi-worker-replace")?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let session_id = new_session(&mut client, "n1", &root)?;
+        let turn = client.request_with_notifications(
+            "p1",
+            "session/prompt",
+            json!({"sessionId": session_id,
+                "prompt": [{"type": "text", "text": "before the swap"}]}),
+        )?;
+        let idle = |frame: &Value| frame["params"]["update"]["state"] == "idle";
+        if !turn.iter().any(idle) {
+            client.read_until(idle)?;
+        }
+
+        let binary = crate::yi_bin::yi_command(&dir.home()?);
+        let replaced = client.request(
+            "w1",
+            "_yi/worker_replace",
+            json!({"cwd": root.display().to_string(), "binary": Path::new(binary.get_program())}),
+        )?;
+        assert!(
+            replaced.get("error").is_none(),
+            "the replacement was refused: {replaced}"
+        );
+        assert_eq!(replaced["result"]["from"], 1, "{replaced}");
+        assert_eq!(
+            replaced["result"]["to"], 2,
+            "a new generation serves: {replaced}"
+        );
+        assert!(
+            replaced["result"]["sessions"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|row| row == &json!(session_id))),
+            "the session is not in what the new generation holds: {replaced}"
+        );
+
+        let resumed = client.request_with_notifications(
+            "r2",
+            "session/resume",
+            json!({"sessionId": session_id, "cwd": root.display().to_string(), "replayFrom": 0}),
+        )?;
+        let answer = resumed.last().ok_or("no resume answer")?;
+        assert!(
+            answer.get("error").is_none(),
+            "the new worker does not hold the session: {answer}"
+        );
+        assert!(
+            resumed
+                .iter()
+                .any(|frame| frame.to_string().contains("before the swap")),
+            "the session did not resume from the ledger: {resumed:?}"
+        );
+
+        let answered = client.request_with_notifications(
+            "p2",
+            "session/prompt",
+            json!({"sessionId": session_id,
+                "prompt": [{"type": "text", "text": "after the swap"}]}),
+        )?;
+        let chunk = |frame: &Value| {
+            frame["method"] == "session/update"
+                && frame["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        };
+        let spoke = answered.iter().any(chunk);
+        if !spoke {
+            client.read_until(chunk)?;
+        }
+        Ok(())
+    })();
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}

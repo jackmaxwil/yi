@@ -1010,7 +1010,6 @@ mod tests {
                 72,
                 false,
                 &theme,
-                "⌘W",
             )
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -1096,7 +1095,7 @@ mod tests {
             Some("text/x-python"),
         ];
         for mime in mimes {
-            let empty = notebook_lines(&[kind_cell(mime, "")], 72, false, &theme, "⌘W");
+            let empty = notebook_lines(&[kind_cell(mime, "")], 72, false, &theme);
             assert!(
                 !empty
                     .iter()
@@ -1105,7 +1104,7 @@ mod tests {
                 "{mime:?} drew a cut row for an empty value"
             );
             let cell = kind_cell(mime, "## a\tb\x1b[2J\rc € {\"k\": ");
-            let lines = notebook_lines(&[cell], 72, false, &theme, "⌘W");
+            let lines = notebook_lines(&[cell], 72, false, &theme);
             for span in lines.iter().flat_map(|line| line.spans.iter()) {
                 assert_eq!(
                     span.content.chars().find(|c: &char| c.is_control()),
