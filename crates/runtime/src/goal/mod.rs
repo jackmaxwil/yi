@@ -1,3 +1,7 @@
+mod check;
+
+pub(crate) use check::{CheckShell, captured};
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -120,32 +124,6 @@ pub struct Checker {
     hooks: Option<Arc<crate::claude_hooks::Hooks>>,
     broker: Option<Arc<crate::permission::PermissionBroker>>,
     wall: crate::wall::Wall,
-}
-
-/// A check's command, its proxy lease, and what kills what a killed `docker exec` left running.
-pub(crate) struct CheckShell {
-    pub(crate) command: std::process::Command,
-    lease: Option<crate::egress::Lease>,
-    sweep: Option<String>,
-}
-
-/// Runs a check to its capture, holding its lease until then. Invariant: a check past its deadline
-/// is swept before it reads as settled, or what it started goes on writing the tree.
-pub(crate) fn captured(
-    shell: CheckShell,
-    stdin: Option<Vec<u8>>,
-    cancelled: &yi_tools::CancelFlag,
-) -> Result<yi_tools::CommandCapture, String> {
-    let mut capture =
-        yi_tools::run_captured(shell.command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
-    capture.rows = shell
-        .lease
-        .map(crate::egress::Lease::revoke)
-        .unwrap_or_default();
-    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
-        yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND));
-    }
-    Ok(capture)
 }
 
 /// The lease's proxy variables: the one place a spawned check learns the proxy's address.
@@ -1150,6 +1128,27 @@ mod sweep_tests {
             "the flag trips a check that never finishes"
         );
         assert!(marker.exists(), "a cancelled check's sweep ran");
+        Ok(())
+    }
+
+    /// Incident: a sweep that exited nonzero was reported as a SWEEP_BOUND timeout, hiding the
+    /// failure and telling the model a hang happened when none did.
+    #[test]
+    fn a_failed_sweep_names_its_exit_code_not_the_time_bound()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut command = yi_tools::keyless_command("sh");
+        command.args(["-c", "sleep 5"]);
+        let shell = CheckShell {
+            command,
+            lease: None,
+            sweep: Some("exit 23".to_owned()),
+        };
+        let cancelled: yi_tools::CancelFlag = Arc::new(|| true);
+        let capture = captured(shell, None, &cancelled)?;
+        assert!(capture.cancelled);
+        let rows = capture.rows.join("\n");
+        assert!(rows.contains("sweep failed with exit code 23"), "{rows}");
+        assert!(!rows.contains("SWEEP_BOUND"), "{rows}");
         Ok(())
     }
 }

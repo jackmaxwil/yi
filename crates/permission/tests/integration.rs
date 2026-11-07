@@ -7,6 +7,7 @@ mod scratch;
 
 mod decide;
 mod open;
+mod outbox;
 mod review;
 mod safety;
 mod scope;
