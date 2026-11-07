@@ -560,6 +560,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     });
     host.start(None, false);
@@ -679,6 +680,7 @@ fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
             schema_instruction: None,
             context_window: 128_000,
             global_skills: Vec::new(),
+            pointer: None,
             can_delegate: true,
         });
         host.start(None, false);
@@ -742,17 +744,19 @@ fn report_the_prefix_size() -> TestResult {
 }
 
 /// Bare is a TB container's root: no instruction file, Yolo. Lane adds the tracked AGENTS.md
-/// and a Cargo.toml in Auto; main adds the checkout's untracked CLAUDE.md when it has one.
+/// and a Cargo.toml in Auto; main adds the checkout's untracked CLAUDE.md when it has one, and
+/// skills carries a project skill beside them so a catalog has something to list.
 #[derive(Clone, Copy)]
 enum Workspace {
     Bare,
     Lane,
     Main,
+    Skills,
 }
 
 /// Each role's brief and spawn kwargs, `None` for the root's own turn. A brief is the needle
 /// its request is found by, so none is a substring of another.
-const ROLES: [(&str, &str, Option<&str>); 5] = [
+const ROLES: [(&str, &str, Option<&str>); 6] = [
     ("root", "Say hello to the root.", None),
     (
         "leaf",
@@ -773,6 +777,11 @@ const ROLES: [(&str, &str, Option<&str>); 5] = [
         "worker",
         "Rename the sea line to grey sea.",
         Some(r#"{"role":"worker","partition":["local://notes.txt"]}"#),
+    ),
+    (
+        "worker_editor",
+        "Edit the sea line without reading it.",
+        Some(r#"{"role":"worker","partition":["local://notes.txt"],"tools":["edit"]}"#),
     ),
 ];
 
@@ -819,11 +828,8 @@ async fn role_bodies(
     upstream::git(&ws, &["init", "-q", "-b", "main"])?;
     let mode = match workspace {
         Workspace::Bare => PermissionMode::Yolo,
-        Workspace::Lane | Workspace::Main => PermissionMode::Auto,
+        Workspace::Lane | Workspace::Main | Workspace::Skills => PermissionMode::Auto,
     };
-    if matches!(workspace, Workspace::Bare) {
-        upstream::git(&ws, &["init", "-q", "-b", "main"])?;
-    }
     let broker = std::sync::Arc::new(yi_runtime::PermissionBroker::new(
         mode,
         ws.clone(),
@@ -862,6 +868,14 @@ async fn role_bodies(
     }
     if matches!(workspace, Workspace::Main) && checkout().join("CLAUDE.md").is_file() {
         std::fs::copy(checkout().join("CLAUDE.md"), ws.join("CLAUDE.md"))?;
+    }
+    if matches!(workspace, Workspace::Skills) {
+        let skill = ws.join(".yi/skills/probe/SKILL.md");
+        std::fs::create_dir_all(skill.parent().ok_or("no parent")?)?;
+        std::fs::write(
+            &skill,
+            "---\nname: probe\ndescription: A project skill a worker cannot read.\n---\nStep one.\n",
+        )?;
     }
     for (_, brief, kwargs) in ROLES {
         match kwargs {
@@ -963,6 +977,29 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
             "{role} reads the doctrine"
         );
     }
+    let pointer = yi_runtime::skills::CHILD_POINTER;
+    for role in ["leaf", "leaf_orchestrate", "worker"] {
+        let prefix = text(role)?;
+        assert!(
+            prefix.contains(pointer),
+            "{role} is told where the catalog is: {prefix}"
+        );
+        assert!(
+            !prefix.contains("<skills>"),
+            "{role} is sent no catalog: {prefix}"
+        );
+    }
+    let editor = text("worker_editor")?;
+    assert!(
+        !editor.contains("yi://skills"),
+        "a worker with no read is pointed nowhere: {editor}"
+    );
+    let skilled = role_bodies(Workspace::Skills, 1).await?;
+    let editor = role_text(&skilled, "worker_editor")?;
+    assert!(
+        !editor.contains("<skills>"),
+        "a worker with no read attaches no catalog, not even a project skill's: {editor}"
+    );
     let delegation = yi_runtime::delegation_fragment();
     assert!(
         lines_of(delegation, &text("root")?, true),
