@@ -273,6 +273,7 @@ fn tool_result(id: &str, name: &str, text: &str) -> AgentMessage {
 fn context(messages: Vec<AgentMessage>) -> Result<LlmContext, Box<dyn Error>> {
     Ok(LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: system_prompt(),
         messages,
         transient: Vec::new(),

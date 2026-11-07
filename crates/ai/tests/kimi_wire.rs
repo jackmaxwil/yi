@@ -32,6 +32,7 @@ fn k3_1() -> Result<Model, Box<dyn Error>> {
 fn context(messages: Vec<AgentMessage>) -> LlmContext {
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "be terse".to_owned(),
         messages,
         transient: Vec::new(),
