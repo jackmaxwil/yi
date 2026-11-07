@@ -14,6 +14,11 @@ impl LineMap {
         Self { lines, authored }
     }
 
+    pub fn from_script(script: &crate::diff::EditScript) -> Self {
+        let (lines, authored) = script.line_map();
+        Self { lines, authored }
+    }
+
     pub fn line(&self, line: u64) -> Option<u64> {
         let index = usize::try_from(line.checked_sub(1)?).ok()?;
         self.lines.get(index).copied().flatten()
