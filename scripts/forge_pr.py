@@ -453,7 +453,7 @@ def cmd_ready(args):
     for err in errs:
         print(f"  {err}")
     if errs and pr_review.MODE == "blocking":
-        print(f"ready: refused — #{number} stays a draft until two review rounds are clean on its head")
+        print(f"ready: refused — #{number} stays a draft until a review round is clean on its head")
         return 1
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
     if not answer or answer.get("message"):
@@ -626,7 +626,7 @@ def cmd_merge(args):
             if errs := unreviewed(number, pr):
                 for err in errs:
                     print(f"  {err}")
-                print(f"merge: refused — #{number} needs two review rounds clean on its head")
+                print(f"merge: refused — #{number} needs a review round clean on its head")
                 return 1
             # The head the gates were read on: the forge refuses a head that moved since.
             answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge",
@@ -832,14 +832,14 @@ def selfcheck():
     posted = []
     globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
                      jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: False, decide=lambda *a: "green",
-                     unreviewed=lambda n, pr: ["0 review round(s); a PR needs two"],
+                     unreviewed=lambda n, pr: ["0 review round(s); a PR needs one"],
                      fgj_api=forge_variable("off", posted))
     try:
         with contextlib.redirect_stdout(io.StringIO()) as merging:
             held = cmd_merge(argparse.Namespace(number=7, timeout=1, wait=False))
     finally:
         globals().update(fakes)
-    assert held == 1 and not posted and "needs two review rounds" in merging.getvalue(), "a green PR without rounds is not merged"
+    assert held == 1 and not posted and "needs a review round" in merging.getvalue(), "a green PR without rounds is not merged"
     globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": False,
                                      "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
                      jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, decide=lambda *a: "behind",
@@ -1188,7 +1188,7 @@ def build_parser():
         sub.add_argument("number", nargs="?")
         sub.set_defaults(run=run)
     pr.choices["review"].add_argument("--dry-run", action="store_true", help="print the round, post nothing")
-    pr.choices["review"].add_argument("--again", action="store_true", help="read a head the rule says is read enough, except one a round blocked unless that round lost a lens")
+    pr.choices["review"].add_argument("--again", action="store_true", help="go past the retry cap of a head whose rounds lost a lens, reading only that lens; a head a round read whole is never read again")
     pr.add_parser("sweep").set_defaults(run=pr_review.cmd_sweep)
     import pr_autofix
 
