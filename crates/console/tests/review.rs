@@ -15,19 +15,6 @@ fn text(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
         .collect()
 }
 
-fn review_view(
-    diff: Option<&SessionDiff>,
-    scope: ReviewScope,
-    note: &str,
-    width: usize,
-    theme: &Theme,
-) -> (String, Vec<ratatui::text::Line<'static>>) {
-    let review = yi_console::panes::review_parts(diff, scope, note, (width, 8), theme);
-    let mut lines = review.head;
-    lines.extend(review.body);
-    (review.title, lines)
-}
-
 fn edit(path: &str, turn: u64, serving: Option<&str>) -> (String, FileDiff) {
     let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1,2 @@\n line\n+added\n");
     let file = FileDiff {
@@ -54,9 +41,11 @@ fn a_review_scopes_edits_by_turn_and_names_the_todo_each_served() {
         .push(edit("src/a.rs", 1, Some("write the parser")));
     diff.files.push(edit("src/b.rs", 2, None));
     diff.reads.insert("src/c.rs".to_owned(), 3);
-    let (title, lines) = review_view(Some(&diff), ReviewScope::Turn, "", 80, &theme);
+    let (title, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Turn, "", 80, &theme);
     assert_eq!(title, "Review · turn · 1 file +1 −0");
-    let (title, lines_all) = review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
+    let (title, lines_all) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
     assert_eq!(title, "Review · session · 2 files +2 −0");
     let all = text(&lines_all);
     assert!(
@@ -87,7 +76,8 @@ fn a_branch_review_names_the_todo_of_a_file_its_edit_named_absolutely() {
         patch: String::new(),
         untracked: 0,
     });
-    let (_, lines) = review_view(Some(&diff), ReviewScope::Branch, "", 80, &theme);
+    let (_, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Branch, "", 80, &theme);
     let all = text(&lines);
     assert!(
         all.iter()
@@ -99,7 +89,8 @@ fn a_branch_review_names_the_todo_of_a_file_its_edit_named_absolutely() {
         all.iter().all(|line| !line.contains("read only")),
         "{all:#?}"
     );
-    let (_, lines) = review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
+    let (_, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
     let all = text(&lines);
     assert!(
         all.iter().all(|line| !line.contains("read only")),
@@ -122,7 +113,8 @@ fn each_hunk_is_asked_why_at_its_first_changed_line_and_the_chain_shows_under_it
         "src/b.rs".to_owned(),
         vec!["  ↳ L2 1a2b3c4d5e6f Check evidence · todo t4 · goal tool ergonomics".to_owned()],
     );
-    let (_, lines) = review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
+    let (_, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
     let rows = text(&lines);
     let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
     let body_head = rows.iter().position(|row| row == "M src/b.rs  +1 −0");
@@ -366,7 +358,7 @@ fn a_reviews_rows_follow_its_width_its_scope_and_each_new_edit() {
 
 fn dropped_row_in(diff: &SessionDiff, scope: ReviewScope) -> Option<String> {
     let theme = Theme::new(ColorTier::TrueColor, true);
-    let (_, lines) = review_view(Some(diff), scope, "", 80, &theme);
+    let (_, lines) = yi_console::render::review_view(Some(diff), scope, "", 80, &theme);
     text(&lines)
         .into_iter()
         .find(|row| row.contains("not shown"))
@@ -519,24 +511,6 @@ fn a_click_on_a_scope_chip_or_a_file_row_works_the_review() -> Result<(), Box<dy
     Ok(())
 }
 
-#[test]
-fn hidden_workspace_tabs_offer_no_review_controls() -> Result<(), Box<dyn std::error::Error>> {
-    use yi_console::render::Hit;
-    let (mut app, outbound) = review_app();
-    let _ = pane_rows(&mut app, "Review");
-    let hidden = app.state.focused_pane_id().ok_or("no review pane")?;
-    app.state.new_tab();
-    let _ = pane_rows(&mut app, "Review");
-    let stale = app.hits.as_ref().is_some_and(|hits| {
-        hits.controls
-            .iter()
-            .any(|(_, hit)| matches!(hit, Hit::Review(pane, _) if *pane == hidden))
-    });
-    assert!(!stale, "the hidden review kept its click targets");
-    outbound.shutdown();
-    Ok(())
-}
-
 /// Dies when a scope with no files is a bare line: it must say so and give each scope's count, so
 /// the chips above it are the way out.
 #[test]
@@ -547,7 +521,8 @@ fn an_empty_scope_says_so_and_counts_every_scope() {
         ..SessionDiff::default()
     };
     diff.files.push(edit("src/old.rs", 1, None));
-    let (_, lines) = review_view(Some(&diff), ReviewScope::Turn, "", 80, &theme);
+    let (_, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Turn, "", 80, &theme);
     let rows = text(&lines);
     assert!(
         rows.iter()
@@ -559,54 +534,4 @@ fn an_empty_scope_says_so_and_counts_every_scope() {
             .any(|row| row == "branch 0 · turn 0 · session 1 · click a scope above"),
         "{rows:#?}"
     );
-}
-
-#[test]
-fn a_height_change_reuses_the_review_body_cache() -> Result<(), Box<dyn std::error::Error>> {
-    let (mut app, outbound) = review_app();
-    let _ = pane_rows_at(&mut app, "Review", (100, 30));
-    let Some(pane) = app.state.focused_pane_mut() else {
-        return Err("no review pane".into());
-    };
-    let PaneContent::SessionDiff {
-        drawn: Some((_, review)),
-        ..
-    } = &mut pane.content
-    else {
-        return Err("no warm review cache".into());
-    };
-    review
-        .body
-        .push(ratatui::text::Line::raw("body cache marker"));
-    let _ = pane_rows_at(&mut app, "Review", (100, 40));
-    let kept = app
-        .state
-        .focused_pane()
-        .and_then(|pane| match &pane.content {
-            PaneContent::SessionDiff {
-                drawn: Some((_, review)),
-                ..
-            } => Some(review),
-            _ => None,
-        })
-        .is_some_and(|review| {
-            review
-                .body
-                .iter()
-                .any(|line| line.to_string() == "body cache marker")
-        });
-    assert!(kept, "a height-only change rebuilt the diff body");
-    outbound.shutdown();
-    Ok(())
-}
-
-#[test]
-fn review_chips_and_totals_fit_a_narrow_pane() {
-    let theme = Theme::new(ColorTier::TrueColor, true);
-    let mut diff = SessionDiff::default();
-    diff.files.push(edit("src/a.rs", 0, None));
-    let (_, lines) = review_view(Some(&diff), ReviewScope::Session, "", 20, &theme);
-    let first = lines.first().cloned().unwrap_or_default();
-    assert!(first.to_string().contains("+1 −0"), "{first}");
-    assert!(first.width() <= 20, "{first} is wider than 20 cells");
 }

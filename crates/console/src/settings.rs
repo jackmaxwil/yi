@@ -422,18 +422,15 @@ fn clip(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
-pub(crate) fn tab_window(
-    total: usize,
-    current: usize,
-    width: usize,
-    span: impl Fn(usize, usize) -> usize,
-) -> (usize, usize) {
-    let current = current.min(total.saturating_sub(1));
-    let (mut first, mut last) = (current, current);
+/// The strip's pieces and the tab each selects, so the drawn strip and its click targets agree.
+fn strip(settings: &Settings, width: usize) -> Vec<(String, Option<usize>)> {
+    let span = |first: usize, last: usize| -> usize {
+        let names: usize = (first..=last).map(|i| tab_name(i).chars().count()).sum();
+        names + (last - first) + 6
+    };
+    let (mut first, mut last) = (settings.tab, settings.tab);
     loop {
-        let right = (last.saturating_add(1) < total
-            && span(first, last.saturating_add(1)) <= width)
-            .then(|| last.saturating_add(1));
+        let right = (last < KEYS && span(first, last + 1) <= width).then(|| last + 1);
         last = right.unwrap_or(last);
         let left = first.checked_sub(1).filter(|lo| span(*lo, last) <= width);
         first = left.unwrap_or(first);
@@ -441,15 +438,6 @@ pub(crate) fn tab_window(
             break;
         }
     }
-    (first, last)
-}
-/// The strip's pieces and the tab each selects, so the drawn strip and its click targets agree.
-fn strip(settings: &Settings, width: usize) -> Vec<(String, Option<usize>)> {
-    let span = |first: usize, last: usize| -> usize {
-        let names: usize = (first..=last).map(|i| tab_name(i).chars().count()).sum();
-        names + (last - first) + 6
-    };
-    let (first, last) = tab_window(KEYS.saturating_add(1), settings.tab, width, span);
     let mut pieces = vec![((if first > 0 { "‹ " } else { "  " }).to_owned(), None)];
     for index in first..=last {
         if index > first {

@@ -509,8 +509,8 @@ fn place_chat_orbs(app: &mut App, out: &mut impl std::io::Write) {
     let focused = app.state.focused_pane_id();
     let shown = |id: PaneId| {
         app.hits.as_ref().is_some_and(|hits| {
-            let pane = hits.panes.iter().find(|(pane, _)| *pane == id);
-            pane.is_some_and(|(_, rect)| !hits.overlays.iter().any(|cover| cover.intersects(*rect)))
+            hits.rect_of(id)
+                .is_some_and(|rect| !hits.overlays.iter().any(|cover| cover.intersects(rect)))
         })
     };
     let shown: Vec<PaneId> = app
@@ -565,20 +565,14 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
                 .next()
         })
         .and_then(|image| {
-            let rect = app
-                .hits
-                .as_ref()
-                .and_then(|hits| {
-                    hits.panes
-                        .iter()
-                        .find(|(id, _)| focused.is_some_and(|pane| id == &pane))
-                        .map(|(_, rect)| {
-                            let inner = rect.inner(crate::layout::pane_margin(true, false));
-                            ratatui::layout::Rect {
-                                height: inner.height / 2,
-                                ..inner
-                            }
-                        })
+            let rect = focused.and_then(|pane| app.hits.as_ref()?.rect_of(pane));
+            let rect = rect
+                .map(|rect| {
+                    let inner = rect.inner(crate::layout::pane_margin(true, false));
+                    ratatui::layout::Rect {
+                        height: inner.height / 2,
+                        ..inner
+                    }
                 })
                 .filter(|half| {
                     half.height >= 3

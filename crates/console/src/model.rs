@@ -913,10 +913,6 @@ impl ConsoleState {
         roots
     }
 
-    pub fn ordered_roots(&self) -> Vec<String> {
-        crate::sidebar::ordered_roots(self)
-    }
-
     pub fn split_focused_at(&mut self, direction: Direction, ratio: f32) -> Option<Vec<bool>> {
         let new_id = self.split_focused(direction)?;
         let tab = self.tabs.get_mut(self.active_tab)?;

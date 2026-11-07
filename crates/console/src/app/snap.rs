@@ -125,14 +125,7 @@ fn rect_of(app: &App, drop: Drop) -> Option<Rect> {
             width: area.width / 3,
             ..area
         },
-        Drop::Onto(pane) => {
-            app.hits
-                .as_ref()?
-                .panes
-                .iter()
-                .find(|(id, _)| *id == pane)?
-                .1
-        }
+        Drop::Onto(pane) => app.hits.as_ref()?.rect_of(pane)?,
     })
 }
 
@@ -255,7 +248,7 @@ impl App {
             .is_some_and(|tab| tab.layout.pane_count() > 1);
         let top = || {
             let pane = hits.pane_at(x, y)?;
-            let rect = hits.panes.iter().find(|(id, _)| *id == pane)?.1;
+            let rect = hits.rect_of(pane)?;
             (y == rect.y && hits.split_at(x, y).is_none()).then_some(pane)
         };
         match hits.hit_at(x, y).map(|(_, hit)| hit) {
@@ -376,14 +369,73 @@ impl App {
         self.dirty = true;
     }
 
+    /// ⌥⇧↑↓: the project under the cursor swaps with its neighbour.
+    pub(crate) fn shift_project(&mut self, step: isize) -> bool {
+        let roots = crate::sidebar::project_roots(&self.state);
+        let here = self.state.header.clone().or_else(|| {
+            self.state
+                .selected_id()
+                .and_then(|id| self.state.sessions.get(id))
+                .map(|row| row.root.clone())
+        });
+        let neighbour = here.as_ref().and_then(|root| {
+            let at = roots.iter().position(|known| known == root)?;
+            roots.get(at.checked_add_signed(step)?)
+        });
+        let (Some(root), Some(other)) = (here, neighbour) else {
+            return false;
+        };
+        crate::sidebar::move_group(&mut self.state, &root, other);
+        self.dirty = true;
+        true
+    }
+
     /// A new empty panel on the screen's `snap` edge, focused.
-    pub(super) fn new_pane_at(&mut self, snap: Snap) -> Option<PaneId> {
+    fn new_pane_at(&mut self, snap: Snap) -> Option<PaneId> {
         let ids = &mut self.state.pane_ids;
         let tab = self.state.tabs.get_mut(self.state.active_tab)?;
         tab.zoomed = false;
         let pane = tab.layout.snap_new(ids, snap);
         self.state.panes.insert(pane, Pane::empty_session());
         Some(pane)
+    }
+
+    /// The file at tab `index`, out of its panel; a lone file takes its panel with it.
+    fn extract_tab(&mut self, from: PaneId, index: usize) -> Option<crate::model::Editor> {
+        let many = self.tabs_of(from).map(|tabs| tabs.count() > 1)?;
+        if many {
+            return self.tabs_of(from)?.take(index);
+        }
+        self.focus_pane(from);
+        match self.state.close_focused_pane()?.content {
+            crate::model::PaneContent::Editor(tabs) => Some((*tabs).into_shown()),
+            _ => None,
+        }
+    }
+
+    fn drop_tab(&mut self, from: PaneId, index: usize, drop: Drop) {
+        let Some(file) = self.extract_tab(from, index) else {
+            return;
+        };
+        let target = match drop {
+            Drop::Onto(pane) => pane,
+            Drop::Edge(snap) => {
+                let Some(pane) = self.new_pane_at(snap) else {
+                    return;
+                };
+                if let Some(slot) = self.state.panes.get_mut(&pane) {
+                    slot.content = crate::model::PaneContent::Editor(Box::new(
+                        crate::editor_view::Tabs::new(file),
+                    ));
+                }
+                return self.state.focus_panes();
+            }
+        };
+        if let Some(tabs) = self.tabs_of(target) {
+            tabs.open(file);
+        }
+        self.focus_pane(target);
+        self.state.focus_panes();
     }
 
     pub(super) fn layout_action(&mut self, outbound: &Outbound, action: Action) {
@@ -400,7 +452,7 @@ impl App {
     fn snap_drop(&mut self, outbound: &Outbound, source: Source, drop: Drop) {
         let whole = match &source {
             Source::Pane(id) => Some(*id),
-            Source::Tab(id, _) if self.tabs_of(*id).is_some_and(|tabs| tabs.len() <= 1) => {
+            Source::Tab(id, _) if self.tabs_of(*id).is_some_and(|tabs| tabs.count() <= 1) => {
                 Some(*id)
             }
             _ => None,
@@ -431,9 +483,14 @@ impl App {
             }
         };
         match source {
-            Source::New(root) => {
-                let root = root.unwrap_or_else(|| self.state.root.clone());
+            Source::New(Some(root)) => {
                 self.new_session_into(outbound, pane, root);
+            }
+            Source::New(None) => {
+                if let Some(tab) = self.state.tab_mut() {
+                    tab.layout.focus_pane(pane);
+                }
+                self.new_session(outbound, (0, 0));
             }
             Source::Session(index) => {
                 self.state.header = None;

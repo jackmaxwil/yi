@@ -1190,6 +1190,61 @@ fn the_files_sidebar_works_by_mouse_and_opens_files_in_one_panel() -> TestResult
     Ok(())
 }
 
+#[test]
+fn files_do_not_open_where_the_sidebar_has_no_width() -> TestResult {
+    use yi_console::keys::Action;
+    for width in [50, 60, 70] {
+        let (mut app, _) = console()?;
+        app.state.sidebar = SidebarMode::Full;
+        let mut terminal = Terminal::new(TestBackend::new(width, 30))?;
+        draw(&mut app, &mut terminal)?;
+        let button = hits(&app)?
+            .header_buttons
+            .iter()
+            .find(|(_, action)| *action == Action::OpenEditor)
+            .map(|(rect, _)| *rect)
+            .ok_or("no Files button")?;
+        mouse(&mut app, MouseKind::Down, button.x, button.y);
+        assert!(
+            app.state.files.is_none(),
+            "an invisible tree opened and took the keyboard at width {width}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn resizing_files_out_of_view_returns_the_keyboard() -> TestResult {
+    use yi_console::keys::Action;
+    let (mut app, _) = console()?;
+    let (outbound, _threads) = no_daemon();
+    app.state.sidebar = SidebarMode::Full;
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let button = hits(&app)?
+        .header_buttons
+        .iter()
+        .find(|(_, action)| *action == Action::OpenEditor)
+        .map(|(rect, _)| *rect)
+        .ok_or("no Files button")?;
+    mouse(&mut app, MouseKind::Down, button.x, button.y);
+    assert!(app.state.files.is_some(), "no tree opened");
+    terminal = Terminal::new(TestBackend::new(50, 30))?;
+    draw(&mut app, &mut terminal)?;
+    assert!(
+        hits(&app)?.files.is_none(),
+        "the narrow tree still has a rect"
+    );
+    press(&mut app, &outbound, KeyCode::Char('b'), KeyModifiers::ALT);
+    outbound.shutdown();
+    assert_ne!(
+        app.state.sidebar,
+        SidebarMode::Full,
+        "the hidden tree swallowed a chord"
+    );
+    Ok(())
+}
+
 /// Dies when an empty notebook is blank, when its start rows are not the control table's rows, or
 /// when a press on one does nothing: the row for the palette must open the palette.
 #[test]
@@ -1422,7 +1477,7 @@ fn files_open_as_sticky_tabs_that_switch_close_split_out_and_merge() -> TestResu
             .panes
             .iter()
             .find_map(|(id, pane)| match &pane.content {
-                PaneContent::Editor(tabs) => Some((*id, tabs.len(), tabs.path.clone())),
+                PaneContent::Editor(tabs) => Some((*id, tabs.count(), tabs.path.clone())),
                 _ => None,
             })
     };
@@ -1502,7 +1557,7 @@ fn files_open_as_sticky_tabs_that_switch_close_split_out_and_merge() -> TestResu
         .panes
         .values()
         .filter_map(|pane| match &pane.content {
-            PaneContent::Editor(tabs) => Some(tabs.len()),
+            PaneContent::Editor(tabs) => Some(tabs.count()),
             _ => None,
         })
         .collect();
@@ -1560,6 +1615,22 @@ fn files_open_as_sticky_tabs_that_switch_close_split_out_and_merge() -> TestResu
         2,
         "the dropped tab did not join the strip"
     );
+    let (outbound, _threads) = no_daemon();
+    press(&mut app, &outbound, KeyCode::Char('x'), KeyModifiers::ALT);
+    assert_eq!(
+        editor(&app).ok_or("the panel closed with a tab left")?.1,
+        1,
+        "alt-x did not close only the showing tab"
+    );
+    assert_eq!(
+        panes(&app),
+        before + 1,
+        "alt-x closed a panel with tabs left"
+    );
+    press(&mut app, &outbound, KeyCode::Char('x'), KeyModifiers::ALT);
+    assert!(editor(&app).is_none(), "the last tab left its panel open");
+    assert_eq!(panes(&app), before, "the last tab did not take its panel");
+    outbound.shutdown();
     Ok(())
 }
 
@@ -1772,6 +1843,89 @@ fn a_project_moves_by_key_and_by_dragging_its_header() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn reordering_filtered_projects_keeps_every_hidden_project_in_the_order() -> TestResult {
+    let (mut app, _) = console()?;
+    let (outbound, _threads) = no_daemon();
+    app.state.sidebar = SidebarMode::Full;
+    sessions_in(&mut app, "/aaa", ["match-a".to_owned()].into_iter());
+    sessions_in(&mut app, "/bbb", ["match-b".to_owned()].into_iter());
+    sessions_in(&mut app, "/ccc", ["hidden".to_owned()].into_iter());
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let search = hits(&app)?
+        .controls
+        .iter()
+        .find(|(_, hit)| matches!(hit, yi_console::render::Hit::Search))
+        .map(|(rect, _)| *rect)
+        .ok_or("no Search row")?;
+    mouse(&mut app, MouseKind::Down, search.x + 2, search.y);
+    for c in "match".chars() {
+        press(&mut app, &outbound, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    app.state.header = Some("/aaa".to_owned());
+    assert!(
+        app.state
+            .groups()
+            .iter()
+            .all(|group| group.root.as_deref() != Some("/ccc")),
+        "the search did not filter the project list"
+    );
+    draw(&mut app, &mut terminal)?;
+    let header = |app: &App, root: &str| {
+        app.hits.as_ref().and_then(|hits| {
+            hits.controls
+                .iter()
+                .find(
+                    |(_, hit)| matches!(hit, yi_console::render::Hit::Fold(known) if known == root),
+                )
+                .map(|(rect, _)| *rect)
+        })
+    };
+    let from = header(&app, "/aaa").ok_or("no first visible header")?;
+    let over = header(&app, "/bbb").ok_or("no second visible header")?;
+    mouse(&mut app, MouseKind::Down, from.x + 2, from.y);
+    mouse(&mut app, MouseKind::Drag, from.x + 2, over.y);
+    mouse(&mut app, MouseKind::Up, from.x + 2, over.y);
+    press(&mut app, &outbound, KeyCode::Esc, KeyModifiers::NONE);
+    let roots: Vec<String> = app
+        .state
+        .groups()
+        .into_iter()
+        .filter_map(|group| group.root)
+        .collect();
+    outbound.shutdown();
+    assert_eq!(
+        roots,
+        ["/repo", "/bbb", "/aaa", "/ccc"],
+        "a filtered move dropped projects from the saved order"
+    );
+    mouse(&mut app, MouseKind::Down, search.x + 2, search.y);
+    for c in "match".chars() {
+        press(&mut app, &outbound, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    app.state.header = Some("/bbb".to_owned());
+    press(
+        &mut app,
+        &outbound,
+        KeyCode::Down,
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+    );
+    press(&mut app, &outbound, KeyCode::Esc, KeyModifiers::NONE);
+    let roots: Vec<String> = app
+        .state
+        .groups()
+        .into_iter()
+        .filter_map(|group| group.root)
+        .collect();
+    assert_eq!(
+        roots,
+        ["/repo", "/aaa", "/bbb", "/ccc"],
+        "a filtered key move did not use the visible neighbour or lost a root"
+    );
+    Ok(())
+}
+
 /// Dies when the New session row starts a session in a directory nobody chose, though several
 /// projects are listed: it must ask which one.
 #[test]
@@ -1804,30 +1958,33 @@ fn the_new_session_row_asks_which_project_when_there_are_several() -> TestResult
 }
 
 #[test]
-fn files_never_stays_focused_where_it_has_no_width() -> TestResult {
-    let (mut app, outbound) = crate::editor_view::console();
-    crate::editor_view::key(
-        &mut app,
-        &outbound,
-        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
-    );
-    assert!(app.state.files.is_some(), "the tree did not open");
-    let mut terminal = Terminal::new(TestBackend::new(59, 30))?;
+fn dragging_new_session_also_asks_which_project() -> TestResult {
+    use yi_console::model::Mode;
+    use yi_console::render::Hit;
+    let (mut app, _) = console()?;
+    app.state.sidebar = SidebarMode::Full;
+    sessions_in(&mut app, "/other", ["x".to_owned()].into_iter());
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
-    assert!(app.state.files.is_none(), "an invisible tree kept focus");
-    crate::editor_view::key(
-        &mut app,
-        &outbound,
-        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
-    );
-    assert!(app.state.files.is_none(), "an invisible tree opened");
+    let row = hits(&app)?
+        .controls
+        .iter()
+        .find(|(_, hit)| matches!(hit, Hit::New(None)))
+        .map(|(rect, _)| *rect)
+        .ok_or("no New session row")?;
+    let edge = hits(&app)?
+        .panes
+        .iter()
+        .map(|(_, rect)| rect.right())
+        .max()
+        .ok_or("no panes")?
+        .saturating_sub(3);
+    mouse(&mut app, MouseKind::Down, row.x + 3, row.y);
+    mouse(&mut app, MouseKind::Drag, edge, 12);
+    mouse(&mut app, MouseKind::Up, edge, 12);
     assert!(
-        app.state
-            .banner
-            .as_ref()
-            .is_some_and(|note| note.contains("60")),
-        "the refusal does not name the minimum width"
+        matches!(app.state.mode, Mode::Menu(_)),
+        "the drop started in the default root without asking"
     );
-    outbound.shutdown();
     Ok(())
 }

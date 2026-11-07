@@ -38,7 +38,7 @@ pub use crate::hit::Hit;
 
 #[derive(Default)]
 pub struct Hits {
-    pub screen_width: u16,
+    pub area: Rect,
     pub sidebar_width: u16,
     pub sidebar_height: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
@@ -79,6 +79,13 @@ impl Hits {
         let at = ratatui::layout::Position::new(x, y);
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
         Some(*pane)
+    }
+
+    pub fn rect_of(&self, pane: PaneId) -> Option<Rect> {
+        self.panes
+            .iter()
+            .find(|(id, _)| *id == pane)
+            .map(|(_, rect)| *rect)
     }
 
     pub fn covered(&self, rect: ratatui::layout::Rect) -> bool {
@@ -195,13 +202,6 @@ fn pane_hue(app: &App, id: PaneId, theme: &Theme) -> Color {
 }
 
 pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
-    for pane in app.state.panes.values_mut() {
-        match &mut pane.content {
-            PaneContent::Editor(tabs) => tabs.clear_drawn(),
-            PaneContent::SessionDiff { ui, .. } => ui.hits.clear(),
-            _ => {}
-        }
-    }
     let sidebar_width = if area.width >= 50 {
         crate::sidebar::width(app)
     } else {
@@ -213,11 +213,8 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     };
     let gear_rows = crate::chrome::gear_height(sidebar_width, app.kitty);
     let (sidebar, gear) = split_off_bottom(sidebar, gear_rows);
-    let files = crate::files::side(area, app.state.files.is_some());
-    if app.state.files.is_some() && files.width == 0 {
-        app.state.files = None;
-        app.note("files closed: the tree needs at least 60 columns");
-    }
+    let files_open = app.state.files.is_some() && area.width.saturating_sub(sidebar_width) >= 60;
+    let files = crate::files::side(area, files_open);
     let reserved = sidebar_width.saturating_add(files.width);
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
@@ -314,7 +311,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         .last()
         .map_or(0, |(rect, _)| rect.right().saturating_sub(header.x));
     app.hits = Some(Hits {
-        screen_width: area.width,
+        area,
         sidebar_width,
         sidebar_height: sidebar.height,
         sidebar_rows,
@@ -474,8 +471,10 @@ fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> Strin
     }
     note
 }
-use crate::panes::{cached, cached_review, windowed};
-pub use crate::panes::{hunk_lines, review_files};
+
+use crate::panes::{cached, windowed};
+pub use crate::panes::{hunk_lines, review_files, review_view};
+
 fn pane_view_content(
     pane: &mut crate::model::Pane,
     view: &PaneData<'_>,
@@ -545,8 +544,8 @@ fn pane_view_content(
             let room = visible / 3;
             let rev = diff.map_or(0, |diff| diff.rev);
             let key = (width, room, *scope, note.to_owned(), rev);
-            let review = cached_review(drawn, key, |reused| {
-                crate::panes::review_parts_reusing(diff, *scope, note, (width, room), theme, reused)
+            let review = cached(drawn, key, || {
+                crate::panes::review_parts(diff, *scope, note, (width, room), theme)
             });
             if let Some(row) = ui.jump.take().and_then(|file| review.heads.get(file)) {
                 pane.scroll_from_bottom = crate::panes::TOP.saturating_sub(*row);

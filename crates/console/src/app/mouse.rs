@@ -28,7 +28,7 @@ impl App {
     fn scroll_sideways(&mut self, x: u16, y: u16, delta: isize) {
         let Some((pane, rect)) = self.hits.as_ref().and_then(|hits| {
             let pane = hits.pane_at(x, y)?;
-            Some((pane, hits.panes.iter().find(|(id, _)| *id == pane)?.1))
+            Some((pane, hits.rect_of(pane)?))
         }) else {
             return;
         };
@@ -147,12 +147,7 @@ impl App {
     }
 
     fn editor_cell(&self, pane_id: PaneId, x: u16, y: u16) -> Option<(usize, usize)> {
-        let (_, rect) = self
-            .hits
-            .as_ref()?
-            .panes
-            .iter()
-            .find(|(id, _)| *id == pane_id)?;
+        let rect = self.hits.as_ref()?.rect_of(pane_id)?;
         let inner = rect.inner(crate::layout::pane_margin(true, false));
         let PaneContent::Editor(editor) = &self.state.panes.get(&pane_id)?.content else {
             return None;
@@ -204,14 +199,13 @@ impl App {
                 self.dirty = true;
                 return self.apply_action(outbound, Action::ClosePane);
             }
-            Some((_, crate::render::Hit::New(None))) => {
-                self.new_session_menu(outbound, (x, y));
-                return;
-            }
             Some((_, crate::render::Hit::New(root))) => {
-                let root = root.unwrap_or_else(|| self.state.root.clone());
-                if let Some(pane) = self.state.focused_pane_id() {
-                    self.new_session_into(outbound, pane, root);
+                if let Some(root) = root {
+                    if let Some(pane) = self.state.focused_pane_id() {
+                        self.new_session_into(outbound, pane, root);
+                    }
+                } else {
+                    self.new_session(outbound, (x, y));
                 }
                 self.dirty = true;
                 return;
@@ -226,6 +220,25 @@ impl App {
                 return self.review_pick(pane, pick);
             }
             Some((_, crate::render::Hit::Search)) => return self.begin_search(),
+            Some((_, crate::render::Hit::FilesRefresh)) => {
+                if let Some(files) = &mut self.state.files {
+                    files.refresh();
+                }
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::FilesCollapse)) => {
+                if let Some(files) = &mut self.state.files {
+                    files.collapse_all();
+                }
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::FilesClose)) => {
+                self.state.files = None;
+                self.dirty = true;
+                return;
+            }
             Some((_, crate::render::Hit::Run(pane, cell, ordinal))) => {
                 self.pending_close = None;
                 let looking = self.state.focused_pane_id();

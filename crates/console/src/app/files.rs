@@ -15,24 +15,22 @@ impl App {
             Some(files) if files.focused => self.state.files = None,
             Some(files) => files.focused = true,
             None => {
-                if self
-                    .hits
-                    .as_ref()
-                    .is_some_and(|hits| hits.screen_width < 60)
-                {
-                    self.note("files needs at least 60 columns");
-                    self.dirty = true;
-                    return;
+                let fits = self.hits.as_ref().is_some_and(|hits| {
+                    let open = hits.area.width.saturating_sub(hits.sidebar_width) >= 60;
+                    crate::files::side(hits.area, open).width > 0
+                });
+                if fits {
+                    let root = self.session_dir();
+                    self.state.files = Some(Files::open(&root));
                 }
-                let root = self.session_dir();
-                self.state.files = Some(Files::open(&root));
             }
         }
         self.dirty = true;
     }
 
     pub(crate) fn files_focused(&self) -> bool {
-        self.state.files.as_ref().is_some_and(|files| files.focused)
+        self.hits.as_ref().is_some_and(|hits| hits.files.is_some())
+            && self.state.files.as_ref().is_some_and(|files| files.focused)
     }
 
     fn files_rect(&self) -> Rect {
@@ -119,14 +117,7 @@ impl App {
         match kind {
             MouseKind::Down => {
                 if y == side.y {
-                    match side.right().saturating_sub(x) {
-                        10..=12 => files.refresh(),
-                        6..=8 => files.collapse_all(),
-                        2..=4 => self.state.files = None,
-                        _ => {}
-                    }
-                    self.dirty = true;
-                    return true;
+                    return false;
                 }
                 files.focused = true;
                 if let Some(index) = files.pointed(side, x, y) {

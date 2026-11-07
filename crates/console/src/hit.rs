@@ -14,6 +14,9 @@ pub enum Hit {
     Title(PaneId),
     New(Option<String>),
     Search,
+    FilesRefresh,
+    FilesCollapse,
+    FilesClose,
     Fold(String),
     Session(usize),
     /// A chat pane's run chip: the answer cell and the ordinal of the shell block it stands for.

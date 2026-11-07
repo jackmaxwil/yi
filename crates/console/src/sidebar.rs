@@ -1,5 +1,4 @@
 //! The rail and the full sidebar: pinned sessions, then one foldable group per workspace.
-use crate::client::Outbound;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
@@ -11,6 +10,7 @@ use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 
 use crate::app::App;
 use crate::avatar::Placement;
+use crate::client::Outbound;
 use crate::keys::{self, Action};
 use crate::model::{
     Group, Mode, Painted, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms,
@@ -308,7 +308,7 @@ pub(crate) fn refine(state: &crate::model::ConsoleState, mut groups: Vec<Group>)
     groups
 }
 
-pub(crate) fn ordered_roots(state: &crate::model::ConsoleState) -> Vec<String> {
+pub(crate) fn project_roots(state: &crate::model::ConsoleState) -> Vec<String> {
     let mut roots = state.roots();
     roots.sort_by_key(|root| {
         state
@@ -323,7 +323,7 @@ pub(crate) fn ordered_roots(state: &crate::model::ConsoleState) -> Vec<String> {
 
 /// Move project `root` to where `to` is in the painted order of projects.
 pub(crate) fn move_group(state: &mut crate::model::ConsoleState, root: &str, to: &str) {
-    let mut roots = state.ordered_roots();
+    let mut roots = project_roots(state);
     let (Some(from), Some(at)) = (
         roots.iter().position(|known| known == root),
         roots.iter().position(|known| known == to),
@@ -792,6 +792,34 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
 }
 
 impl App {
+    /// The project order as the sidebar lists it, written to config so the next console starts in it.
+    pub(crate) fn save_order(&mut self, outbound: &Outbound) {
+        let roots = project_roots(&self.state);
+        let params = serde_json::json!({"id": "console.projectOrder", "value": roots});
+        self.send_request(
+            outbound,
+            crate::app::RequestKind::Sidebar,
+            "_yi/set_default",
+            params,
+        );
+    }
+
+    /// The wheel over the sidebar slides its rows; the cursor stays where it was.
+    pub(crate) fn scroll_sidebar(&mut self, delta: isize) {
+        let height = self.hits.as_ref().map_or(0, |hits| hits.sidebar_height);
+        if let Some(next) = scrolled(self, height, delta) {
+            self.state.side.scroll = Some(next);
+            self.dirty = true;
+        }
+    }
+
+    /// The Search row turns into an input: typing filters the sessions, esc ends it.
+    pub(crate) fn begin_search(&mut self) {
+        self.state.side.query = Some(String::new());
+        self.state.side.scroll = None;
+        self.dirty = true;
+    }
+
     /// Panels have the keys while a drag is up (any key cancels it) and while the tree is focused.
     /// Keys while the inline search is up. True when it took the key.
     pub(super) fn search_key(
@@ -799,6 +827,30 @@ impl App {
         outbound: &crate::client::Outbound,
         key: ratatui::crossterm::event::KeyEvent,
     ) -> bool {
+        if self.state.side.query.is_some()
+            && matches!(
+                key.code,
+                ratatui::crossterm::event::KeyCode::Up | ratatui::crossterm::event::KeyCode::Down
+            )
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::ALT)
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::SHIFT)
+        {
+            if self.shift_project(if key.code == ratatui::crossterm::event::KeyCode::Down {
+                1
+            } else {
+                -1
+            }) {
+                self.save_order(outbound);
+            }
+            self.state.side.scroll = None;
+            self.state.settle_visible();
+            self.dirty = true;
+            return true;
+        }
         use ratatui::crossterm::event::KeyCode;
         let Some(query) = self.state.side.query.as_mut() else {
             return false;
@@ -836,51 +888,5 @@ impl App {
             return;
         }
         self.files_key(key);
-    }
-    /// ⌥⇧↑↓: the project under the cursor swaps with its neighbour.
-    pub(crate) fn shift_project(&mut self, step: isize) -> bool {
-        let roots = self.state.ordered_roots();
-        let here = self.state.header.clone().or_else(|| {
-            self.state
-                .selected_id()
-                .and_then(|id| self.state.sessions.get(id))
-                .map(|row| row.root.clone())
-        });
-        let neighbour = here.as_ref().and_then(|root| {
-            let at = roots.iter().position(|known| known == root)?;
-            roots.get(at.checked_add_signed(step)?)
-        });
-        let (Some(root), Some(other)) = (here, neighbour) else {
-            return false;
-        };
-        move_group(&mut self.state, &root, other);
-        self.dirty = true;
-        true
-    }
-    /// The project order as the sidebar lists it, written to config so the next console starts in it.
-    pub(crate) fn save_order(&mut self, outbound: &Outbound) {
-        let roots = self.state.ordered_roots();
-        let params = serde_json::json!({"id": "console.projectOrder", "value": roots});
-        self.send_request(
-            outbound,
-            crate::app::RequestKind::Sidebar,
-            "_yi/set_default",
-            params,
-        );
-    }
-    /// The wheel over the sidebar slides its rows; the cursor stays where it was.
-    pub(crate) fn scroll_sidebar(&mut self, delta: isize) {
-        let height = self.hits.as_ref().map_or(0, |hits| hits.sidebar_height);
-        if let Some(next) = scrolled(self, height, delta) {
-            self.state.side.scroll = Some(next);
-            self.dirty = true;
-        }
-    }
-
-    /// The Search row turns into an input: typing filters the sessions, esc ends it.
-    pub(crate) fn begin_search(&mut self) {
-        self.state.side.query = Some(String::new());
-        self.state.side.scroll = None;
-        self.dirty = true;
     }
 }

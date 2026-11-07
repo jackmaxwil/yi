@@ -370,10 +370,15 @@ pub(crate) fn side(area: Rect, open: bool) -> Rect {
     }
 }
 
-pub(crate) fn draw(app: &crate::app::App, frame: &mut Frame<'_>, theme: &Theme) {
+pub(crate) fn draw(app: &mut crate::app::App, frame: &mut Frame<'_>, theme: &Theme) {
     let side = app.hits.as_ref().and_then(|hits| hits.files);
-    if let (Some(files), Some(side)) = (&app.state.files, side) {
-        render(files, frame, side, theme);
+    let controls = if let (Some(files), Some(side)) = (&app.state.files, side) {
+        render(files, frame, side, theme)
+    } else {
+        Vec::new()
+    };
+    if let Some(hits) = app.hits.as_mut() {
+        hits.controls.extend(controls);
     }
 }
 
@@ -391,7 +396,12 @@ pub(crate) fn tree_rows(files: &Files, side: Rect) -> usize {
 const BUTTONS: [&str; 3] = [" ↻ ", " ⊟ ", " ✕ "];
 pub(crate) const BUTTONS_WIDTH: usize = 12;
 
-pub(crate) fn render(files: &Files, frame: &mut Frame<'_>, side: Rect, theme: &Theme) {
+pub(crate) fn render(
+    files: &Files,
+    frame: &mut Frame<'_>,
+    side: Rect,
+    theme: &Theme,
+) -> Vec<(Rect, crate::hit::Hit)> {
     let width = usize::from(side.width.saturating_sub(1));
     let bar = if files.focused {
         Style::default().fg(theme.text)
@@ -415,13 +425,29 @@ pub(crate) fn render(files: &Files, frame: &mut Frame<'_>, side: Rect, theme: &T
     let title = format!(" EXPLORER: {leaf}");
     let gap = width.saturating_sub(title.chars().count() + BUTTONS_WIDTH);
     let mut header = vec![
-        Span::styled(title, theme.muted_style().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            title.clone(),
+            theme.muted_style().add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" ".repeat(gap)),
     ];
     let chip = Style::default().fg(theme.text).bg(theme.selection_bg());
-    for glyph in BUTTONS {
+    let mut controls = Vec::new();
+    let mut x = side
+        .x
+        .saturating_add(1)
+        .saturating_add(u16::try_from(title.chars().count() + gap).unwrap_or(0));
+    for (index, glyph) in BUTTONS.into_iter().enumerate() {
+        let hit = match index {
+            0 => crate::hit::Hit::FilesRefresh,
+            1 => crate::hit::Hit::FilesCollapse,
+            _ => crate::hit::Hit::FilesClose,
+        };
+        let width = u16::try_from(glyph.chars().count()).unwrap_or(0);
+        controls.push((Rect::new(x, side.y, width, 1), hit));
         header.push(Span::styled(glyph, chip));
         header.push(Span::raw(" "));
+        x = x.saturating_add(width).saturating_add(1);
     }
     let mut lines: Vec<Line<'static>> = vec![Line::from(header)];
     let rows = tree_rows(files, side);
@@ -469,6 +495,7 @@ pub(crate) fn render(files: &Files, frame: &mut Frame<'_>, side: Rect, theme: &T
     }
     let block = Block::new().borders(Borders::LEFT).border_style(bar);
     frame.render_widget(Paragraph::new(lines).block(block), side);
+    controls
 }
 
 /// Invariant: a drawn row is the node under it, so a click and the frame agree.

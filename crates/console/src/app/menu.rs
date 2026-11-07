@@ -74,9 +74,9 @@ impl App {
         self.dirty = true;
     }
 
-    /// The New session row: with one project it starts there, with several it asks which.
-    pub(super) fn new_session_menu(&mut self, outbound: &Outbound, at: (u16, u16)) {
-        let roots = self.state.ordered_roots();
+    /// With one project a new session starts there; with several every entry asks which.
+    pub(super) fn new_session(&mut self, outbound: &Outbound, at: (u16, u16)) {
+        let roots = crate::sidebar::project_roots(&self.state);
         match (roots.len(), self.state.focused_pane_id()) {
             (0 | 1, Some(pane)) => {
                 let root = roots
@@ -105,7 +105,7 @@ impl App {
                 .find(|(_, index)| *index == self.state.selected)
                 .map(|(row, index)| (Target::Session(*index), (1, *row))),
             Zone::Panes => self.state.focused_pane_id().and_then(|id| {
-                let (_, rect) = hits.panes.iter().find(|(pane, _)| *pane == id)?;
+                let rect = hits.rect_of(id)?;
                 let at = (rect.x.saturating_add(2), rect.y.saturating_add(1));
                 Some((Target::Pane(id), at))
             }),
@@ -539,6 +539,45 @@ mod tests {
         app.activate(&outbound);
         outbound.shutdown();
         assert_eq!(open(&app), 2, "Close reached the pane that had focus");
+        Ok(())
+    }
+
+    #[test]
+    fn every_new_session_entry_asks_and_the_choice_sets_the_root() -> Result<(), String> {
+        let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        app.state.link = crate::model::Link::Connected;
+        app.state.upsert_row(SessionRow {
+            id: SessionId("other".to_owned()),
+            root: "/other".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some("other".to_owned()),
+            created_ms: 0,
+            last_ms: 0,
+            pinned: None,
+        });
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-menu-new-session-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.new_session(&outbound, (0, 0));
+        let Mode::Menu(menu) = &app.state.mode else {
+            return Err("the new-session action did not open the project chooser".to_owned());
+        };
+        let Target::NewSession(roots) = &menu.target else {
+            return Err("the chooser has the wrong target".to_owned());
+        };
+        let roots = roots.clone();
+        assert_eq!(roots, ["/repo", "/other"]);
+        app.run_verb(&outbound, Target::NewSession(roots.clone()), Verb::NewIn(1));
+        let started = app
+            .pending
+            .values()
+            .find_map(|pending| match &pending.kind {
+                RequestKind::NewSession(_, root) => Some(root.as_str()),
+                _ => None,
+            });
+        outbound.shutdown();
+        assert_eq!(started, roots.get(1).map(String::as_str));
         Ok(())
     }
 

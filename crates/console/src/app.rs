@@ -211,7 +211,7 @@ impl App {
         self.dirty = true;
     }
 
-    pub(crate) fn note(&mut self, text: &str) {
+    fn note(&mut self, text: &str) {
         match self.focused_chat() {
             Some(chat) => chat.app.notice(text),
             None => self.state.banner = Some(text.to_owned()),
@@ -815,13 +815,7 @@ impl App {
             .values()
             .any(|pane| pane.session().is_some());
         if !bound {
-            self.new_session(outbound);
-        }
-    }
-
-    fn new_session(&mut self, outbound: &Outbound) {
-        if let Some(pane_id) = self.state.focused_pane_id() {
-            self.new_session_into(outbound, pane_id, self.state.root.clone());
+            self.new_session(outbound, (0, 0));
         }
     }
 
@@ -883,7 +877,7 @@ impl App {
             }
             Action::SelectTab(n) => self.state.select_tab(usize::from(n).saturating_sub(1)),
             Action::Snap(_) | Action::Shift(_) => self.layout_action(outbound, action),
-            Action::NewSession => self.new_session(outbound),
+            Action::NewSession => self.new_session(outbound, (0, 0)),
             Action::Navigator => {
                 self.state.mode = Mode::Navigator {
                     query: String::new(),
