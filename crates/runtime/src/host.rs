@@ -152,11 +152,8 @@ pub fn facts() -> HostFacts {
 }
 
 fn macos_guest() -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let cancelled: yi_tools::CancelFlag =
-        std::sync::Arc::new(move || std::time::Instant::now() >= deadline);
     let mut sysctl = yi_tools::command("/usr/sbin/sysctl");
     sysctl.args(["-n", "kern.hv_vmm_present"]);
-    yi_tools::run_captured(sysctl, None, &cancelled, 64)
+    yi_tools::run_captured_until(sysctl, None, None, std::time::Duration::from_secs(2), 64)
         .is_ok_and(|capture| capture.stdout.trim() == "1")
 }

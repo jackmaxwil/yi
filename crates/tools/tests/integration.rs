@@ -15,6 +15,7 @@ mod checkpoint;
 mod contain;
 mod documents;
 mod endings;
+mod hashline_blocks;
 mod hashline_parser;
 mod hashline_patcher;
 mod hashline_read;
