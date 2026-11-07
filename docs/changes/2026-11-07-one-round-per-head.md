@@ -1,4 +1,6 @@
 ---
+version: 0.979.0
+decisions: D565
 issue: Closes #2067
 decision: a head is reviewed once and one clean round promotes it (revises D322 and D332's two rounds): a head a round has read whole, clean or blocked, is never read again, whatever triggers it, a lost lens is the only reread and asks just the lenses still owed with the earlier round's findings kept and no refuter paid for again, and `just pr ready`, `just pr merge` and the sweep's promotion take one round on the head | the bot paid for a second full round on an unchanged head: #1888, #1977, #1830 and #1974 each ran two or three rounds on one sha ($0.30 to $1.09 each), from the second clean round a draft needed, a review job that called the round twice, `--again` skipping every reason but a blocked head, and a void erasing which lens was lost | restore `wanted=2` in `skip_reason`, the two-round clause of `ready_problems` and the blocked-head rule of `--again` in scripts/pr_review.py
 ---
