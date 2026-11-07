@@ -351,8 +351,12 @@ impl App {
 
     /// The project dragged by its header takes the place of the header the pointer crosses.
     fn drag_group(&mut self, root: &str, (x, y): (u16, u16)) {
-        if let Some(drag) = &mut self.state.snap {
-            drag.moved |= x.abs_diff(drag.from.0) >= SLOP || y.abs_diff(drag.from.1) >= SLOP;
+        let Some(drag) = &mut self.state.snap else {
+            return;
+        };
+        drag.moved |= x.abs_diff(drag.from.0) >= SLOP || y.abs_diff(drag.from.1) >= SLOP;
+        if !drag.moved {
+            return;
         }
         let over = self.hits.as_ref().and_then(|hits| {
             hits.controls.iter().find_map(|(rect, hit)| match hit {
@@ -501,5 +505,66 @@ impl App {
             Source::Pane(_) | Source::Tab(..) | Source::Group(_) => {}
         }
         self.state.focus_panes();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{SessionId, SessionRow, SessionStatus};
+
+    fn two_projects() -> Result<App, Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        for (id, root) in [("s-a", "/a"), ("s-b", "/b")] {
+            app.state.upsert_row(SessionRow {
+                id: SessionId(id.to_owned()),
+                root: root.to_owned(),
+                status: SessionStatus::Idle,
+                attached: false,
+                name: None,
+                created_ms: 0,
+                last_ms: 0,
+                pinned: None,
+            });
+        }
+        let hits = crate::render::Hits {
+            controls: vec![(
+                Rect::new(0, 9, 8, 1),
+                crate::hit::Hit::Fold("/b".to_owned()),
+            )],
+            ..Default::default()
+        };
+        app.hits = Some(hits);
+        Ok(app)
+    }
+
+    /// Dies with a header that wobbles one cell reordering the projects: a press that never left
+    /// the slop is the click its release replays, which folds the header.
+    #[test]
+    fn a_header_that_wobbles_under_the_slop_moves_no_project()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut app = two_projects()?;
+        app.state.snap = Some(Drag {
+            source: Source::Group("/a".to_owned()),
+            from: (0, 9),
+            replay: false,
+            moved: false,
+            over: None,
+        });
+        let before = app.state.side.order.clone();
+        app.drag_group("/a", (1, 9));
+        assert_eq!(
+            app.state.side.order, before,
+            "a press that wobbled reordered the projects"
+        );
+        app.drag_group("/a", (3, 9));
+        let place = |root: &str| app.state.side.order.iter().position(|known| known == root);
+        assert!(
+            matches!((place("/b"), place("/a")), (Some(b), Some(a)) if b < a),
+            "a drag past the slop did not move the project: {:?}",
+            app.state.side.order
+        );
+        Ok(())
     }
 }

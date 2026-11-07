@@ -124,7 +124,7 @@ impl App {
             return true;
         }
         if let Some(("e", path)) = query.split_once(' ') {
-            self.open_editor(&resolve(path.trim()), dir, false);
+            self.open_editor(&resolve(path.trim()), dir, true);
             return true;
         }
         let (kind, path) = match query.split_once(' ') {
@@ -156,5 +156,27 @@ impl App {
             Err(error) => self.note(&format!("{path}: {error}")),
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Dies with `e <path>` taking the whole screen: a file opens in a panel beside the chat.
+    #[test]
+    fn e_opens_a_file_in_a_panel_beside_the_chat() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = crate::app::App::new("/r".to_owned(), theme);
+        let chat = app.state.focused_pane_id().ok_or("a pane")?;
+        let path = std::env::temp_dir().join(format!("yi-navigator-{}.txt", std::process::id()));
+        std::fs::write(&path, "tide\n")?;
+        app.run_navigator_command(&format!("e {}", path.display()));
+        let kept =
+            app.state.panes.get(&chat).is_some_and(|pane| {
+                matches!(pane.content, crate::model::PaneContent::Session { .. })
+            });
+        assert!(kept, "the chat kept the screen");
+        assert_eq!(app.state.panes.len(), 2, "the file opened in its own panel");
+        let _ = std::fs::remove_file(&path);
+        Ok(())
     }
 }

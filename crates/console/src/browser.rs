@@ -140,9 +140,6 @@ pub struct BrowserPane {
     pressed: bool,
 }
 
-/// What a new browser pane opens when no session printed a local address.
-pub const HOME_URL: &str = "https://www.google.com";
-
 impl BrowserPane {
     /// With no URL the bar opens for typing one.
     pub fn new(url: Option<String>) -> Self {
