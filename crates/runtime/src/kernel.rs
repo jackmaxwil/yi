@@ -1032,7 +1032,7 @@ mod tests {
         let past_scrub = prefix
             .iter()
             .skip_while(|arg| *arg != "--")
-            .any(|arg| arg.starts_with("GIT_CONFIG_KEY_") && arg.contains("protocol.https.allow"));
+            .any(|arg| arg == "GIT_CONFIG_KEY_1=protocol.allow");
         assert!(
             past_scrub,
             "the kernel's git keeps the no-transport env: {prefix:?}"
