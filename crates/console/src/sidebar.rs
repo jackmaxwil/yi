@@ -792,6 +792,18 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
 }
 
 impl App {
+    /// The project order as the sidebar lists it, written to config so the next console starts in it.
+    pub(crate) fn save_order(&mut self, outbound: &Outbound) {
+        let roots = project_roots(&self.state);
+        let params = serde_json::json!({"id": "console.projectOrder", "value": roots});
+        self.send_request(
+            outbound,
+            crate::app::RequestKind::Sidebar,
+            "_yi/set_default",
+            params,
+        );
+    }
+
     /// The wheel over the sidebar slides its rows; the cursor stays where it was.
     pub(crate) fn scroll_sidebar(&mut self, delta: isize) {
         let height = self.hits.as_ref().map_or(0, |hits| hits.sidebar_height);

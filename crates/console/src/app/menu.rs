@@ -76,7 +76,7 @@ impl App {
 
     /// With one project a new session starts there; with several every entry asks which.
     pub(super) fn new_session(&mut self, outbound: &Outbound, at: (u16, u16)) {
-        let roots = self.state.roots();
+        let roots = crate::sidebar::project_roots(&self.state);
         match (roots.len(), self.state.focused_pane_id()) {
             (0 | 1, Some(pane)) => {
                 let root = roots
