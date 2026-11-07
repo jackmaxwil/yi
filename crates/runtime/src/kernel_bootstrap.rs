@@ -133,6 +133,7 @@ pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
 }
 
 const RESTORE_NAMES_SHOWN: usize = 40;
+const RESTORE_FAILED_SHOWN: usize = 40;
 const NAMES_SHOWN: usize = 40;
 
 /// The post-compaction note; `None` names is a listing that failed, so it claims nothing.
@@ -169,14 +170,21 @@ pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> S
         ));
     }
     if !restore.failed.is_empty() {
-        let names: Vec<&str> = restore
+        let names: Vec<String> = restore
             .failed
             .iter()
-            .map(|failure| failure.name.as_str())
+            .map(|failure| failure.name.clone())
             .collect();
+        let next = yi_kernel::snapshot::RESTORE_FAILURES_VAR;
         lines.push(format!(
-            "These could not be restored and must be recreated if needed: {}.",
-            names.join(", ")
+            "These could not be restored and must be recreated if needed: {}. Why each failed: {next}.",
+            crate::listed::listed(
+                &names,
+                "names not revived",
+                "RESTORE_FAILED_SHOWN",
+                RESTORE_FAILED_SHOWN,
+                next
+            )
         ));
     }
     lines.push("</ipython_state_restored>".to_owned());

@@ -4,6 +4,7 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+use crate::faux_model::faux_model;
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_runtime::auto_review::{ReviewOutcome, Reviewer, parse_outcome, review_fragment};
@@ -11,35 +12,9 @@ use yi_runtime::permission::{CallOutcome, PermissionBroker};
 use yi_runtime::{AskOutcome, Asker, PermissionMode, ProviderStream};
 use yi_tools::ToolKind;
 use yi_types::message::StopReason;
-use yi_types::model::{Model, ModelCost};
 use yi_types::permission::Answerer;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 struct Harness {
     broker: Arc<PermissionBroker>,
@@ -104,7 +79,7 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harn
     if with_reviewer {
         broker.set_reviewer(Arc::new(Reviewer::new(
             Arc::clone(&provider),
-            faux_model(),
+            faux_model(128_000),
             yi_runtime::classifier::Screeners::default(),
         )));
     }
@@ -505,7 +480,7 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
         let session = yi_runtime::AgentSession::new(
             yi_runtime::SessionConfig {
                 system_prompt: String::new(),
-                model: faux_model(),
+                model: faux_model(128_000),
                 thinking_level: None,
                 tool_execution: yi_runtime::ExecutionMode::Sequential,
             },
@@ -519,12 +494,16 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             schema_instruction: None,
             context_window: 128_000,
             global_skills: Vec::new(),
+            pointer: None,
             can_delegate: true,
         }));
         let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
         yi_runtime::auto_review::wire_role(
             &session,
-            (named.then(faux_model), Some(Arc::clone(&harness.broker))),
+            (
+                named.then(|| faux_model(128_000)),
+                Some(Arc::clone(&harness.broker)),
+            ),
             &harness.provider,
             &mut tools,
             None,
@@ -569,7 +548,7 @@ fn a_root_nobody_attends_is_handed_the_default_and_goes_on() -> TestResult {
         let session = yi_runtime::AgentSession::new(
             yi_runtime::SessionConfig {
                 system_prompt: String::new(),
-                model: faux_model(),
+                model: faux_model(128_000),
                 thinking_level: None,
                 tool_execution: yi_runtime::ExecutionMode::Sequential,
             },
@@ -723,7 +702,11 @@ async fn a_request_asked_twice_at_once_is_put_to_the_user_once() -> TestResult {
 async fn the_reviewers_prompt_carries_the_screen_mark() -> TestResult {
     let (screeners, seen, handle) =
         crate::classifier_e2e::armed(r#"{"answers":{"inject":{"noul":0.93}}}"#)?;
-    let reviewer = Reviewer::new(Arc::new(ProviderStream::new(None)), faux_model(), screeners);
+    let reviewer = Reviewer::new(
+        Arc::new(ProviderStream::new(None)),
+        faux_model(128_000),
+        screeners,
+    );
     let request = yi_runtime::auto_review::ReviewRequest {
         tool: "bash".to_owned(),
         display: "rm -rf build".to_owned(),

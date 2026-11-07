@@ -335,7 +335,7 @@ async fn turn(
     let tools: crate::upstream::Tools = Arc::new(Vec::new);
     let (session, _host) = crate::upstream::root_at(
         &root,
-        crate::support::faux_model(),
+        crate::support::faux_model(128_000),
         provider,
         Some(broker),
         false,
@@ -500,7 +500,7 @@ fn family(context: &str) -> Result<Family, Box<dyn Error>> {
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: crate::support::faux_model(),
+            model: crate::support::faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         },

@@ -1,0 +1,84 @@
+# The merge queue's candidate (scripts/pr_queue.py) runs pr.yml's gate here, on a `queue` runner that takes
+# no other job; check_workflows.py holds this file's env and steps equal to pr.yml's.
+
+# Incident: on `ubuntu-latest` the candidate's 12-minute gate waited 60 minutes behind 37 PR runs, and Forgejo
+# evaluates `runs-on` with no `github` context, so pr.yml could not pick this lane by branch.
+
+# `name: pr` keeps the statuses the queue reads: `pr / gate (<lane>) (push)`.
+name: pr
+
+on:
+  push:
+    branches: [queue/candidate]
+
+concurrency:
+  group: candidate
+  cancel-in-progress: true
+
+# Each job is capped at 5 CPUs but sees the runner VM's 16; without these,
+# cargo and nextest start 16 threads apiece and timing-sensitive tests starve
+# (gate (test) failed 41% of runs with 4+ jobs on the runners, 14% with 3 or fewer).
+env:
+  CARGO_BUILD_JOBS: "5"
+  NEXTEST_TEST_THREADS: "5"
+  # A kernel with no Landlock fails the suite rather than skipping what proves the sandbox.
+  YI_SANDBOX_REQUIRED: "1"
+  # Incident: upload-artifact runs on Node, which ignores the system store, and failed every
+  # chunk with "unable to get local issuer certificate" against the forge's internal CA.
+  NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [lint, guardrails, test]
+    # One job at a time: the lanes run back to back, each under its own cap.
+    runs-on: queue
+    timeout-minutes: 20
+    steps:
+      # check_commit_style.py resolves origin/main and refuses to pass blind on
+      # a shallow clone, so the full history is the gate's precondition.
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The image ships just, codespell, uv, cargo-deny, cargo-machete and
+      # cargo-nextest, so taiki-e/install-action and the pipx/uv bootstrap the
+      # GitHub file carries are both gone. `rustup show` stays: it prints — and
+      # installs — whatever rust-toolchain.toml pins, which is the one thing
+      # the image can go stale on.
+      - run: rustup show
+      # The runner's cache server is on, so rust-cache works here as it does on
+      # GitHub: one key per lane, and postmerge's `warm` job saves every lane's
+      # key on main, which is what a branch's first push inherits.
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        with:
+          shared-key: ${{ matrix.lane }}
+          # Invariant: on the `queue` runner only a candidate lane that passed writes the cache, so a lane
+          # that failed never hands its artifacts to the next batch's landing gate.
+          cache-on-failure: ${{ github.ref != 'refs/heads/queue/candidate' }}
+          # main (postmerge `warm`) and the candidate, whose `queue` runner no main run reaches, save;
+          # a PR's own multi-GB save is readable only by later runs of that PR and costs the disk every push.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/queue/candidate' }}
+      # scripts/intake's selfcheck rewrites a scratch repo with the mirror's own filter, which
+      # the gate image does not ship; the pin is scripts/mirror/filter-repo.version.
+      - if: matrix.lane == 'guardrails'
+        run: |
+          uv tool install "git-filter-repo==$(cat scripts/mirror/filter-repo.version)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: just lane ${{ matrix.lane }}
+      # A failing test keeps a copy of its scratch dir under target/tmp/failed, and every console
+      # drive run its frames under target/tmp/drive.
+      - uses: actions/upload-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        if: failure() && matrix.lane == 'test'
+        with:
+          name: failed-tests
+          path: |
+            target/tmp/failed/
+            target/tmp/drive/
+          if-no-files-found: ignore
+          retention-days: 7

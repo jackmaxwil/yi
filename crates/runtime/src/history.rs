@@ -65,34 +65,13 @@ fn belongs(dir: &Path, repo: &Path) -> Belongs {
     };
     // Incident: a header's `/var/…` never matched its own `/private/var/…` repository.
     let at = at.canonicalize().unwrap_or(at);
-    match repo_at(&at) {
+    match crate::lane::canonical_repo(&at) {
         Some(other) if other == repo => Belongs::Mine,
         Some(_) => Belongs::Other,
         None if at.starts_with(repo) => Belongs::Mine,
         None if at.exists() => Belongs::Other,
         None => Belongs::Unknown,
     }
-}
-
-/// [`crate::lane::canonical_repo`] with its misses kept too: a gone checkout spawned a git
-/// per session directory on every name lookup.
-fn repo_at(at: &Path) -> Option<PathBuf> {
-    static MISSED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
-    let missed = |at: &Path| {
-        MISSED
-            .lock()
-            .is_ok_and(|missed| missed.iter().any(|known| known == at))
-    };
-    if missed(at) {
-        return None;
-    }
-    let repo = crate::lane::canonical_repo(at);
-    if repo.is_none()
-        && let Ok(mut missed) = MISSED.lock()
-    {
-        missed.push(at.to_path_buf());
-    }
-    repo
 }
 
 fn repo_of(cwd: &Path) -> PathBuf {
@@ -130,12 +109,21 @@ pub fn find_session(sessions_dir: &Path, cwd: &Path, id: &str) -> Option<PathBuf
         return None;
     }
     let mine = (repo_sessions(sessions_dir, cwd).files.into_iter()).find(|file| carries(file, id));
-    let anywhere = || {
-        (session_dirs(sessions_dir).iter())
-            .flat_map(|dir| jsonl_files(dir))
-            .find(|file| carries(file, id))
-    };
-    mine.or_else(anywhere)
+    mine.or_else(|| in_any_repo(sessions_dir, id))
+}
+
+fn in_any_repo(sessions_dir: &Path, id: &str) -> Option<PathBuf> {
+    (session_dirs(sessions_dir).iter())
+        .flat_map(|dir| jsonl_files(dir))
+        .find(|file| carries(file, id))
+}
+
+/// The repository directory session `id` was started in, from its file's header.
+pub fn session_cwd(sessions_dir: &Path, id: &str) -> Option<PathBuf> {
+    if id.is_empty() || id.contains(['/', '\\']) {
+        return None;
+    }
+    header_cwd(in_any_repo(sessions_dir, id)?.parent()?)
 }
 
 /// A name as an address spells it: case aside, its spaces as dashes, since a URL holds none.

@@ -1,3 +1,7 @@
+mod check;
+
+pub(crate) use check::{CheckShell, captured};
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -11,9 +15,12 @@ use yi_types::subagent::Discovery;
 
 use crate::args::Args;
 
-pub const CONTINUATION_TEMPLATE: &str = include_str!("prompts/continuation.md");
-pub const BUDGET_LIMIT_TEMPLATE: &str = include_str!("prompts/budget_limit.md");
-pub const OBJECTIVE_UPDATED_TEMPLATE: &str = include_str!("prompts/objective_updated.md");
+pub(crate) static CONTINUATION: std::sync::LazyLock<String> =
+    crate::packed::packed!("continuation");
+pub(crate) static BUDGET_LIMIT: std::sync::LazyLock<String> =
+    crate::packed::packed!("budget_limit");
+pub(crate) static OBJECTIVE_UPDATED: std::sync::LazyLock<String> =
+    crate::packed::packed!("objective_updated");
 
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
@@ -89,38 +96,34 @@ pub(crate) fn evidence_once(first: bool, evidence: String) -> String {
     }
 }
 
+/// Why a check did not pass, typed so a caller can release instead of re-prompting when the
+/// failure is not the model's to fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckFailure {
+    /// A Claude Code shell hook refused the command.
+    Refused(String),
+    Spawn(String),
+    TimedOut(u64),
+    /// The command ran and its exit was not 0; the evidence is the viewed capture.
+    Red(String),
+}
+
+impl CheckFailure {
+    pub fn evidence(&self) -> String {
+        match self {
+            Self::Refused(why) => why.clone(),
+            Self::Spawn(error) => format!("goal check failed to run: {error}"),
+            Self::TimedOut(ms) => format!("goal check timed out after {ms} ms"),
+            Self::Red(evidence) => evidence.clone(),
+        }
+    }
+}
 /// What a check runs under: the project's Claude Code hooks and the session's sandbox.
 #[derive(Clone, Default)]
 pub struct Checker {
     hooks: Option<Arc<crate::claude_hooks::Hooks>>,
     broker: Option<Arc<crate::permission::PermissionBroker>>,
     wall: crate::wall::Wall,
-}
-
-/// A check's command, its proxy lease, and what kills what a killed `docker exec` left running.
-pub(crate) struct CheckShell {
-    pub(crate) command: std::process::Command,
-    lease: Option<crate::egress::Lease>,
-    sweep: Option<String>,
-}
-
-/// Runs a check to its capture, holding its lease until then. Invariant: a check past its deadline
-/// is swept before it reads as settled, or what it started goes on writing the tree.
-pub(crate) fn captured(
-    shell: CheckShell,
-    stdin: Option<Vec<u8>>,
-    cancelled: &yi_tools::CancelFlag,
-) -> Result<yi_tools::CommandCapture, String> {
-    let mut capture =
-        yi_tools::run_captured(shell.command, stdin, cancelled, yi_tools::OUTPUT_CAP)?;
-    capture.rows = shell
-        .lease
-        .map(crate::egress::Lease::revoke)
-        .unwrap_or_default();
-    if let (true, Some(sweep)) = (capture.cancelled, &shell.sweep) {
-        yi_tools::jobs::run_sweep_within(sweep, Some(yi_tools::jobs::SWEEP_BOUND));
-    }
-    Ok(capture)
 }
 
 /// The lease's proxy variables: the one place a spawned check learns the proxy's address.
@@ -215,19 +218,35 @@ pub(crate) fn run_check(
     timeout_ms: u64,
     checker: &Checker,
 ) -> Result<(), String> {
-    checker.guard(check, cwd)?;
-    if let Some(refusal) = checker.probe(check, cwd) {
-        return Err(refusal);
-    }
-    let command = checker.shell("sh", check, cwd);
-    let deadline = Instant::now()
-        .checked_add(std::time::Duration::from_millis(timeout_ms))
-        .unwrap_or_else(Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = captured(command, None, &cancelled)
-        .map_err(|error| format!("goal check failed to run: {error}"))?;
+    run_check_typed_under(check, cwd, timeout_ms, checker).map_err(|failed| failed.evidence())
+}
+
+/// [`run_check`] without a session's hooks, its failure still typed: `yi ask --check` releases
+/// on a spawn or a timeout and only re-prompts a check that ran and was red.
+///
+/// # Errors
+/// Any check that is not exit 0, with the reason it did not run.
+pub fn run_check_typed(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+) -> Result<(), CheckFailure> {
+    run_check_typed_under(check, cwd, timeout_ms, &Checker::from_hooks(None))
+}
+
+fn run_check_typed_under(
+    check: &str,
+    cwd: &std::path::Path,
+    timeout_ms: u64,
+    checker: &Checker,
+) -> Result<(), CheckFailure> {
+    let runner = ShellCheck::new(check, cwd, checker)
+        .within(timeout_ms)
+        .probe();
+    runner.guard().map_err(CheckFailure::Refused)?;
+    let capture = runner.capture().map_err(CheckFailure::Spawn)?;
     if capture.cancelled {
-        return Err(format!("goal check timed out after {timeout_ms} ms"));
+        return Err(CheckFailure::TimedOut(timeout_ms));
     }
     match capture.exit_code {
         Some(0) => Ok(()),
@@ -236,10 +255,10 @@ pub(crate) fn run_check(
             let contained = checker
                 .refusal(cwd, check, &capture)
                 .map_or_else(String::new, |why| format!("[contained: {why}]\n"));
-            Err(format!(
+            Err(CheckFailure::Red(format!(
                 "{contained}goal check `{check}` exited {exit}:\n{}",
                 check_view(check, cwd, None, &capture)
-            ))
+            )))
         }
     }
 }
@@ -317,36 +336,8 @@ fn probe_assignment(token: &str) -> bool {
 /// The environment a checker may see beyond what its manifest declares (plan section 6.3).
 pub const CHECKER_ENV_BASE: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
 
-/// # Errors
-/// No spawn, or a Claude Code Bash hook refused it. `/bin/sh -c`, `env_clear()` plus the allowlist.
-pub(crate) fn run_check_in(
-    cwd: &std::path::Path,
-    command: &str,
-    env_names: &[String],
-    stdin: Option<Vec<u8>>,
-    deadline: Instant,
-    stop: Option<&yi_tools::CancelFlag>,
-    checker: &Checker,
-) -> Result<yi_tools::CommandCapture, String> {
-    checker.guard(command, cwd)?;
-    let mut shell = checker.shell("/bin/sh", command, cwd);
-    shell.command.env_clear();
-    let proxy: Vec<(String, String)> = lease_env(shell.lease.as_ref()).collect();
-    shell.command.envs(proxy);
-    for name in CHECKER_ENV_BASE
-        .iter()
-        .map(|name| (*name).to_owned())
-        .chain(env_names.iter().cloned())
-    {
-        if let Some(value) = std::env::var_os(&name) {
-            shell.command.env(name, value);
-        }
-    }
-    let stop = stop.cloned();
-    let cancelled: yi_tools::CancelFlag =
-        Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
-    captured(shell, stdin, &cancelled)
-}
+mod shell_check;
+pub(crate) use shell_check::{ShellCheck, run_check_in};
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
 
@@ -367,22 +358,25 @@ pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 /// and per completion attempt, so it gets a per-row budget, not [`DEFAULT_CHECK_TIMEOUT_MS`].
 pub(crate) const DISCOVERY_CHECK_TIMEOUT_MS: u64 = 60_000;
 
-/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it
-/// survives compaction and resume and is still there to block completion.
-pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<(), String> {
+/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it survives compaction
+/// and resume to block completion. `false` means no goal exists, so no completion gate holds.
+pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<bool, String> {
     let handle = store().ok_or("no session store is attached")?;
     let mut session = yi_session::lock_session(&handle);
-    let mut goal = session.goal().ok_or(NO_GOAL_ERROR)?;
+    let Some(mut goal) = session.goal() else {
+        return Ok(false);
+    };
     if goal
         .discoveries
         .iter()
         .any(|kept| kept.fingerprint == row.fingerprint)
     {
-        return Ok(());
+        return Ok(true);
     }
     goal.discoveries.push(row.clone());
     goal.updated = yi_session::now_ms();
-    session.set_goal(goal).map_err(|error| error.to_string())
+    session.set_goal(goal).map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 fn drained_message(row: &Discovery, mut details: Value) -> AgentMessage {
@@ -462,15 +456,15 @@ pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) 
         ("check_status", check_status),
         ("plan_frontier", plan_frontier),
     ];
-    fill(CONTINUATION_TEMPLATE, goal, extra)
+    fill(CONTINUATION.as_str(), goal, extra)
 }
 
 pub fn budget_limit_text(goal: &Goal) -> String {
-    fill(BUDGET_LIMIT_TEMPLATE, goal, Vec::new())
+    fill(BUDGET_LIMIT.as_str(), goal, Vec::new())
 }
 
 pub fn objective_updated_text(goal: &Goal) -> String {
-    fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
+    fill(OBJECTIVE_UPDATED.as_str(), goal, Vec::new())
 }
 
 /// The objective-edit and budget notices ride the continuation kind but are never superseded.
@@ -946,8 +940,90 @@ pub fn attach_goal(
 }
 
 #[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::shell_check::Env;
+    use super::{CHECKER_ENV_BASE, Checker, ShellCheck};
+
+    fn names(env_dump: &str) -> Vec<&str> {
+        env_dump
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    #[test]
+    fn the_env_policy_decides_what_the_check_sees() -> Result<(), Box<dyn Error>> {
+        let cwd = std::env::current_dir()?;
+        let declared = ["DUP_SMOKE_UNSET".to_owned()];
+        let allowlisted = ShellCheck::new("env", &cwd, &Checker::default())
+            .env(Env::Allowlist(&declared))
+            .run()?;
+        let seen = names(&allowlisted.stdout);
+        assert!(seen.contains(&"PATH"), "{seen:?}");
+        let allowed: Vec<&str> = CHECKER_ENV_BASE
+            .iter()
+            .copied()
+            .chain(declared.iter().map(String::as_str))
+            .collect();
+        // `/bin/sh` sets these itself after `env_clear()`; anything else is inheritance.
+        let shell_own = ["PWD", "SHLVL", "OLDPWD", "_"];
+        for name in &seen {
+            assert!(
+                allowed.contains(name) || shell_own.contains(name),
+                "{name} reached the allowlisted check: {seen:?}"
+            );
+        }
+        let host: Vec<String> = std::env::vars_os()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .filter(|name| !allowed.contains(&name.as_str()))
+            .filter(|name| !shell_own.contains(&name.as_str()))
+            .collect();
+        for name in &host {
+            assert!(
+                !seen.contains(&name.as_str()),
+                "{name} was inherited past the allowlist: {seen:?}"
+            );
+        }
+        let keyless = ShellCheck::new("env", &cwd, &Checker::default()).run()?;
+        let inherited = names(&keyless.stdout);
+        assert!(
+            inherited.len() >= seen.len(),
+            "the keyless check inherits what the allowlisted one was denied: {inherited:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_check_past_its_deadline_is_cancelled() -> Result<(), Box<dyn Error>> {
+        let cwd = std::env::current_dir()?;
+        let capture = ShellCheck::new("sleep 5", &cwd, &Checker::default())
+            .within(50)
+            .run()?;
+        assert!(capture.cancelled, "{capture:?}");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod checker_tests {
     use super::*;
+
+    #[test]
+    fn a_probe_refusal_stays_typed_through_the_shared_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let failure = run_check_typed(
+            "yi-missing-check-2009f3389",
+            &std::env::current_dir()?,
+            30_000,
+        )
+        .err()
+        .ok_or("a missing check program passed")?;
+        assert!(matches!(failure, CheckFailure::Refused(_)), "{failure:?}");
+        Ok(())
+    }
 
     /// Dies with a container child's check running on the host, which that child's wall forbids.
     #[test]
@@ -1061,6 +1137,27 @@ mod sweep_tests {
             "the flag trips a check that never finishes"
         );
         assert!(marker.exists(), "a cancelled check's sweep ran");
+        Ok(())
+    }
+
+    /// Incident: a sweep that exited nonzero was reported as a SWEEP_BOUND timeout, hiding the
+    /// failure and telling the model a hang happened when none did.
+    #[test]
+    fn a_failed_sweep_names_its_exit_code_not_the_time_bound()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut command = yi_tools::keyless_command("sh");
+        command.args(["-c", "sleep 5"]);
+        let shell = CheckShell {
+            command,
+            lease: None,
+            sweep: Some("exit 23".to_owned()),
+        };
+        let cancelled: yi_tools::CancelFlag = Arc::new(|| true);
+        let capture = captured(shell, None, &cancelled)?;
+        assert!(capture.cancelled);
+        let rows = capture.rows.join("\n");
+        assert!(rows.contains("sweep failed with exit code 23"), "{rows}");
+        assert!(!rows.contains("SWEEP_BOUND"), "{rows}");
         Ok(())
     }
 }

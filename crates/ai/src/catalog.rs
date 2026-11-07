@@ -14,15 +14,7 @@ const GOOGLE_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/google.zz")
 const CURSOR_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cursor.zz"));
 const KIMI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kimi.zz"));
 
-pub const PROVIDERS: [&str; 7] = [
-    "anthropic",
-    "openai",
-    "openrouter",
-    "openai-codex",
-    "google",
-    "cursor",
-    "kimi",
-];
+pub const PROVIDERS: [&str; 7] = yi_types::CATALOG_PROVIDERS;
 
 /// A fetched file's top-level `"schema"`. One under another is stale and rewritten by the next
 /// session; its entries still load, so a model only the fetch knows keeps resolving.
@@ -36,15 +28,35 @@ pub struct Catalog {
 
 static SHARED: OnceLock<Catalog> = OnceLock::new();
 static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
+static CUSTOM: OnceLock<Vec<Model>> = OnceLock::new();
 
 impl Catalog {
-    /// The bundled catalog under the cache dir's overlay, parsed once per process; model
-    /// lookup runs per turn and per subagent spawn.
+    /// The bundled catalog under the cache dir's overlay and the config's own providers, parsed
+    /// once per process; model lookup runs per turn and per subagent spawn.
     pub fn shared() -> &'static Self {
-        SHARED.get_or_init(|| match CACHE_DIR.get() {
-            Some(dir) => Self::bundled().with_cache(dir),
-            None => Self::bundled(),
+        SHARED.get_or_init(|| {
+            let catalog = match CACHE_DIR.get() {
+                Some(dir) => Self::bundled().with_cache(dir),
+                None => Self::bundled(),
+            };
+            catalog.with_custom(CUSTOM.get().map(Vec::as_slice).unwrap_or_default())
         })
+    }
+
+    /// Set before the first lookup, beside [`Catalog::set_cache_dir`].
+    pub fn set_custom(models: Vec<Model>) {
+        let _already_set = CUSTOM.set(models);
+    }
+
+    /// Invariant: applied after the cache, so no fetched file can replace or drop a model the
+    /// user declared; a refresh only ever writes the built-in providers' files.
+    #[must_use]
+    pub fn with_custom(mut self, models: &[Model]) -> Self {
+        for model in models {
+            self.models
+                .insert((model.provider.clone(), model.id.clone()), model.clone());
+        }
+        self
     }
 
     /// Set before the first lookup; `yi --version` never looks up, so it never reads a cache.
@@ -114,6 +126,14 @@ impl Catalog {
                     continue;
                 }
                 match serde_json::from_value::<Model>(entry) {
+                    // Invariant: the cursor-agent wire bounds its own wait, so the field is refused.
+                    Ok(model)
+                        if model.api == "cursor-agent" && model.read_timeout_secs.is_some() =>
+                    {
+                        self.rejected.push(format!(
+                            "{source}: {id}: readTimeoutSecs is not a cursor-agent deadline"
+                        ));
+                    }
                     Ok(model) => {
                         self.models
                             .insert((model.provider.clone(), model.id.clone()), model);

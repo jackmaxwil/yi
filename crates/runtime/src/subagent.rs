@@ -61,7 +61,7 @@ pub(crate) struct ChildRecord {
     /// a respawned service, whose predecessor's turns were billed to the lease that ended.
     pub(crate) billed_from: usize,
     tool_use_count: u64,
-    token_count: u64,
+    pub(crate) spent: record::Billing,
     cost: f64,
     answer_preview: Option<String>,
     pub(crate) rows: record::ChildRows,
@@ -234,7 +234,7 @@ pub struct SubagentHost {
     pub(crate) harvests: Mutex<std::collections::HashSet<String>>,
     pub(crate) waits: std::sync::atomic::AtomicU64,
     pub(crate) told: Mutex<Option<(String, u64)>>,
-    pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
+    pub(crate) stuck: Mutex<(crate::family::StuckLatch, Option<std::time::Instant>)>,
     /// The board a long reply is kept on: the wiring's, set once after construction (D242).
     pub(crate) family: std::sync::OnceLock<PathBuf>,
     pub(crate) resolver: std::sync::OnceLock<Arc<crate::fetch::Resolver>>,
@@ -295,8 +295,6 @@ fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<Stri
 fn child_entry(child_id: &str, record: &ChildRecord) -> Value {
     json!({
         "rlm_child_id": child_id,
-        "active_session_id": Value::Null,
-        "session_id": Value::Null,
         "session_name": record.session_name,
         "session_dir": record.session_dir.to_string_lossy(),
         "status": crate::family::read_exit(record.exit).status.as_str(),
@@ -453,20 +451,6 @@ impl SubagentHost {
         });
     }
 
-    fn create_child_dir(&self, parent_dir: &Path) -> Result<(PathBuf, String), String> {
-        std::fs::create_dir_all(parent_dir).map_err(|error| error.to_string())?;
-        for _ in 0..100 {
-            let suffix = random_suffix()?;
-            let dir = parent_dir.join(format!("sub-{suffix}"));
-            match std::fs::create_dir(&dir) {
-                Ok(()) => return Ok((dir, format!("sub-{suffix}"))),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(format!("{}: {error}", dir.display())),
-            }
-        }
-        Err("Unable to create unique RLM child session directory".to_owned())
-    }
-
     /// Validates, admits, spawns detached, returns the handle at admission.
     pub fn spawn(
         self: &Arc<Self>,
@@ -544,10 +528,10 @@ impl SubagentHost {
         let mut cast = self.cast(&kwargs, &isolation)?;
         let (seed, prompt) = reader::brief(self, &kwargs, prompt, &mut cast)?;
         let model = cast.0.clone();
-        let (session_dir, child_id) = self.create_child_dir(&self.children_dir())?;
+        let (mut spawn_dir, child_id) = build::create_child_dir(&self.children_dir())?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
-        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, &standing)?;
+        let (reserved, lease) = self.reserve(&session_name, &ask, &standing)?;
         let stagger = reader::share(self, &kwargs, seed.as_ref(), &mut cast);
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;
@@ -570,9 +554,10 @@ impl SubagentHost {
             _ => None,
         };
         cast.2.container = container.as_ref().map(|held| held.name().to_owned());
-        let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
+        let child = self.build(cast, &session_name, spawn_dir.path(), cwd, &lease, None)?;
         let (trail, rows) =
             self.trail_admission(&session_name, &child_id, &child, &prompt, role, &standing);
+
         let window = child.model().context_window;
         let forked = reader::seed_for_fork(&*self.options.parent_messages, fork, window);
         reader::seed(&child, forked, seed);
@@ -594,7 +579,7 @@ impl SubagentHost {
                 child_id.clone(),
                 ChildRecord {
                     session_name: session_name.clone(),
-                    session_dir: session_dir.clone(),
+                    session_dir: spawn_dir.path().to_path_buf(),
                     trail,
                     spawned_by: self.spawning_cell(),
                     worktree,
@@ -609,7 +594,7 @@ impl SubagentHost {
                     activity: ChildActivity::Waiting,
                     billed_from: 0,
                     tool_use_count: 0,
-                    token_count: 0,
+                    spent: record::Billing::default(),
                     cost: 0.0,
                     rows,
                     answer_preview: None,
@@ -629,6 +614,7 @@ impl SubagentHost {
             // and a spawn racing this one would be refused tokens nobody holds.
             children.release_build(&session_name);
             children.touch(&child_id, crate::family::Cause::Spawned);
+            spawn_dir.keep();
         }
         drop(reserved);
         self.watch(child_id.clone(), &session);
@@ -650,7 +636,7 @@ impl SubagentHost {
             .await;
         });
         self.publish(&child_id);
-        let mut reply = service::handle(&child_id, &session_name, &session_dir, &model);
+        let mut reply = service::handle(&child_id, &session_name, spawn_dir.path(), &model);
         if let Some(left_out) = left_out {
             (self.options.notice)(&format!("{session_name}: {left_out}"), None);
             let next = reply
@@ -705,7 +691,7 @@ impl SubagentHost {
                             state,
                             note,
                             tools: record.tool_use_count,
-                            tokens: record.token_count,
+                            tokens: record.spent.tokens,
                             cost: record.cost,
                             idle_s,
                             worktree: record

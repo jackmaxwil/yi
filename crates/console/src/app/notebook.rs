@@ -5,18 +5,21 @@ const TEXT_CAP: usize = 8 * 1024;
 const RESULT_CAP: usize = 2 * 1024;
 use crate::model::{IMAGE_BYTES_MAX, IMAGES_PER_CELL};
 
-fn clamp_bytes(text: &str, cap: usize) -> String {
+fn clamp_bytes(text: &str, cap: usize) -> (String, bool) {
     if text.len() <= cap {
-        return text.to_owned();
+        return (text.to_owned(), false);
     }
     let head = text
         .get(..text.floor_char_boundary(cap))
         .unwrap_or_default();
-    format!(
-        "{head}\n[… {} of {} bytes kept · notebook cap {} KiB · the transcript holds all of it]",
-        head.len(),
-        text.len(),
-        cap / 1024
+    (
+        format!(
+            "{head}\n[… {} of {} bytes kept · notebook cap {} KiB · the transcript holds all of it]",
+            head.len(),
+            text.len(),
+            cap / 1024
+        ),
+        true,
     )
 }
 
@@ -66,17 +69,23 @@ pub(super) fn apply_notebook(
                 cell.stdout = details
                     .get("stdout")
                     .and_then(Value::as_str)
-                    .map(|text| clamp_bytes(text, TEXT_CAP))
+                    .map(|text| clamp_bytes(text, TEXT_CAP).0)
                     .unwrap_or_default();
-                cell.result = details
+                let result = details
                     .get("result")
                     .and_then(Value::as_str)
                     .filter(|text| !text.is_empty())
                     .map(|text| clamp_bytes(text, RESULT_CAP));
+                cell.result_capped = result.as_ref().is_some_and(|(_, capped)| *capped);
+                cell.result = result.map(|(text, _)| text);
+                cell.result_mime = details
+                    .get("resultMime")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 cell.stderr = details
                     .get("stderr")
                     .and_then(Value::as_str)
-                    .map(|text| clamp_bytes(text, TEXT_CAP))
+                    .map(|text| clamp_bytes(text, TEXT_CAP).0)
                     .unwrap_or_default();
                 cell.duration_ms = details.get("durationMs").and_then(Value::as_u64);
                 cell.error =
@@ -155,7 +164,7 @@ mod tests {
 
     fn rows(cells: &[NbCell], width: usize, full: bool) -> Vec<String> {
         let theme = Theme::new(ColorTier::TrueColor, true);
-        notebook_lines(cells, width, full, &theme, "⌘W")
+        notebook_lines(cells, width, full, &theme)
             .iter()
             .map(|line: &Line| {
                 line.spans
@@ -228,10 +237,10 @@ mod tests {
         Ok(cells)
     }
 
+    const RECORDED: &str = include_str!("../../../tui/tests/fixtures/sessions/01a13357.jsonl");
+
     fn recorded() -> Result<Vec<NbCell>, serde_json::Error> {
-        replay(include_str!(
-            "../../../tui/tests/fixtures/sessions/01a13357.jsonl"
-        ))
+        replay(RECORDED)
     }
 
     #[test]
@@ -435,7 +444,7 @@ mod tests {
             ..NbCell::default()
         };
         let theme = Theme::new(ColorTier::TrueColor, true);
-        let lines = notebook_lines(&[cell], WIDTH, false, &theme, "⌘W");
+        let lines = notebook_lines(&[cell], WIDTH, false, &theme);
         for span in lines.iter().flat_map(|line| line.spans.iter()) {
             let bad = span.content.chars().find(|c| c.is_control());
             assert_eq!(bad, None, "{:?}", span.content);
@@ -697,7 +706,7 @@ mod tests {
             ..NbCell::default()
         };
         let theme = Theme::new(ColorTier::TrueColor, true);
-        let lines = notebook_lines(std::slice::from_ref(&cell), 100, false, &theme, "x");
+        let lines = notebook_lines(std::slice::from_ref(&cell), 100, false, &theme);
         assert!(
             lines
                 .iter()
@@ -730,7 +739,7 @@ mod tests {
             })
             .ok_or("no RuntimeError cell")?;
         let theme = Theme::new(ColorTier::TrueColor, true);
-        let lines = notebook_lines(std::slice::from_ref(cell), 100, true, &theme, "x");
+        let lines = notebook_lines(std::slice::from_ref(cell), 100, true, &theme);
         let frame = lines
             .iter()
             .find(|line| said(line).trim_start().starts_with("File "))
@@ -780,7 +789,7 @@ mod tests {
             ..NbCell::default()
         };
         let theme = Theme::new(ColorTier::TrueColor, true);
-        let lines = notebook_lines(std::slice::from_ref(&cell), 70, false, &theme, "x");
+        let lines = notebook_lines(std::slice::from_ref(&cell), 70, false, &theme);
         let row = lines
             .iter()
             .find(|line| said(line).contains("pwd && ls"))
@@ -793,6 +802,328 @@ mod tests {
             "a shell command in a shell cell: {:?}",
             row.spans
         );
+        Ok(())
+    }
+
+    /// Dies with Yi's own byte clamp read as bad JSON: a 2 KiB JSON result would be drawn flat
+    /// under a row claiming the value did not parse.
+    #[test]
+    fn a_json_result_past_the_bytes_names_the_cap_not_a_parse_failure() -> TestResult {
+        let big = json!({"rows": vec!["tide"; 700]}).to_string();
+        let drawn = rows(
+            &one_cell(json!({"result": big, "resultMime": "application/json"})),
+            84,
+            false,
+        )
+        .join("\n");
+        assert!(drawn.contains("past the cell's byte cap"), "{drawn}");
+        assert!(!drawn.contains("did not parse as JSON"), "{drawn}");
+        let broken = rows(
+            &one_cell(json!({"result": "{not json", "resultMime": "application/json"})),
+            84,
+            false,
+        )
+        .join("\n");
+        assert!(broken.contains("did not parse as JSON"), "{broken}");
+        Ok(())
+    }
+
+    /// Dies with the mime dropped between the tool's details and the cell: a declared markdown
+    /// value drew as the text it arrived in.
+    #[test]
+    fn a_cells_details_hand_its_mime_to_the_pane() -> TestResult {
+        let cells = one_cell(json!({"result": "# Tide", "resultMime": "text/markdown"}));
+        assert_eq!(
+            cells.first().and_then(|cell| cell.result_mime.as_deref()),
+            Some("text/markdown")
+        );
+        let drawn = rows(&cells, 72, false);
+        assert!(drawn.iter().any(|row| row.contains("Tide")), "{drawn:#?}");
+        assert!(
+            !drawn.iter().any(|row| row.contains("# Tide")),
+            "{drawn:#?}"
+        );
+        Ok(())
+    }
+
+    /// The recorded reply that carries every markdown block a notebook must draw: a heading, a
+    /// numbered list, bold, a table and a fence.
+    const MARKDOWN_SESSION: &str =
+        include_str!("../../../tui/tests/fixtures/sessions/01a0d6e4.jsonl");
+
+    fn recorded_markdown() -> Result<String, Box<dyn std::error::Error>> {
+        let mut best = String::new();
+        for message in session::session_entries(MARKDOWN_SESSION)? {
+            if let AgentMessage::Assistant { content, .. } = &message {
+                for block in content {
+                    if let Content::Text { text, .. } = block
+                        && text.len() > best.len()
+                    {
+                        best.clone_from(text);
+                    }
+                }
+            }
+        }
+        Ok(best)
+    }
+
+    /// A recorded kernel result's details, which is the JSON object a notebook renders as a
+    /// tree: a real payload, in the shape the tool wrote it.
+    fn recorded_json() -> Result<String, serde_json::Error> {
+        let details = session::session_entries(RECORDED)?
+            .into_iter()
+            .find_map(|message| match message {
+                AgentMessage::ToolResult {
+                    tool_name, details, ..
+                } if tool_name == "ipython" => details,
+                _ => None,
+            })
+            .unwrap_or_default();
+        serde_json::to_string(&details)
+    }
+
+    fn kind_cell(mime: Option<&str>, result: &str) -> NbCell {
+        NbCell {
+            number: 1,
+            result: Some(result.to_owned()),
+            result_mime: mime.map(str::to_owned),
+            ..NbCell::default()
+        }
+    }
+
+    /// Dies with a markdown result drawn raw: the heading keeps its `#`, the table its pipes,
+    /// and the chat's own renderer never ran.
+    #[test]
+    fn a_markdown_result_draws_its_blocks_as_the_chat_does() -> TestResult {
+        let source = recorded_markdown()?;
+        assert!(source.len() > 4_000, "the recorded reply is life-sized");
+        let drawn = rows(&[kind_cell(Some("text/markdown"), &source)], 72, true);
+        for (raw, drawn_as) in [
+            ("# Yi codebase assessment", "Yi codebase assessment"),
+            ("## What it is", "What it is"),
+        ] {
+            assert!(source.contains(raw), "{raw:?} left the recording");
+            assert!(
+                drawn.iter().any(|row| row.contains(drawn_as)),
+                "{drawn_as:?}: {drawn:#?}"
+            );
+            let raw_row = drawn.iter().find(|row| row.contains(raw));
+            assert_eq!(raw_row, None, "{raw:?} drawn raw");
+        }
+        assert!(
+            drawn.iter().any(|row| row.contains("│ dimension")),
+            "no table row: {drawn:#?}"
+        );
+        assert!(
+            !drawn.iter().any(|row| row.contains("|---|")),
+            "the table's rule drawn raw"
+        );
+        assert!(
+            drawn
+                .iter()
+                .any(|row| row.contains("1. Crate line budgets")),
+            "no list row"
+        );
+        Ok(())
+    }
+
+    /// Dies with the byte-cap notice inside a markdown table: the cut lands in the table and the
+    /// notice draws as a one-cell row instead of the pane's own muted row.
+    #[test]
+    fn a_markdown_result_past_the_bytes_ends_in_the_cap_row_not_a_table_cell() -> TestResult {
+        let mut table = String::from("| tide | depth |\n|---|---|\n");
+        while table.len() < 3_000 {
+            table.push_str("| neap | 12 |\n");
+        }
+        let drawn = rows(
+            &one_cell(json!({"result": table, "resultMime": "text/markdown"})),
+            72,
+            true,
+        );
+        let cap = drawn.iter().find(|row| row.contains("bytes kept"));
+        let cap = cap.cloned().unwrap_or_default();
+        assert!(cap.trim_start().starts_with("[…"), "{drawn:#?}");
+        assert!(!cap.contains('│'), "{cap:?}");
+        Ok(())
+    }
+
+    /// Dies with a JSON result drawn as its one compact line, or with the cap row silent.
+    #[test]
+    fn a_json_result_draws_pretty_and_names_the_cap_it_collapsed_past() -> TestResult {
+        let source = recorded_json()?;
+        let drawn = rows(&[kind_cell(Some("application/json"), &source)], 72, true);
+        assert!(
+            drawn.iter().any(|row| row.contains("  \"stdout\":")),
+            "not pretty-printed: {drawn:#?}"
+        );
+        assert!(
+            !drawn.iter().any(|row| row.contains("{\"status\":")),
+            "the compact one-line source was drawn"
+        );
+        let long = json!({"crates": (1..=40).map(|n| format!("crate-{n}")).collect::<Vec<_>>()});
+        let cut = rows(
+            &[kind_cell(Some("application/json"), &long.to_string())],
+            72,
+            false,
+        );
+        let notice = cut
+            .iter()
+            .find(|row| row.contains("[…] result first 20 of"))
+            .ok_or("cap row silent")?;
+        assert!(notice.contains("notebook cap 20"), "{notice:?}");
+        assert!(notice.contains("v shows every row"), "{notice:?}");
+        let whole = rows(
+            &[kind_cell(Some("application/json"), &long.to_string())],
+            72,
+            true,
+        );
+        assert!(
+            whole.iter().any(|row| row.contains("crate-40")),
+            "{whole:#?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with an unknown mime re-routed: a type no renderer names draws the value as the
+    /// text it already was, byte for byte beside a cell that named no mime at all.
+    #[test]
+    fn a_mime_no_renderer_names_draws_the_value_as_text() -> TestResult {
+        let source = "# not a heading\n| a | b |\n{\"one\": 1}";
+        let plain = rows(&[kind_cell(None, source)], 72, false);
+        for mime in ["text/html", "text/plain", "image/svg+xml"] {
+            assert_eq!(
+                rows(&[kind_cell(Some(mime), source)], 72, false),
+                plain,
+                "{mime} was re-routed"
+            );
+        }
+        Ok(())
+    }
+
+    /// Dies with a python result drawn flat: its keyword keeps the theme's text colour.
+    #[test]
+    fn a_code_result_is_highlighted_by_the_language_its_mime_names() -> TestResult {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let keyword = |mime: Option<&str>| -> Option<Option<ratatui::style::Color>> {
+            notebook_lines(
+                &[kind_cell(mime, "def tide(sea):\n    return sea")],
+                72,
+                false,
+                &theme,
+            )
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "def")
+            .map(|span| span.style.fg)
+        };
+        let coloured = keyword(Some("text/x-python")).ok_or("no def span")?;
+        assert_ne!(coloured, Some(theme.text), "the keyword was drawn flat");
+        assert_eq!(keyword(None), None, "an unnamed mime was split into tokens");
+        Ok(())
+    }
+
+    /// Dies with a declared JSON value that is not JSON drawn pretty anyway, or with no row
+    /// saying the pane fell back to text.
+    #[test]
+    fn a_json_result_that_does_not_parse_says_it_drew_as_text() -> TestResult {
+        let drawn = rows(
+            &[kind_cell(Some("application/json"), "{\"cut\": ")],
+            72,
+            false,
+        );
+        assert!(
+            drawn
+                .iter()
+                .any(|row| row
+                    .contains("application/json result did not parse as JSON · shown as text")),
+            "{drawn:#?}"
+        );
+        assert!(
+            drawn.iter().any(|row| row.contains("{\"cut\":")),
+            "the value itself is gone"
+        );
+        Ok(())
+    }
+
+    /// Dies with a value's own last row peeled into a cap notice, or invalid JSON announcing a
+    /// byte cut that never happened.
+    #[test]
+    fn a_result_value_that_looks_like_a_cap_notice_stays_value() -> TestResult {
+        let markdown = rows(
+            &[kind_cell(Some("text/markdown"), "Before\n\n[…] own row")],
+            72,
+            false,
+        );
+        assert!(
+            markdown.iter().any(|row| row.starts_with("↳ […] own row")),
+            "the value's own row was not rendered as markdown: {markdown:#?}"
+        );
+        assert!(
+            !markdown.iter().any(|row| row == "  […] own row"),
+            "the value's own row became a pane notice: {markdown:#?}"
+        );
+
+        let json = rows(
+            &[kind_cell(
+                Some("application/json"),
+                "{\"cut\": \n[…] own row",
+            )],
+            72,
+            false,
+        );
+        assert!(
+            json.iter().any(|row| row.contains("did not parse as JSON")),
+            "the parse fallback was not named: {json:#?}"
+        );
+        assert!(
+            !json
+                .iter()
+                .any(|row| row.contains("past the cell's byte cap")),
+            "the value forged a byte cap: {json:#?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with a markdown value keeping its `##`, or a tab or an escape drawn raw.
+    #[test]
+    fn every_result_kind_survives_an_empty_and_a_control_ridden_value() -> TestResult {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mimes = [
+            None,
+            Some("text/markdown"),
+            Some("application/json"),
+            Some("text/x-python"),
+        ];
+        for mime in mimes {
+            let empty = notebook_lines(&[kind_cell(mime, "")], 72, false, &theme);
+            assert!(
+                !empty
+                    .iter()
+                    .flat_map(|line| line.spans.iter())
+                    .any(|span| span.content.contains('…')),
+                "{mime:?} drew a cut row for an empty value"
+            );
+            let cell = kind_cell(mime, "## a\tb\x1b[2J\rc € {\"k\": ");
+            let lines = notebook_lines(&[cell], 72, false, &theme);
+            for span in lines.iter().flat_map(|line| line.spans.iter()) {
+                assert_eq!(
+                    span.content.chars().find(|c: &char| c.is_control()),
+                    None,
+                    "{mime:?}: {:?}",
+                    span.content
+                );
+            }
+            let drawn: String = lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(
+                drawn.contains("##"),
+                mime != Some("text/markdown"),
+                "{mime:?} was not drawn by its mime: {drawn}"
+            );
+        }
         Ok(())
     }
 }

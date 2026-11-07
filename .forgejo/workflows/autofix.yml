@@ -73,6 +73,7 @@ jobs:
         if: steps.queue.outputs.newer == '0'
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
+          MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # The rounds the findings fixer answers: the bot's and the owner's, as the review job counts them.
           YI_ROUND_AUTHORS: yi-bot,jack

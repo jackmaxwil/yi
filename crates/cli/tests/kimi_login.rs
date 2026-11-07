@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use crate::loopback::read_request;
+use crate::loopback::{read_request, reply};
 use crate::plan_ops::streams as text;
 use crate::scratch::Scratch;
 use crate::yi_bin::yi_command;
@@ -23,13 +23,6 @@ const BASH_TURN: &str = include_str!("../../ai/tests/fixtures/kimi-chat-2026-10-
 const ANSWER_TURN: &str = include_str!("../../ai/tests/fixtures/kimi-chat-2026-10-24-answer.sse");
 
 type Seen = Arc<Mutex<Vec<(String, String)>>>;
-
-fn reply(status: &str, kind: &str, body: &str) -> String {
-    format!(
-        "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    )
-}
 
 /// The account's endpoints on 127.0.0.1; `denied` answers the token poll with `access_denied`.
 /// Every request is kept as (request line, headers and body).
@@ -211,7 +204,8 @@ fn a_device_login_refreshes_the_list_and_a_kimi_turn_streams_through_it() -> Tes
         .rev()
         .find_map(|message| message["content"][0]["text"].as_str())
         .ok_or("no final text")?;
-    assert_eq!(answered, "```text\none\ntwo\nthree\n```");
+    let status = "Ran the three requested commands in sequence and reported their outputs.\n\n";
+    assert_eq!(answered, format!("{status}```text\none\ntwo\nthree\n```"));
 
     let chats: Vec<String> = seen
         .lock()

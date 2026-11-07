@@ -73,9 +73,20 @@ impl ToolContext {
         gate
     }
 
-    /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`.
+    /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`, at
+    /// most [`READ_FILE_CAP`] of them: the cap every text read and edit takes.
     pub(crate) fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        read_all(self.read_gate().open(path, &self.deny_read)?)
+        read_capped(
+            self.read_gate().open(path, &self.deny_read)?,
+            path,
+            Cap::Text,
+        )
+    }
+
+    /// [`Self::read`] for a document, under the converter's own ceiling: the parsed text, not the
+    /// source bytes, is what reaches the model, and a page selection parses only those pages.
+    pub(crate) fn read_document(&self, path: &Path, cap: Cap) -> std::io::Result<Vec<u8>> {
+        read_capped(self.read_gate().open(path, &self.deny_read)?, path, cap)
     }
 
     /// What a write may not land on: both lists of the wall.
@@ -278,12 +289,181 @@ pub(crate) fn read_all(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Replaces a file's content through the handle the gate judged, never the name again.
-pub(crate) fn overwrite(file: &mut std::fs::File, content: &[u8]) -> std::io::Result<()> {
+/// The most of one file `read` shows or `edit` takes whole; past it grep searches the file.
+pub const READ_FILE_CAP: usize = 16 * 1024 * 1024;
+
+/// [`read_all`] up to its cap; past it a `FileTooLarge` error whose text is the cut row.
+pub(crate) fn read_capped(file: std::fs::File, path: &Path, cap: Cap) -> std::io::Result<Vec<u8>> {
+    let limit = cap.limit();
+    let ceiling = u64::try_from(limit).unwrap_or(u64::MAX);
+    let size = file.metadata().map_or(0, |meta| meta.len());
+    let mut bytes = Vec::new();
+    if size <= ceiling {
+        let mut limited = std::io::Read::take(&file, ceiling.saturating_add(1));
+        std::io::Read::read_to_end(&mut limited, &mut bytes)?;
+    }
+    if size <= ceiling && bytes.len() <= limit {
+        return Ok(bytes);
+    }
+    let size = size.max(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+    let total = usize::try_from(size).unwrap_or(usize::MAX);
+    let row = cut_row(0, total, "bytes read", cap.name(), limit, &cap.next(path));
+    Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, row))
+}
+
+/// What a capped read may take of one file, and what its cut row says.
+#[derive(Clone, Copy)]
+pub(crate) enum Cap {
+    /// Text the model reads as bytes, capped at [`READ_FILE_CAP`].
+    Text,
+    /// A document converted whole, capped at the converter's ceiling; `pages` says a page
+    /// selection could parse past that ceiling, which only a PDF can.
+    Document { pages: bool },
+    /// A document whose page selection parses only those pages.
+    Paged,
+}
+
+impl Cap {
+    fn limit(self) -> usize {
+        let bytes = match self {
+            Self::Text => u64::try_from(READ_FILE_CAP).unwrap_or(u64::MAX),
+            Self::Document { .. } => crate::document::INPUT_CEILING,
+            Self::Paged => crate::document::PAGED_CEILING,
+        };
+        usize::try_from(bytes).unwrap_or(usize::MAX)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Text => "READ_FILE_CAP",
+            Self::Document { .. } => "INPUT_CEILING",
+            Self::Paged => "PAGED_CEILING",
+        }
+    }
+
+    fn next(self, path: &Path) -> String {
+        let shown = path.display();
+        match self {
+            Self::Text => {
+                format!("grep path={shown} with a pattern, or bash `sed -n '1,2000p' {shown}`")
+            }
+            Self::Document { pages: false } => {
+                "no read converts a document this large, whatever the page selection".to_owned()
+            }
+            Self::Document { pages: true } => {
+                format!("read path={shown} pages=1-50 for the pages it can convert")
+            }
+            Self::Paged => {
+                "no read reaches past this: the file is too large to convert at any page selection"
+                    .to_owned()
+            }
+        }
+    }
+}
+
+/// Said when [`overwrite`] could not stage a sibling and wrote the file in place instead.
+pub(crate) const IN_PLACE: &str = "the file was written in place (no sibling could replace its name), so a reader during the write could see it short";
+
+/// Replaces the file the gate judged: a sibling temp renamed over its name once that name still
+/// names `file`, so no reader or crash ever sees it short; a hard-linked file is written in place.
+/// Returns [`IN_PLACE`] when the sibling could not be made or renamed and the write fell back.
+pub(crate) fn overwrite(
+    file: &std::fs::File,
+    path: &Path,
+    content: &[u8],
+) -> std::io::Result<Option<&'static str>> {
+    replace(file, path, content, &mut || ())
+}
+
+/// [`overwrite`] with `held` run where another process could swap the name: the one window a test
+/// can drive, and the reason production passes an empty one.
+fn replace(
+    file: &std::fs::File,
+    path: &Path,
+    content: &[u8],
+    held: &mut dyn FnMut(),
+) -> std::io::Result<Option<&'static str>> {
     use std::io::{Seek, Write};
-    file.set_len(0)?;
-    file.rewind()?;
-    file.write_all(content)
+    let meta = file.metadata()?;
+    let in_place = |mut file: &std::fs::File| {
+        file.set_len(0)?;
+        file.rewind()?;
+        file.write_all(content)
+    };
+    let fell_back = |file: &std::fs::File| in_place(file).map(|()| Some(IN_PLACE));
+    if links(&meta) > 1 {
+        return in_place(file).map(|()| None);
+    }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return fell_back(file);
+    };
+    static TEMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = TEMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".{}.yi-{}-{serial}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    let Ok(mut staged) = options.write(true).create_new(true).open(&temp) else {
+        return fell_back(file);
+    };
+    // Invariant: a sibling takes this process's owner and the directory's group, so a file whose
+    // owner or group differs is written in place to keep both.
+    if staged.metadata().map(|staged| owners(&staged)).ok() != Some(owners(&meta)) {
+        let _already_gone = std::fs::remove_file(&temp);
+        return fell_back(file);
+    }
+    let staged_ok = (|| {
+        staged.set_permissions(meta.permissions())?;
+        staged.write_all(content)?;
+        staged.sync_all()?;
+        held();
+        let named = std::fs::symlink_metadata(path)?;
+        let id = yi_permission::file_id;
+        if named.file_type().is_symlink() || id(&named) != id(&meta) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} no longer names the file that was opened (a link or another file was put there); nothing was written",
+                    path.display()
+                ),
+            ));
+        }
+        Ok(())
+    })();
+    let landed = match staged_ok {
+        Ok(()) => match std::fs::rename(&temp, path) {
+            Ok(()) => Ok(None),
+            Err(_) => fell_back(file),
+        },
+        Err(error) => Err(error),
+    };
+    if !matches!(landed, Ok(None)) {
+        let _already_gone = std::fs::remove_file(&temp);
+    }
+    landed
+}
+
+#[cfg(unix)]
+fn links(meta: &std::fs::Metadata) -> u64 {
+    std::os::unix::fs::MetadataExt::nlink(meta)
+}
+
+#[cfg(not(unix))]
+fn links(_meta: &std::fs::Metadata) -> u64 {
+    1
+}
+
+#[cfg(unix)]
+fn owners(meta: &std::fs::Metadata) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.uid(), meta.gid())
+}
+
+#[cfg(not(unix))]
+fn owners(_meta: &std::fs::Metadata) -> (u32, u32) {
+    (0, 0)
 }
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {
@@ -334,4 +514,57 @@ pub(crate) fn rooted_glob(raw: &str, base: &Path) -> Result<RootedGlob, String> 
         base: yi_permission::lexical_normalize(&head),
         rest,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::scratch::Scratch;
+    use std::fs;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_swapped_for_a_symlink_before_the_rename_is_refused()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-tools-write-atomic-swap")?;
+        let (path, victim) = (dir.join("a.txt"), dir.join("victim.txt"));
+        fs::write(&path, "judged\n")?;
+        fs::write(&victim, "kept\n")?;
+        let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+        let (name, target) = (path.clone(), victim.clone());
+        let mut held = move || {
+            let _ = fs::remove_file(&name);
+            let _ = std::os::unix::fs::symlink(&target, &name);
+        };
+        let landed = super::replace(&file, &path, b"new\n", &mut held);
+        assert!(landed.is_err(), "the swapped name was written");
+        assert!(fs::symlink_metadata(&path)?.file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&victim)?, "kept\n");
+        Ok(())
+    }
+
+    /// Incident: a read-only parent proved this fallback on macOS and proved nothing in CI, where
+    /// the runner is root and 0o555 stops no one, so staging succeeded and the row never appeared.
+    #[test]
+    fn a_write_into_a_name_with_no_room_for_a_sibling_writes_in_place_and_says_so()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-tools-write-in-place")?;
+        let name = format!("{}.json", "a".repeat(250));
+        let path = dir.join(&name);
+        fs::write(&path, "{}")?;
+        let mut input = serde_json::Map::new();
+        input.insert("path".to_owned(), name.into());
+        input.insert("content".to_owned(), "[1]".into());
+        let context = super::ToolContext::new(dir.to_path_buf());
+        let output = super::Tool::execute(&crate::builtins::WriteTool::default(), input, &context);
+        let text = yi_types::message::join_text(&output.result.content, "");
+        assert!(!output.is_error, "{text}");
+        assert_eq!(fs::read_to_string(&path)?, "[1]");
+        let rows: Vec<&str> = text.lines().skip(1).collect();
+        assert_eq!(
+            rows,
+            ["syntax: ok", &format!("warning: {}", super::IN_PLACE)]
+        );
+        assert_eq!(output.result.details["syntax"], "syntax: ok");
+        Ok(())
+    }
 }

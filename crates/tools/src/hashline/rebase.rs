@@ -3,16 +3,42 @@
 
 use super::types::{Anchor, BlockSpan, Cursor, Edit, ParsedRange, PasteTarget};
 
-pub struct LineMap(Vec<Option<u64>>);
+pub struct LineMap {
+    lines: Vec<Option<u64>>,
+    authored: Vec<u64>,
+}
 
 impl LineMap {
     pub fn between(old_text: &str, new_text: &str) -> Self {
-        Self(crate::diff::line_map(old_text, new_text))
+        let (lines, authored) = crate::diff::line_map(old_text, new_text);
+        Self { lines, authored }
+    }
+
+    pub fn from_script(script: &crate::diff::EditScript) -> Self {
+        let (lines, authored) = script.line_map();
+        Self { lines, authored }
     }
 
     pub fn line(&self, line: u64) -> Option<u64> {
         let index = usize::try_from(line.checked_sub(1)?).ok()?;
-        self.0.get(index).copied().flatten()
+        self.lines.get(index).copied().flatten()
+    }
+
+    pub fn authored(&self) -> &[u64] {
+        &self.authored
+    }
+
+    pub fn removed<'a>(&self, old_text: &'a str) -> Vec<(u64, &'a str)> {
+        old_text
+            .lines()
+            .enumerate()
+            .filter(|(index, _)| self.lines.get(*index) == Some(&None))
+            .filter_map(|(index, text)| {
+                u64::try_from(index.saturating_add(1))
+                    .ok()
+                    .map(|line| (line, text))
+            })
+            .collect()
     }
 
     fn range(&self, range: ParsedRange) -> Option<ParsedRange> {

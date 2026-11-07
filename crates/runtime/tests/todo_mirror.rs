@@ -7,6 +7,7 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+use crate::faux_model::faux_model;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::{ExecutionMode, TurnSnapshot};
@@ -17,7 +18,6 @@ use yi_runtime::todo::mirror::{ENGINE_ACTOR, Mirror, plan_of};
 use yi_runtime::todo::{Op as TodoOp, TodoError, TodoStore, latest_record, text};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
-use yi_types::model::{Model, ModelCost};
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Check, Delegation, GoalText, Plan, PlanId, PlanTier, ProbeCommand,
     SpawnSpec, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName,
@@ -47,36 +47,11 @@ impl yi_runtime::plan::ops::OpSink for Nothing {
     }
 }
 
-pub(crate) fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
-
 pub(crate) fn session(provider: Arc<ProviderStream>) -> AgentSession {
     AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

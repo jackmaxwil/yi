@@ -1,12 +1,10 @@
 use std::error::Error;
-use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 use yi_types::json_salvage::parse_streaming_json;
 
 fn recorded_tool_call(line: usize, tool: &str) -> Result<Value, Box<dyn Error>> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../tui/tests/fixtures/sessions/01a0d6e4.jsonl");
+    let path = crate::workspace_root()?.join("crates/tui/tests/fixtures/sessions/01a0d6e4.jsonl");
     let body = std::fs::read_to_string(&path)?;
     let row = body.lines().nth(line.saturating_sub(1)).ok_or("row")?;
     let entry: Value = serde_json::from_str(row)?;

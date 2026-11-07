@@ -408,7 +408,6 @@ impl ToolCell {
                     == digest.trim()
             })
         };
-        // A failure's body is never mode-gated: a reader who cannot see why a
         // call failed cannot act on it, whatever mode the cell rendered under.
         if let Some(digest) = digest
             && (failed || !repeats_digest(&digest))
@@ -458,15 +457,6 @@ impl ToolCell {
                     theme.dim_style(),
                 )));
             }
-        }
-        let running = matches!(self.status, ToolStatus::Running | ToolStatus::Awaiting);
-        if mode == TranscriptMode::Thinking
-            && (running || (self.patch().is_none() && !body.is_empty()))
-        {
-            body.resize_with(
-                PREVIEW_ROWS.saturating_add(1).max(body.len()),
-                Line::default,
-            );
         }
         crate::card::card(Line::from(spans), &chips, body, width, theme, self.status)
     }

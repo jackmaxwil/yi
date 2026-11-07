@@ -51,7 +51,7 @@ pub enum VariableReadError {
     #[error("the kernel could not be read: {detail}")]
     Cell { detail: String },
     #[error(
-        "the agent is running a cell; nothing was read within {} s",
+        "the agent is running a cell; nothing was read within {} s. A live read needs an idle agent: let it rlm.put(name, value) before it awaits, and a member with a kernel reads it back with rlm.get(name); a reader has no kernel, so give it the value through context_keys. family://<name> is the put's sidecar, not the object",
         yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
     )]
     Busy,
@@ -78,6 +78,15 @@ pub(crate) fn py_literal(value: &str) -> String {
     Value::String(value.to_owned()).to_string()
 }
 
+/// The namespace both cells read: the cell's own IPython shell, else the module's globals.
+const NAMESPACE_LOOKUP: &str = r#"    ip = None
+    try:
+        ip = get_ipython()  # noqa: F821 (injected by IPython)
+    except _b.Exception:
+        ip = None
+    ns = ip.user_ns if ip is not None else _b.globals()
+"#;
+
 /// Invariant: a page never widens the cell's reply past [`VARIABLE_MAX_CHARS`] (D213).
 pub(crate) fn read_variable_code(name: &VariableName, page: Option<crate::fetch::Page>) -> String {
     let start = page.map_or(0, |page| page.offset);
@@ -87,13 +96,7 @@ pub(crate) fn read_variable_code(name: &VariableName, page: Option<crate::fetch:
     format!(
         r#"def _yi_read_variable():
     import builtins as _b, json
-    ip = None
-    try:
-        ip = get_ipython()  # noqa: F821 (injected by IPython)
-    except _b.Exception:
-        ip = None
-    ns = ip.user_ns if ip is not None else _b.globals()
-    name = {name}
+{lookup}    name = {name}
     if name not in ns:
         _b.print({marker} + json.dumps({{"found": False}}))
         return
@@ -109,6 +112,7 @@ try:
     _yi_read_variable()
 finally:
     del _yi_read_variable"#,
+        lookup = NAMESPACE_LOOKUP,
         name = py_literal(name.as_str()),
         marker = py_literal(VARIABLE_MARKER),
         end = start.saturating_add(limit),
@@ -121,13 +125,7 @@ pub(crate) fn dump_variable_code(name: &VariableName, path: &Path) -> String {
     format!(
         r#"def _yi_dump_variable():
     import builtins as _b, json, os
-    ip = None
-    try:
-        ip = get_ipython()  # noqa: F821 (injected by IPython)
-    except _b.Exception:
-        ip = None
-    ns = ip.user_ns if ip is not None else _b.globals()
-    name = {name}
+{lookup}    name = {name}
     path = {path}
     if name not in ns:
         _b.print({marker} + json.dumps({{"found": False}}))
@@ -161,6 +159,7 @@ try:
     _yi_dump_variable()
 finally:
     del _yi_dump_variable"#,
+        lookup = NAMESPACE_LOOKUP,
         name = py_literal(name.as_str()),
         path = py_literal(&path.to_string_lossy()),
         marker = py_literal(VARIABLE_MARKER),
