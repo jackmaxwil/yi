@@ -5,7 +5,10 @@ use std::time::{Instant, SystemTime};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use tui_textarea::{CursorMove, TextArea};
 
+use crate::client::Outbound;
+use crate::editor_view::Tabs;
 use crate::keys::Action;
+use crate::layout::PaneId;
 use crate::model::{Editor, PaneContent};
 
 use super::App;
@@ -49,6 +52,8 @@ pub(super) fn load(path: &str, workdir: String) -> Result<Editor, String> {
         mtime: mtime_of(path),
         stale: false,
         scroll_top: 0,
+        widest: None,
+        scroll_left: 0,
         primed: None,
         last_cursor: (0, 0),
         lang: Path::new(path)
@@ -107,6 +112,7 @@ impl Editor {
         let fresh = load(&self.path, self.workdir.clone())?;
         let (row, col) = self.text.cursor();
         self.text = fresh.text;
+        self.widest = None;
         self.crlf = fresh.crlf;
         self.final_newline = fresh.final_newline;
         self.text.move_cursor(CursorMove::Jump(
@@ -146,6 +152,7 @@ impl Editor {
         let before = self.text.cursor().0;
         if yi_tui::composer::edit_key(&mut self.text, key) {
             self.dirty = true;
+            self.widest = None;
             // Only an edit above the viewport can change what the visible rows sit inside.
             let touched = before.min(self.text.cursor().0);
             if touched < self.scroll_top {
@@ -200,17 +207,103 @@ impl Editor {
 }
 
 impl App {
+    /// The editor panel a file joins as a tab: the focused one, else the first in the layout.
+    fn editor_group(&mut self) -> Option<PaneId> {
+        let tab = self.state.tabs.get_mut(self.state.active_tab)?;
+        let is_editor = |id: &PaneId| {
+            matches!(
+                self.state.panes.get(id).map(|pane| &pane.content),
+                Some(PaneContent::Editor(_))
+            )
+        };
+        let focused = tab.layout.focused();
+        let found = if is_editor(&focused) {
+            Some(focused)
+        } else {
+            tab.layout.pane_ids().into_iter().find(is_editor)
+        };
+        if let Some(id) = found {
+            tab.layout.focus_pane(id);
+            tab.zoomed = false;
+        }
+        found
+    }
+
+    /// A file opens as a tab that stays until it is closed: in an editor panel, else in a new split
+    /// beside the focused pane, so a file never takes the screen from what was there.
     pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
-        match load(path, workdir) {
-            Ok(editor) => {
+        let file = match load(path, workdir) {
+            Ok(file) => file,
+            Err(error) => {
+                self.dirty = true;
+                return self.note(&error);
+            }
+        };
+        match self.editor_group() {
+            Some(id) => {
+                if let Some(PaneContent::Editor(tabs)) =
+                    self.state.panes.get_mut(&id).map(|pane| &mut pane.content)
+                {
+                    tabs.open(file);
+                }
+            }
+            None => {
+                self.state
+                    .split_focused(ratatui::layout::Direction::Horizontal);
                 if let Some(pane) = self.state.focused_pane_mut() {
-                    pane.content = PaneContent::Editor(editor);
+                    pane.content = PaneContent::Editor(Box::new(Tabs::new(file)));
                     pane.scroll_from_bottom = 0;
                 }
             }
-            Err(error) => self.note(&error),
         }
         self.dirty = true;
+    }
+
+    pub(super) fn tabs_of(&mut self, pane: PaneId) -> Option<&mut Tabs> {
+        match &mut self.state.panes.get_mut(&pane)?.content {
+            PaneContent::Editor(tabs) => Some(tabs),
+            _ => None,
+        }
+    }
+
+    pub(super) fn show_tab(&mut self, pane: PaneId, index: usize) {
+        self.focus_pane(pane);
+        if let Some(tabs) = self.tabs_of(pane) {
+            tabs.show(index);
+        }
+        self.dirty = true;
+    }
+
+    /// A tab goes; the last one of a panel takes the panel with it.
+    pub(super) fn close_tab(&mut self, outbound: &Outbound, pane: PaneId, index: usize) {
+        self.focus_pane(pane);
+        if self
+            .tabs_of(pane)
+            .and_then(|tabs| tabs.take(index))
+            .is_none()
+        {
+            self.apply_action(outbound, Action::ClosePane);
+        }
+        self.dirty = true;
+    }
+
+    pub(super) fn file_tab(&mut self, delta: isize) {
+        if let Some(PaneContent::Editor(tabs)) =
+            self.state.focused_pane_mut().map(|pane| &mut pane.content)
+        {
+            tabs.step(delta);
+        }
+    }
+
+    /// ⌥x on an editor with other tabs closes the showing tab; the pane goes with the last one.
+    pub(super) fn close_tab_or_pane(&mut self) -> Option<crate::model::Pane> {
+        if let Some(PaneContent::Editor(tabs)) =
+            self.state.focused_pane_mut().map(|pane| &mut pane.content)
+            && tabs.take(tabs.shown_index()).is_some()
+        {
+            return Some(crate::model::Pane::empty_session());
+        }
+        self.state.close_focused_pane()
     }
 
     pub(super) fn editor_mut(&mut self) -> Option<&mut Editor> {
@@ -244,6 +337,9 @@ impl App {
             Action::Redo => (!editor.text.redo()).then(|| "nothing to redo".to_owned()),
             _ => return false,
         };
+        if matches!(action, Action::Undo | Action::Redo) {
+            editor.widest = None;
+        }
         if matches!(action, Action::Undo | Action::Redo) && note.is_none() {
             editor.dirty = true;
         }
@@ -301,11 +397,14 @@ impl App {
     pub(super) fn editors_touched(&mut self, path: Option<&str>) {
         let mut notes = Vec::new();
         for pane in self.state.panes.values_mut() {
-            if let PaneContent::Editor(editor) = &mut pane.content
-                && path.is_none_or(|path| path == editor.path)
-                && let Err(error) = editor.check_disk()
-            {
-                notes.push(error);
+            if let PaneContent::Editor(tabs) = &mut pane.content {
+                for editor in tabs.files_mut() {
+                    if path.is_none_or(|path| path == editor.path)
+                        && let Err(error) = editor.check_disk()
+                    {
+                        notes.push(error);
+                    }
+                }
             }
         }
         for note in notes {

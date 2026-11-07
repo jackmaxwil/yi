@@ -3,7 +3,9 @@ use serde_json::Value;
 use yi_tui::port::SessionPort;
 use yi_types::acp::AcpSessionUpdate;
 
+use crate::layout::PaneId;
 use crate::model::{PaneContent, SessionId};
+use crate::panes::ReviewPick;
 
 use super::App;
 
@@ -13,6 +15,36 @@ impl App {
             PaneContent::SessionDiff { session, .. } => Some(session.clone()),
             _ => None,
         }
+    }
+
+    /// A click on a scope chip switches the scope; on a file row it selects that file and the body
+    /// scrolls to it on the next draw.
+    pub(super) fn review_pick(&mut self, pane: PaneId, pick: ReviewPick) {
+        self.focus_pane(pane);
+        let Some(PaneContent::SessionDiff {
+            session, scope, ui, ..
+        }) = self
+            .state
+            .panes
+            .get_mut(&pane)
+            .map(|pane| &mut pane.content)
+        else {
+            return;
+        };
+        let session = session.clone();
+        match pick {
+            ReviewPick::Scope(next) => {
+                *scope = next;
+                ui.jump = Some(0);
+                self.diff_mut(&session).selected = 0;
+                self.refresh_branch(&session);
+            }
+            ReviewPick::File(index) => {
+                ui.jump = Some(index);
+                self.diff_mut(&session).selected = index;
+            }
+        }
+        self.dirty = true;
     }
 
     pub(super) fn review_key(&mut self, key: KeyEvent) {
@@ -80,6 +112,14 @@ impl App {
                 },
             },
             _ => {}
+        }
+        if matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::Char('s')) {
+            let at = self.diff_mut(&session).selected;
+            if let Some(PaneContent::SessionDiff { ui, .. }) =
+                self.state.focused_pane_mut().map(|pane| &mut pane.content)
+            {
+                ui.jump = Some(at);
+            }
         }
         self.dirty = true;
     }

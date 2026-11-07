@@ -2,7 +2,6 @@
 //! the bytes on disk; the fixtures came from the stores themselves.
 
 use std::error::Error;
-use std::path::PathBuf;
 
 use yi_types::memory::MemoryRecord;
 use yi_types::plan::canonical::{Chained, Digest};
@@ -11,8 +10,8 @@ use yi_types::plan::ledger::JournalRecord;
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn fixture(name: &str) -> Result<String, Box<dyn Error>> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+    let path = crate::workspace_root()?
+        .join("crates/types/tests/fixtures")
         .join(name);
     Ok(std::fs::read_to_string(path)?)
 }

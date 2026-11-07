@@ -561,6 +561,11 @@ impl App {
         self.history.is_empty() && !self.running
     }
 
+    /// Rows above the composer when the last pane paint drew no transcript at all, else `None`.
+    pub fn blank_above(&self) -> Option<u16> {
+        self.pane_rows.blank
+    }
+
     /// The small mark's cells as the last paint laid them out, whether or not it is placed.
     pub fn orb_rect(&self) -> Option<Rect> {
         let (col, row) = self.orb_slot?;

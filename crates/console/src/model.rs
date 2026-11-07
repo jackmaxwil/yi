@@ -250,7 +250,7 @@ pub(crate) fn notebook_cells<'a>(
 /// revision), redrawn only when the key moves; a new pane content starts with none.
 pub type Drawn<K, V = Rows> = Option<(K, V)>;
 pub type Rows = Vec<ratatui::text::Line<'static>>;
-pub type ReviewKey = (usize, ReviewScope, String, u64);
+pub type ReviewKey = (usize, usize, ReviewScope, String, u64);
 
 /// What a pane shows: the provider seam — a new kind is a new variant plus
 /// its render arm, nothing else.
@@ -280,10 +280,11 @@ pub enum PaneContent {
     SessionDiff {
         session: SessionId,
         scope: ReviewScope,
-        drawn: Drawn<ReviewKey, (String, Rows)>,
+        drawn: Drawn<ReviewKey, crate::panes::Review>,
+        ui: crate::panes::ReviewUi,
     },
     Terminal(Box<crate::pty::Pty>),
-    Editor(Editor),
+    Editor(Box<crate::editor_view::Tabs>),
     Settings(Box<crate::settings::Settings>),
     Browser(Box<crate::browser::BrowserPane>),
 }
@@ -295,6 +296,9 @@ pub struct Editor {
     pub mtime: Option<std::time::SystemTime>,
     pub stale: bool,
     pub scroll_top: usize,
+    /// Drawn columns scrolled off the left edge; a long line is reached by sliding, not wrapping.
+    pub scroll_left: usize,
+    pub widest: Option<usize>,
     pub lang: Option<String>,
     pub primed: Option<(usize, yi_tui::highlight::Lang)>,
     pub last_cursor: (usize, usize),
@@ -496,7 +500,6 @@ pub enum Mode {
     Normal,
     Prefix,
     Navigator { query: String, selected: usize },
-    Files(crate::files::Files),
     Menu(crate::menu::Menu),
 }
 
@@ -544,6 +547,13 @@ pub struct ConsoleState {
     pub chrome: crate::browser::Chrome,
     pub browser_placed: BTreeMap<PaneId, crate::placed::Placed>,
     pub home: Option<String>,
+    /// The Files sidebar on the right edge; it stays up while a file opens in a pane beside it.
+    pub files: Option<crate::files::Files>,
+    /// A press on a panel source, a drag of it once it moves; the zone under the pointer is lit.
+    pub(crate) snap: Option<crate::app::snap::Drag>,
+    /// The mouse pointer shape last asked of the terminal (OSC 22), so only a change is sent.
+    pub(crate) pointer: &'static str,
+    pub side: crate::sidebar::SideUi,
 }
 
 impl ConsoleState {
@@ -596,6 +606,10 @@ impl ConsoleState {
             chrome: crate::browser::Chrome::default(),
             browser_placed: BTreeMap::new(),
             home: None,
+            files: None,
+            snap: None,
+            pointer: "",
+            side: crate::sidebar::SideUi::default(),
             quit: false,
         }
     }
@@ -869,7 +883,7 @@ impl ConsoleState {
                 folded,
             });
         }
-        groups
+        crate::sidebar::refine(self, groups)
     }
 
     pub fn visible_rows(&self) -> Vec<usize> {

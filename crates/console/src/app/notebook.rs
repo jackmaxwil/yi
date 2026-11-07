@@ -164,7 +164,7 @@ mod tests {
 
     fn rows(cells: &[NbCell], width: usize, full: bool) -> Vec<String> {
         let theme = Theme::new(ColorTier::TrueColor, true);
-        notebook_lines(cells, width, full, &theme, "⌘W")
+        notebook_lines(cells, width, full, &theme)
             .iter()
             .map(|line: &Line| {
                 line.spans
@@ -444,7 +444,7 @@ mod tests {
             ..NbCell::default()
         };
         let theme = Theme::new(ColorTier::TrueColor, true);
-        let lines = notebook_lines(&[cell], WIDTH, false, &theme, "⌘W");
+        let lines = notebook_lines(&[cell], WIDTH, false, &theme);
         for span in lines.iter().flat_map(|line| line.spans.iter()) {
             let bad = span.content.chars().find(|c| c.is_control());
             assert_eq!(bad, None, "{:?}", span.content);
@@ -706,7 +706,7 @@ mod tests {
             ..NbCell::default()
         };
         let theme = Theme::new(ColorTier::TrueColor, true);
-        let lines = notebook_lines(std::slice::from_ref(&cell), 100, false, &theme, "x");
+        let lines = notebook_lines(std::slice::from_ref(&cell), 100, false, &theme);
         assert!(
             lines
                 .iter()
@@ -739,7 +739,7 @@ mod tests {
             })
             .ok_or("no RuntimeError cell")?;
         let theme = Theme::new(ColorTier::TrueColor, true);
-        let lines = notebook_lines(std::slice::from_ref(cell), 100, true, &theme, "x");
+        let lines = notebook_lines(std::slice::from_ref(cell), 100, true, &theme);
         let frame = lines
             .iter()
             .find(|line| said(line).trim_start().starts_with("File "))
@@ -789,7 +789,7 @@ mod tests {
             ..NbCell::default()
         };
         let theme = Theme::new(ColorTier::TrueColor, true);
-        let lines = notebook_lines(std::slice::from_ref(&cell), 70, false, &theme, "x");
+        let lines = notebook_lines(std::slice::from_ref(&cell), 70, false, &theme);
         let row = lines
             .iter()
             .find(|line| said(line).contains("pwd && ls"))
@@ -1010,7 +1010,6 @@ mod tests {
                 72,
                 false,
                 &theme,
-                "⌘W",
             )
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -1096,7 +1095,7 @@ mod tests {
             Some("text/x-python"),
         ];
         for mime in mimes {
-            let empty = notebook_lines(&[kind_cell(mime, "")], 72, false, &theme, "⌘W");
+            let empty = notebook_lines(&[kind_cell(mime, "")], 72, false, &theme);
             assert!(
                 !empty
                     .iter()
@@ -1105,7 +1104,7 @@ mod tests {
                 "{mime:?} drew a cut row for an empty value"
             );
             let cell = kind_cell(mime, "## a\tb\x1b[2J\rc € {\"k\": ");
-            let lines = notebook_lines(&[cell], 72, false, &theme, "⌘W");
+            let lines = notebook_lines(&[cell], 72, false, &theme);
             for span in lines.iter().flat_map(|line| line.spans.iter()) {
                 assert_eq!(
                     span.content.chars().find(|c: &char| c.is_control()),

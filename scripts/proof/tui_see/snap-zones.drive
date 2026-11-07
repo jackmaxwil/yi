@@ -1,0 +1,26 @@
+#! console --size 140x34
+# Panels placed by snap zone: ⌘⌥G / ⌘⌥⇧← move the focused panel; a drag from the new-session row lights
+# the zone under the pointer and drops a panel there.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+key alt-v
+key alt-v
+snap three
+cmd-alt-g
+snap right-third
+cmd-alt-shift-left
+snap left-half
+mouse down 82 2
+mouse drag 90 6
+mouse drag 130 14
+snap drag-right
+mouse up 130 14
+snap dropped
+mouse down 82 2
+mouse drag 90 6
+mouse drag 70 30
+snap drag-third
+mouse up 70 30
+snap third-dropped
+quit

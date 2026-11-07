@@ -50,7 +50,7 @@ fn a_review_scopes_edits_by_turn_and_names_the_todo_each_served() {
     let all = text(&lines_all);
     assert!(
         all.iter()
-            .any(|line| line.contains("src/a.rs  +1 −0  · write the parser")),
+            .any(|line| line.contains("src/a.rs  +1 −0") && line.contains("· write the parser")),
         "{all:#?}"
     );
     assert!(
@@ -81,7 +81,8 @@ fn a_branch_review_names_the_todo_of_a_file_its_edit_named_absolutely() {
     let all = text(&lines);
     assert!(
         all.iter()
-            .any(|line| line == "▸ src/a.rs  +1 −0  · write the parser"),
+            .any(|line| line.starts_with("▸ M src/a.rs  +1 −0")
+                && line.ends_with("· write the parser")),
         "{all:#?}"
     );
     assert!(
@@ -116,8 +117,12 @@ fn each_hunk_is_asked_why_at_its_first_changed_line_and_the_chain_shows_under_it
         yi_console::render::review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
     let rows = text(&lines);
     let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
-    let (b, chain) = (at("▸ src/b.rs"), at("↳ L2 1a2b3c4d5e6f"));
-    assert!(at("● src/a.rs").is_some(), "{rows:#?}");
+    let body_head = rows.iter().position(|row| row == "M src/b.rs  +1 −0");
+    let (b, chain) = (body_head, at("↳ L2 1a2b3c4d5e6f"));
+    assert!(
+        at("  M src/a.rs").is_some() && at("▸ M src/b.rs").is_some(),
+        "{rows:#?}"
+    );
     assert!(b.is_some() && chain == b.map(|b| b + 1), "{rows:#?}");
 }
 
@@ -181,40 +186,46 @@ fn pane_rows_at(app: &mut yi_console::app::App, title: &str, size: (u16, u16)) -
 fn a_review_taller_than_its_pane_opens_on_its_file_list() {
     let (mut app, outbound) = review_app();
     let rows = pane_rows(&mut app, "Review");
-    let files = [
-        "crates/console/src/app/chat.rs",
-        "crates/console/src/app/diffs.rs",
-        "crates/console/src/app/notebook.rs",
-        "crates/console/src/model.rs",
-        "crates/console/src/panes.rs",
-        "docs/changes/2026-10-12-notebook-cells-persist.md",
-    ];
     let row = |at: usize| rows.get(at).map_or("", String::as_str);
+    assert!(row(0).starts_with(" branch "), "no scope chips: {rows:#?}");
     let base = "no branch diff from git, so this session's edits";
-    assert_eq!(row(0), base, "{rows:#?}");
-    for (at, path) in files.iter().enumerate() {
-        let mark = if at == 0 { "▸" } else { "●" };
-        assert!(
-            row(at + 1).starts_with(&format!("{mark} {path}  +")),
-            "{rows:#?}"
-        );
-    }
-    assert!(row(7).starts_with("s scope · ↑/↓ file"), "{rows:#?}");
-    press(&mut app, &outbound, KeyCode::Down);
-    let rows = pane_rows(&mut app, "Review");
-    let row = |at: usize| rows.get(at).map_or("", String::as_str);
+    assert_eq!(row(1), base, "{rows:#?}");
     assert!(
-        row(1).starts_with("● crates/console/src/app/chat.rs"),
+        row(2).starts_with("▸ M crates/console/src/app/chat.rs  +"),
         "{rows:#?}"
     );
     assert!(
-        row(2).starts_with("▸ crates/console/src/app/diffs.rs"),
+        rows.iter().any(|row| row.contains("of 6 files listed")),
+        "a cut file list names how much it kept: {rows:#?}"
+    );
+    let hint = rows
+        .iter()
+        .position(|row| row.starts_with("s scope · ↑/↓ file"))
+        .unwrap_or(usize::MAX);
+    assert_eq!(
+        rows.get(hint.saturating_add(1)).map(String::as_str),
+        Some("M crates/console/src/app/chat.rs  +11 −1"),
+        "the diff does not open on the first file: {rows:#?}"
+    );
+    press(&mut app, &outbound, KeyCode::Down);
+    let rows = pane_rows(&mut app, "Review");
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("▸ M crates/console/src/app/diffs.rs")),
         "{rows:#?}"
+    );
+    let hint = rows
+        .iter()
+        .position(|row| row.starts_with("s scope · ↑/↓ file"))
+        .unwrap_or(usize::MAX);
+    assert_eq!(
+        rows.get(hint.saturating_add(1)).map(String::as_str),
+        Some("M crates/console/src/app/diffs.rs  +50 −0"),
+        "the diff did not scroll to the selected file: {rows:#?}"
     );
     outbound.shutdown();
 }
 
-/// A console with `query` run in its palette, its pane focused.
 fn palette_app(query: &str) -> (yi_console::app::App, yi_console::client::Outbound) {
     let (mut app, outbound) = console();
     palette(&mut app, &outbound, query);
@@ -330,8 +341,7 @@ fn a_reviews_rows_follow_its_width_its_scope_and_each_new_edit() {
     warm.reduce_client(&outbound, tool_frame(edit));
     let rows = pane_rows_at(&mut warm, "Review", (60, 40));
     assert!(
-        rows.iter()
-            .any(|row| row.starts_with("● src/new.rs  +1 −0")),
+        rows.iter().any(|row| row.contains("U src/new.rs  +1 −0")),
         "{rows:#?}"
     );
     let read = serde_json::json!({"sessionUpdate": "tool_call_update",
@@ -349,7 +359,9 @@ fn a_reviews_rows_follow_its_width_its_scope_and_each_new_edit() {
 fn dropped_row_in(diff: &SessionDiff, scope: ReviewScope) -> Option<String> {
     let theme = Theme::new(ColorTier::TrueColor, true);
     let (_, lines) = yi_console::render::review_view(Some(diff), scope, "", 80, &theme);
-    text(&lines).into_iter().find(|row| row.contains("[…]"))
+    text(&lines)
+        .into_iter()
+        .find(|row| row.contains("not shown"))
 }
 
 fn dropped_row(diff: &SessionDiff) -> Option<String> {
@@ -452,5 +464,74 @@ fn a_turns_review_counts_only_the_files_its_own_turn_lost() {
         dropped_row(&diff).is_some_and(|row| row.contains("514 older files not shown")),
         "{:?}",
         dropped_row(&diff)
+    );
+}
+
+/// Dies when a scope chip or a file row of the pinned header does nothing under the pointer: a
+/// chip must switch the scope, and a file row must select that file and scroll the diff to it.
+#[test]
+fn a_click_on_a_scope_chip_or_a_file_row_works_the_review() -> Result<(), Box<dyn std::error::Error>>
+{
+    use yi_console::app::MouseKind;
+    use yi_console::panes::ReviewPick;
+    use yi_console::render::Hit;
+    let (mut app, outbound) = review_app();
+    let _ = pane_rows(&mut app, "Review");
+    let find = |app: &yi_console::app::App, want: ReviewPick| {
+        app.hits
+            .as_ref()
+            .and_then(|hits| {
+                hits.controls
+                    .iter()
+                    .find(|(_, hit)| matches!(hit, Hit::Review(_, pick) if *pick == want))
+            })
+            .map(|(rect, _)| *rect)
+    };
+    let chip = find(&app, ReviewPick::Scope(ReviewScope::Turn)).ok_or("no Turn chip")?;
+    app.handle_mouse(&outbound, MouseKind::Down, chip.x + 1, chip.y);
+    let rows = pane_rows(&mut app, "Review");
+    assert_eq!(
+        rows.get(1).map(String::as_str),
+        Some("the last turn's edits"),
+        "a click on the Turn chip did not switch the scope: {rows:#?}"
+    );
+    let file = find(&app, ReviewPick::File(1)).ok_or("no second file row")?;
+    app.handle_mouse(&outbound, MouseKind::Down, file.x + 4, file.y);
+    let rows = pane_rows(&mut app, "Review");
+    let hint = rows
+        .iter()
+        .position(|row| row.starts_with("s scope · ↑/↓ file"))
+        .unwrap_or(usize::MAX);
+    assert_eq!(
+        rows.get(hint.saturating_add(1)).map(String::as_str),
+        Some("M crates/console/src/app/diffs.rs  +50 −0"),
+        "a click on a file row did not scroll the diff to it: {rows:#?}"
+    );
+    outbound.shutdown();
+    Ok(())
+}
+
+/// Dies when a scope with no files is a bare line: it must say so and give each scope's count, so
+/// the chips above it are the way out.
+#[test]
+fn an_empty_scope_says_so_and_counts_every_scope() {
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let mut diff = SessionDiff {
+        turn: 3,
+        ..SessionDiff::default()
+    };
+    diff.files.push(edit("src/old.rs", 1, None));
+    let (_, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Turn, "", 80, &theme);
+    let rows = text(&lines);
+    assert!(
+        rows.iter()
+            .any(|row| row == "nothing changed in this scope"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row == "branch 0 · turn 0 · session 1 · click a scope above"),
+        "{rows:#?}"
     );
 }

@@ -790,7 +790,7 @@ impl App {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Notebook { .. }))
     }
 
-    fn open_selected(&mut self, outbound: &Outbound) {
+    pub(crate) fn open_selected(&mut self, outbound: &Outbound) {
         if !self.connected() {
             self.note("not connected");
             return;
@@ -813,13 +813,7 @@ impl App {
             .values()
             .any(|pane| pane.session().is_some());
         if !bound {
-            self.new_session(outbound);
-        }
-    }
-
-    fn new_session(&mut self, outbound: &Outbound) {
-        if let Some(pane_id) = self.state.focused_pane_id() {
-            self.new_session_into(outbound, pane_id, self.state.root.clone());
+            self.new_session(outbound, (0, 0));
         }
     }
 
@@ -838,11 +832,11 @@ impl App {
         );
     }
 
-    fn apply_action(&mut self, outbound: &Outbound, action: Action) {
+    pub(super) fn apply_action(&mut self, outbound: &Outbound, action: Action) {
         match action {
             Action::SplitRight => self.split_share(Direction::Horizontal, 0.5),
             Action::SplitDown => self.split_share(Direction::Vertical, 0.5),
-            Action::ClosePane => match self.state.close_focused_pane() {
+            Action::ClosePane => match self.close_tab_or_pane() {
                 None => self.note("last pane — alt+q quits"),
                 Some(mut pane) => {
                     if let Some(ask) = pane.take_ask() {
@@ -879,10 +873,9 @@ impl App {
                     .unwrap_or(0);
                 self.state.select_tab(prev);
             }
-            Action::SelectTab(n) => {
-                self.state.select_tab(usize::from(n).saturating_sub(1));
-            }
-            Action::NewSession => self.new_session(outbound),
+            Action::SelectTab(n) => self.state.select_tab(usize::from(n).saturating_sub(1)),
+            Action::Snap(_) | Action::Shift(_) => self.layout_action(action),
+            Action::NewSession => self.new_session(outbound, (0, 0)),
             Action::Navigator => {
                 self.state.mode = Mode::Navigator {
                     query: String::new(),
@@ -909,7 +902,7 @@ impl App {
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::OpenTerminal => self.open_terminal(),
-            Action::OpenEditor => self.open_files(),
+            Action::OpenEditor => self.toggle_files(),
             Action::OpenBrowser => self.open_browser(),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
@@ -1019,8 +1012,8 @@ impl App {
         }
         match self.state.mode {
             Mode::Navigator { .. } => return self.handle_navigator_key(outbound, key),
-            Mode::Files(_) => return self.files_key(key),
             Mode::Menu(_) => return self.menu_key(outbound, key),
+            Mode::Normal if self.keys_held() => return self.held_key(outbound, key),
             Mode::Normal | Mode::Prefix => {}
         }
         if matches!(self.state.mode, Mode::Prefix) {
@@ -1119,6 +1112,7 @@ mod review;
 #[cfg(test)]
 mod rows;
 mod settings;
+pub(crate) mod snap;
 mod terminal;
 
 pub use mouse::MouseKind;

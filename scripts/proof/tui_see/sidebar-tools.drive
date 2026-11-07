@@ -1,0 +1,16 @@
+#! console --size 140x34
+# The session sidebar: a New session chip that asks which project, Search that filters in place, and
+# the wheel sliding the rows.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+key alt-b
+wait-frame 5000 Search
+snap sidebar
+mouse down 8 1
+mouse up 8 1
+type unt
+wait-frame 5000 ⌕ unt
+snap searching
+key esc
+quit
