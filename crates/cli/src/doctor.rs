@@ -44,7 +44,7 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 15] = [
+const ROWS: [(&str, Check); 16] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
