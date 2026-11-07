@@ -11,7 +11,9 @@ every gate because nothing recorded the intent. The register is main's docs/chan
 `unrecorded` is the half `just pr open` runs: a file that loses five or more substantive lines net
 needs a `cut:` line, or `cut: none <path>`, in the branch's change file.
 """
+import json
 import pathlib
+import re
 import sys
 from collections import defaultdict
 
@@ -21,6 +23,8 @@ from check_changes import CELL, files, held, parse, pending  # noqa: E402
 from fixer_guard import CUT_AT, commits, substantive  # noqa: E402
 
 FIXTURES = ROOT / "scripts/guardrails/fixtures/intent"
+# A finding about deleted text sits beside where it was: #2062's high asking for the cut block back was 3 lines below it.
+NEAR = 3
 
 
 def anchors(fields, key):
@@ -77,6 +81,67 @@ def unrecorded(diff, own, off=""):
             if path not in named and len(lost := [line for line in dels if substantive(line) and line not in moved]) >= CUT_AT]
 
 
+def records_in(root):
+    """(change file, kind, path, line) for every cut and keep in a checkout's change files."""
+    out = []
+    for change in sorted((pathlib.Path(root) / "docs/changes").glob("*.md")):
+        fields = parse(change.read_text())[0]
+        out += [(change.name, kind, path, line) for kind in ("cut", "keep") for path, line in anchors(fields, kind)]
+    return out
+
+
+def deleted_at(diff, path, line):
+    """The head-side line numbers where a unified diff deletes `line` from `path`."""
+    out, current, new = [], None, None
+    for row in diff.splitlines():
+        if row.startswith("+++ "):
+            current, new = row[6:] if row.startswith("+++ b/") else None, None
+        elif (hunk := re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", row)):
+            new = int(hunk.group(1))
+        elif new is None or row.startswith("--- "):
+            continue
+        elif row.startswith("-"):
+            if current == path and row[1:].strip() == line:
+                out.append(new)
+        elif row[:1] in ("+", " "):
+            new += 1
+    return out
+
+
+def contrary(finding, records, diff, off=""):
+    """Why a review finding asks to undo a recorded intent, or None: its quote is a kept line, or it sits
+    within NEAR lines of where the PR deleted a cut line."""
+    for name, kind, path, line in records:
+        if path != finding.get("path"):
+            continue
+        if kind == "keep" and off != "keep" and (finding.get("quote") or "").strip() == line:
+            return f"`{path}:{finding.get('line')}` would delete `{line[:80]}`, which {name} keeps on purpose"
+        if kind == "cut" and off != "cut" and any(abs(at - (finding.get("line") or 0)) <= (0 if off == "near" else NEAR)
+                                                  for at in deleted_at(diff, path, line)):
+            return f"`{path}:{finding.get('line')}` would put back `{line[:80]}`, which {name} cut on purpose"
+    return None
+
+
+def intent_block(records):
+    if not records:
+        return ""
+    rows = [f"- {kind} by {name} in {path}: {line}" for name, kind, path, line in records]
+    return ("<recorded-intent>\nThe owner removed or kept these lines on purpose. A finding that asks to put a cut line "
+            "back, or to remove a kept line, is dropped before the round posts.\n" + "\n".join(rows) + "\n</recorded-intent>\n")
+
+
+def review_selfcheck(off=""):
+    """#2062's round 1, posted on e1b555564, against the cut and keep its author would have recorded."""
+    findings = json.loads((FIXTURES / "pr2062-round1.json").read_text())
+    diff = (FIXTURES / "readme-pr.diff").read_text()
+    records = [("2026-11-06-readme-guide.md", "cut", "README.md", "It checks the release's sha256 and the owner's key, "
+                "then installs `yi` to `~/.local/bin` and its"), ("2026-11-06-readme-guide.md", "keep", "README.md", "flowchart TB")]
+    dropped = {f["line"] for f in findings if contrary(f, records, diff, off)}
+    if dropped != {21, 128}:
+        return [f"#2062's round 1 dropped the findings at lines {sorted(dropped)}, not 21 (restore the cut block) and 128 (delete the kept chart)"]
+    return []
+
+
 def branch_diff(base):
     return git("-c", "core.quotePath=false", "diff", "--unified=0", "--no-color", "--no-ext-diff", base).stdout
 
@@ -122,9 +187,13 @@ def selfcheck(off=""):
 def main():
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
+        errs += review_selfcheck()
         for off in ("cut", "keep", "escape", "decision", "none"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} check off, so it refutes nothing")
+        for off in ("cut", "keep", "near"):
+            if not review_selfcheck(off):
+                errs.append(f"the review selfcheck passes with the {off} match off, so it refutes nothing")
         fail(errs, "intent selfcheck")
         return
     base = fork()
