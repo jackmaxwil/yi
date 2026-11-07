@@ -492,7 +492,7 @@ fn scan_cut_target(line: &str, index: usize, end: usize) -> Option<(TargetScan, 
     )
 }
 
-fn unquote_path(path_text: &str) -> &str {
+pub(crate) fn unquote_path(path_text: &str) -> &str {
     if path_text.len() < 2 {
         return path_text;
     }
