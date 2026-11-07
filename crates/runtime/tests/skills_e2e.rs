@@ -739,6 +739,37 @@ fn a_skill_within_a_repository_is_listed_only_there() -> TestResult {
     Ok(())
 }
 
+const TOOL_IMPORT_SKILL: &str = include_str!("../../../skills/yi/tool-import/SKILL.md");
+
+/// The bundled catalog is how a session offers this skill: the line it renders must say what
+/// the importer is called, whole, and the skill must be listed from a project that is not Yi's.
+#[test]
+fn the_bundled_catalog_names_tool_import_without_clipping_it() -> TestResult {
+    let root = Scratch::new("yi-skills-taught")?;
+    let home = root.join("home");
+    let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi");
+    scratch::copy_tree(&bundle, &home.join(".yi/skills/yi"))?;
+
+    let description = yi_runtime::skills::frontmatter(TOOL_IMPORT_SKILL)
+        .get("description")
+        .cloned()
+        .ok_or("the skill states no description")?;
+    let catalog =
+        yi_runtime::skills_catalog(&root, &home, yi_runtime::skills::catalog_budget(128_000))
+            .ok_or("no catalog")?;
+    let line = format!("- tool-import: {description}\n");
+    assert!(
+        catalog.text.contains(&line),
+        "the catalog must describe tool-import, whole:\n{}",
+        catalog.text
+    );
+    assert!(
+        line.contains("yi tool import just"),
+        "the catalog line names the command: {line}"
+    );
+    Ok(())
+}
+
 struct CheckerRun {
     _root: Scratch,
     project: PathBuf,
@@ -860,6 +891,28 @@ async fn the_checker_snippet_carries_the_task_text_as_data() -> TestResult {
     assert!(
         prompt.contains(INJECTION),
         "the brief must carry the task text unchanged: {prompt}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_tool_import_skill_shows_the_schema_and_usage_the_model_acts_on() -> TestResult {
+    for needle in [
+        "yi tool import just [recipe ...]",
+        "--schema",
+        "always `exec`",
+        "yi: skip",
+        "next session",
+        "another justfile",
+    ] {
+        assert!(
+            TOOL_IMPORT_SKILL.contains(needle),
+            "the skill no longer teaches {needle}"
+        );
+    }
+    assert!(
+        !TOOL_IMPORT_SKILL.contains("within:"),
+        "a within: line hides the skill outside Yi's own repository"
     );
     Ok(())
 }

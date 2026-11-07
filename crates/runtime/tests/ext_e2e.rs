@@ -1186,7 +1186,7 @@ fn the_catalog_lists_a_home_skill_only_when_config_names_it() -> TestResult {
 }
 
 #[test]
-fn the_memory_block_is_present_at_zero_notes() -> TestResult {
+fn the_memory_block_waits_for_the_first_prompt_at_zero_notes() -> TestResult {
     let cwd = Scratch::new("yi-ext-memory-zero-cwd")?;
     let home = Scratch::new("yi-ext-memory-zero-home")?;
     let mut host = install(ExtOptions {
@@ -1205,6 +1205,12 @@ fn the_memory_block_is_present_at_zero_notes() -> TestResult {
         std::sync::Arc::clone(&feed),
     )));
     host.start(None, false);
+    assert!(
+        !host.peek_prompt().contains("source=\"memory\""),
+        "session start must not render a block the first prompt replaces"
+    );
+    let event = host.prompt_event("what does this repository do?");
+    host.dispatch(&event, None);
     let prompt = host.system_prompt();
     assert!(
         prompt.contains("source=\"memory\" trust=\"untrusted\">>>\nSaved memories:"),
@@ -1219,6 +1225,142 @@ fn the_memory_block_is_present_at_zero_notes() -> TestResult {
     );
     let _ = std::fs::remove_dir_all(&cwd);
     let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+#[test]
+fn the_first_prompt_replaces_the_index_with_the_notes_it_earns() -> TestResult {
+    let cwd = Scratch::new("yi-ext-focus-cwd")?;
+    let home = Scratch::new("yi-ext-focus-home")?;
+    let store = home.join(".yi/memory");
+    std::fs::create_dir_all(&store)?;
+    for (name, kind, hook) in [
+        (
+            "lane-pool",
+            "project",
+            "a no free lane error means orphaned worktrees hold the pool",
+        ),
+        (
+            "streaming",
+            "feedback",
+            "streaming renders commit by byte cursor over standalone slices",
+        ),
+    ] {
+        std::fs::write(
+            store.join(format!("{name}.md")),
+            format!("---\nname: {name}\ndescription: {hook}\ntype: {kind}\n---\n{name} body\n"),
+        )?;
+    }
+    let mut host = install(ExtOptions {
+        cwd: cwd.to_path_buf(),
+        home: home.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+        can_delegate: true,
+    });
+    host.register(Box::new(yi_runtime::memory::MemoryExt::new(
+        home.to_path_buf(),
+        std::sync::Arc::new(yi_runtime::memory::Activity::default()),
+    )));
+    host.start(None, false);
+    let event = host.prompt_event("I am getting lane: no free lane, 2 orphaned of 3");
+    host.dispatch(&event, None);
+    let prompt = host.system_prompt();
+    assert!(prompt.contains("lane-pool body"), "{prompt}");
+    assert!(!prompt.contains("streaming body"), "{prompt}");
+    assert!(prompt.contains("- [streaming](streaming.md)"), "{prompt}");
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+#[test]
+fn a_resume_keeps_the_block_the_first_prompt_earned() -> TestResult {
+    let cwd = Scratch::new("yi-ext-resume-memory-cwd")?;
+    let home = Scratch::new("yi-ext-resume-memory-home")?;
+    let store_dir = home.join(".yi/memory");
+    std::fs::create_dir_all(&store_dir)?;
+    std::fs::write(
+        store_dir.join("lane-pool.md"),
+        "---\nname: lane-pool\ndescription: orphaned worktrees hold the lane pool\ntype: project\n---\nlane-pool body\n",
+    )?;
+    let mut sessions = yi_session::JsonlRepo::new(home.join("sessions"), cwd.display().to_string());
+    let store = {
+        use yi_session::SessionRepo;
+        sessions.create(yi_session::CreateOptions::default())?
+    };
+    let options = || ExtOptions {
+        cwd: cwd.to_path_buf(),
+        home: home.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+        can_delegate: true,
+    };
+    let mut original = install(options());
+    original.register(Box::new(yi_runtime::memory::MemoryExt::new(
+        home.to_path_buf(),
+        std::sync::Arc::new(yi_runtime::memory::Activity::default()),
+    )));
+    original.start(Some(&store), false);
+    let event = original.prompt_event("orphaned worktrees hold the lane pool");
+    original.dispatch(&event, Some(&store));
+    assert!(original.system_prompt().contains("lane-pool body"));
+
+    let mut resumed = install(options());
+    resumed.register(Box::new(yi_runtime::memory::MemoryExt::new(
+        home.to_path_buf(),
+        std::sync::Arc::new(yi_runtime::memory::Activity::default()),
+    )));
+    resumed.start(Some(&store), true);
+    let prompt = resumed.system_prompt();
+    assert!(prompt.contains("lane-pool body"), "{prompt}");
+    assert!(!prompt.contains("\nglobal:\n"), "{prompt}");
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+#[test]
+fn a_resume_without_a_snapshot_earns_memory_at_its_first_prompt() -> TestResult {
+    let cwd = Scratch::new("yi-ext-resume-empty-memory-cwd")?;
+    let home = Scratch::new("yi-ext-resume-empty-memory-home")?;
+    let store_dir = home.join(".yi/memory");
+    std::fs::create_dir_all(&store_dir)?;
+    std::fs::write(
+        store_dir.join("lane-pool.md"),
+        "---\nname: lane-pool\ndescription: orphaned worktrees hold the lane pool\ntype: project\n---\nlane-pool body\n",
+    )?;
+    let mut sessions = yi_session::JsonlRepo::new(home.join("sessions"), cwd.display().to_string());
+    let store = {
+        use yi_session::SessionRepo;
+        sessions.create(yi_session::CreateOptions::default())?
+    };
+    let mut resumed = install(ExtOptions {
+        cwd: cwd.to_path_buf(),
+        home: home.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+        can_delegate: true,
+    });
+    resumed.register(Box::new(yi_runtime::memory::MemoryExt::new(
+        home.to_path_buf(),
+        std::sync::Arc::new(yi_runtime::memory::Activity::default()),
+    )));
+    resumed.start(Some(&store), true);
+    assert!(!resumed.peek_prompt().contains("source=\"memory\""));
+    let event = resumed.prompt_event("orphaned worktrees hold the lane pool");
+    resumed.dispatch(&event, Some(&store));
+    let prompt = resumed.system_prompt();
+    assert!(prompt.contains("source=\"memory\""), "{prompt}");
+    assert!(prompt.contains("lane-pool body"), "{prompt}");
     Ok(())
 }
 

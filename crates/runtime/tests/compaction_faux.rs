@@ -853,6 +853,53 @@ async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// Dies with a second compaction whose summarizer reply lost the Values section the first one recorded.
+#[tokio::test]
+async fn a_second_compaction_keeps_the_values_the_first_recorded() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-values")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-values");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-values".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text(
+                "## Goal\n- user://1\n\n## Values\n- build id 7f3a9c21 in /tmp/yi-target/run-4",
+            )],
+            StopReason::Stop,
+        ),
+        reply_with_usage(&format!("second reply {}", "y".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\n- user://1\n\n## Dropped\n- (none)")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("third answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    for ask in [
+        "first requirement: keep the guardrails green",
+        "second ask with enough characters to keep recent",
+        "third ask with enough characters to keep recent",
+    ] {
+        session.prompt(ask)?;
+        session.wait_idle().await;
+    }
+    let compactions = compaction_entries(&store);
+    let Some(Entry::Compaction { summary, .. }) = compactions.last() else {
+        return Err("expected a compaction entry".into());
+    };
+    assert_eq!(compactions.len(), 2, "{summary}");
+    assert!(
+        summary.contains("- build id 7f3a9c21 in /tmp/yi-target/run-4"),
+        "{summary}"
+    );
+    Ok(())
+}
+
 /// Dies with a host-written message counted into the index: every `user://` address the
 /// summarizer's key and a produced summary name is fetched and must serve the user's own words.
 #[tokio::test]
