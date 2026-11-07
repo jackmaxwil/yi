@@ -463,6 +463,25 @@ fn write_targets_keep_what_the_splitter_skips() {
     }
 }
 
+/// Dies with shell text read as a write: quoted arrows and heredoc bodies name no file, while
+/// bash's combined-stream forms name the same file their shell writes.
+#[test]
+fn write_targets_read_redirects_with_shell_quoting() {
+    let heredoc = "python3 - <<'PY'\ndef gate(n: int) -> bool:\n    return n > 1\nPY";
+    let cases: [(&str, &[&str]); 7] = [
+        (heredoc, &[]),
+        ("echo \"a > crates/b\"", &[]),
+        ("make >&crates/build.log", &["crates/build.log"]),
+        ("echo hi >& crates/lock.rs", &["crates/lock.rs"]),
+        ("cargo test &>> crates/test.log", &["crates/test.log"]),
+        ("cd /tmp && echo hi > crates/after.rs", &["crates/after.rs"]),
+        ("cmd >&2 2>/dev/null", &["/dev/null"]),
+    ];
+    for (command, expected) in cases {
+        assert_eq!(write_targets(command), expected, "{command:?}");
+    }
+}
+
 /// A word carrying a redirect is that word plus a redirect, so the lenient splitter must keep it:
 /// dropping the whole token read `find . -delete>/dev/null` as `find .`, a search that deletes.
 #[test]
@@ -485,7 +504,6 @@ fn a_word_carrying_a_redirect_keeps_its_word() {
             "-Dx".to_owned()
         ]]
     );
-    // Input redirection stays the splitter's: its operand is the redirect's target, never argv.
     assert_eq!(command_segments("cat < in"), [vec!["cat".to_owned()]]);
     assert_eq!(
         command_segments("< /dev/null ssh host"),
