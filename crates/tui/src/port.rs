@@ -702,8 +702,8 @@ impl App {
         }
     }
 
-    pub fn set_status_name_shown(&mut self, shown: bool) {
-        self.status_name_hidden = !shown;
+    pub fn set_status_name(&mut self, name: String) {
+        self.status_name = Some(name);
     }
 
     pub fn set_pane(&mut self) {

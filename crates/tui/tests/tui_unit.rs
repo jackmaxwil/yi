@@ -507,8 +507,8 @@ fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
         context_window: 128_000,
         ..StatusInput::default()
     };
-    let text = flat(&yi_tui::status::render(&input, 80, &theme()));
-    assert!(text.contains(" yi "), "{text}");
+    let text = flat(&yi_tui::status::render(&input, 120, &theme()));
+    assert!(text.contains("worktree yi "), "{text}");
     assert!(
         !text.contains("⎇ lane"),
         "the lane slot suffix is gone: {text}"
@@ -518,8 +518,33 @@ fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
         "the hash stays off the row: {text}"
     );
     assert!(
-        !text.contains("⎇ yi/"),
-        "the branch repeats the session id: {text}"
+        text.contains("⎇ yi/01a06f8d-1234"),
+        "the lane's branch is named beside the repo: {text}"
+    );
+    Ok(())
+}
+
+/// Dies with a bare `yi`, a bare `01a1b3a9` and a lane branch clipped to its uuid tail: the row
+/// never said what each was, and cut away the only part of `yi/<uuid>` that tells sessions apart.
+#[test]
+fn status_labels_the_worktree_branch_and_session_and_keeps_a_lane_branch_head() -> TestResult {
+    let input = StatusInput {
+        model: "faux-1".to_owned(),
+        lane: Some("yi".to_owned()),
+        branch: Some("yi/01a1b3a9-7dac-af6b-a6081b9c1059".to_owned()),
+        session_name: "01a1b3a9-7dac-af6b-a6081b9c1059".to_owned(),
+        context_window: 1_000_000,
+        ..StatusInput::default()
+    };
+    let wide = flat(&yi_tui::status::render(&input, 160, &theme()));
+    for needle in ["worktree yi ", "branch ⎇ yi/01a1b3a", "session "] {
+        assert!(wide.contains(needle), "{needle:?} missing: {wide}");
+    }
+    let narrow = flat(&yi_tui::status::render(&input, 60, &theme()));
+    assert!(!narrow.contains("worktree "), "labels go first: {narrow}");
+    assert!(
+        narrow.contains("01a1b3a9"),
+        "the id outlasts them: {narrow}"
     );
     Ok(())
 }

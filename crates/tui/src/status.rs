@@ -217,11 +217,13 @@ struct Fit {
     path_max: usize,
     name_max: usize,
     place: bool,
+    labels: bool,
 }
 
 /// The drop order, applied first to last until the row fits. The order never changes, only
 /// how many apply, and each cut takes a whole field; the model is never cut.
-const CUTS: [fn(&mut Fit); 12] = [
+const CUTS: [fn(&mut Fit); 13] = [
+    |fit| fit.labels = false,
     |fit| fit.input.cache = None,
     |fit| fit.input.landing = None,
     |fit| fit.input.subagents = 0,
@@ -288,39 +290,42 @@ fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
             effort_style(level, theme),
         ));
     }
-    let mut segs: Vec<(String, Style)> = Vec::new();
+    let mut segs: Vec<(&str, String, Style)> = Vec::new();
     segs.extend(
         input
             .mode
             .as_ref()
-            .map(|mode| (format!("◉ {mode}"), hue(input, theme, theme.blue5))),
+            .map(|mode| ("", format!("◉ {mode}"), hue(input, theme, theme.blue5))),
     );
     if fit.place {
-        match &input.lane {
-            Some(lane) => segs.push((lane.clone(), hue(input, theme, theme.cyan))),
-            None => {
-                segs.push((
-                    shrink_left(&input.cwd, fit.path_max),
-                    hue(input, theme, theme.cyan),
-                ));
-                if let Some(branch) = &input.branch {
-                    let mut label = format!("⎇ {}", shrink_left(branch, fit.path_max));
-                    if input.dirty > 0 {
-                        label.push_str(&format!(" +{}", input.dirty));
-                    }
-                    segs.push((label, hue(input, theme, theme.orange)));
-                }
+        let (kind, place) = match &input.lane {
+            Some(lane) => ("worktree", lane.clone()),
+            None => ("dir", shrink_left(&input.cwd, fit.path_max)),
+        };
+        segs.push((kind, place, hue(input, theme, theme.cyan)));
+        if let Some(branch) = &input.branch {
+            let shown = match &input.lane {
+                Some(_) => shrink_middle(branch, fit.path_max),
+                None => shrink_left(branch, fit.path_max),
+            };
+            let mut label = format!("⎇ {shown}");
+            if input.dirty > 0 {
+                label.push_str(&format!(" +{}", input.dirty));
             }
+            segs.push(("branch", label, hue(input, theme, theme.orange)));
         }
     }
     segs.extend(
         input
             .landing
             .clone()
-            .map(|seg| (seg, hue(input, theme, theme.purple))),
+            .map(|seg| ("", seg, hue(input, theme, theme.purple))),
     );
-    for (seg, style) in segs {
+    for (label, seg, style) in segs {
         spans.push(chevron(theme));
+        if fit.labels && !label.is_empty() {
+            spans.push(Span::styled(format!("{label} "), theme.dim_style()));
+        }
         spans.push(Span::styled(format!("{seg} "), style));
     }
     spans
@@ -378,6 +383,9 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
                 .fg(name_accent(&input.session_name))
                 .add_modifier(Modifier::BOLD)
         };
+        if fit.labels {
+            spans.push(Span::styled("session ", theme.dim_style()));
+        }
         spans.push(Span::styled(
             crate::colors::name_tile(&input.session_name),
             crate::colors::tile_style(&input.session_name),
@@ -430,6 +438,7 @@ fn render_with(
         path_max: 24,
         name_max: 24,
         place: true,
+        labels: true,
     };
     let mut cuts = CUTS.iter();
     let (mut spans, right) = loop {

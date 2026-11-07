@@ -83,7 +83,7 @@ impl App {
         let mut app = yi_tui::app::App::new(options, theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
         app.set_clock(self.clock);
-        app.set_status_name_shown(false);
+        app.set_status_name(session.0.clone());
         app.set_pane();
         Box::new(Chat {
             app,
@@ -1020,6 +1020,64 @@ mod tests {
             crate::chat_wake(&app),
             yi_tui::reveal::FRAME
         );
+        Ok(())
+    }
+
+    /// Dies with the console chat's status row naming only the lane's repo: no session id (the
+    /// title above carries the name, not the id) and no branch.
+    #[test]
+    fn a_lane_chat_status_row_labels_the_session_id_and_the_branch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-console-status-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".git"))?;
+        std::fs::write(dir.join(".git/HEAD"), "ref: refs/heads/yi/lane-branch\n")?;
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        let session = SessionId("01a1af4a-dce0-7a45-8a37-173c4f977fca".to_owned());
+        app.state.upsert_row(crate::model::SessionRow {
+            id: session.clone(),
+            root: "/r".to_owned(),
+            status: crate::model::SessionStatus::Idle,
+            attached: true,
+            name: Some("alpha".to_owned()),
+            created_ms: 0,
+            last_ms: 0,
+            pinned: None,
+        });
+        let chat = app.make_chat(&session);
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::Session {
+                session: Some(session.clone()),
+                chat: Some(chat),
+            };
+        }
+        for chat in app.state.chats_mut(&session) {
+            chat.app
+                .set_workdir(dir.display().to_string(), Some("yi".to_owned()));
+        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 30))?;
+        terminal.draw(|frame| {
+            let mut view = crate::render::compute_view(&mut app, frame.area(), &theme);
+            crate::render::render(&mut app, frame, &mut view, &theme);
+        })?;
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+                    .collect()
+            })
+            .collect();
+        std::fs::remove_dir_all(&dir)?;
+        let row = rows
+            .iter()
+            .find(|row| row.contains("worktree yi"))
+            .ok_or_else(|| format!("no status row: {rows:#?}"))?;
+        assert!(
+            row.contains("session ") && row.contains("01a1af4a"),
+            "{row}"
+        );
+        assert!(row.contains("branch ⎇ yi/lane-branch"), "{row}");
         Ok(())
     }
 
