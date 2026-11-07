@@ -1240,8 +1240,10 @@ an unknown method −32601, bad JSON −32700.
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, at most 512 entries and 8 MiB per frame; a root's
 last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
-`_yi/committed{entry}` (`AcpCommitted`: each user or assistant message as saved, so a client can act on a reply it
-watched stream), `_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
+`_yi/committed{entry, ancestors, ancestors_notice}` (`AcpCommitted`: each user or assistant message as saved, with
+the newest ordered active-main ancestry suffix since the prior commit cursor, bounded by the replay limits;
+a cut names kept/total and `session/resume` with `replayFrom: 0` as the full-branch call), `_yi/config`,
+`_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 
 `yi serve` is a supervisor on `~/.yi/daemon.sock` (mode 0600): one `yi acp --cwd <root>` worker
