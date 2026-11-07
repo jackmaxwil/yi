@@ -7,6 +7,14 @@ use yi_types::model::{Effort, Model};
 use crate::anthropic::Thinking;
 
 /// For the keys that still vary per entry and fail loudly with a 400 when wrong.
+pub(crate) fn max_tokens_field(model: &Model) -> &'static str {
+    if compat_bool(model, "plainMaxTokens", false) {
+        "max_tokens"
+    } else {
+        "max_completion_tokens"
+    }
+}
+
 pub(crate) fn compat_bool(model: &Model, key: &str, default: bool) -> bool {
     model
         .compat

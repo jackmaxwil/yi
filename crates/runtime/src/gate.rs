@@ -149,19 +149,26 @@ pub(crate) fn headless_split(why: &str) -> String {
     )
 }
 
-/// A refusal with no one to ask gains a `permissions.allow` entry only when the display names
-/// one exact call: the pattern is a glob, so the call's own `*` and `[` are escaped.
+/// A headless refusal gains an exact `permissions.allow` entry when its display names one call.
+/// A pathless non-bash display would allow every call, so it names interactive approval instead.
 pub(crate) fn named_rule(
     mut outcome: CallOutcome,
     headless: bool,
     (tool, display): (&str, &str),
 ) -> CallOutcome {
-    if headless && (tool == "bash" || display != tool) {
-        let entry = Value::String(format!("{tool} {}", globset::escape(display)));
+    if headless {
         let said = std::mem::take(&mut outcome.reason);
-        outcome.reason = format!(
-            "{said} Allow exactly this call with the permissions.allow entry {entry} in ~/.yi/config.json."
-        );
+        outcome.reason = match display == tool && tool != "bash" {
+            true => format!(
+                "{said} No single allow rule names only this call; rerun interactively to approve it."
+            ),
+            false => {
+                let entry = Value::String(format!("{tool} {}", globset::escape(display)));
+                format!(
+                    "{said} Allow exactly this call with the permissions.allow entry {entry} in ~/.yi/config.json."
+                )
+            }
+        };
     }
     outcome
 }

@@ -440,6 +440,20 @@ fn allow_write_refuses_a_protected_or_missing_dir_and_takes_a_real_one() -> Test
         &["--allow-write", &workspace.project().to_string_lossy()],
     )?;
     assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let granted = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("allow-write-config-{}", std::process::id()));
+    std::fs::create_dir_all(&granted)?;
+    write_config(
+        &workspace,
+        &json!({"permissions": {"allowWrite": [granted]}}).to_string(),
+    )?;
+    let made = granted.join("made");
+    let command = format!("touch '{}'", made.display());
+    let script = bash_script(&workspace, &command, Some("done"))?;
+    let configured = ask(&workspace, "look", &["--faux", &script, "--yolo"])?;
+    assert_eq!(configured.status.code(), Some(0), "{configured:?}");
+    assert!(made.exists());
+    std::fs::remove_dir_all(granted)?;
     let ledger = session_text(&workspace.0.join("home/sessions"))?;
     assert!(
         !ledger.contains(yi_types::permission::PERMISSION_RULE_ENTRY),
@@ -2266,6 +2280,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "config",
             "classifier",
             "catalog",
+            "providers",
             "python-runtime",
             "kernel-toolchain",
             "kernel-boot",
@@ -2278,7 +2293,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "exec-tools"
         ]
     );
-    assert_eq!(rows[11]["detail"], "no session here", "{rows}");
+    assert_eq!(rows[12]["detail"], "no session here", "{rows}");
     Ok(())
 }
 
@@ -2303,7 +2318,7 @@ fn doctor_reports_a_cache_notice_and_leaves_the_session_file_alone() -> TestResu
     std::fs::write(&file, &torn)?;
     let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
     let rows: Value = serde_json::from_str(&stdout(&json))?;
-    let row = &rows[11];
+    let row = &rows[12];
     assert_eq!(row["name"], "cache", "{rows}");
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().ok_or("detail")?;
@@ -3339,6 +3354,30 @@ fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -
     Ok(())
 }
 
+/// Dies with `edit edit` offered as an exact remedy: its pattern allows every edit, so a pathless
+/// display must send the operator to an interactive approval instead of printing that entry.
+#[test]
+fn a_headless_edit_denial_does_not_offer_an_allow_everything_entry() -> TestResult {
+    let workspace = Workspace::new("headless-edit-denial")?;
+    let patch = "[crates/x.rs#1234]\nPUT 1.=1:\n+changed";
+    let script = tool_script(&workspace, &[("edit", json!({"patch": patch}))], Some("no"))?;
+    let run = ask(
+        &workspace,
+        "go",
+        &["--confirm", "--json", "--faux", &script],
+    )?;
+    assert_eq!(run.status.code(), Some(4), "{run:?}");
+    let out = stdout(&run);
+    let mut lines = out.lines().rev();
+    let last: Value = serde_json::from_str(lines.next().ok_or("no output")?)?;
+    assert_eq!(last["type"], "final", "{out}");
+    let denied: Value = serde_json::from_str(lines.next().ok_or("no denial")?)?;
+    let reason = denied["reason"].as_str().ok_or("no reason")?;
+    assert!(!reason.contains("Allow exactly this call"), "{reason}");
+    assert!(reason.contains("interactive"), "{reason}");
+    Ok(())
+}
+
 /// Dies with a mistyped `permissions.allow` entry dropped, so the denial it was written to
 /// prevent came back with no word of why.
 #[test]
@@ -3349,6 +3388,106 @@ fn an_allow_entry_without_a_pattern_ends_the_run_with_exit_2() -> TestResult {
     let err = String::from_utf8_lossy(&run.stderr).into_owned();
     assert_eq!(run.status.code(), Some(2), "{err}");
     assert!(err.contains("permissions.allow"), "{err}");
+    Ok(())
+}
+
+/// Dies with a fix pass under a brief for `evals/` editing `crates/` (#1630, #1638): in yolo, where
+/// those runs ran, the write outside the glob is refused with both named, the one inside lands,
+/// and without the flag the same script writes both.
+#[test]
+fn scope_refuses_a_write_outside_its_glob_and_lets_one_inside_through() -> TestResult {
+    let workspace = Workspace::new("scope")?;
+    let project = workspace.project();
+    for dir in ["crates", "evals"] {
+        std::fs::create_dir_all(project.join(dir))?;
+    }
+    let script = tool_script(
+        &workspace,
+        &[
+            (
+                "write",
+                json!({"path": "crates/lock.rs", "content": "locked"}),
+            ),
+            (
+                "write",
+                json!({"path": "evals/probe.py", "content": "probe"}),
+            ),
+        ],
+        Some("done"),
+    )?;
+    let flags = ["--yolo", "--json", "--faux", &script];
+    let free = ask(&workspace, "go", &flags)?;
+    assert_eq!(free.status.code(), Some(0), "{}", stdout(&free));
+    assert!(project.join("crates/lock.rs").exists());
+    std::fs::remove_file(project.join("crates/lock.rs"))?;
+    std::fs::remove_file(project.join("evals/probe.py"))?;
+
+    let run = ask(
+        &workspace,
+        "go",
+        &[&flags[..], &["--scope", "evals/**"]].concat(),
+    )?;
+    let out = stdout(&run);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert!(!project.join("crates/lock.rs").exists(), "{out}");
+    assert!(project.join("evals/probe.py").exists(), "{out}");
+    let ended = |id: &str| -> Result<Value, Box<dyn Error>> {
+        let events = out.lines().map(serde_json::from_str::<Value>);
+        for event in events {
+            let event = event?;
+            if event["type"] == "tool_execution_end" && event["toolCallId"] == id {
+                return Ok(event);
+            }
+        }
+        Err(format!("no end for {id}: {out}").into())
+    };
+    let refused = ended("c0")?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let said = refused["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or("no text")?;
+    assert!(
+        said.contains("crates/lock.rs") && said.contains("evals/**"),
+        "{said}"
+    );
+    assert_eq!(ended("c1")?["isError"], false, "{out}");
+    Ok(())
+}
+
+/// Dies with a run that ended on a scope refusal exiting 0 as if it had answered, and a glob that
+/// could never match (absolute) or a verb that drops the flag (`console`) failing only at the
+/// first write, or never.
+#[test]
+fn a_run_ending_on_a_scope_refusal_exits_4_and_a_bad_scope_is_refused_up_front() -> TestResult {
+    let workspace = Workspace::new("scope-exit")?;
+    let script = tool_script(
+        &workspace,
+        &[("write", json!({"path": "lock.rs", "content": "locked"}))],
+        Some("could not"),
+    )?;
+    let run = ask(
+        &workspace,
+        "go",
+        &["--yolo", "--json", "--faux", &script, "--scope", "evals/**"],
+    )?;
+    let (out, err) = (
+        stdout(&run),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    );
+    assert_eq!(run.status.code(), Some(4), "{out}{err}");
+    assert!(err.contains("lock.rs") && err.contains("evals/**"), "{err}");
+    assert!(!workspace.project().join("lock.rs").exists());
+
+    let absolute = ask(&workspace, "go", &["--scope", "/work/evals/**"])?;
+    let console = workspace.yi(&["console", "--scope", "evals/**"])?;
+    for (run, said) in [(absolute, "scope"), (console, "needs `yi ask`")] {
+        let err = String::from_utf8_lossy(&run.stderr).into_owned();
+        assert_eq!(
+            (run.status.code(), err.contains(said)),
+            (Some(2), true),
+            "{err}"
+        );
+    }
     Ok(())
 }
 
