@@ -1,4 +1,5 @@
 ---
+version: 0.956.0
 issue: Closes #2014
 ---
 `just push` now installs `x86_64-unknown-linux-gnu` when rustup lacks it, then runs clippy for the branch's changed crates with all targets and warnings as errors, plus the `yi-cli` no-default-features configuration. A diff without crate paths lints the workspace. A machine without rustup or cargo, or one whose target install fails, prints a named skip and can still push.
