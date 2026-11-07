@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.985.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.986.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -352,6 +352,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D569 | A draft branch whose own copy of a workflow still carries a `runs-on` line the base changed is merged with its base after ten quiet minutes, not two hours (amends D344 for this case only) | review.yml moved to the llm runner on 2026-10-12 and ten branches that never merged main kept running their copy on ubuntu-latest, holding five of six general runners; a ready PR mid-landing must not be pushed to | delete stale_lane and the stale argument of decide in scripts/pr_autofix.py; D344 then applies unchanged |
 | D568 | a head whose own latest read was clean is read again when a later round read another commit, while a blocked or retry-capped head stays refused (revises D565) | #1852 sat forever between "round 2 read this head" and "round 7 reviewed b6c0477c, not the head", so neither the reviewer nor the queue moved it | delete the stale-latest-round guard at the end of `skip_reason` |
 | D567 | `yi setup` asks two numbered menus, takes the key of the provider picked, and always records that it ran, amending D300 | the first-run flow asked free text, ended with no config when nothing was chosen so every launch asked again, saved a model whose key it never took, and a dogfood as a first-time user found the jargon and dead ends; the classifier question is dropped because `models.classifier` is already a config key | restore the free-text prompts, classifier_step and the no-write finish in crates/cli/src/setup.rs |
 | D566 | every child is sent a pointer in place of a skill catalog, `Skills: read("yi://skills") lists them; read("yi://skills/<name>") loads one.`, and a second line naming each skill its parent read through `yi://skills/<name>` (amends D334, whose narrow child carried no catalog, and D290, whose full child listed `~/.yi/skills` and the repository's skills); `read("yi://skills")` serves every listed skill with its whole description, fitted to 32 KiB with a cut row naming kept of total, the cap and the per-skill read; a reader with no `read` is sent no pointer | the owner, 2026-11-05: "narrow children should get skill catalog on demand. should get a pointer to skill catalog"; a worker could not look up a skill, and `read("yi://skills")` was refused as a bad address | drop the `Pointer` arm of `ProjectResources` and the `skills` arm of `resolve_docs` |
