@@ -1,4 +1,5 @@
 ---
+version: 0.978.0
 issue: Closes #1532
 growth: +510 one line-diff builder replaces four copies per edit; four runtime helpers and two hashline unquoters fold into one each, and the rest is the tests that hold them.
 raise: tests +508
