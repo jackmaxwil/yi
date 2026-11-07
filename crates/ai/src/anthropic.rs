@@ -844,9 +844,11 @@ fn run_request(
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
+    let retry = crate::request::Retry::new(model.read_timeout(), stop, &retried);
     let resent = match crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::send_with_retry(&url, &headers, body, proxy, stop, &retried),
+        &retry,
+        || crate::request::send_with_retry(&url, &headers, body, proxy, &retry),
         |sse| {
             let kind = sse.event.as_deref().unwrap_or("");
             if kind == "error" {

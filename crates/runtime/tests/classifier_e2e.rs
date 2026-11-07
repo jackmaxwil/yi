@@ -670,7 +670,7 @@ async fn an_unsafe_answer_goes_straight_to_the_user() -> TestResult {
     gate.broker
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
-            crate::support::faux_model(),
+            crate::support::faux_model(128_000),
             Default::default(),
         )));
     let outcome = tokio::task::block_in_place(|| run(&gate, "make deploy"));
@@ -933,7 +933,7 @@ async fn a_call_the_user_refused_is_not_reopened_by_the_classifier() -> TestResu
     gate.broker
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
-            crate::support::faux_model(),
+            crate::support::faux_model(128_000),
             Default::default(),
         )));
     let first = tokio::task::block_in_place(|| run(&gate, "make deploy"));
@@ -977,7 +977,7 @@ async fn a_call_the_reviewer_refused_is_not_reopened_by_the_classifier() -> Test
     gate.broker
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
-            crate::support::faux_model(),
+            crate::support::faux_model(128_000),
             Default::default(),
         )));
     let first = tokio::task::block_in_place(|| run(&gate, "make deploy"));
@@ -1017,7 +1017,7 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
     gate.broker
         .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
             Arc::clone(&provider),
-            crate::support::faux_model(),
+            crate::support::faux_model(128_000),
             Default::default(),
         )));
     assert!(!tokio::task::block_in_place(|| run(&gate, "make deploy")).allowed);
@@ -1623,7 +1623,7 @@ fn a_session_with_no_screener_never_inherits_another_session_s() -> TestResult {
         yi_runtime::AgentSession::new(
             yi_runtime::SessionConfig {
                 system_prompt: prompt.to_owned(),
-                model: crate::support::faux_model(),
+                model: crate::support::faux_model(128_000),
                 thinking_level: None,
                 tool_execution: yi_loop::ExecutionMode::Sequential,
             },

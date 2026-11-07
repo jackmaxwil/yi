@@ -25,7 +25,7 @@ fn session(script: Vec<AgentMessage>) -> AgentSession {
     provider.queue_faux(script);
     let config = SessionConfig {
         system_prompt: "sys".to_owned(),
-        model: support::faux_model(),
+        model: support::faux_model(128_000),
         thinking_level: None,
         tool_execution: yi_loop::ExecutionMode::Sequential,
     };
@@ -55,7 +55,12 @@ fn family(parent: &Arc<AgentSession>, kind: Child) -> std::io::Result<Family> {
         cwd: root.to_path_buf(),
         home: root.join("home"),
         lane_slots: 1,
-        defaults: Arc::new(|| (support::faux_model(), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| {
+            (
+                support::faux_model(128_000),
+                yi_types::model::Effort::Medium,
+            )
+        }),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let mut child = match kind {
                 Child::Says(lines) => session(lines.iter().map(|line| said(line)).collect()),
