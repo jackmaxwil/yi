@@ -77,7 +77,6 @@ fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model,
     if input.is_empty() {
         input.push("text".to_owned());
     }
-    let zero = || serde_json::Number::from(0u8);
     Ok(Model {
         id: id.to_owned(),
         name: entry
@@ -91,18 +90,13 @@ fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model,
         base_url: base_url.to_owned(),
         reasoning: thinks,
         input,
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window,
         max_tokens: positive("output").unwrap_or(context_window),
         compat: None,
         thinking_level_map: thinks.then(|| levels(kind == Some("only"), &valid)),
         headers: None,
+        read_timeout_secs: None,
     })
 }
 

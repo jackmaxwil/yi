@@ -187,6 +187,60 @@ fn agent(url: &str, proxy: Option<&ProxyConfig>, read_timeout: std::time::Durati
     builder.build()
 }
 
+/// Invariant: both retry layers count into one place, so the notice names the requests that ran.
+pub struct Retry<'a> {
+    deadline: std::time::Duration,
+    attempts: std::sync::atomic::AtomicU32,
+    stop: Option<&'a std::sync::atomic::AtomicBool>,
+    on_wait: &'a dyn Fn(Wait),
+}
+
+impl<'a> Retry<'a> {
+    pub fn new(
+        deadline: std::time::Duration,
+        stop: Option<&'a std::sync::atomic::AtomicBool>,
+        on_wait: &'a dyn Fn(Wait),
+    ) -> Self {
+        Self {
+            deadline,
+            attempts: std::sync::atomic::AtomicU32::new(0),
+            stop,
+            on_wait,
+        }
+    }
+
+    pub fn ran(&self) -> u32 {
+        self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn bump(&self) {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Incident: ureq words the connect and read deadlines alike, and only the read one is the
+/// gateway that never sends its first token.
+fn read_timed_out(text: &str) -> bool {
+    text.contains("timed out reading response")
+}
+
+/// Invariant: a stall names the field that fixes it and the wait that ran, because the retry
+/// layers used to spend the deadline twice on a gateway that had already proved silent.
+fn read_timeout_notice(read_timeout: std::time::Duration, attempts: u32) -> String {
+    let ran = match attempts {
+        1 => "1 attempt ran".to_owned(),
+        other => format!("{other} attempts ran"),
+    };
+    format!(
+        "{} {} s (the model's readTimeoutSecs, default {}); \
+         raise readTimeoutSecs on the model in the catalog entry; {ran}, not retried",
+        yi_types::telemetry::READ_DEADLINE_SPENT,
+        read_timeout.as_secs(),
+        yi_types::model::DEFAULT_READ_TIMEOUT_SECS
+    )
+}
+
 fn read_capped(response: ureq::Response, url: &str, cap: usize) -> Result<Value, String> {
     let mut body = Vec::new();
     let limit = u64::try_from(cap.saturating_add(1)).unwrap_or(u64::MAX);
@@ -274,15 +328,22 @@ pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
 /// Past this a pooled connection is not trusted: a NAT may have dropped it without a FIN.
 const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
 
-static POOLED: std::sync::Mutex<Option<(ureq::Agent, std::time::Instant)>> =
-    std::sync::Mutex::new(None);
+static POOLED: std::sync::Mutex<Vec<Pooled>> = std::sync::Mutex::new(Vec::new());
+
+/// A deadline is built into the agent, so a pool keyed by nothing but idle time handed a fast
+/// model's connection the slow model's bound. One slot thrashed two models in one session.
+struct Pooled {
+    agent: ureq::Agent,
+    idle_since: std::time::Instant,
+    read_timeout: std::time::Duration,
+}
 
 // ponytail: a proxied request pools nothing; key the pool by proxy if that path matters.
-fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
+fn stream_agent(proxy: Option<&ureq::Proxy>, read_timeout: std::time::Duration) -> ureq::Agent {
     let builder = ureq::AgentBuilder::new()
         .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(30))
-        .timeout_read(std::time::Duration::from_secs(60))
+        .timeout_read(read_timeout)
         // ureq keeps one idle connection per host by default, so a later turn of the session
         // dialed again: the family's eight live streams is the width worth keeping.
         .max_idle_connections(16)
@@ -293,19 +354,44 @@ fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     let Ok(mut pooled) = POOLED.lock() else {
         return builder.build();
     };
-    let agent = match pooled.take() {
-        Some((agent, idle_since)) if idle_since.elapsed() < KEEP_ALIVE => agent,
-        _ => builder.build(),
-    };
-    *pooled = Some((agent.clone(), std::time::Instant::now()));
+    pooled.retain(|held| held.idle_since.elapsed() < KEEP_ALIVE);
+    if let Some(agent) = pooled
+        .iter_mut()
+        .find(|held| held.read_timeout == read_timeout)
+        .map(|held| {
+            held.idle_since = std::time::Instant::now();
+            held.agent.clone()
+        })
+    {
+        return agent;
+    }
+    let agent = builder.build();
+    if pooled.len() >= POOLED_SLOTS
+        && let Some((at, _)) = pooled
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, held)| held.idle_since)
+    {
+        drop(pooled.swap_remove(at));
+    }
+    pooled.push(Pooled {
+        agent: agent.clone(),
+        idle_since: std::time::Instant::now(),
+        read_timeout,
+    });
     agent
 }
 
-fn pooled_idle_from_now() {
+/// Two deadlines at once is the alternating main/advisor pattern; a third covers a subagent.
+const POOLED_SLOTS: usize = 3;
+
+fn pooled_idle_from_now(read_timeout: std::time::Duration) {
     if let Ok(mut pooled) = POOLED.lock()
-        && let Some((_, idle_since)) = pooled.as_mut()
+        && let Some(held) = pooled
+            .iter_mut()
+            .find(|held| held.read_timeout == read_timeout)
     {
-        *idle_since = std::time::Instant::now();
+        held.idle_since = std::time::Instant::now();
     }
 }
 
@@ -314,12 +400,14 @@ pub fn send_with_retry(
     headers: &[(String, String)],
     body: &crate::breakpoints::Encoded,
     proxy: Option<&ProxyConfig>,
-    stop: Option<&std::sync::atomic::AtomicBool>,
-    on_retry: &dyn Fn(Wait),
+    retry: &Retry<'_>,
 ) -> Result<ureq::Response, String> {
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
-    let agent = stream_agent(proxy.and_then(|config| config.proxy_for(host_of(url))));
+    let agent = stream_agent(
+        proxy.and_then(|config| config.proxy_for(host_of(url))),
+        retry.deadline,
+    );
     let body = {
         let _span = yi_types::trace::span("ai.serialize");
         body.to_string()
@@ -336,6 +424,7 @@ pub fn send_with_retry(
         let sending = yi_types::trace::span("ai.http_send")
             .arg("attempt", attempt)
             .arg("bytes", body.len());
+        retry.bump();
         let sent = request.send_string(&body);
         drop(sending);
         match sent {
@@ -382,30 +471,33 @@ pub fn send_with_retry(
                 };
                 attempt = attempt.saturating_add(1);
                 announce(
-                    on_retry,
+                    retry.on_wait,
                     attempt,
                     &policy,
                     Some(delay),
                     format!("HTTP {status}"),
                 );
-                if !sleep_in_slices(delay, stop) {
+                if !sleep_in_slices(delay, retry.stop) {
                     return Err(format!(
                         "HTTP {status}: the turn was cut during the {delay:?} retry wait"
                     ));
                 }
             }
             Err(error) => {
+                // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
+                let reason = match &error {
+                    ureq::Error::Transport(transport) => transport_cause(transport),
+                    ureq::Error::Status(..) => error.to_string(),
+                };
+                if read_timed_out(&reason) {
+                    return Err(read_timeout_notice(retry.deadline, retry.ran()));
+                }
                 if attempt < policy.max_attempts && started.elapsed() < policy.max_total_wall {
                     let delay = crate::retry::retry_delay(attempt);
                     attempt = attempt.saturating_add(1);
-                    // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
-                    let reason = match &error {
-                        ureq::Error::Transport(transport) => transport_cause(transport),
-                        ureq::Error::Status(..) => error.to_string(),
-                    };
                     let cause: String = reason.chars().take(80).collect();
-                    announce(on_retry, attempt, &policy, Some(delay), cause);
-                    if !sleep_in_slices(delay, stop) {
+                    announce(retry.on_wait, attempt, &policy, Some(delay), cause);
+                    if !sleep_in_slices(delay, retry.stop) {
                         return Err(format!("the turn was cut during the {delay:?} retry wait"));
                     }
                     continue;
@@ -558,6 +650,7 @@ fn drain_to_eof(reader: Box<dyn std::io::Read + Send + Sync + 'static>) {
 /// a body that died before its first event is sent once more; the first error returns (D146).
 pub fn pump_sse_with_resend(
     stop: Option<&std::sync::atomic::AtomicBool>,
+    retry: &Retry<'_>,
     send: impl Fn() -> Result<ureq::Response, String>,
     mut on_event: impl FnMut(SseEvent) -> Result<bool, String>,
 ) -> Result<Option<String>, String> {
@@ -580,8 +673,17 @@ pub fn pump_sse_with_resend(
         });
         match pumped {
             Ok(()) => {
-                pooled_idle_from_now();
+                pooled_idle_from_now(retry.deadline);
                 return Ok(first_error);
+            }
+            // A silent gateway already spent the model's whole deadline: one more wait is longer
+            // than the bound the field sets.
+            Err(text) if read_timed_out(&text) => {
+                let notice = read_timeout_notice(retry.deadline, retry.ran());
+                return Err(match first_error {
+                    Some(first) => format!("{notice} (resent once after: {first})"),
+                    None => notice,
+                });
             }
             // Incident: `Bad address (os error 14)` killed a trial's third request
             // before any byte arrived (ledger 0017, issue #256).
@@ -735,7 +837,7 @@ pub fn openai_bearer_post(
     model: &Model,
     body: &crate::breakpoints::Encoded,
     wire: Wire<'_>,
-    on_retry: &dyn Fn(Wait),
+    retry: &Retry<'_>,
 ) -> Result<ureq::Response, String> {
     let headers = headers_for(
         model,
@@ -746,8 +848,7 @@ pub fn openai_bearer_post(
         &merge_headers(headers, wire.extra.to_vec()),
         body,
         wire.proxy,
-        wire.stop,
-        on_retry,
+        retry,
     )
 }
 

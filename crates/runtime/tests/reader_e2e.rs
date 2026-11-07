@@ -4,39 +4,15 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+pub(crate) use crate::faux_model::faux_model;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Effort, Model, ModelCost, Reuse};
+use yi_types::model::{Effort, Model, Reuse};
 
 type TestResult = Result<(), Box<dyn Error>>;
 type Script = Arc<Mutex<Vec<AgentMessage>>>;
-
-pub(crate) fn faux_model(context_window: u64) -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 pub(crate) struct Family {
     root: Scratch,
@@ -62,6 +38,7 @@ pub(crate) struct Setup {
     pub(crate) provider: Option<Arc<ProviderStream>>,
     pub(crate) model: Option<Model>,
     pub(crate) resolver: Option<Arc<yi_runtime::fetch::Resolver>>,
+    pub(crate) kernel: Option<Hook>,
 }
 
 impl Default for Setup {
@@ -75,6 +52,7 @@ impl Default for Setup {
             provider: None,
             model: None,
             resolver: None,
+            kernel: None,
         }
     }
 }
@@ -98,6 +76,7 @@ pub(crate) fn family_with(
         provider,
         model,
         resolver,
+        kernel,
     } = setup;
     let model = model.unwrap_or_else(|| faux_model(window));
     let fresh = || Arc::new(ProviderStream::new(None));
@@ -152,7 +131,12 @@ pub(crate) fn family_with(
                 provider,
                 build,
                 &reader,
-                yi_tools::builtin_tools(),
+                (yi_tools::builtin_tools, |_| {
+                    if let Some(kernel) = &kernel {
+                        kernel();
+                    }
+                    None
+                }),
                 (cwd.clone(), &home),
                 broker.clone(),
                 rules.clone(),
@@ -851,7 +835,35 @@ async fn a_worker_writes_where_a_reader_is_walled_and_holds_a_worker_slot() -> T
 }
 
 #[tokio::test]
-async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
+async fn a_one_turn_worker_naming_ipython_builds_no_kernel() -> TestResult {
+    let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sink = Arc::clone(&builds);
+    let kernel: Hook = Arc::new(move || {
+        sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    let family = family_with(
+        1,
+        Arc::new(Mutex::new(vec![reply("done")])),
+        Setup {
+            kernel: Some(kernel),
+            ..Setup::default()
+        },
+    )?;
+    family.host.spawn(
+        "Answer once".to_owned(),
+        kwargs(json!({"name": "once", "role": "worker", "tools": ["ipython"], "turns": 1})),
+    )?;
+    let rows = transcript(&family, "once").await?;
+    assert_eq!(
+        builds.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "a one-turn worker built a kernel it cannot call: {rows:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_worker_is_refused_a_fork_a_check_and_a_tool_it_may_not_call() -> TestResult {
     let family = family(4, Arc::default())?;
     let refused = |args: Value| family.host.spawn("w".to_owned(), kwargs(args)).err();
     let fork = refused(json!({"role": "worker", "fork": "all"})).ok_or("fork admitted")?;
@@ -865,11 +877,10 @@ async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
         check.contains("a worker answers once and runs no check"),
         "{check}"
     );
-    let kernel =
-        refused(json!({"role": "worker", "tools": ["ipython"]})).ok_or("ipython admitted")?;
+    let spawn = refused(json!({"role": "worker", "tools": ["answer"]})).ok_or("answer admitted")?;
     assert_eq!(
-        kernel,
-        "a worker may call read, grep, edit, write, bash and get_context, not ipython; \
+        spawn,
+        "a worker may call read, grep, edit, write, bash, get_context and ipython, not answer; \
          role=\"root\" spawns a full child"
     );
     let turns = refused(json!({"role": "worker", "turns": 41})).ok_or("41 turns admitted")?;

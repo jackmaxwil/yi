@@ -59,7 +59,7 @@ fn rig(answer: &'static str) -> Result<Rig, Box<dyn Error>> {
         home: home.clone(),
         lane_slots: 1,
         provider: Arc::new(ProviderStream::new(None)),
-        defaults: Arc::new(|| (crate::support::faux_model(), Effort::Medium)),
+        defaults: Arc::new(|| (crate::support::faux_model(128_000), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let provider = Arc::new(ProviderStream::new(None));
             provider.queue_faux(vec![reply(answer)]);
@@ -69,7 +69,7 @@ fn rig(answer: &'static str) -> Result<Rig, Box<dyn Error>> {
                     provider,
                     build,
                     &reader,
-                    yi_tools::builtin_tools(),
+                    (yi_tools::builtin_tools, |_| None),
                     (cwd.clone(), &home),
                     None,
                     None,
@@ -346,7 +346,7 @@ fn wired(root: &Scratch) -> Result<(AgentSession, Arc<ProviderStream>), Box<dyn 
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: crate::support::faux_model(),
+            model: crate::support::faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         },

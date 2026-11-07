@@ -28,7 +28,7 @@ pub fn nothing_delivered(message: &AgentMessage) -> bool {
     let verdict = matches!(&class, Some(ErrorClass::ProviderQuota))
         || matches!(&class, Some(ErrorClass::Provider(kind)) if kind != "error");
     let generating = !verdict && (usage.output > 0 || usage.reasoning.unwrap_or(0) > 0);
-    let wire = class.as_ref().is_some_and(ErrorClass::is_wire_refusal);
+    let wire = error_message.as_deref().is_some_and(ErrorClass::resendable);
     // Incident: Wafer's in-band 502 had no usage and no transport class; yi exited 0 (D175)
     let in_band = raw_stop_reason.as_deref() == Some(yi_types::message::RAW_STOP_IN_BAND_ERROR);
     (generating || wire || in_band)

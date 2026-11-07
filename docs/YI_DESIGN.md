@@ -205,8 +205,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D352).
 - Reclaim runs inside the run's `convert_to_llm`, before compaction is ever due: a tool result
   at least 1,200 chars long and 5 requests old (never `ask_user`, `plan`, `todo`, or the newest
-  `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the tokens dropped × cache-read price × requests so far beat the
-  tokens after the first cut × (write − read price), or the cache lapsed; at least 2,000 tokens.
+  `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the
+  tokens dropped × requests so far beat ten reads of the tokens after the first cut, or the cache
+  lapsed; at least 2,000 tokens, on every route whatever its price.
   A `custom{reclaim}` entry names the cut results, which render from then on as one
   `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
 - `annotate` writes `custom{annotation}`: `pin` keeps the newest result whose call contains
@@ -269,9 +270,12 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
-  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s. A
+  wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter. A
   server wait past 60 s or `x-should-retry: false` ends the turn stamped `retry refused:`, which
   the loop reads as final; `x-should-retry: true` retries any status.
+- A read timeout is the model's `readTimeoutSecs` (default 60 s) and bounds one read, so an idle
+  gap between chunks and not the whole body; a timeout is neither retried nor resent, and its
+  refusal names the field, the default and the attempts that ran.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
   outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
   into `ToolUse`.

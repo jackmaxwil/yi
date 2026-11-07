@@ -4,7 +4,8 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use serde_json::{Map, Number, Value};
+use crate::faux_model::faux_model;
+use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::{
@@ -12,37 +13,12 @@ use yi_runtime::{
 };
 use yi_tools::{CancelFlag, KernelBridge};
 use yi_types::message::StopReason;
-use yi_types::model::{Effort, Model, ModelCost};
+use yi_types::model::Effort;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 const POLL_ATTEMPTS: usize = 600;
 const POLL_INTERVAL_MS: u64 = 50;
-
-fn faux_model() -> Model {
-    let zero = || Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn process_alive(pid: u32) -> bool {
     let mut command = yi_tools::command("ps");
@@ -82,7 +58,7 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
         cwd: std::env::temp_dir(),
         home: std::env::temp_dir(),
         lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), Effort::Medium)),
+        defaults: Arc::new(|| (faux_model(128_000), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let provider = Arc::new(ProviderStream::new(None));
             provider.queue_faux(vec![faux_assistant_message(
