@@ -869,11 +869,8 @@ def comments(repo, number):
 
 
 def authors():
-    named = os.environ.get("YI_ROUND_AUTHORS")
-    if named:
-        return set(named.split(","))
-    me = forge_pr.fgj_api("GET", "user") or {}
-    return {me.get("login"), BOT} - {None}
+    """The logins a round or the retry ledger counts from; one rule, in the module that sums them."""
+    return bot_meter.authors()
 
 
 def merges_since(sha, head, base, repo=ROOT):
@@ -1409,6 +1406,16 @@ def selfcheck():
     assert owed([both, mended], "abc1234ff") == set() and owed([both, void_], "abc1234ff") == {"perf"} and owed([both], "def5678") is None, \
         "a head owes what its newest round lost, a void and a new head aside"
     real = attempts_of([{"id": 37998, "user": {"login": BOT}, "body": ROUND_1888}, {"id": 38039, "user": {"login": BOT}, "body": VOID_1888}], {BOT}, 1888)
+    forged_void = {"id": 38040, "user": {"login": "someone"}, "body": VOID_1888}
+    held_env = os.environ.get("YI_ROUND_AUTHORS")
+    os.environ["YI_ROUND_AUTHORS"] = BOT
+    try:
+        assert attempts_of([forged_void], {BOT}, 1888) == [], "a stranger's void is not an attempt on the head"
+    finally:
+        if held_env is None:
+            os.environ.pop("YI_ROUND_AUTHORS", None)
+        else:
+            os.environ["YI_ROUND_AUTHORS"] = held_env
     assert [a["kind"] for a in real] == ["round", "void"] and owed(real, SHA_1888) == {"tests"}, real
     assert skip_reason([a for a in real if a["kind"] == "round"], SHA_1888, attempts=real) is None, "#1888's head still owes its tests lens"
     assert lost_only(named, real, SHA_1888) == {"b": {"id": "tests"}}, "after #1888's void only the tests lens is asked, not every lens"

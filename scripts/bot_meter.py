@@ -7,6 +7,8 @@ reads the same lines. No store of its own.
 import collections
 import datetime
 import json
+import math
+import os
 import pathlib
 import sys
 import threading
@@ -18,6 +20,7 @@ import forge_pr  # noqa: E402
 import forge_tracking  # noqa: E402
 
 BOT = "yi-bot"
+_AUTHORS = None
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
 MARKERS = ("<!-- yi-round-meta ", "<!-- yi-round-void-meta ", "<!-- yi-autofix-meta ")
 FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models")
@@ -102,18 +105,34 @@ def status_line(meter, pr_total, day_total, what):
             f"{duration(f['secs'])} · skills read {f['skills']} · this PR ${pr_total:.2f} · today ${day_total:.2f}</sub>")
 
 
-def rows(comments):
+def authors():
+    """The logins a meta line is the ledger from: the bot's, and the owner's forge login, which
+    `just pr retry` writes its gate rerun rows under. A commenter who is neither is not the ledger."""
+    named = os.environ.get("YI_ROUND_AUTHORS")
+    if named:
+        return set(named.split(","))
+    global _AUTHORS
+    if _AUTHORS is None:
+        me = forge_pr.fgj_api("GET", "user") or {}
+        _AUTHORS = {BOT, me.get("login") if isinstance(me, dict) else None} - {None}
+    return _AUTHORS
+
+
+def rows(comments, trusted=None):
     """Every bot meta line in `comments`, as fields, with the comment's PR and time. A gate rerun row
-    counts whoever posted it: `just pr retry` writes its own ledger under the owner's forge login."""
-    out = []
+    counts from a trusted login too, so the retry ledger is the owner's own; anyone else's is text."""
+    out, allowed = [], trusted
     for comment in comments:
-        bot = (comment.get("user") or {}).get("login") == BOT
+        login = (comment.get("user") or {}).get("login")
+        bot = login == BOT
         for line in (comment.get("body") or "").splitlines()[:3]:
             for marker in MARKERS:
                 if line.startswith(marker) and line.endswith(" -->"):
                     fields = dict(p.split("=", 1) for p in line[len(marker):-4].split() if "=" in p)
-                    if not bot and fields.get("verdict") != "rerun":
-                        continue
+                    if not bot:
+                        allowed = authors() if allowed is None else allowed
+                        if fields.get("verdict") != "rerun" or login not in allowed:
+                            continue
                     url = comment.get("pull_request_url") or comment.get("issue_url") or ""
                     out.append({**fields, "kind": marker[5:].split("-meta")[0], "at": comment.get("created_at", ""), "id": comment.get("id", 0),
                                 "pr": fields.get("pr") or url.rsplit("/", 1)[-1]})
@@ -121,7 +140,12 @@ def rows(comments):
 
 
 def cost(row):
-    return float(row.get("cost") or 0)
+    """A row's cost, or 0 for anything unreadable: a mangled line may not sink a whole spend pass."""
+    try:
+        value = float(row.get("cost") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
 
 
 def spent(found):
@@ -206,6 +230,27 @@ def selfcheck():
                   dict(bot, body="<!-- yi-round-void -->\n<!-- yi-round-void-meta pr=9 cost=0.1000 -->\n"),
                   {"user": {"login": "someone"}, "body": "<!-- yi-autofix-meta pr=9 cost=99 -->"},
                   dict(bot, body="prose that mentions <!-- yi-autofix-meta cost=7 --> later\n\n\n")])
+    stranger = {"user": {"login": "someone"}, "body": "<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=9 kind=gate from=abc verdict=rerun cost=99 -->"}
+    owner = {"user": {"login": "jack"}, "body": "<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=9 kind=gate from=abc verdict=rerun -->"}
+    saved = os.environ.get("YI_ROUND_AUTHORS")
+    os.environ["YI_ROUND_AUTHORS"] = "jack"
+    try:
+        if rows([stranger]) != []:
+            errs.append("a stranger's rerun row is the ledger: any login that can comment retires the head's retries")
+        if [r["verdict"] for r in rows([owner])] != ["rerun"]:
+            errs.append("the owner's own rerun row is the retry ledger and was dropped")
+    finally:
+        if saved is None:
+            os.environ.pop("YI_ROUND_AUTHORS", None)
+        else:
+            os.environ["YI_ROUND_AUTHORS"] = saved
+    try:
+        mangled = cost({"cost": "cheap"})
+    except (TypeError, ValueError):
+        errs.append("a mangled cost raises out of a spend total instead of counting nothing")
+    else:
+        if mangled != 0.0:
+            errs.append(f"a mangled cost counted as {mangled}")
     if [r.get("models") for r in found] != [None, "gpt-6.1-sol", None]:
         errs.append("the models a comment's cost went to are not read back")
     if round(spent(found), 4) != 0.85 or [r["kind"] for r in found] != ["yi-round", "yi-autofix", "yi-round-void"]:

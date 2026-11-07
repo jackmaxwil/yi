@@ -339,7 +339,10 @@ def check_ledger():
     with mock.patch.object(forge_pr, "fgj_api", api):
         notes = pr_review.comments("o/r", 7)
     assert len(notes) == 53, len(notes)
-    assert len(pr_autofix.head_rows(notes, sha, "rerun")) == 3, notes
+    with mock.patch.object(bot_meter, "authors", lambda: {bot_meter.BOT}):
+        assert len(pr_autofix.head_rows(notes, sha, "rerun")) == 2, "a stranger's rerun row retired the head's retries"
+    with mock.patch.object(bot_meter, "authors", lambda: {bot_meter.BOT, "jack"}):
+        assert len(pr_autofix.head_rows(notes, sha, "rerun")) == 3, "the owner's own rerun rows are the ledger"
 
 
 
