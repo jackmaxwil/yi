@@ -1,4 +1,5 @@
 ---
+version: 0.993.0
 issue: Closes #1543
 growth: +540 a row carries a check whose command is set once, probed at start, handed to the same rules and wall as any other command, and run by done: the red path, the two refusals and the label-resolution module moved out of the over-cap todo/mod.rs are the new code, and the digest the check stores in the fingerprint is the only new wire field on a todo row
 raise: comments +20
