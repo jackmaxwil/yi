@@ -32,6 +32,7 @@ _yi() {
         'logout:remove a provider credential'
         'setup:choose a model and a permission mode'
         'mcp:one-shot MCP client calls, under mcp.enabled'
+        'tool:import a project'\''s just recipes as exec tools'
     )
     flags=(
         '--help[print this table (also -h)]'

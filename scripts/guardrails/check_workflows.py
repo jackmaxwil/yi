@@ -163,6 +163,84 @@ def skill_gaps(dest, off=""):
     return [name for name in shipped() if not (dest / name / "SKILL.md").is_file()]
 
 
+RECORDER_CHECKS = (
+    "record-timeout", "record-checkout", "record-toolchain", "record-ratchet", "record-bundle",
+    "record-upload", "record-output", "push-dependency", "push-download", "push-token", "push-clean", "push-result",
+)
+
+
+def workflow_job(text, name):
+    jobs = text.rsplit("\njobs:\n", 1)[-1]
+    return "\n".join(block(jobs, f"  {name}:"))
+
+
+def workflow_steps(job):
+    lines = block(job, "    steps:")
+    starts = [n for n, line in enumerate(lines) if line.startswith("      - ")]
+    return ["\n".join(lines[start:end]) for start, end in zip(starts, [*starts[1:], len(lines)])]
+
+
+def workflow_step(steps, marker):
+    return next((step for step in steps if marker in step), "")
+
+
+def recorder_isolation(text, off=""):
+    """The recorder builds untrusted landed code; only its artifact-fed push job may hold the main token."""
+    record, push = workflow_job(text, "record"), workflow_job(text, "push")
+    steps, push_steps = workflow_steps(record), workflow_steps(push)
+    checkout = workflow_step(steps, "uses: actions/checkout@")
+    ratchet = workflow_step(steps, "run: python3 scripts/forge_pr.py ratchet --forge-measured")
+    bundle = workflow_step(steps, 'run: git bundle create "$RUNNER_TEMP/recorder.bundle" HEAD')
+    upload = workflow_step(steps, "uses: actions/upload-artifact@")
+    download = workflow_step(push_steps, "uses: actions/download-artifact@")
+    errs = []
+
+    def want(name, condition, message):
+        if off != name and not condition:
+            errs.append(message)
+
+    want("record-timeout", "    timeout-minutes: 20" in record,
+         "the recorder's cold dist build needs the PR lane's 20-minute budget")
+    want("record-checkout", checkout and "persist-credentials: false" in checkout
+         and "token: ${{ secrets.RECORDER_TOKEN }}" in checkout and record.count("RECORDER_TOKEN") == 1,
+         "the recorder checkout alone may read its token and must not persist it")
+    want("record-toolchain", workflow_step(steps, "run: rustup show")
+         and workflow_step(steps, "uses: Swatinem/rust-cache@"), "the dist build needs its toolchain and cache")
+    want("record-ratchet", ratchet and "id: ratchet" in ratchet and "continue-on-error: true" in ratchet
+         and all(name in ratchet for name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")),
+         "the ratchet step needs an id, continue-on-error and all four Git identity values")
+    want("record-bundle", bundle and "if: always() && steps.ratchet.outcome != 'skipped'" in bundle,
+         "the recorder must bundle HEAD unless an earlier failure skipped the ratchet")
+    want("record-upload", upload and "name: recorder" in upload and "path: ${{ runner.temp }}/recorder.bundle" in upload,
+         "the recorder must upload its bundle as the recorder artifact")
+    want("record-output", "ratchet_outcome: ${{ steps.ratchet.outcome }}" in record,
+         "the record job must export the ratchet outcome to the push job")
+    want("push-dependency", "    needs: [record]" in push
+         and "if: vars.RECORD_CHANGES == 'on' && github.event.head_commit.author.name != 'yi-queue'" in push,
+         "the push job must depend on record and use its enable condition")
+    want("push-download", download and "name: recorder" in download and "path: ${{ runner.temp }}" in download
+         and not workflow_step(push_steps, "uses: actions/checkout@"),
+         "the push job must download the recorder artifact without checking out landed code")
+    want("push-token", "RECORDER_TOKEN: ${{ secrets.RECORDER_TOKEN }}" in push
+         and "RATCHET_OUTCOME: ${{ needs.record.outputs.ratchet_outcome }}" in push,
+         "only the push job may receive the token and it must read the record job's ratchet outcome")
+    want("push-clean", 'mktemp -d "$RUNNER_TEMP/recorder-push' in push
+         and "clone --template= --branch main --single-branch" in push and 'git -C "$push_workspace"' in push
+         and "GIT_CONFIG_GLOBAL=/dev/null" in push and "GIT_CONFIG_NOSYSTEM=1" in push
+         and push.count("core.hooksPath=/dev/null") == 3 and push.count("core.fsmonitor=false") == 3
+         and "http.extraheader" in push and 'fetch "$RUNNER_TEMP/recorder.bundle" HEAD:refs/heads/recording' in push,
+         "the token-bearing clone, fetch and push must use a fresh clone with inherited Git behavior disabled")
+    want("push-result", 'test "$RATCHET_OUTCOME" = "success"' in push,
+         "a pushed ratchet failure must still fail the push job")
+    return errs
+
+
+def mutate_job(text, name, old, new):
+    job = workflow_job(text, name)
+    changed = job.replace(old, new, 1)
+    return text.replace(job, changed, 1) if changed != job else text
+
+
 def selfcheck(off=""):
     incident = "jobs:\n  review:\n    if: github.head == github.repo && startsWith(github.title, 'WIP: ')\n"
     fixed = "jobs:\n  review:\n    if: >-\n      startsWith(github.title, 'WIP: ')\n"
@@ -212,6 +290,28 @@ def selfcheck(off=""):
         bad.append("a bot job that installs no skills is not refused")
     if no_skills("steps:\n  - run: just install-skills\n", "") or no_skills("steps:\n  - if: x\n    run: just install-skills\n", ""):
         bad.append("a bot job that installs the skills is refused")
+    postmerge = (ROOT / ".forgejo/workflows/postmerge.yml").read_text()
+    bad.extend(f"the current postmerge workflow: {err}" for err in recorder_isolation(postmerge, off))
+    mutations = {
+        "record-timeout": ("record", "    timeout-minutes: 20", "    timeout-minutes: 10"),
+        "record-checkout": ("record", "persist-credentials: false", "persist-credentials: true"),
+        "record-toolchain": ("record", "- run: rustup show", "- run: rustup --version"),
+        "record-ratchet": ("record", "continue-on-error: true", "continue-on-error: false"),
+        "record-bundle": ("record", 'git bundle create "$RUNNER_TEMP/recorder.bundle" HEAD', 'git bundle create "$RUNNER_TEMP/recorder.bundle" main'),
+        "record-upload": ("record", "name: recorder", "name: wrong-artifact"),
+        "record-output": ("record", "steps.ratchet.outcome", "steps.other.outcome"),
+        "push-dependency": ("push", "    needs: [record]\n", ""),
+        "push-download": ("push", "name: recorder", "name: wrong-artifact"),
+        "push-token": ("push", "needs.record.outputs.ratchet_outcome", "steps.ratchet.outcome"),
+        "push-clean": ("push", "clone --template=", "clone"),
+        "push-result": ("push", 'test "$RATCHET_OUTCOME" = "success"', 'test "$RATCHET_OUTCOME" = "failure"'),
+    }
+    for name, (job, old, new) in mutations.items():
+        changed = mutate_job(postmerge, job, old, new)
+        if changed == postmerge:
+            bad.append(f"the recorder selfcheck could not make its {name} mutation")
+        elif not recorder_isolation(changed, off):
+            bad.append(f"the {name} recorder rule does not refute its mutation")
     short = pathlib.Path(tempfile.mkdtemp(prefix="yi-workflows-skills-"))
     try:
         if not skill_gaps(short, off):
@@ -232,7 +332,7 @@ def selfcheck(off=""):
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("plain", "blocks", "comments", "silenced", "lane", "candidate", "skills", "install"):
+        for off in ("plain", "blocks", "comments", "silenced", "lane", "candidate", "skills", "install", *RECORDER_CHECKS):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} check disabled, so it refutes nothing")
         fail(errs, "workflows selfcheck")
@@ -240,6 +340,7 @@ if __name__ == "__main__":
     files = sorted((ROOT / ".forgejo/workflows").glob("*.y*ml"))
     gate = (ROOT / ".forgejo/workflows/pr.yml").read_text()
     review = (ROOT / ".forgejo/workflows/review.yml").read_text()
+    postmerge = (ROOT / ".forgejo/workflows/postmerge.yml").read_text()
     candidate_path = ROOT / ".forgejo/workflows/candidate.yml"
     candidate = candidate_path.read_text() if candidate_path.is_file() else ""
     errs = [f"{f.relative_to(ROOT)}:{n}: `{v}` is a plain YAML value holding `: `, which starts a mapping; "
@@ -263,6 +364,7 @@ if __name__ == "__main__":
     errs += [f".forgejo/workflows/{name}: no `run: just install-skills` step; the job's HOME then holds no skills and its "
              "footer says `skills read none`"
              for name in ("review.yml", "autofix.yml") if no_skills((ROOT / ".forgejo/workflows" / name).read_text())]
+    errs += [f".forgejo/workflows/postmerge.yml: {err}" for err in recorder_isolation(postmerge)]
     dest = pathlib.Path(tempfile.mkdtemp(prefix="yi-install-skills-"))
     try:
         ran = subprocess.run(["just", "install-skills", str(dest)], cwd=ROOT, capture_output=True, text=True)
