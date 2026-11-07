@@ -289,14 +289,19 @@ pub fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// PATH with every installed program plugin's directory first, so a spawn and the model's bash
-/// both find it by name; None when none is installed, which leaves a child's PATH untouched.
-pub fn search_path(home: &Path) -> Option<OsString> {
-    let dirs: Vec<PathBuf> = PLUGINS
+/// Every installed program plugin's directory, in the order a PATH leads with them.
+pub fn installed_dirs(home: &Path) -> Vec<PathBuf> {
+    PLUGINS
         .iter()
         .filter(|plugin| plugin.shape.on_path() && plugin.installed(home).is_some())
         .map(|plugin| plugin.dir(home))
-        .collect();
+        .collect()
+}
+
+/// PATH with every installed program plugin's directory first, so a spawn and the model's bash
+/// both find it by name; None when none is installed, which leaves a child's PATH untouched.
+pub fn search_path(home: &Path) -> Option<OsString> {
+    let dirs = installed_dirs(home);
     if dirs.is_empty() {
         return None;
     }
