@@ -37,6 +37,7 @@ fn model(api: &str, provider: &str, port: u16) -> Result<Model, Box<dyn Error>> 
 fn context() -> LlmContext {
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: String::new(),
         messages: vec![AgentMessage::user_input(
             yi_types::message::UserContent::Text("hi".to_owned()),
