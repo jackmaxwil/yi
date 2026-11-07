@@ -6067,3 +6067,30 @@ fn an_empty_chat_shows_the_start_screen_and_a_replayed_one_does_not() -> TestRes
     )?;
     Ok(())
 }
+
+fn worker_replaced() -> Vec<Value> {
+    vec![update(
+        "s-new",
+        json!({"sessionUpdate": "_yi/worker_replaced", "binary": "/bin/yi", "generation": 2}),
+    )]
+}
+
+fn resumed_notice() -> Vec<Value> {
+    vec![update(
+        "s-new",
+        json!({"sessionUpdate": "_yi/notice", "text": "resumed on the new build"}),
+    )]
+}
+
+/// Dies with a pane left bound to the stream of a worker the daemon replaced: the console must
+/// resume the session from the ledger the moment `_yi/worker_replaced` arrives.
+#[test]
+fn a_replaced_worker_resumes_the_pane_bound_to_its_session() -> TestResult {
+    let mut steps = new_session_steps();
+    steps.push(Step::Push(worker_replaced));
+    steps.push(Step::Expect("session/resume", resume_blank));
+    steps.push(Step::Push(resumed_notice));
+    let script = "wait-frame 5000 command palette\nkey alt-n\nwait-frame 5000 s-new\n\
+                  wait-frame 5000 resumed on the new build\nquit\n";
+    run("worker-replaced", steps, script)
+}

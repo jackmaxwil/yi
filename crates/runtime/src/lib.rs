@@ -165,6 +165,11 @@ pub use yi_tools::{
     discover_exec_tools, edit_file, list_files,
 };
 
+/// Every job running in this process, whoever started it: an empty root prefixes every path.
+pub fn running_jobs() -> Vec<String> {
+    yi_tools::jobs::registry().running_under(std::path::Path::new(""))
+}
+
 pub fn documents(home: &std::path::Path) -> Documents {
     let venv_home = home.to_path_buf();
     Documents {
@@ -186,7 +191,7 @@ pub fn session_tools(
 ) -> Vec<std::sync::Arc<dyn yi_tools::Tool>> {
     let mut tools = builtin_tools_with(freeform_grammar, documents);
     if let Some(dir) = exec_dir {
-        for tool in discover_exec_tools(&dir) {
+        for tool in discover_exec_tools(&dir).0 {
             tools.push(std::sync::Arc::new(tool));
         }
     }
