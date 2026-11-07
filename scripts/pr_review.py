@@ -318,6 +318,10 @@ def skip_reason(rounds, head, holds=on_head, attempts=None):
         return None if len(seen) <= RETRIES else f"{len(seen)} attempt(s) on this head lost an answer; the fixer or a push is next"
     if here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
+    # Incident: #1852's head was read clean by round 2, then round 7 read another commit, and the queue
+    # wants the latest round on the head, so a clean read a later round superseded is read once more.
+    if not holds(rounds[-1]["sha"], head):
+        return None
     return f"round {here[-1]['n']} read this head; the fixer or the next push is next"
 
 
@@ -1459,6 +1463,12 @@ def selfcheck():
     assert skip_reason([{"n": 1, "sha": "0000000", "verdict": "clean"}], "abc1234ff") is None, "a new head earns a full round"
     assert skip_reason(one + [{"n": 2, "sha": "abc1234", "verdict": "clean"}], "abc1234ff"), "never a third"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "abc1234ff"), "a blocked head is the fixer's"
+    stale = [{"n": 2, "sha": "458d3987", "verdict": "clean"}, {"n": 7, "sha": "b6c0477c", "verdict": "clean"}]
+    assert skip_reason(stale, "458d3987") is None and any("not the head" in p for p in ready_problems(stale, "458d3987")), \
+        "a head the latest round did not read earns a fresh round"
+    assert skip_reason([stale[0], dict(stale[1], sha="458d3987")], "458d3987"), "the latest round on the head still refuses a repeat"
+    assert "blocked" in (skip_reason([dict(stale[0], verdict="blocked"), stale[1]], "458d3987") or ""), \
+        "a head an earlier round blocked stays the fixer's when a later round read another commit"
     began = []
 
     def began_round(*_):
