@@ -109,7 +109,13 @@ pub struct ProjectResources {
     budget: yi_context::Bytes,
     catalog: yi_context::Bytes,
     global_skills: Vec<String>,
-    lists_skills: bool,
+    skills: Catalogs,
+}
+
+enum Catalogs {
+    Listed,
+    Pointer(String),
+    None,
 }
 impl ProjectResources {
     pub fn new(cwd: PathBuf, home: PathBuf) -> Self {
@@ -121,17 +127,22 @@ impl ProjectResources {
             budget: yi_context::SourceBudgets::default().project_instructions,
             catalog: yi_context::SourceBudgets::default().skills_meta,
             global_skills: Vec::new(),
-            lists_skills: true,
+            skills: Catalogs::Listed,
         }
     }
 
     #[must_use]
-    pub fn without_catalogs(mut self) -> Self {
-        self.lists_skills = false;
+    pub fn with_pointer(mut self, pointer: String) -> Self {
+        self.skills = Catalogs::Pointer(pointer);
         self
     }
 
     #[must_use]
+    pub fn without_skills(mut self) -> Self {
+        self.skills = Catalogs::None;
+        self
+    }
+
     pub fn with_global_skills(mut self, names: Vec<String>) -> Self {
         self.global_skills = names;
         self
@@ -316,8 +327,13 @@ impl Extension for ProjectResources {
             return;
         }
         self.instructions(out);
-        if self.lists_skills {
-            self.catalogs(out);
+        match &self.skills {
+            Catalogs::Listed => self.catalogs(out),
+            Catalogs::Pointer(pointer) => out.push(Effect::AttachFragment {
+                slot: Slot::new(Rank::Catalog, "skills"),
+                text: pointer.clone(),
+            }),
+            Catalogs::None => {}
         }
     }
 }
