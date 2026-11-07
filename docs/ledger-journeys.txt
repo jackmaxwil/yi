@@ -633,6 +633,7 @@ model read deadline | `read_timeout::a_gateway_silent_past_the_models_deadline_n
 model read deadline | `a_run_that_ends_on_a_provider_error_exits_non_zero_in_json_too` (T0)
 fetch: one addressable read path | `kernel_across_sessions::a_read_of_a_busy_kernel_gives_up_within_its_deadline`
 host-written memory (one file per fact, hook index) | `memory_inject::the_focused_block_scores_against_the_saved_labels` (T1)
+daemon (ACP-router supervisor + worker/root) | `serve_daemon::replacing_a_worker_keeps_the_session_and_the_daemon_serving_it` (T2)
 kernel + ipython + rlm() subagents | `requests_e2e::a_final_text_over_the_body_cap_points_at_the_childs_transcript`
 kernel + ipython + rlm() subagents | `recursion_e2e::a_high_discovery_with_no_goal_is_delivered_as_a_note`
 kernel + ipython + rlm() subagents | `tools::tests::a_large_cell_result_names_the_file_write_one_liner` (T0)

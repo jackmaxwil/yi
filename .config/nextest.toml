@@ -1,6 +1,15 @@
+experimental = ["wrapper-scripts"]
+
 [profile.default]
 retries = 1
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+[scripts.wrapper.tmp-sandbox]
+command = { command-line = "scripts/test_tmp.sh", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+filter = "all()"
+run-wrapper = "tmp-sandbox"
 
 [test-groups]
 kernel = { max-threads = 1 }

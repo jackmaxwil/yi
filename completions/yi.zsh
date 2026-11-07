@@ -23,6 +23,7 @@ _yi() {
         'sessions:list, show, or remove stored sessions'
         'stats:tools and tokens of a session, or a rollup'
         'serve:run the session daemon'
+        'worker:swap a running worker for a fresh binary'
         'console:open the workspace shell'
         'tui:open the solo terminal UI'
         'version:print the version'
@@ -51,6 +52,8 @@ _yi() {
         '--cwd[working directory]:dir:_files -/'
         '--here[work in this directory and claim no lane]'
         '--fix[let doctor or gc change what it reports]'
+        '--binary[with worker replace: the built yi to serve from now on]:path:_files'
+        '--if-running[with worker replace: no daemon is a success]'
         '--socket[daemon socket path]:path:_files'
         '--headless[drive the tui or console without a terminal]'
         '--lanes[claim a lane in a headless or cassette run]'
@@ -79,6 +82,7 @@ _yi() {
         rest)
             case $words[1] in
                 sessions) _values 'subcommand' list show rm ;;
+                worker) _values 'subcommand' replace ;;
             esac
             ;;
     esac

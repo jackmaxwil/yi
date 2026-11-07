@@ -28,17 +28,18 @@ pub struct DaemonOptions {
     pub session_dir: PathBuf,
 }
 
-type ClientId = u64;
+pub(crate) type ClientId = u64;
 
 const CLIENT_QUEUE: usize = 4096;
 
-enum Input {
+pub(crate) enum Input {
     Client(ClientId, mpsc::Sender<String>),
     ClientLine(ClientId, Value),
     ClientClosed(ClientId),
-    WorkerLine(String, Value, String),
+    WorkerLine(String, u64, Value, String),
     WorkerReply(String, Value),
-    WorkerClosed(String),
+    WorkerClosed(String, u64),
+    SwapTimeout(String, u64, crate::swap::Stage),
     Mail(Vec<Waiting>),
     Answer(ClientId, String),
     Shutdown,
@@ -55,16 +56,17 @@ struct ClientRequest {
     resumed: Option<String>,
 }
 
-struct Worker {
-    child: Child,
-    stdin: ChildStdin,
+pub(crate) struct Worker {
+    pub(crate) child: Child,
+    pub(crate) stdin: ChildStdin,
+    pub(crate) generation: u64,
 }
 
 /// Per-session routing plus the unseen ledger (in-memory, survives detach not restart).
 /// Attachment is a set, so one session can be watched from any number of terminals.
-struct SessionEntry {
-    root: String,
-    attached: std::collections::HashSet<ClientId>,
+pub(crate) struct SessionEntry {
+    pub(crate) root: String,
+    pub(crate) attached: std::collections::HashSet<ClientId>,
     unseen: u64,
     last_state: Option<String>,
     last_event_ms: u64,
@@ -133,18 +135,6 @@ impl SessionEntry {
 
 fn ledger_path(socket: &std::path::Path) -> PathBuf {
     socket.with_extension("ledger.json")
-}
-
-/// Worker stderr lands here, owner-only beside the socket; /dev/null kept a worker's dying words.
-fn worker_log(socket: &std::path::Path) -> Stdio {
-    use std::os::unix::fs::OpenOptionsExt;
-    let path = socket.with_extension("worker.log");
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path);
-    log.map_or_else(|_| Stdio::null(), Stdio::from)
 }
 
 /// Invariant: the ledger is written whole through a rename (D118), so a reader sees one
@@ -220,12 +210,12 @@ pub(crate) fn now_ms() -> u64 {
 
 /// Routes ACP v2 between clients (unix socket) and one worker per root (`yi acp` over
 /// stdio). Workers outlive client connections, so schedulers fire with nobody attached.
-struct Supervisor {
-    options: DaemonOptions,
+pub(crate) struct Supervisor {
+    pub(crate) options: DaemonOptions,
     ledger: std::sync::mpsc::Sender<DaemonLedger>,
-    workers: HashMap<String, Worker>,
+    pub(crate) workers: HashMap<String, Worker>,
     clients: HashMap<ClientId, mpsc::Sender<String>>,
-    sessions: HashMap<String, SessionEntry>,
+    pub(crate) sessions: HashMap<String, SessionEntry>,
     woken: HashSet<(String, String)>,
     requests: HashMap<u64, ClientRequest>,
     worker_requests: HashMap<String, String>,
@@ -233,21 +223,21 @@ struct Supervisor {
     /// attach; without this the worker's synchronous asker blocks on an unseen answer.
     parked: HashMap<String, Vec<Value>>,
     next_request: u64,
-    input: mpsc::UnboundedSender<Input>,
+    pub(crate) swap: crate::swap::Swaps,
+    pub(crate) input: mpsc::UnboundedSender<Input>,
     settings_tail: Option<tokio::task::JoinHandle<()>>,
 }
-
-fn error_frame(id: Value, code: i64, message: &str) -> String {
+pub(crate) fn error_frame(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
 }
 
-fn result_frame(id: Value, result: Value) -> String {
+pub(crate) fn result_frame(id: Value, result: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
 }
 
 impl Supervisor {
     /// A client that cannot keep up is dropped, never queued without bound; it heals on reconnect.
-    fn send_client(&self, client: ClientId, line: String) {
+    pub(crate) fn send_client(&self, client: ClientId, line: String) {
         let Some(sink) = self.clients.get(&client) else {
             return;
         };
@@ -310,45 +300,13 @@ impl Supervisor {
     }
 
     async fn worker_for(&mut self, root: &str) -> Result<(), String> {
+        if let Some(refused) = self.swap_refusal(root) {
+            return Err(refused);
+        }
         if self.workers.contains_key(root) {
             return Ok(());
         }
-        let _span = yi_types::trace::span("daemon.spawn_worker").arg("root", root);
-        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        let mut command = tokio::process::Command::new(exe);
-        command
-            .arg("acp")
-            .arg("--cwd")
-            .arg(root)
-            .args(&self.options.worker_args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(worker_log(&self.options.socket));
-        let mut child = command.spawn().map_err(|error| error.to_string())?;
-        let stdin = child.stdin.take().ok_or("worker has no stdin")?;
-        let stdout = child.stdout.take().ok_or("worker has no stdout")?;
-        let input = self.input.clone();
-        let worker_root = root.to_owned();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let parsing =
-                    yi_types::trace::span("daemon.parse_worker_line").arg("bytes", line.len());
-                let parsed = serde_json::from_str::<Value>(&line);
-                drop(parsing);
-                if let Ok(value) = parsed
-                    && input
-                        .send(Input::WorkerLine(worker_root.clone(), value, line))
-                        .is_err()
-                {
-                    break;
-                }
-            }
-            let _ = input.send(Input::WorkerClosed(worker_root.clone()));
-        });
-        self.workers
-            .insert(root.to_owned(), Worker { child, stdin });
-        Ok(())
+        self.spawn_worker(root)
     }
 
     async fn forward_to_worker(
@@ -358,6 +316,12 @@ impl Supervisor {
         id: Option<Value>,
         mut frame: Value,
     ) {
+        if let Some(refused) = self.swap_refusal(root) {
+            if let Some(original) = id {
+                self.send_client(client, error_frame(original, crate::swap::BUSY, &refused));
+            }
+            return;
+        }
         if let Some(original) = id {
             self.next_request = self.next_request.wrapping_add(1);
             let rewritten = self.next_request;
@@ -376,16 +340,7 @@ impl Supervisor {
                 map.insert("id".to_owned(), json!(format!("sup_{rewritten}")));
             }
         }
-        let line = frame.to_string();
-        let gone = match self.workers.get_mut(root) {
-            Some(worker) => {
-                let mut payload = line.into_bytes();
-                payload.push(b'\n');
-                worker.stdin.write_all(&payload).await.is_err()
-            }
-            None => true,
-        };
-        if gone {
+        if !self.write_worker(root, frame.to_string()).await {
             self.handle_worker_closed(root.to_owned());
         }
     }
@@ -514,6 +469,7 @@ impl Supervisor {
             "_yi/pin" => self.pin(client, id, &frame),
             "_yi/settings" | "_yi/set_default" => self.settings(client, id, &method, &frame),
             "_yi/open" => self.open(client, id, &frame),
+            "_yi/worker_replace" => self.replace(client, id, &frame).await,
             _ => {
                 let Some(root) = self.root_of(&frame) else {
                     if let Some(id) = id {
@@ -547,16 +503,10 @@ impl Supervisor {
     }
 
     async fn forward_response_to_worker(&mut self, root: &str, frame: Value) {
-        let line = frame.to_string();
-        let gone = match self.workers.get_mut(root) {
-            Some(worker) => {
-                let mut payload = line.into_bytes();
-                payload.push(b'\n');
-                worker.stdin.write_all(&payload).await.is_err()
-            }
-            None => true,
-        };
-        if gone {
+        if self.swap_refusal(root).is_some() {
+            return;
+        }
+        if !self.write_worker(root, frame.to_string()).await {
             self.handle_worker_closed(root.to_owned());
         }
     }
@@ -750,6 +700,7 @@ impl Supervisor {
         }
         self.parked
             .retain(|id, _| self.sessions.get(id).is_some_and(|e| e.root != root));
+        self.abandon_swap(&root, "the worker exited");
     }
 
     /// The daemon answers for the config, not a worker: a worker holds the copy it started on.
@@ -936,6 +887,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             parked: HashMap::new(),
             settings_tail: None,
             next_request: 0,
+            swap: crate::swap::Swaps::default(),
             input: input_tx.clone(),
         };
         mail::poll(&supervisor.options.session_dir, input_tx.clone());
@@ -966,7 +918,10 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                     supervisor.handle_client_line(client, frame).await;
                 }
                 Input::ClientClosed(client) => supervisor.handle_client_closed(client),
-                Input::WorkerLine(root, frame, line) => {
+                Input::WorkerLine(root, generation, frame, line) => {
+                    if !supervisor.serves(&root, generation) {
+                        continue;
+                    }
                     let _span = yi_types::trace::span(format!(
                         "daemon worker {}",
                         frame
@@ -974,12 +929,23 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                             .and_then(Value::as_str)
                             .unwrap_or("response")
                     ));
-                    supervisor.handle_worker_line(root, frame, line);
+                    if crate::swap::is_reply(&frame) {
+                        supervisor.swap_reply(&root, &frame).await;
+                    } else {
+                        supervisor.handle_worker_line(root, frame, line);
+                    }
                 }
                 Input::WorkerReply(root, frame) => {
                     supervisor.forward_response_to_worker(&root, frame).await;
                 }
-                Input::WorkerClosed(root) => supervisor.handle_worker_closed(root),
+                Input::WorkerClosed(root, generation) => {
+                    if supervisor.swap_closing(&root, generation) {
+                        supervisor.swap_exited(&root).await;
+                    } else if supervisor.serves(&root, generation) {
+                        supervisor.handle_worker_closed(root);
+                    }
+                }
+                Input::SwapTimeout(root, id, stage) => supervisor.swap_timeout(&root, id, stage),
                 Input::Mail(waiting) => supervisor.wake(waiting).await,
                 Input::Answer(client, line) => supervisor.send_client(client, line),
                 Input::Shutdown => break,
@@ -1063,6 +1029,7 @@ mod tests {
             parked: HashMap::new(),
             settings_tail: None,
             next_request: 0,
+            swap: crate::swap::Swaps::default(),
             input,
         };
         for (id, pinned_ms) in [("pinned", Some(1)), ("loose", None)] {
@@ -1127,6 +1094,26 @@ mod tests {
         Ok(())
     }
 
+    /// Dies with a misspelled root (`--cwd .`, a trailing slash) answered as a successful swap
+    /// while the worker that serves the console keeps the old build.
+    #[tokio::test]
+    async fn replacing_a_root_no_worker_serves_refuses_and_spawns_nothing() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        let (sink, mut replies) = mpsc::channel(4);
+        supervisor.clients.insert(7, sink);
+        let binary = std::env::current_exe().map_err(|error| error.to_string())?;
+        let frame = json!({"params": {"cwd": "/repo/", "binary": binary.display().to_string()}});
+        supervisor.replace(7, Some(json!(1)), &frame).await;
+        let reply = replies.try_recv().map_err(|error| error.to_string())?;
+        assert!(reply.contains("no worker serves /repo/"), "{reply}");
+        assert!(supervisor.workers.is_empty(), "a worker was spawned");
+        assert!(
+            supervisor.swap.binaries.is_empty(),
+            "the binary was adopted"
+        );
+        Ok(())
+    }
+
     /// Dies with a session the daemon started for a mailed request parking its ask for a client
     /// that never comes, or with a ledger row skipped as held because a sibling in its repo is.
     #[tokio::test]
@@ -1154,9 +1141,14 @@ mod tests {
             .kill_on_drop(true);
         let mut child = stub.spawn().map_err(|error| error.to_string())?;
         let stdin = child.stdin.take().ok_or("the stub worker has no stdin")?;
-        supervisor
-            .workers
-            .insert("/repo".to_owned(), Worker { child, stdin });
+        supervisor.workers.insert(
+            "/repo".to_owned(),
+            Worker {
+                child,
+                stdin,
+                generation: 0,
+            },
+        );
         let mut sibling = SessionEntry::new("/repo".to_owned(), None);
         sibling.loaded = true;
         supervisor.sessions.insert("sibling".to_owned(), sibling);
