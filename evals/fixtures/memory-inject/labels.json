@@ -1,0 +1,115 @@
+{
+  "suite": "memory-inject@1",
+  "labeling": {
+    "by": "hand",
+    "date": "2026-10-29",
+    "why": "the paid judge run is opt-in and needs the network; these labels are the owner's agent reading the same four questions the judge prompt asks, one reason per label",
+    "judge_prompt": "evals/memory_inject.py JUDGE"
+  },
+  "cases": [
+    {
+      "id": "linker-failure",
+      "prompt": "my build is failing with a weird linker error, can you figure out why",
+      "source": "session 01a0f638 scrubbed",
+      "relevant": {
+        "linker-error-first-symbol": "the message is a build failure and asks for its cause; the note names the first thing to read in a linker log"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "diff-review",
+      "prompt": "take a look at my diff before I merge it and tell me what's wrong",
+      "source": "session 01a0f618 scrubbed",
+      "relevant": {
+        "pr-review-lenses": "a pre-merge review is exactly the note's subject: read the claims, then the code"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "shrink-a-function",
+      "prompt": "this function is way too complicated, make it shorter",
+      "source": "session 01a0f618 scrubbed",
+      "relevant": {
+        "hashline-edit-anchors": "the work is editing an existing function, and the note is the edit method that keeps a patch aligned"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "oauth-plan",
+      "prompt": "before we start coding, lay out the steps for adding OAuth login",
+      "source": "session 01a0f618 scrubbed",
+      "relevant": {
+        "plan-before-code": "the message asks for the steps before code, which is the plan note's rule"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "is-it-done",
+      "prompt": "is this actually done? prove it works before you tell me it's finished",
+      "source": "session 01a0f619 scrubbed",
+      "relevant": {
+        "guardrails-run-first": "the message demands proof before a done claim, and the note names the gate that is the proof"
+      },
+      "aliases": {
+        "guardrails-run-first": [
+          "run-the-gate-first"
+        ]
+      }
+    },
+    {
+      "id": "lanes-error",
+      "prompt": "I am getting this error: \"NewSession(PaneId(1)): lane: no free lane: 1 held, 2 orphaned of 3; `yi lanes` lists them\" after trying /new for a new session",
+      "source": "session 01a0a214 scrubbed",
+      "relevant": {
+        "lane-pool-reclaim": "the message quotes the pool's no-free-lane error, which the note explains and repairs"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "classifier",
+      "prompt": "is the yi classifier fully implemented and integrated?",
+      "source": "session 01a0f41f scrubbed",
+      "relevant": {
+        "classifier-routes-turns": "the question is about this repo's turn classifier, whose file and vocabulary the note names"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "recent-prs",
+      "prompt": "analyze the yi codebase recent changes. summarize the last 50 prs at a high level",
+      "source": "session 01a184ff scrubbed",
+      "relevant": {
+        "forge-pr-shape": "a summary of recent pull requests rests on what a PR of this repo carries and where its body lives"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "tool-tour",
+      "prompt": "test the read, glob, grep, bash, upython, and rlm subagent tool",
+      "source": "session 01a06af5 scrubbed",
+      "relevant": {
+        "hashline-edit-anchors": "the tour edits files, and the note is the edit method the tools follow",
+        "subagent-brief-pointers": "the tour drives the rlm subagent tools, and the note is what a child's brief must carry"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "streaming-story",
+      "prompt": "write a very long story in line in this chat. no tool calls. i am testing Yi's rendering streaming markdown stability",
+      "source": "session 01a044af scrubbed",
+      "relevant": {
+        "tui-streaming-render": "the message tests streaming markdown rendering, which is the note's contract"
+      },
+      "aliases": {}
+    },
+    {
+      "id": "advisor",
+      "prompt": "Run a long sequence of complex commands. I am testing out the advisor feature on Yi. Keep the session going for a while and try to trigger the advisor feature in Yi",
+      "source": "session 01a185d1 scrubbed",
+      "relevant": {
+        "advisor-nudges": "the message names the advisor feature and asks to trigger it, which the note places"
+      },
+      "aliases": {}
+    }
+  ]
+}
