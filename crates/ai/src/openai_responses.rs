@@ -606,9 +606,12 @@ fn run_request(
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
+    let stripped = crate::request::Stripped::default();
+    let retry = crate::request::Retry::new(model.read_timeout(), wire.stop, &retried);
     let resent = match crate::request::pump_sse_with_resend(
         wire.stop,
-        || crate::request::openai_bearer_post(&url, model, body, wire, &retried),
+        &retry,
+        || crate::request::openai_bearer_post(&url, model, body, wire, &retry, &stripped),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
@@ -648,9 +651,7 @@ fn run_request(
             return Ok(());
         }
     };
-    if let Some(first_error) = resent {
-        crate::request::note_resend(&mut mapper.output, &first_error);
-    }
+    crate::request::note_reply(&mut mapper.output, resent, &stripped);
     for item in mapper.finish() {
         let _ = sender.blocking_send(item);
     }

@@ -735,6 +735,7 @@ impl Compactor {
         let warm = summarizer == model;
         let request = |window_messages: &[AgentMessage], warm: bool| LlmContext {
             cache_ttl: yi_types::model::Ttl::Min5,
+            cache_tail: true,
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
                 // A cold attempt sends no tools, and Anthropic refuses tool blocks without them

@@ -134,8 +134,7 @@ fn a_provider_request_reaches_the_configured_proxy() -> Res {
         &[],
         &transport_probe(),
         Some(&config),
-        None,
-        &|_| {},
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|_| {}),
     );
 
     let error = sent.err().ok_or("the 400 reply was reported as success")?;
@@ -194,7 +193,13 @@ fn back_to_back_requests_share_one_connection() -> Res {
         }
     });
     for _ in 0..3 {
-        let response = send_with_retry(&url, &[], &transport_probe(), None, None, &|_| {})?;
+        let response = send_with_retry(
+            &url,
+            &[],
+            &transport_probe(),
+            None,
+            &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|_| {}),
+        )?;
         assert_eq!(response.into_string()?, "ok");
     }
     assert_eq!(
@@ -242,8 +247,9 @@ fn a_retried_request_says_which_attempt_and_how_long_it_waits() -> Res {
         &[],
         &transport_probe(),
         None,
-        None,
-        &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|wait| {
+            seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(())
+        }),
     );
     assert!(
         sent.is_ok(),
@@ -301,8 +307,9 @@ fn a_dropped_connection_retry_names_the_reason_not_the_url() -> Res {
         &[],
         &transport_probe(),
         None,
-        None,
-        &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|wait| {
+            seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(())
+        }),
     );
     assert!(
         sent.is_ok(),

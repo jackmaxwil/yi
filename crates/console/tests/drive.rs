@@ -5574,6 +5574,92 @@ fn a_resumed_sessions_kernel_cells_fill_the_notebook() -> TestResult {
     Ok(())
 }
 
+/// The recorded kernel call and its result, `count` copies: each renumbered and with its script
+/// replaced, so a fixture is one session's shape with N cells in it.
+fn replayed_cells(count: usize) -> Vec<(Value, Value)> {
+    let entries = recorded(KERNEL_SESSION);
+    let Some(result) = entries
+        .iter()
+        .find(|e| e["message"]["toolName"] == "ipython")
+    else {
+        return Vec::new();
+    };
+    let Some(call) = entries
+        .iter()
+        .find(|e| e["message"]["content"][0]["id"] == result["message"]["toolCallId"])
+    else {
+        return Vec::new();
+    };
+    (0..count)
+        .map(|n| {
+            let (mut call, mut result) = (call.clone(), result.clone());
+            let id = json!(format!("call_{n}"));
+            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
+            call["message"]["content"][0]["id"] = id.clone();
+            result["message"]["toolCallId"] = id;
+            (call, result)
+        })
+        .collect()
+}
+
+/// Four kernel calls of one recorded session, each result carrying the mime a notebook renders
+/// it by: markdown, JSON, python, then the plain text it already drew.
+fn mime_entries() -> Vec<Value> {
+    let values = [
+        ("text/markdown", "# Tide survey\n\n- one\n- two"),
+        ("application/json", "{\"datum\":4}"),
+        ("text/x-python", "def tide(sea):\n    return sea"),
+        ("text/plain", "plain 42"),
+    ];
+    let mut out: Vec<Value> = Vec::new();
+    for ((call, mut result), (mime, text)) in replayed_cells(values.len()).into_iter().zip(values) {
+        result["message"]["details"] = json!({"stdout": "", "result": text, "resultMime": mime});
+        out.push(call);
+        out.push(result);
+    }
+    out.push(entry("e-tail", None, 9999, &assistant("kinds in")));
+    out
+}
+
+/// Dies with a declared mime drawn as its flat text: one frame of one recorded session must
+/// show a rendered heading, a pretty JSON row, a highlighted `def` and untouched plain text.
+#[test]
+fn a_replayed_sessions_values_draw_by_their_mime() -> TestResult {
+    let frame = run_frames_sized(
+        "replay-notebook-mimes",
+        replayed_session(|frame| resume_with(frame, &mime_entries())),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 kinds in\ncmd-i\n\
+         wait-frame 5000 ● [4]\nquit\n",
+        SidebarMode::Full,
+        (180, 40),
+    )?;
+    let markdown = cell_rows(&frame, 1)?;
+    assert!(
+        markdown.iter().any(|row| row.contains("Tide survey")),
+        "{markdown:?}"
+    );
+    assert!(
+        !markdown.iter().any(|row| row.contains("# Tide survey")),
+        "{markdown:?}"
+    );
+    let json = cell_rows(&frame, 2)?;
+    assert!(
+        json.iter().any(|row| row.contains("\"datum\": 4")),
+        "{json:?}"
+    );
+    let python = cell_rows(&frame, 3)?;
+    assert!(
+        python.iter().any(|row| row.contains("def tide(sea):")),
+        "{python:?}"
+    );
+    let plain = cell_rows(&frame, 4)?;
+    assert!(
+        plain.iter().any(|row| row.contains("plain 42")),
+        "{plain:?}"
+    );
+    Ok(())
+}
+
 /// A full replay after a reconnect finds the cells already there; it must not append them again.
 #[test]
 fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
@@ -5600,25 +5686,15 @@ fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
     Ok(())
 }
 
-/// `count` kernel calls: the recording's first call and result, each under its own ids and as a
-/// one-line cell, then a last reply `tail`.
+/// `count` kernel calls, each a one-line cell, then a last reply `tail`.
 fn cell_entries(count: usize, tail: &str) -> Vec<Value> {
-    let entries = recorded(KERNEL_SESSION);
-    let result = (entries.iter()).find(|e| e["message"]["toolName"] == "ipython");
-    let call = result.and_then(|r| {
-        (entries.iter()).find(|e| e["message"]["content"][0]["id"] == r["message"]["toolCallId"])
-    });
-    let mut out: Vec<Value> = (0..count)
-        .filter_map(|n| {
-            let (mut call, mut result) = (call.cloned()?, result.cloned()?);
-            let id = json!(format!("call_{n}"));
-            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
-            call["message"]["content"][0]["id"] = id.clone();
+    let mut out: Vec<Value> = replayed_cells(count)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(n, (call, mut result))| {
             result["message"]["details"]["stdout"] = json!(format!("{n}\n"));
-            result["message"]["toolCallId"] = id;
-            Some([call, result])
+            [call, result]
         })
-        .flatten()
         .collect();
     out.push(entry("e-tail", None, 9999, &assistant(tail)));
     out
