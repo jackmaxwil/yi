@@ -3,6 +3,8 @@
 A coding agent in one Rust binary. The model works inside a persistent Python kernel, where
 subagents are function calls and plans are programs.
 
+Use [Ghostty](https://ghostty.org), [Kitty](https://sw.kovidgoyal.net/kitty/) or another terminal
+that supports the kitty graphics protocol.
 
 ![Three subagents asked from one kernel cell](docs/media/fanout.webp)
 
@@ -13,21 +15,9 @@ curl -fsSL https://raw.githubusercontent.com/jackmaxwil/yi/main/scripts/install.
 yi --version
 ```
 
-It checks the release's sha256 and the owner's key, then installs `yi` to `~/.local/bin` and its
-runtime to `~/.yi`; Apple-silicon Macs and x86_64 Linux, and `| bash -s -- --help` prints that key. By hand:
-
-```bash
-v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v; a=yi-$v-$t.tar.gz
-curl -fLO "$base/$a" -O "$base/$a.sig" -O "$base/SHA256SUMS"; shasum -a 256 -c SHA256SUMS --ignore-missing
-echo 'jackmaxwil-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAaFfxFxxkIpL0TuZcvkcLpzT164hwIaCbzyFnVkAMX7' > allowed_signers
-ssh-keygen -Y verify -f allowed_signers -I jackmaxwil-release -n yi-release -s "$a.sig" < "$a"
-tar -xzf "$a" && "./yi-$v-$t/install.sh"
-```
-
 ## Quick start
 
 ```bash
-yi ask --model faux/faux-1 "hello"   # offline, no key: prints "faux: hello"
 yi                                   # the console; --solo: one chat
 yi login openrouter                  # paste a key at the prompt
 yi setup                             # default model and permission mode
