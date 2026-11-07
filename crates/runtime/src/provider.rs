@@ -41,6 +41,26 @@ pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {
     Catalog::set_cache_dir(dir);
 }
 
+/// The config's `providers`, installed before the first model lookup or credential resolve.
+pub fn set_custom_providers(providers: &yi_types::config::Providers) {
+    Catalog::set_custom(
+        (providers.iter())
+            .flat_map(|(id, provider)| provider.catalog(id))
+            .collect(),
+    );
+    yi_ai::auth::set_custom_keys(
+        (providers.iter())
+            .map(|(id, provider)| {
+                let key = yi_ai::auth::CustomKey {
+                    env: provider.api_key_env.clone(),
+                    literal: provider.api_key.clone().map(yi_ai::auth::Secret::new),
+                };
+                (id.to_owned(), key)
+            })
+            .collect(),
+    );
+}
+
 pub fn catalog_cache_dir() -> Option<&'static std::path::Path> {
     Catalog::cache_dir()
 }
