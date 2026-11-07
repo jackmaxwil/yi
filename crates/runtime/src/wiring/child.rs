@@ -52,23 +52,20 @@ pub(crate) fn child_factory(
             },
             Arc::clone(&provider),
         );
-        let pointer = crate::skills::child_pointer(&crate::skills::inherited(&build.link));
-        child.install_extensions(crate::ext::install_child(
-            crate::ext::ExtOptions {
-                cwd: child_cwd.clone(),
-                home: wiring.home.clone(),
-                mode: wiring
-                    .broker
-                    .as_ref()
-                    .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode()),
-                user_system: String::new(),
-                schema_instruction: None,
-                context_window: child.model().context_window,
-                global_skills: Vec::new(),
-                can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
-            },
-            pointer,
-        ));
+        child.install_extensions(crate::ext::install(crate::ext::ExtOptions {
+            cwd: child_cwd.clone(),
+            home: wiring.home.clone(),
+            mode: wiring
+                .broker
+                .as_ref()
+                .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode()),
+            user_system: String::new(),
+            schema_instruction: None,
+            context_window: child.model().context_window,
+            global_skills: Vec::new(),
+            pointer: Some(crate::skills::child_pointer(&build.link)),
+            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
+        }));
         screen.hand_down(&child.screeners(), crate::classifier::journal(&child));
         let host = attach_runtime(&mut child, below);
         host.set_grant(child.wall(), build.tokens);

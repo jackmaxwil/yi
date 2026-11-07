@@ -289,8 +289,9 @@ fn read_skill(
 ) -> Result<String, Box<dyn Error>> {
     let resolver = yi_runtime::fetch::Resolver::new(cwd.to_path_buf(), yi_runtime::Wall::default())
         .with_home(home.to_path_buf());
+    let address = format!("yi://skills/{name}");
     Ok(resolver
-        .fetch(&format!("yi://skills/{name}").parse()?)?
+        .fetch(&address.trim_end_matches('/').parse()?)?
         .text)
 }
 
@@ -977,22 +978,40 @@ async fn the_checker_snippet_walls_history_and_the_workspace_but_not_checks_dir(
 }
 
 fn index(cwd: &std::path::Path, home: &std::path::Path) -> Result<String, Box<dyn Error>> {
-    let resolver = yi_runtime::fetch::Resolver::new(cwd.to_path_buf(), yi_runtime::Wall::default())
-        .with_home(home.to_path_buf());
-    Ok(resolver.fetch(&"yi://skills".parse()?)?.text)
+    read_skill(cwd, home, "")
 }
 
-fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> TestResult {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let target = to.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_tree(&entry.path(), &target)?;
-        } else {
-            std::fs::copy(entry.path(), &target)?;
-        }
-    }
+#[test]
+fn the_index_names_only_what_the_catalog_lists_and_the_wall_admits() -> TestResult {
+    let root = Scratch::new("yi-skills-index-rule")?;
+    let (home, project) = (root.join("home"), root.join("project"));
+    let skill = |dir: std::path::PathBuf, name: &str| {
+        skill_dir(
+            &dir,
+            name,
+            &format!("---\nname: {name}\ndescription: The {name} skill.\n---\nbody\n"),
+        )
+    };
+    skill(home.join(".yi/skills"), "own")?;
+    skill(home.join(".claude/skills"), "foreign")?;
+    skill(project.join(".yi/skills"), "walled")?;
+    let mut wall = yi_runtime::Wall::default();
+    wall.deny_read.push(project.join(".yi/skills"));
+    let resolver = yi_runtime::fetch::Resolver::new(project.clone(), wall).with_home(home.clone());
+    let served = resolver.fetch(&"yi://skills".parse()?)?.text;
+    assert!(served.contains("- own: The own skill."), "{served}");
+    assert!(
+        !served.contains("foreign"),
+        "an unnamed global root stays unlisted: {served}"
+    );
+    assert!(
+        !served.contains("walled"),
+        "a walled skill is not named: {served}"
+    );
+    assert!(
+        index(&project, &home)?.contains("- walled: "),
+        "unwalled, the project skill lists"
+    );
     Ok(())
 }
 
@@ -1002,7 +1021,7 @@ fn the_index_serves_every_bundled_skill_whole_and_only_where_it_applies() -> Tes
     let (home, project) = (root.join("home"), root.join("project"));
     std::fs::create_dir_all(&project)?;
     let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi");
-    copy_tree(&shipped, &home.join(".yi/skills/yi"))?;
+    yi_runtime::spec::copy_tree(&shipped, &home.join(".yi/skills/yi"))?;
     let wide = "Prüfe jede Änderung gegen den Plan, bevor du etwas für erledigt erklärst — immer, ohne Ausnahme.";
     skill_dir(
         &project.join(".yi/skills"),

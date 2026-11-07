@@ -560,6 +560,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     });
     host.start(None, false);
@@ -679,6 +680,7 @@ fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
             schema_instruction: None,
             context_window: 128_000,
             global_skills: Vec::new(),
+            pointer: None,
             can_delegate: true,
         });
         host.start(None, false);
@@ -752,7 +754,7 @@ enum Workspace {
 
 /// Each role's brief and spawn kwargs, `None` for the root's own turn. A brief is the needle
 /// its request is found by, so none is a substring of another.
-const ROLES: [(&str, &str, Option<&str>); 5] = [
+const ROLES: [(&str, &str, Option<&str>); 6] = [
     ("root", "Say hello to the root.", None),
     (
         "leaf",
@@ -773,6 +775,11 @@ const ROLES: [(&str, &str, Option<&str>); 5] = [
         "worker",
         "Rename the sea line to grey sea.",
         Some(r#"{"role":"worker","partition":["local://notes.txt"]}"#),
+    ),
+    (
+        "worker_editor",
+        "Edit the sea line without reading it.",
+        Some(r#"{"role":"worker","partition":["local://notes.txt"],"tools":["edit"]}"#),
     ),
 ];
 
@@ -963,8 +970,7 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
             "{role} reads the doctrine"
         );
     }
-    let pointer =
-        r#"Skills: read("yi://skills") lists them; read("yi://skills/<name>") loads one."#;
+    let pointer = yi_runtime::skills::CHILD_POINTER;
     for role in ["leaf", "leaf_orchestrate", "worker"] {
         let prefix = text(role)?;
         assert!(
@@ -976,6 +982,11 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
             "{role} is sent no catalog: {prefix}"
         );
     }
+    let editor = text("worker_editor")?;
+    assert!(
+        !editor.contains("yi://skills"),
+        "a worker with no read is pointed nowhere: {editor}"
+    );
     let delegation = yi_runtime::delegation_fragment();
     assert!(
         lines_of(delegation, &text("root")?, true),

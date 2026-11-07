@@ -33,7 +33,8 @@ impl Resolver {
             what,
         };
         if url.path() == "skills" {
-            let index = crate::skills::index_text(self.workspace(), self.home());
+            let deny = &self.wall().deny_read;
+            let index = crate::skills::index_text(self.workspace(), self.home(), deny);
             return Ok((index, "skill-index".to_owned()));
         }
         match url.path().split_once('/') {

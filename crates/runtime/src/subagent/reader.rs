@@ -194,8 +194,9 @@ pub fn session(
     rules: Option<Arc<crate::rules::RuleEngine>>,
 ) -> AgentSession {
     // A pointer the child has no `read` to follow would be a lie about its tools.
-    let reads = reader.turns > 1 && reader.tools.iter().any(|name| name == "read");
-    let pointer = || crate::skills::child_pointer(&crate::skills::inherited(&build.link));
+    let admitted = |name: &str| reader.turns > 1 && reader.tools.iter().any(|tool| tool == name);
+    let reads = admitted("read");
+    let pointer = || crate::skills::child_pointer(&build.link);
     let mut child = AgentSession::new(
         SessionConfig {
             system_prompt: match reader.role {
@@ -212,7 +213,8 @@ pub fn session(
         provider,
     );
     if reader.role == Role::Worker {
-        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER.as_str(), pointer()));
+        let pointer = reads.then(pointer);
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER.as_str(), pointer));
         child.enable_compaction();
     }
     child.set_turn_cap(reader.turns);
@@ -230,7 +232,6 @@ pub fn session(
         }
         child.set_rules_engine(rules);
     }
-    let admitted = |name: &str| reader.turns > 1 && reader.tools.iter().any(|tool| tool == name);
     let mut named: Vec<_> = tools()
         .into_iter()
         .filter(|tool| admitted(tool.name()))

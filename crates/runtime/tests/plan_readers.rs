@@ -212,8 +212,7 @@ async fn a_plan_reader_with_a_schema_contract_runs_as_a_reader_and_is_accepted()
     );
     let built = rig.built.lock().map_err(|_| "poisoned")?.clone();
     let (_, reader, prompt) = built.first().ok_or("no child built")?;
-    let pointer =
-        "Skills: read(\"yi://skills\") lists them; read(\"yi://skills/<name>\") loads one.";
+    let pointer = yi_runtime::skills::CHILD_POINTER;
     assert!(
         *reader && prompt.starts_with(READER_PROMPT) && prompt.ends_with(pointer),
         "{prompt}"

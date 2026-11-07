@@ -87,45 +87,71 @@ pub fn skills_catalog(cwd: &Path, home: &Path, budget: Bytes) -> Option<Truncate
     catalog_text(&listing(cwd, home), budget)
 }
 
-pub fn index_text(cwd: &Path, home: &Path) -> String {
-    let skills = listing(cwd, home);
+/// Judged as the catalog and a skill read are: a global skill lists only from `~/.yi/skills`,
+/// and a skill whose manifest the reader's `deny_read` covers is not named at all.
+pub fn index_text(cwd: &Path, home: &Path, deny: &[PathBuf]) -> String {
+    let (global, project) = discover_split(cwd, home);
+    let mut skills: Vec<Skill> = (global.into_iter())
+        .filter(|skill| crate::ext::project::listed(skill, home, &[]))
+        .chain(project)
+        .filter(|skill| !yi_tools::walled(deny, &skill.path))
+        .collect();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
     match fitted(&skills, CATALOG_CEILING, View::Index) {
         Some(index) => index.text,
         None => "No skills found: a skill is <root>/<name>/SKILL.md under .yi, .agents, .pi or .claude/skills, in the repository or the home directory.".to_owned(),
     }
 }
 
+pub const CHILD_POINTER: &str =
+    "Skills: read(\"yi://skills\") lists them; read(\"yi://skills/<name>\") loads one.";
+const INHERITED_CAP: usize = 20;
+
 #[must_use]
-pub(crate) fn child_pointer(inherited: &[String]) -> String {
+pub(crate) fn child_pointer(link: &crate::mailbox::ParentLink) -> String {
     let address = crate::rules::SKILL_ADDRESS;
-    let mut text = format!(
-        "Skills: read(\"{INDEX_ADDRESS}\") lists them; read(\"{address}<name>\") loads one."
-    );
+    let inherited = inherited(link);
+    let mut text = CHILD_POINTER.to_owned();
     if !inherited.is_empty() {
-        let named: Vec<String> = (inherited.iter())
+        let named: Vec<String> = (inherited.iter().take(INHERITED_CAP))
             .map(|name| format!("{address}{name}"))
             .collect();
         text.push_str(&format!("\nYour parent loaded: {}", named.join(", ")));
+        if inherited.len() > INHERITED_CAP {
+            let next = format!("read(\"{INDEX_ADDRESS}\") for every skill");
+            let row = yi_tools::cut_row(
+                INHERITED_CAP,
+                inherited.len(),
+                "parent-loaded skills named",
+                "INHERITED_CAP",
+                INHERITED_CAP,
+                &next,
+            );
+            text.push_str(&format!("\n{row}"));
+        }
     }
     text
 }
 
 /// A read of a file beside a skill, or of a line range, counts for the skill.
-#[must_use]
-pub(crate) fn inherited(link: &crate::mailbox::ParentLink) -> Vec<String> {
+fn inherited(link: &crate::mailbox::ParentLink) -> Vec<String> {
     let Some(host) = link.host.upgrade() else {
         return Vec::new();
     };
     let Some(resolver) = host.resolver.get() else {
         return Vec::new();
     };
-    let names: std::collections::BTreeSet<String> = (resolver.log().records().iter())
-        .filter_map(|record| record.url.strip_prefix(crate::rules::SKILL_ADDRESS))
-        .map(|rest| rest.split_once('#').map_or(rest, |(path, _)| path))
-        .map(|path| path.split_once('/').map_or(path, |(name, _)| name))
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .collect();
+    let mut names = std::collections::BTreeSet::new();
+    resolver.log().each_url(|url| {
+        let Some(rest) = url.strip_prefix(crate::rules::SKILL_ADDRESS) else {
+            return;
+        };
+        let path = rest.split_once('#').map_or(rest, |(path, _)| path);
+        let name = path.split_once('/').map_or(path, |(name, _)| name);
+        if !name.is_empty() {
+            names.insert(name.to_owned());
+        }
+    });
     names.into_iter().collect()
 }
 

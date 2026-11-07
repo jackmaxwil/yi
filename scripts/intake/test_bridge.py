@@ -676,16 +676,17 @@ EXPECTED = {
 
 
 def selfcheck() -> int:
-    if trouble := keygen_trouble():
-        print(f"skip intake selfcheck (no host ssh-keygen can verify a commit signature: {trouble})")
-        return 0
+    trouble = keygen_trouble()
     assert len(bridge.CHECKS) == 25
     check_real_fixture()
     check_filter_repo()
     check_rewrite_helper()
     check_real_patch_edges()
-    check_forged_headers()
-    check_signed_object()
+    if trouble:
+        print(f"skip check_forged_headers, check_signed_object (no host ssh-keygen can verify a commit signature: {trouble})")
+    else:
+        check_forged_headers()
+        check_signed_object()
     valid = valid_case()
     assert bridge.evaluate(valid) == bridge.ALLOW
     check_caps()
@@ -718,7 +719,7 @@ def selfcheck() -> int:
     assert 'trust="untrusted"' in payload["body"]
     print("\n".join("seen-red " + line for line in red))
     print(f"ok   intake selfcheck ({len(red)} hostile cases, 25 ordered checks, real fixtures)")
-    return 0
+    return 1 if trouble and os.environ.get("CI") else 0
 
 
 if __name__ == "__main__":

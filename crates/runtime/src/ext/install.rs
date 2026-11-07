@@ -20,6 +20,7 @@ pub struct ExtOptions {
     pub schema_instruction: Option<String>,
     pub context_window: u64,
     pub global_skills: Vec<String>,
+    pub pointer: Option<String>,
     /// Invariant: false where the depth cap already refuses this session's spawns, so the
     /// protocol for delegating is never sent to a session that cannot act on it.
     pub can_delegate: bool,
@@ -35,14 +36,6 @@ fn rust_pack() -> Pack {
 }
 
 pub fn install(options: ExtOptions) -> Host {
-    install_with(options, None)
-}
-
-pub fn install_child(options: ExtOptions, pointer: String) -> Host {
-    install_with(options, Some(pointer))
-}
-
-fn install_with(options: ExtOptions, pointer: Option<String>) -> Host {
     let ExtOptions {
         cwd,
         home,
@@ -51,6 +44,7 @@ fn install_with(options: ExtOptions, pointer: Option<String>) -> Host {
         schema_instruction,
         context_window,
         global_skills,
+        pointer,
         can_delegate,
     } = options;
     let mut host = Host::new(cwd.clone());
@@ -94,12 +88,14 @@ fn install_with(options: ExtOptions, pointer: Option<String>) -> Host {
     host
 }
 
-pub fn narrow(cwd: &Path, home: &Path, identity: &str, pointer: String) -> Host {
+pub fn narrow(cwd: &Path, home: &Path, identity: &str, pointer: Option<String>) -> Host {
     let mut host = Host::new(cwd.to_path_buf());
     host.attach(Slot::new(Rank::Identity, "identity"), identity.to_owned());
-    host.register(Box::new(
-        ProjectResources::new(cwd.to_path_buf(), home.to_path_buf()).with_pointer(pointer),
-    ));
+    let resources = ProjectResources::new(cwd.to_path_buf(), home.to_path_buf());
+    host.register(Box::new(match pointer {
+        Some(pointer) => resources.with_pointer(pointer),
+        None => resources,
+    }));
     register_packs(&mut host, cwd, home);
     host
 }

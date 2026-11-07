@@ -1210,9 +1210,9 @@ async fn a_child_that_can_read_is_pointed_at_the_catalog_and_the_skills_its_pare
         prompts.get(1).ok_or("no tool-less reader built")?,
     );
     assert!(
-        reads.ends_with(concat!(
-            "Skills: read(\"yi://skills\") lists them; read(\"yi://skills/<name>\") loads one.\n",
-            "Your parent loaded: yi://skills/changelog, yi://skills/release-notes"
+        reads.ends_with(&format!(
+            "{}\nYour parent loaded: yi://skills/changelog, yi://skills/release-notes",
+            yi_runtime::skills::CHILD_POINTER
         )),
         "{reads}"
     );
