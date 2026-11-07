@@ -99,6 +99,7 @@ class Value:
         return repr(self._data)
 
 
+
 def _wrap(data: Any) -> Any:
     if isinstance(data, dict):
         return Value(data)
@@ -170,6 +171,7 @@ def _tools() -> dict[str, dict[str, Any]]:
 def excluded() -> list[dict[str, str]]:
     """The tools this session holds that a cell cannot call, each with why."""
     return list(_load().get("excluded", []))
+
 
 
 def search(query: str = "", offset: int = 0, limit: int = SEARCH_LIMIT) -> dict[str, Any]:

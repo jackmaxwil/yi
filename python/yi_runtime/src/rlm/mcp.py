@@ -15,12 +15,36 @@ import os
 import re
 from typing import Any
 
-from .mcp_base import McpToolError, _parse_result
 
-__all__ = ["McpStartupError", "call_tool", "close", "list_tools", "reload"]
+__all__ = ["McpStartupError", "McpToolError", "call_tool", "close", "list_tools", "reload"]
 
 _DEFAULT_STARTUP_TIMEOUT = 20.0
 _DEFAULT_CALL_TIMEOUT = 60.0
+
+
+class McpToolError(RuntimeError):
+    """Raised when an MCP tool call returns a result flagged as an error."""
+
+
+def _parse_result(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    content = result.get("content")
+    texts = [
+        item.get("text")
+        for item in content or []
+        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+    ]
+    if result.get("isError"):
+        raise McpToolError("\n".join(texts) or "MCP tool call failed")
+    if len(texts) == 1:
+        try:
+            return json.loads(texts[0])
+        except ValueError:
+            return texts[0]
+    if texts and content is not None and len(texts) == len(content):
+        return texts
+    return result
 
 
 class McpStartupError(RuntimeError):

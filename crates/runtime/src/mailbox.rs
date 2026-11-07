@@ -87,7 +87,8 @@ pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String
             .as_str()
             .map_or_else(|| value.to_string(), str::to_owned);
         let total = counted.and_then(|chars| usize::try_from(chars.get(name)?.as_u64()?).ok());
-        let row = cut(&text, CONTEXT_VALUE_CAP, total, "mail.context_value", ROUTE);
+        let cap = crate::levers::get().mail_context_value;
+        let row = cut(&text, cap, total, "mail.context_value", ROUTE);
         block.push_str(&format!("{name} = {row}\n"));
     }
     block = clamp(&block, CONTEXT_TOTAL_CAP, "mail.context_total", ROUTE);
