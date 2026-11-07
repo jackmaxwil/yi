@@ -3175,6 +3175,40 @@ fn the_repository_root_is_found_once_per_directory() -> TestResult {
     Ok(())
 }
 
+/// Incident: a cached session lookup miss hid a worktree created later in the same process
+/// until restart.
+#[test]
+fn a_repository_that_appears_after_a_miss_is_found() -> TestResult {
+    let rig = Rig::new("canonical-missing")?;
+    let plain = rig.root.join("plain");
+    std::fs::create_dir(&plain)?;
+    let sessions = rig.root.join("sessions");
+    let store =
+        yi_session::create_flat_session(sessions.join("project"), plain.to_string_lossy(), None)?;
+    let file = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("no session file")?;
+    assert!(
+        yi_runtime::history::repo_sessions(&sessions, &rig.repo)
+            .files
+            .is_empty(),
+        "the plain directory is not yet part of the repository"
+    );
+    let worktree = plain.to_string_lossy().into_owned();
+    git(
+        &rig.repo,
+        &["worktree", "add", "-b", "after-miss", &worktree],
+    )?;
+    let found = yi_runtime::history::repo_sessions(&sessions, &rig.repo);
+    assert_eq!(
+        found.files,
+        vec![file],
+        "worktree created after the first miss was not found"
+    );
+    Ok(())
+}
+
 /// Incident: a claim ran `git fetch origin main` whenever the last fetch was a minute old,
 /// seconds against a forge; it now starts from the known `origin/main` and fetches beside.
 #[test]
