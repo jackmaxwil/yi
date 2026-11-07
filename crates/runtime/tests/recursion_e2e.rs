@@ -3107,7 +3107,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         move || {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
-                "import asyncio\nfor _ in range(100):\n    subs = await rlm.list_subagents()\n    if subs and subs[0].status == 'completed':\n        break\n    await asyncio.sleep(0.05)\nprint(subs[0].session_name, subs[0].status)",
+                "import asyncio\nfor _ in range(100):\n    subs = await rlm.list_subagents()\n    if subs and subs[0].status == 'finished':\n        break\n    await asyncio.sleep(0.05)\nprint(subs[0].session_name, subs[0].status)",
                 "",
                 &cancelled,
                 None,
@@ -3116,8 +3116,8 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
     })
     .await??;
     assert!(
-        list_cell.result.stdout.contains("helper completed"),
-        "rlm.list_subagents must expose the completed child: {} {}",
+        list_cell.result.stdout.contains("helper finished"),
+        "rlm.list_subagents must expose the finished child: {} {}",
         list_cell.result.stdout,
         list_cell.result.stderr
     );
@@ -5106,8 +5106,8 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
     })
     .await??;
     assert!(
-        cell.result.stdout.contains("doomed error"),
-        "the delete takes the handle and says the run did not finish: {} {}",
+        cell.result.stdout.contains("doomed failed"),
+        "the delete takes the handle and says the run did not finish, in the roster's word: {} {}",
         cell.result.stdout,
         cell.result.stderr
     );

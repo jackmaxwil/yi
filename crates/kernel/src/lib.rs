@@ -16,6 +16,7 @@ pub mod reduce;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 pub mod snapshot;
+mod venv;
 
 // Generous backstop for a kernel alive but wedged: crashes surface in one 25ms poll and warm
 // boots return in under a second, but a cold boot may need tens of seconds of imports.

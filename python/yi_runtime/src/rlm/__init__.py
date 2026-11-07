@@ -25,8 +25,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .harness import HarnessEntry, HarnessScope, HarnessState, RefinementEvent, get_harness_state
-
 try:
     from ipykernel.comm import Comm
 except Exception:  # pragma: no cover - depends on ipykernel version
@@ -206,6 +204,58 @@ async def _watch(timeout: float, cursor: int | None) -> "Reply | None":
     return None
 
 
+async def _await_child(name: str, target: str, schema: Any, timeout: float) -> dict[str, Any]:
+    """The one child wait: ``RLMSpawnHandle.result`` and ``rlm.result(timeout=)`` both run it."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    # Invariant: a bare wait resumes from the model's last bare wait, which may already
+    # have seen this child finish; cursor 0 reads the family as it stands now.
+    cursor, state, note = 0, None, None
+    while True:
+        # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
+        remaining = min(timeout, deadline - loop.time())
+        if remaining <= 0:
+            break
+        reply = await _watch(remaining, cursor)
+        if reply is None:
+            continue
+        next_cursor = reply.get("cursor")
+        if isinstance(next_cursor, int):
+            cursor = next_cursor
+        try:
+            state, note = await _digest_child(reply, name)
+        except NoSuchChild as error:
+            if name != target:
+                raise RuntimeError(
+                    f"child {name} ({target}) is no longer registered with "
+                    "the parent; rlm.delete_subagent reaps a child and its answer with it"
+                ) from error
+            poll = {"target": target, **({"schema": schema} if schema is not None else {})}
+            try:
+                return await host_request("rlm.result", poll)
+            except RuntimeError as poll_error:
+                if "still running" not in str(poll_error):
+                    raise
+        if state == "stuck":
+            raise RuntimeError(
+                f"child {name} is stuck ({note or 'no progress in its records'}); "
+                "rlm.send it a nudge, rlm.interrupt it, or call result() again to keep waiting"
+            )
+        if state in ("finished", "failed", "needs_you"):
+            try:
+                return await result(target, schema=schema)
+            except RuntimeError as error:
+                # Another run can start between the wait and the read; it is waited on.
+                if "still running" not in str(error):
+                    raise
+                if isinstance(note, str) and note.startswith("asks "):
+                    raise RuntimeError(
+                        f"child {name} {note}; answer it with rlm.send({name!r}, "
+                        "text, reply_to=<that id>), then call result() again"
+                    ) from error
+    raise TimeoutError(f"child {name} did not finish within {timeout}s")
+
+
 def _merge_digest(reply: dict[str, Any], states: dict, notes: dict) -> tuple[dict, dict]:
     if "counts" not in reply:
         return reply.get("states") or {}, reply.get("notes") or {}
@@ -224,18 +274,17 @@ async def _digest_child(reply: dict[str, Any], name: str) -> tuple[Any, Any]:
     if not isinstance(states, dict):
         raise RuntimeError("rlm.wait returned an invalid state map")
     causes = reply.get("causes")
-    if isinstance(causes, dict) and causes.get(name) == "reaped":
+    digest_name = name
+    if isinstance(causes, dict) and causes.get(digest_name) == "reaped":
         raise NoSuchChild(name)
-    if name not in states:
+    if digest_name not in states:
         if "counts" not in reply:
             raise NoSuchChild(name)
         current = await status(name)
         return current.get("state"), current.get("note")
-    note = None
-    if name in states or (isinstance(causes, dict) and name in causes):
-        notes = reply.get("notes")
-        note = notes.get(name) if isinstance(notes, dict) else None
-    return states[name], note
+    notes = reply.get("notes")
+    note = notes.get(digest_name) if isinstance(notes, dict) else None
+    return states[digest_name], note
 
 
 class Reply(dict):
@@ -342,47 +391,7 @@ class RLMSpawnHandle:
         so does a child the host reports ``stuck``.
         """
         _check_schema(schema)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        # Invariant: a bare wait resumes from the model's last bare wait, which may already
-        # have seen this child finish; cursor 0 reads the family as it stands now.
-        cursor, state, note = 0, None, None
-        while True:
-            # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
-            remaining = min(timeout, deadline - loop.time())
-            if remaining <= 0:
-                break
-            reply = await _watch(remaining, cursor)
-            if reply is None:
-                continue
-            next_cursor = reply.get("cursor")
-            if isinstance(next_cursor, int):
-                cursor = next_cursor
-            try:
-                state, note = await _digest_child(reply, self.name)
-            except NoSuchChild as error:
-                raise RuntimeError(
-                    f"child {self.name} ({self.rlm_child_id}) is no longer registered with "
-                    "the parent; rlm.delete_subagent reaps a child and its answer with it"
-                ) from error
-            if state == "stuck":
-                raise RuntimeError(
-                    f"child {self.name} is stuck ({note or 'no progress in its records'}); "
-                    "rlm.send it a nudge, rlm.interrupt it, or call result() again to keep waiting"
-                )
-            if state in ("finished", "failed", "needs_you"):
-                try:
-                    return await result(self.rlm_child_id, schema=schema)
-                except RuntimeError as error:
-                    # Another run can start between the wait and the read; it is waited on.
-                    if "still running" not in str(error):
-                        raise
-                    if isinstance(note, str) and note.startswith("asks "):
-                        raise RuntimeError(
-                            f"child {self.name} {note}; answer it with rlm.send({self.name!r}, "
-                            "text, reply_to=<that id>), then call result() again"
-                        ) from error
-        raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
+        return await _await_child(self.name, self.rlm_child_id, schema, timeout)
 
     @_handed_out
     async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
@@ -549,9 +558,14 @@ def _host_request_blocking(
     raise RuntimeError(str(reply.get("error") or f"host request {request_type} failed"))
 
 
-# The host's per-value cap; the kernel sends one char past it so the host's clamp, the one
-# place that writes the truncation marker, fires.
+# The host's per-value cap (its `mail.context_value` lever, passed in the kernel env); the
+# kernel sends one char past it so the host's clamp, the one place that writes the marker, fires.
 CONTEXT_VALUE_CAP = 4096
+
+
+def _context_value_cap() -> int:
+    raw = os.environ.get("RLM_CONTEXT_VALUE_CAP", "")
+    return int(raw) if raw.isdigit() else CONTEXT_VALUE_CAP
 
 
 def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -577,7 +591,7 @@ def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             text = repr(namespace[key])
         context_chars[key] = len(text)
-        context[key] = text[: CONTEXT_VALUE_CAP + 1]
+        context[key] = text[: _context_value_cap() + 1]
     kwargs["context"] = context
     kwargs["context_chars"] = context_chars
     return kwargs
@@ -619,10 +633,11 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``turns`` requests (3; the last is told to answer, and a tool call in it is refused), writes walled off, and no kernel. It stands
     outside the child cap; its finish reaches you like any child's unless ``result`` took it.
     ``role="worker"`` is the same brief for a child that changes files: a short worker prompt, the
-    permission mode and the project's AGENTS.md and CLAUDE.md, ``tools`` from ``["read", "grep",
-    "edit", "write", "bash", "get_context"]`` (the first four by default), ``turns`` 12 (at most
-    40), its writes behind the same wall, permissions and rules as a root child's; it holds a child
-    slot, may take ``isolation``, and refuses ``fork`` and ``check``. ``partition`` is
+    permission mode and the project's AGENTS.md and CLAUDE.md, ``tools`` defaulting to
+    ``["read", "grep", "edit", "write"]`` and taking any tool the worker role allows (``bash``,
+    ``get_context``), ``turns`` 12 (at most 40), its writes behind the same wall, permissions and
+    rules as a root child's; it holds a child slot, may take ``isolation``, and refuses ``fork``
+    and ``check``. ``partition`` is
     a list of URLs (``local://path#L1-40`` for those lines as they are now, ``#L1-40@TAG`` to refuse a changed
     file, ``history://…``, ``plan://…``) resolved now and
     inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
@@ -751,6 +766,10 @@ async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
     return found
 
 
+# The host's exit words, read as the roster words ``status()`` and ``wait`` use.
+_ROSTER_STATES = {"running": "running", "completed": "finished", "error": "failed"}
+
+
 def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") -> RLMSubagent:
     if not isinstance(payload, dict):
         raise RuntimeError(f"{operation} returned an invalid subagent entry")
@@ -770,7 +789,8 @@ def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") 
         raise RuntimeError(f"{operation} entry is missing session_name")
     if not isinstance(session_dir, str) or not session_dir:
         raise RuntimeError(f"{operation} entry is missing session_dir")
-    if status not in {"running", "completed", "error"}:
+    status = _ROSTER_STATES.get(status, status)
+    if status not in _ROSTER_STATES.values():
         raise RuntimeError(f"{operation} entry has invalid status")
     return RLMSubagent(
         rlm_child_id=child_id,
@@ -784,7 +804,10 @@ def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") 
 
 @_public
 async def list_subagents() -> list[RLMSubagent]:
-    """List direct RLM children retained by the current parent session."""
+    """List direct RLM children retained by the current parent session.
+
+    Each entry's ``status`` is a ``status()`` state: ``running``, ``finished`` or ``failed``.
+    """
     payload = await host_request("rlm.list_subagents")
     entries = payload.get("subagents")
     if not isinstance(entries, list):
@@ -911,6 +934,24 @@ async def subscribe(
             kept["ageMs"] = _ms(retention["age"])
         payload["retention"] = {key: value for key, value in kept.items() if value is not None}
     return await host_request("rlm_heartbeat.create", payload)
+
+
+@_public
+async def subscriptions() -> list[dict[str, Any]]:
+    """This session's subscriptions and heartbeats, each ``{id, status, ...}`` as the host stores it."""
+    return (await host_request("rlm_heartbeat.list", {})).get("jobs") or []
+
+
+@_public
+async def resume(job: str) -> dict[str, Any]:
+    """Resume a paused subscription by ``id``: the remedy a paused adapter's notice names."""
+    return await host_request("rlm_heartbeat.update", {"id": job, "status": "resume"})
+
+
+@_public
+async def unsubscribe(job: str) -> dict[str, Any]:
+    """Cancel a subscription by ``id``; it stops ticking."""
+    return await host_request("rlm_heartbeat.delete", {"id": job})
 
 
 @_public
@@ -1081,8 +1122,8 @@ async def result(
 ) -> dict[str, Any]:
     """A finished child's answer as data, checked against ``schema`` host-side.
 
-    ``timeout`` waits that many seconds for a child that is still running, as
-    ``RLMSpawnHandle.result`` does; omitted, a running child raises at once.
+    ``timeout`` waits that many seconds for a child that is still running, by the same wait
+    ``RLMSpawnHandle.result`` runs (a ``stuck`` child raises); omitted, a running child raises.
     """
     _check_schema(schema)
     payload: dict[str, Any] = {"target": _worktree_target(target)}
@@ -1090,16 +1131,8 @@ async def result(
         payload["schema"] = schema
     if timeout is None:
         return await host_request("rlm.result", payload)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        try:
-            return await host_request("rlm.result", payload)
-        except RuntimeError as error:
-            remaining = min(timeout, deadline - loop.time())
-            if remaining <= 0 or "still running" not in str(error):
-                raise
-        await _watch(remaining, None)
+    name = target.name if isinstance(target, RLMSubagent) else payload["target"]
+    return await _await_child(name, payload["target"], schema, timeout)
 
 
 def _worktree_target(target: "str | RLMSubagent") -> str:
@@ -1252,7 +1285,18 @@ def put(name: str, obj: Any) -> dict[str, Any]:
     if not isinstance(name, str) or not FAMILY_NAME.match(name):
         raise ValueError("a blackboard name is a plain file-safe token, e.g. 'shard_auth'")
     directory = _family_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        return _put(directory, name, obj)
+    except PermissionError as error:
+        raise PermissionError(
+            f"rlm.put({name!r}) cannot write the family board here ({error.strerror or error}): "
+            "this kernel is contained. Write the value as JSON to a file in the workspace and pass "
+            "local://<path> to the member that needs it; it reads it with rlm.fetch."
+        ) from error
+
+
+def _put(directory: Path, name: str, obj: Any) -> dict[str, Any]:
     serializer = _serializer()
     target = directory / f"{name}.dill"
     # Invariant: both files are staged before either is renamed, so a put that fails while
@@ -1527,58 +1571,6 @@ def bash(command: str) -> BashHandle:
     return BashHandle(command)
 
 
-class _HarnessProxy:
-    """Resolve the harness state against the current environment on every access.
-
-    The kernel forkserver preimports rlm in a template process before per-session
-    env vars exist; a state bound at import time would freeze that (env-less)
-    resolution into every forked kernel. Resolving per access picks up the env
-    applied after fork. Resolution must never raise (a failure inside the kernel
-    namespace would take down the kernel). When the local store is genuinely
-    unconfigured (no session env, e.g. --no-session) reads see an empty view but
-    local writes raise instructively instead of vanishing on kernel exit; any
-    other resolution failure degrades to a shared in-memory store until local
-    resolution starts succeeding.
-    """
-
-    _fallback: HarnessState | None = None
-    _unpersisted: HarnessState | None = None
-
-    def _resolve(self) -> HarnessState:
-        try:
-            return get_harness_state()
-        except RuntimeError as exc:
-            if "Local harness state requires" in str(exc):
-                if _HarnessProxy._unpersisted is None:
-                    _HarnessProxy._unpersisted = HarnessState(
-                        in_memory=True,
-                        local_write_error=(
-                            f"{exc} This session has no persistent local harness store; "
-                            "pass global_=True to persist across sessions."
-                        ),
-                    )
-                return _HarnessProxy._unpersisted
-            return self._degraded()
-        except Exception:  # pragma: no cover - harness access must never raise
-            return self._degraded()
-
-    @staticmethod
-    def _degraded() -> HarnessState:
-        if _HarnessProxy._fallback is None:
-            _HarnessProxy._fallback = HarnessState(in_memory=True)
-        return _HarnessProxy._fallback
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._resolve(), name)
-
-    def __repr__(self) -> str:
-        return repr(self._resolve())
-
-
-_harness_state = _HarnessProxy()
-harness = _harness_state
-
-
 class _CallableModule(types.ModuleType):
     def __call__(self, prompt: str, **kwargs: Any) -> Any:
         return run(prompt, **kwargs)
@@ -1589,28 +1581,21 @@ sys.modules[__name__].__class__ = _CallableModule
 __all__ = [
     *_PUBLIC,
     "BashHandle",
-    "HarnessEntry",
-    "HarnessScope",
-    "HarnessState",
-    "McpIntegration",
-    "McpToolError",
     "NoSuchChild",
     "HopLimit",
-    "NotEnabled",
     "RLMModel",
     "RLMSpawnHandle",
     "RLMSubagent",
-    "RefinementEvent",
-    "get_harness_state",
-    "harness",
+    "McpToolError",
+    "McpIntegration",
+    "NotEnabled",
 ]
 
-# Lazily re-export the MCP base class. Kept lazy so `import rlm` never requires
-# the optional `mcp` SDK — only integration packages that subclass it do.
+
 _LAZY_MCP = {"McpIntegration", "McpToolError", "NotEnabled"}
 
 
-def __getattr__(name: str) -> Any:  # noqa: D401 - module-level lazy attr hook
+def __getattr__(name: str) -> Any:
     if name in _LAZY_MCP:
         from . import mcp_base
 
