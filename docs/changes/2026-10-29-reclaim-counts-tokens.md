@@ -1,4 +1,6 @@
 ---
+version: 0.962.0
+decisions: D558
 issue: Refs #1762
 raise: crate runtime +48, tests +56, comments +1
 ledger~: context P1–P19; prefix-aligned P7 | cutting it costs less than resending it | the tokens it drops pay for ten cache reads of the rewrite on any route, whatever its price

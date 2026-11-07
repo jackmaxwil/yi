@@ -1,4 +1,6 @@
 ---
+version: 0.960.0
+decisions: D557
 issue: Closes #1824
 growth: +205 deadline plumbing through three adapters, the read-deadline pool and the loop guard; the refresh merge moved onto the catalog overlay and the fixture dedupe deleted what it could
 decision: a catalog entry's `readTimeoutSecs` (default 60 s) is the model's own read deadline, applied per read so it bounds the idle gap between chunks and never the whole body, and a timeout is neither retried nor resent | four commands ended mid-task on a gateway that answers only when its first token is ready, the fixed 60 s was the HTTP client's and named nothing, and the retry layers spent it three times over | delete the field from the catalog entry, which restores the client's constant

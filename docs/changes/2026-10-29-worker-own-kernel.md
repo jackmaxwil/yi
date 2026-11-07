@@ -1,4 +1,5 @@
 ---
+version: 0.963.0
 issue: Closes #1584
 raise: crate runtime +72, tests +107
 ledger~: kernel + ipython + rlm() subagents | n mode | n mode (`tools=[..., "ipython"]` boots it its own kernel at worker prices, a walled one refused with the root's `WALLED_KERNEL_UNCONFINED` text where there is no Seatbelt, `kernel_across_sessions::a_walled_worker_naming_ipython_keeps_the_kernel_boundary`)

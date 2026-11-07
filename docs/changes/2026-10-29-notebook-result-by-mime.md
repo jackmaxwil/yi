@@ -1,4 +1,5 @@
 ---
+version: 0.961.0
 issue: Closes #1740
 raise: tests +527, comments +8, crate console +460, crate kernel +57, crate types +13, crate tools +5
 growth: +535 the renderer table, the shared cap helpers and six contract tests; the tests went into the crates' own modules rather than a test binary of their own, the per-kind cap paths were folded into one before it landed, and the kernel's bounded serialization was priced after the review found the uncapped one
