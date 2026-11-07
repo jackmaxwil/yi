@@ -575,24 +575,12 @@ fn show_calls_an_unflagged_nonzero_exit_an_error() -> TestResult {
     Ok(())
 }
 
-/// Dies with an old session's list reading differently after the todo merge: `yi todo` over a
-/// recorded session prints what the pre-merge binary printed for it, byte for byte.
-#[test]
-fn yi_todo_reads_a_recorded_session_as_before_the_merge() -> TestResult {
-    let workspace = Workspace::new("todo-before")?;
-    let cwd = workspace.project().display().to_string();
-    let session_dir = workspace
-        .0
-        .join("home/sessions")
-        .join(yi_runtime::session_store::session_directory_name(&cwd));
-    std::fs::create_dir_all(&session_dir)?;
-    // The scrub masked every id and the loader refuses duplicates, so they are re-minted as a chain.
+/// The scrub masked every id and the loader refuses duplicates, so they are re-minted as a chain
+/// and the header becomes session `recorded`.
+fn reminted(scrubbed: &str) -> Result<String, Box<dyn Error>> {
     let mut rows = Vec::new();
     let mut parent = Value::Null;
-    for (index, line) in include_str!("../../tui/tests/fixtures/sessions/01a0d6e4.jsonl")
-        .lines()
-        .enumerate()
-    {
+    for (index, line) in scrubbed.lines().enumerate() {
         let mut row: Value = serde_json::from_str(line)?;
         let id = if index == 0 {
             json!("recorded")
@@ -607,7 +595,26 @@ fn yi_todo_reads_a_recorded_session_as_before_the_merge() -> TestResult {
         }
         rows.push(row.to_string());
     }
-    std::fs::write(session_dir.join("1_recorded.jsonl"), rows.join("\n") + "\n")?;
+    Ok(rows.join("\n") + "\n")
+}
+
+/// Dies with an old session's list reading differently after the todo merge: `yi todo` over a
+/// recorded session prints what the pre-merge binary printed for it, byte for byte.
+#[test]
+fn yi_todo_reads_a_recorded_session_as_before_the_merge() -> TestResult {
+    let workspace = Workspace::new("todo-before")?;
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    std::fs::write(
+        session_dir.join("1_recorded.jsonl"),
+        reminted(include_str!(
+            "../../tui/tests/fixtures/sessions/01a0d6e4.jsonl"
+        ))?,
+    )?;
     let output = workspace.yi(&["todo"])?;
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout(&output), include_str!("fixtures/todo-before.txt"));
@@ -2650,6 +2657,41 @@ fn stats_prices_fits_the_published_price_and_names_the_route_it_left_out() -> Te
         text.contains("[1 route(s) not fitted: fewer than 30 priced replies (MIN_SAMPLES)"),
         "{text}"
     );
+    Ok(())
+}
+
+/// Dies when `yi stats` loses a followed skill pointer: the recorded session reads
+/// `yi://skills/debug` one turn after `Relevant: yi://skills/debug`, in one session and the fold.
+#[test]
+fn stats_counts_a_followed_skill_pointer_in_one_session_and_the_fold() -> TestResult {
+    let workspace = Workspace::new("stats-skills")?;
+    let empty = rolled(&workspace, &["stats", "--by", "skills", "--json"])?;
+    assert_eq!(empty["skills"]["pointers"], 0, "{empty}");
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    std::fs::write(
+        session_dir.join("1_recorded.jsonl"),
+        reminted(include_str!(
+            "../../tui/tests/fixtures/sessions/01a14278.jsonl"
+        ))?,
+    )?;
+    let expected = json!({
+        "skillReads": 1, "pointers": 1, "followed": 1, "followWindow": 3,
+    });
+    let one: Value =
+        serde_json::from_str(&stdout(&workspace.yi(&["stats", "--json", "recorded"])?))?;
+    assert_eq!(one["skills"], expected, "{one}");
+    let text = stdout(&workspace.yi(&["stats", "recorded"])?);
+    let line = "skills  skill reads 1, pointers 1 (1 followed by a read within 3 turns)";
+    assert!(text.lines().any(|row| row == line), "{text}");
+    let fold = rolled(&workspace, &["stats", "--by", "skills", "--json"])?;
+    assert_eq!(fold["skills"], expected, "{fold}");
+    let folded = stdout(&workspace.yi(&["stats", "--by", "skills"])?);
+    assert!(folded.lines().any(|row| row == line), "{folded}");
     Ok(())
 }
 

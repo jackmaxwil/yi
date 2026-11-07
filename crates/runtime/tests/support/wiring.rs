@@ -63,7 +63,7 @@ pub(crate) fn walled_session(w: Wired<'_>) -> yi_runtime::AgentSession {
     let mut session = yi_runtime::AgentSession::new(
         yi_runtime::SessionConfig {
             system_prompt: String::new(),
-            model: crate::support::faux_model(),
+            model: crate::support::faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         },

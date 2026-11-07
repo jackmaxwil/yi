@@ -16,11 +16,19 @@ use yi_types::plan::canonical::Digest;
 
 pub use doc::Note;
 use doc::Scope;
-pub use ext::{MemoryExt, block, listed};
+pub use ext::{MemoryExt, block, focused, listed};
 pub use rank::tokens;
 pub use store::{Store, global_dir, repo_dir};
 
 const SEARCH_LIMIT: usize = 5;
+
+fn scored(notes: &[&Note], query: &str) -> Vec<(usize, f64)> {
+    let texts: Vec<String> = notes
+        .iter()
+        .map(|note| format!("{} {} {}", note.name, note.hook, note.body))
+        .collect();
+    rank::Bm25::new(texts.iter().map(String::as_str)).rank(query)
+}
 
 pub fn ranked(stores: &[&Store], query: &str) -> Vec<(usize, Note)> {
     let notes: Vec<(usize, Note)> = stores
@@ -28,13 +36,8 @@ pub fn ranked(stores: &[&Store], query: &str) -> Vec<(usize, Note)> {
         .enumerate()
         .flat_map(|(at, store)| store.notes().into_iter().map(move |note| (at, note)))
         .collect();
-    let texts: Vec<String> = notes
-        .iter()
-        .map(|(_, note)| format!("{} {} {}", note.name, note.hook, note.body))
-        .collect();
-    let index = rank::Bm25::new(texts.iter().map(String::as_str));
-    index
-        .rank(query)
+    let refs: Vec<&Note> = notes.iter().map(|(_, note)| note).collect();
+    scored(&refs, query)
         .into_iter()
         .filter_map(|(at, _)| notes.get(at).cloned())
         .collect()
@@ -469,6 +472,26 @@ mod tests {
         let text = format!("---\nname: {name}\ndescription: {hook}\ntype: feedback\n---\n{body}\n");
         let memory = doc::draft(&text, &[]).unwrap().memory;
         verbs.store(Scope::Repo).save(memory).unwrap();
+    }
+
+    #[test]
+    fn scoring_indexes_name_hook_and_body_for_search_and_focus() {
+        let (_base, verbs) = verbs("shared-scoring", true);
+        seed(
+            &verbs,
+            "never-git-reset",
+            "never git reset in the shared tree",
+            "sync main another way",
+        );
+        seed(&verbs, "lane-main", "a lane merges main", "lanes");
+        let notes = verbs.store(Scope::Repo).notes();
+        let refs: Vec<&Note> = notes.iter().collect();
+        let hits = scored(&refs, "sync main");
+        let names: Vec<&str> = hits
+            .iter()
+            .filter_map(|(at, _)| notes.get(*at).map(|note| note.name.as_str()))
+            .collect();
+        assert_eq!(names, vec!["never-git-reset", "lane-main"]);
     }
 
     #[test]

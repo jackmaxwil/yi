@@ -6,8 +6,8 @@ import io
 import json
 import os
 import pathlib
-import subprocess
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest.mock
@@ -24,7 +24,8 @@ TEMPS = []
 
 
 def install_passwd_wrapper():
-    if shutil.which("getent") is None or subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True).returncode == 0:
+    # Invariant: macOS has no getent, and resolves the uid through Directory Services already.
+    if not shutil.which("getent") or subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True).returncode == 0:
         return
     wrapper = pathlib.Path(tempfile.mkdtemp(prefix="intake-passwd-")) / "passwd.so"
     source = """#include <pwd.h>

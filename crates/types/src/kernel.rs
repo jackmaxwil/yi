@@ -76,6 +76,16 @@ pub enum ExecuteStatus {
     Other(String),
 }
 
+/// The display-bundle member a JSON value travels under, whichever shape the kernel picks.
+pub const JSON_MIME: &str = "application/json";
+
+/// The display-bundle members a notebook draws, richest first: the rank the kernel picks a
+/// value's mime by and the renderers the console keys off, so neither list can drift alone.
+pub const RESULT_MIMES: [&str; 3] = [MARKDOWN_MIME, JSON_MIME, PYTHON_MIME];
+
+pub const MARKDOWN_MIME: &str = "text/markdown";
+pub const PYTHON_MIME: &str = "text/x-python";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResult {
@@ -83,6 +93,9 @@ pub struct ExecuteResult {
     pub stderr: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// The display-bundle mime `result` came from, absent when the kernel named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_mime: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<KernelAttachment>,
     pub status: ExecuteStatus,

@@ -26,7 +26,7 @@ pub(in crate::plan) type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 use yi_ai::faux::faux_model;
 
-pub(in crate::plan) fn reply(text: &str) -> AgentMessage {
+pub(crate) fn reply(text: &str) -> AgentMessage {
     yi_ai::faux::faux_assistant_message(vec![yi_ai::faux::faux_text(text)], StopReason::Stop)
 }
 
@@ -61,9 +61,9 @@ pub(in crate::plan) fn sink<T: Send + 'static>() -> (Sink<T>, Arc<dyn Fn(T) + Se
     (sink, push)
 }
 
-pub(in crate::plan) struct Rig {
+pub(crate) struct Rig {
     pub(in crate::plan) engine: Arc<PlanEngine>,
-    pub(in crate::plan) host: Arc<SubagentHost>,
+    pub(crate) host: Arc<SubagentHost>,
     pub(in crate::plan) pins: Arc<FetchLog>,
     pub(in crate::plan) reports: Sink<AgentMessage>,
     /// The host's own lifecycle notices, which a child the engine took never sends.
@@ -84,7 +84,7 @@ pub(in crate::plan) fn hooked(
     rig_of(script, true)
 }
 
-pub(in crate::plan) fn rig_of(
+pub(crate) fn rig_of(
     script: Vec<AgentMessage>,
     finish: bool,
 ) -> Result<Rig, Box<dyn std::error::Error>> {
