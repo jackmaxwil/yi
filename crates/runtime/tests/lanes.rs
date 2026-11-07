@@ -3175,12 +3175,13 @@ fn the_repository_root_is_found_once_per_directory() -> TestResult {
     Ok(())
 }
 
+/// Incident: a cached miss hid a repository created later in the same process from lanes,
+/// memory and session storage until restart.
 #[test]
-fn a_missing_repository_root_is_found_once_per_directory() -> TestResult {
+fn a_repository_that_appears_after_a_miss_is_found() -> TestResult {
     let root = Scratch::new("yi-lanes-canonical-missing")?;
     let plain = root.join("plain");
     std::fs::create_dir(&plain)?;
-    let modified = std::fs::metadata(&plain)?.modified()?;
     let callers: Vec<_> = (0..8)
         .map(|_| {
             let dir = plain.clone();
@@ -3192,12 +3193,10 @@ fn a_missing_repository_root_is_found_once_per_directory() -> TestResult {
         assert_eq!(found, None);
     }
     init_repo(&plain)?;
-    std::fs::File::open(&plain)?.set_modified(modified)?;
     assert_eq!(
         yi_runtime::lane::canonical_repo(&plain),
-        None,
-        "git asked for {} after its first miss",
-        plain.display()
+        Some(plain.canonicalize()?),
+        "repository created after the first miss was not found"
     );
     Ok(())
 }

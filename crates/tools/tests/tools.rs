@@ -3564,7 +3564,7 @@ fn a_crate_root_is_checked_without_reading_its_children() -> TestResult {
     Ok(())
 }
 
-/// A placeholder tag names the road back rather than only the rule it broke (#473).
+/// Two sections of one file share one reply block and retain both patch rows.
 #[test]
 fn a_two_section_edit_of_a_recorded_session_renders_one_patch_per_section() -> TestResult {
     let dir = temp_dir("edit-session-fixture")?;
@@ -3607,6 +3607,10 @@ fn a_two_section_edit_of_a_recorded_session_renders_one_patch_per_section() -> T
     assert!(
         reply.starts_with("[session.jsonl#"),
         "a file block opens the reply"
+    );
+    assert!(
+        reply.contains("updated; +2 -2 at line 1"),
+        "the reply names both replacements and their first line: {reply}"
     );
     assert_eq!(
         reply.matches("updated;").count(),
