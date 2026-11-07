@@ -270,6 +270,7 @@ fn image_turns(count: usize, image: &str) -> LlmContext {
         .collect();
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: String::new(),
         messages,
         transient: Vec::new(),

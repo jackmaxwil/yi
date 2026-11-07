@@ -364,6 +364,7 @@ fn a_call_streamed_as_text_finishes_as_a_tool_call() -> Result<(), Box<dyn Error
 fn a_routed_claude_request_keeps_its_newest_twenty_images() {
     let turns = |count: usize| LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: String::new(),
         messages: (0..count)
             .map(|_| {
