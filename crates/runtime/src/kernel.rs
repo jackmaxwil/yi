@@ -13,8 +13,8 @@ pub use crate::kernel_bootstrap::{
     BootFn, RLM_BOOTSTRAP_CODE, compaction_notice, restore_notice_text, rlm_bootstrap_code,
 };
 use crate::kernel_variables::{
-    VARIABLE_MARKER, VariableReply, dump_variable_code, parse_variable_reply, read_variable_code,
-    render_value,
+    VARIABLE_MARKER, VariableReply, dump_variable_code, parse_variable_reply, py_literal,
+    read_variable_code, render_value,
 };
 pub use crate::kernel_variables::{VariableName, VariableReadError};
 use crate::wiring::make_board;
@@ -242,6 +242,27 @@ pub(crate) fn kernel_profile(
     profile
 }
 
+/// The cell that re-leads the kernel's PATH with `wanted`, drops `stale`, and keeps every other
+/// entry a cell put there; `PATH` itself is preserved when both are empty.
+fn path_cell(wanted: &[PathBuf], stale: &[PathBuf]) -> String {
+    let listing = |dirs: &[PathBuf]| -> String {
+        let rows: Vec<String> = dirs
+            .iter()
+            .map(|dir| py_literal(&dir.to_string_lossy()))
+            .collect();
+        format!("[{}]", rows.join(", "))
+    };
+    format!(
+        "import os as _os\n_want = {}\n_stale = {}\n\
+         _parts = [p for p in _os.environ.get('PATH', '').split(_os.pathsep) \
+         if p not in _stale and p not in _want]\n\
+         _os.environ['PATH'] = _os.pathsep.join(_want + _parts)\n\
+         del _os, _want, _stale, _parts",
+        listing(wanted),
+        listing(stale)
+    )
+}
+
 /// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
 pub struct KernelService {
     options: KernelServiceOptions,
@@ -261,6 +282,8 @@ pub struct KernelService {
     surface_shown: std::sync::atomic::AtomicBool,
     snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
     waited: Mutex<Option<String>>,
+    /// The plugin directories the live kernel's PATH currently leads with.
+    kernel_path: Mutex<Vec<PathBuf>>,
     own_paths: Option<crate::wiring::OwnPathsFn>,
     user_cells: std::sync::atomic::AtomicUsize,
     pub(crate) cell_calls: std::sync::OnceLock<Arc<dyn yi_tools::CellCalls>>,
@@ -293,6 +316,7 @@ impl KernelService {
             surface_shown: std::sync::atomic::AtomicBool::new(false),
             snapshot_lock: Mutex::new(None),
             waited: Mutex::new(None),
+            kernel_path: Mutex::new(Vec::new()),
             own_paths: None,
             user_cells: std::sync::atomic::AtomicUsize::new(0),
             cell_calls: std::sync::OnceLock::new(),
@@ -408,6 +432,9 @@ impl KernelService {
 
     fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
         let mut env = Vec::new();
+        if let Ok(mut slot) = self.kernel_path.lock() {
+            *slot = self.plugin_dirs();
+        }
         if let Ok(bin) = std::env::current_exe() {
             env.push(("YI_BIN".to_owned(), bin.to_string_lossy().into_owned()));
         }
@@ -444,6 +471,38 @@ impl KernelService {
             env.push((key.to_owned(), value.to_string_lossy().into_owned()));
         }
         env
+    }
+
+    /// The plugin directories a booted kernel's PATH leads with, as [`yi_tools::plugin::search_path`]
+    /// builds it for a spawn.
+    fn plugin_dirs(&self) -> Vec<PathBuf> {
+        yi_tools::plugin::installed_dirs(&self.options.home)
+    }
+
+    /// Incident: the kernel's PATH was fixed at boot, so a plugin added by `yi plugin add`
+    /// mid-session stayed invisible to `!`, `%%bash` and `subprocess` until a restart.
+    async fn refresh_path(&self, manager: &KernelManager) {
+        let wanted = self.plugin_dirs();
+        let applied = self
+            .kernel_path
+            .lock()
+            .map(|dirs| dirs.clone())
+            .unwrap_or_default();
+        if applied == wanted {
+            return;
+        }
+        let code = path_cell(&wanted, &applied);
+        let options = ExecuteOptions {
+            internal: true,
+            ..ExecuteOptions::default()
+        };
+        let done = manager
+            .execute(&code, options)
+            .await
+            .is_ok_and(|result| result.status == yi_types::kernel::ExecuteStatus::Ok);
+        if let (true, Ok(mut slot)) = (done, self.kernel_path.lock()) {
+            *slot = wanted;
+        }
     }
 
     /// Boot the kernel now so the first cell pays execution only. A failed prewarm, or one a
@@ -719,6 +778,7 @@ impl KernelService {
                 notes.push(self.restart_note(&manager).await);
             }
             notes.extend(self.waited.lock().ok().and_then(|mut waited| waited.take()));
+            self.refresh_path(&manager).await;
             let abort = AbortFlag::default();
             let watcher = {
                 let abort = abort.clone();
@@ -962,6 +1022,17 @@ mod tests {
         let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
         std::fs::create_dir_all(ripwire.dir(&home))?;
         std::fs::write(ripwire.dir(&home).join("ripwire"), "#!/bin/sh\n")?;
+        let service = KernelService::new(options(&home));
+        service.kernel_env(None);
+        assert_eq!(
+            service
+                .kernel_path
+                .lock()
+                .map_err(|error| error.to_string())?
+                .as_slice(),
+            &[ripwire.dir(&home)],
+            "the boot PATH is already applied"
+        );
         let path = path_of(&home).ok_or("no PATH for the kernel")?;
         let first = std::env::split_paths(&path).next();
         assert_eq!(first, Some(ripwire.dir(&home)));
@@ -978,6 +1049,56 @@ mod tests {
             config.as_deref().map(std::path::Path::new),
             Some(browser.dir(&home).join("config.json").as_path())
         );
+        Ok(())
+    }
+
+    /// A cell that adds its own PATH entry keeps it across a refresh, and a plugin removed
+    /// mid-session leaves the kernel's PATH; run as the kernel runs it, through python3.
+    #[test]
+    fn a_refresh_keeps_a_cells_path_and_drops_a_removed_plugin() -> TestResult {
+        let python = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|dir| dir.join("python3"))
+            .find(|candidate| candidate.is_file())
+            .ok_or("no python3 to run the refresh cell")?;
+        let dir = |name: &str| PathBuf::from(format!("/plugins/{name}"));
+        let run = |wanted: &[PathBuf], stale: &[PathBuf], cell: &str| -> Result<String, String> {
+            let code = format!(
+                "{}\nimport os as _probe\nprint(_probe.environ['PATH'])",
+                path_cell(wanted, stale)
+            );
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the cell's own interpreter runs the script the kernel would"
+            )]
+            let output = std::process::Command::new(&python)
+                .arg("-c")
+                .arg(code)
+                .env("PATH", cell)
+                .output()
+                .map_err(|error| error.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+            }
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_owned())
+        };
+        let path = |entries: &[&str]| -> Result<String, String> {
+            std::env::join_paths(entries.iter())
+                .map_err(|error| error.to_string())?
+                .into_string()
+                .map_err(|_| "a PATH entry is not UTF-8".to_owned())
+        };
+        // The cell set /cell/bin itself after boot, so only the plugin entries are the host's.
+        let cell = path(&["/cell/bin", "/plugins/a", "/usr/bin", "/bin"])?;
+        let refresh = run(&[dir("b")], &[dir("a")], &cell)?;
+        assert_eq!(
+            refresh,
+            path(&["/plugins/b", "/cell/bin", "/usr/bin", "/bin"])?
+        );
+        // `yi plugin remove`: nothing installed, so every plugin directory goes and the rest stays.
+        let removed = run(&[], &[dir("b")], &refresh)?;
+        assert_eq!(removed, path(&["/cell/bin", "/usr/bin", "/bin"])?);
         Ok(())
     }
 
@@ -1041,6 +1162,7 @@ mod tests {
         );
         Ok(())
     }
+
     #[test]
     fn only_a_bare_ascii_identifier_is_a_variable_name() -> TestResult {
         for good in ["x", "_x", "a1", "Data_2", "_", "__doc__"] {
