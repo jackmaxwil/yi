@@ -10,6 +10,7 @@ pub fn plain() -> Model {
 pub fn plain_context() -> LlmContext {
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "be terse".to_owned(),
         messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),

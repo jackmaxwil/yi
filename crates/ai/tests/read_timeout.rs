@@ -164,6 +164,7 @@ fn every_streaming_adapter_reads_the_deadline_from_the_model() -> TestResult {
         model.base_url = format!("http://127.0.0.1:{port}");
         let context = yi_types::model::LlmContext {
             cache_ttl: yi_types::model::Ttl::Min5,
+            cache_tail: true,
             system_prompt: String::new(),
             messages: Vec::new(),
             transient: Vec::new(),

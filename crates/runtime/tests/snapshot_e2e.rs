@@ -84,12 +84,13 @@ fn store(id: &str) -> yi_session::SharedSession {
 
 async fn cell(
     service: &Arc<KernelService>,
-    code: &'static str,
+    code: &str,
 ) -> Result<yi_tools::KernelCellOutcome, String> {
     let service = Arc::clone(service);
+    let code = code.to_owned();
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
+        KernelBridge::execute_cell(service.as_ref(), &code, "", &cancelled, None)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -436,7 +437,6 @@ async fn a_cell_that_changes_one_name_writes_only_that_name() -> TestResult {
     std::fs::remove_file(added.first().ok_or("no new blob")?)?;
     let third = service(&dir, &notices);
     let outcome = cell(&third, "print(len(big))").await?;
-    third.dispose().await;
     assert!(
         outcome.result.stdout.contains("10000000"),
         "{}",
@@ -447,9 +447,22 @@ async fn a_cell_that_changes_one_name_writes_only_that_name() -> TestResult {
         .map(|queue| queue.join("\n"))
         .unwrap_or_default();
     assert!(
-        announced.contains("could not be restored and must be recreated if needed: small."),
-        "a missing blob must be named, not dropped: {announced}"
+        announced.contains("could not be restored and must be recreated if needed: small"),
+        "a missing blob must be named without its reason: {announced}"
     );
+    assert!(
+        !announced.contains("small (") && !announced.contains("FileNotFoundError"),
+        "the restore notice must omit failure reasons: {announced}"
+    );
+    let print_failures = format!("print({})", yi_kernel::snapshot::RESTORE_FAILURES_VAR);
+    let failures = cell(&third, &print_failures).await?;
+    assert!(
+        failures.result.stdout.contains("small")
+            && failures.result.stdout.contains("FileNotFoundError"),
+        "the continuation list must hold the omitted failure and its reason: {}",
+        failures.result.stdout
+    );
+    third.dispose().await;
     Ok(())
 }
 

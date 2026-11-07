@@ -24,6 +24,7 @@ fn tool(name: &str, freeform: Option<FreeformFormat>) -> ToolDef {
 fn bodies(choice: Option<ToolChoice>, tools: Vec<ToolDef>) -> [Value; 3] {
     let context = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "s".to_owned(),
         messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),
@@ -127,6 +128,7 @@ fn a_forced_tool_switches_extended_thinking_off_for_that_turn() -> TestResult {
     };
     let context = |choice| LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "s".to_owned(),
         messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),
