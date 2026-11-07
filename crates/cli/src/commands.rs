@@ -1,7 +1,7 @@
 use crate::{
     Args, catalog, debug, doctor, fetch, lanes, memory, models, run_acp, run_ask,
     run_console_command, run_gate, run_gc, run_plan, run_rpc, run_serve_command, run_sessions,
-    run_stats, run_trust, run_tui, run_undo, run_version, run_why, todo,
+    run_stats, run_trust, run_tui, run_undo, run_version, run_why, todo, tool_import,
 };
 
 pub(crate) enum Route {
@@ -62,6 +62,7 @@ const VERBS: &[Verb] = &[
     Verb { name: "logout", route: Early, words: Any, summary: "remove a provider credential" },
     Verb { name: "setup", route: Early, words: Any, summary: "choose a model and a permission mode" },
     Verb { name: "mcp", route: Early, words: Any, summary: "one-shot MCP client calls, under mcp.enabled" },
+    Verb { name: "tool", route: Run(tool_import::run), words: Any, summary: "import a project's just recipes as exec tools" },
 ];
 
 #[rustfmt::skip]

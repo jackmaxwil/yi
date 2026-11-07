@@ -903,7 +903,12 @@ def record_cases():
         race = root / ".git/hooks/pre-push"
         race.write_text(f"#!/bin/sh\nenv -u GIT_DIR git -C '{other}' push -q origin HEAD:main\n")
         race.chmod(0o755)
-        if record_main(root) is not False:
+        real_git = git
+        def race_git(*args, **kwargs):
+            return real_git("-c", "core.hooksPath=.git/hooks", *args, **kwargs)
+        with mock.patch.object(sys.modules[__name__], "git", race_git):
+            moved = record_main(root)
+        if moved is not False:
             bad.append("main moved under the push and the tick read it as recorded")
         race.unlink()
     return bad

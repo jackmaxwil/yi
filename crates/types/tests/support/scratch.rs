@@ -75,7 +75,7 @@ pub fn keep(dir: &Path, shelf: &str, name: &std::ffi::OsStr) -> Option<PathBuf> 
 
 /// A copy, not a rename: the system temp dir and the target dir are different filesystems on
 /// the forge's runners. Sockets and symlinks are skipped.
-fn copy_tree(dir: &Path, to: &Path) -> std::io::Result<()> {
+pub fn copy_tree(dir: &Path, to: &Path) -> std::io::Result<()> {
     let mut stack = vec![(dir.to_path_buf(), to.to_path_buf())];
     while let Some((from, to)) = stack.pop() {
         std::fs::create_dir_all(&to)?;
