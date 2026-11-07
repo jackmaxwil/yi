@@ -3,8 +3,6 @@
 A coding agent in one Rust binary. The model works inside a persistent Python kernel, where
 subagents are function calls and plans are programs.
 
-Use [Ghostty](https://ghostty.org), [Kitty](https://sw.kovidgoyal.net/kitty/) or another terminal
-that supports the kitty graphics protocol.
 
 ![Three subagents asked from one kernel cell](docs/media/fanout.webp)
 
@@ -15,9 +13,21 @@ curl -fsSL https://raw.githubusercontent.com/jackmaxwil/yi/main/scripts/install.
 yi --version
 ```
 
+It checks the release's sha256 and the owner's key, then installs `yi` to `~/.local/bin` and its
+runtime to `~/.yi`; Apple-silicon Macs and x86_64 Linux, and `| bash -s -- --help` prints that key. By hand:
+
+```bash
+v=X.Y.Z t=aarch64-apple-darwin; base=https://github.com/jackmaxwil/yi/releases/download/v$v; a=yi-$v-$t.tar.gz
+curl -fLO "$base/$a" -O "$base/$a.sig" -O "$base/SHA256SUMS"; shasum -a 256 -c SHA256SUMS --ignore-missing
+echo 'jackmaxwil-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAaFfxFxxkIpL0TuZcvkcLpzT164hwIaCbzyFnVkAMX7' > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I jackmaxwil-release -n yi-release -s "$a.sig" < "$a"
+tar -xzf "$a" && "./yi-$v-$t/install.sh"
+```
+
 ## Quick start
 
 ```bash
+yi ask --model faux/faux-1 "hello"   # offline, no key: prints "faux: hello"
 yi                                   # the console; --solo: one chat
 yi login openrouter                  # paste a key at the prompt
 yi setup                             # default model and permission mode
@@ -42,24 +52,14 @@ Keys and tokens are saved under `~/.yi/providers/tokens/` (mode 0600), never in 
 ## Plugins and skills
 
 A plugin is an outside program that Yi downloads, checks against a pinned sha256 and keeps in
-`~/.yi/plugins/<name>/<version>/`. Yi uses only the pinned version, or else one already on your `PATH`.
+`~/.yi/plugins/<name>/<version>/`. `yi plugin list` prints this build's pinned versions and
+summaries, plus what is installed or already on your `PATH`.
 
 ```bash
-yi plugin list                       # what exists, and what is installed
-yi plugin add --all                  # ripwire and chrome
-yi plugin add agent-browser          # the two that act on your machine come by name
-yi plugin sync                       # bring installed plugins to this build's pin
-yi plugin remove chrome
+yi plugin list
+yi plugin add --all                  # or one: ripwire, chrome
+yi plugin sync
 ```
-
-| plugin | version | what it gives the model |
-|---|---|---|
-| `ripwire` | 0.6.5 | a code map: the callers an edit breaks, a symbol's callers, the code a task touches; ships 16 skills |
-| `chrome` | 155.0.8059.39 | Chrome for Testing's headless shell (about 100 MB), which the console's browser pane runs when you have no Chrome |
-| `agent-browser` | 0.41.0 | a headless Chrome held in a sandbox: your Mac's apps unasked, the internet after one yes per session; installs `chrome` too |
-| `agent-desktop` | 1.0.2 | any Mac app, through its accessibility tree; asks once per app |
-
-`add --all` skips `agent-browser` and `agent-desktop` because they drive this machine.
 
 A skill is a directory with a `SKILL.md`. Yi reads `.yi/skills`, `.agents/skills`, `.pi/skills` and
 `.claude/skills` in the repository, then `~/.yi/skills`; the first skill with a name wins. Type
@@ -75,23 +75,12 @@ Run `just release`, then check the tag on the forge.
 
 ## Configure
 
-`~/.yi/config.json` is the one config file. Strict: an unknown key is an error that names it.
-Every key is in [YI_DESIGN.md §17.1](docs/YI_DESIGN.md).
-
-```json
-{
-  "thinking": "medium",
-  "permissions": { "mode": "auto" },
-  "tui": { "pace": 100 },
-  "rlm": { "maxDepth": 1 },
-  "kernel": { "prewarm": true },
-  "mcp": { "enabled": false },
-  "lanes": { "enabled": true }
-}
+```bash
+yi debug config                       # ~/.yi/config.json, secrets redacted
 ```
 
-That is every default written out; an empty file does the same. `model` has no default, so
-`yi setup` asks. `yi debug config` prints what Yi read, secrets redacted.
+`~/.yi/config.json` is the one config file. Strict: an unknown key is an error that names it.
+Every key is in [YI_DESIGN.md §17.1](docs/YI_DESIGN.md).
 
 | key | default | meaning |
 |---|---|---|
@@ -124,58 +113,10 @@ Flags: `--model`, `--json`, `--schema`, `--yolo`, `--continue`, `--deadline`;
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    you(["you"])
-
-    subgraph surfaces["Surfaces"]
-        direction LR
-        tui["yi tui<br/>solo chat"]
-        ask["yi ask · yi rpc<br/>one run, JSON out"]
-        console["yi console<br/>workspace panes"]
-        daemon["yi serve · yi acp<br/>ACP v2 daemon"]
-        console -- "ACP" --> daemon
-    end
-
-    subgraph runtime["yi-runtime: one AgentSession per session"]
-        direction LR
-        session["session<br/>JSONL on disk"]
-        subagents["subagents<br/>mailbox"]
-        plans["plans<br/>contracts"]
-        lanes["lanes<br/>worktrees"]
-        more["goals · schedule<br/>advisor"]
-    end
-
-    loop["yi-loop<br/>one model turn"]
-    ai["yi-ai<br/>providers, catalog"]
-    tools["yi-tools<br/>read · grep · edit · bash · ipython"]
-    perm["yi-permission<br/>allow · contain · ask · deny"]
-    kernel["yi-kernel<br/>Jupyter client"]
-    py[["Python kernel<br/>in ~/.yi/kernel-venv<br/>rlm · yi"]]
-
-    you --> tui & ask & console
-    tui --> runtime
-    ask --> runtime
-    daemon --> runtime
-    runtime --> loop & ai & tools & kernel
-    loop --> tools
-    tools --> perm
-    tools -- "ipython cell" --> kernel
-    kernel <--> py
-    py -. "rlm.ask · rlm.run<br/>Plan.create" .-> runtime
-
-    classDef core fill:#eef3ff,stroke:#5b7bd5,color:#1b2a55;
-    classDef safe fill:#fff4e5,stroke:#d98a1f,color:#4a2f00;
-    classDef pyc fill:#e9f7ef,stroke:#2e9e5b,color:#0f3d24;
-    class loop,ai,tools,kernel,session,subagents,plans,lanes,more core;
-    class perm safe;
-    class py pyc;
-```
-
-Read it top down: a surface hands the user's words to the runtime, which runs model turns that call
-tools. The `ipython` tool runs a cell in the Python kernel ([below](#the-kernel)), and from a cell,
-`rlm.ask` and `rlm.run` reach back into the runtime (the dotted line) to start a child session. Crate rules:
-[YI_DESIGN.md §2](docs/YI_DESIGN.md).
+The [architecture map](docs/ARCHITECTURE.md#data-flow) shows a surface handing the user's words to
+the runtime, which runs model turns that call tools. The `ipython` tool runs a cell in the Python
+kernel ([below](#the-kernel)), and from a cell, `rlm.ask` and `rlm.run` reach back into the runtime
+to start a child session. Crate rules: [YI_DESIGN.md §2](docs/YI_DESIGN.md).
 
 ## The kernel
 
@@ -395,7 +336,7 @@ Run `just release`, then check the tag on the forge.
   reason.
 - **History.** Every change is appended to a hash-chained journal in the store. `yi memory check`
   lists notes that do not parse, and `yi memory rebuild` restores the notes from the journal.
-- **Past sessions.** `history.search("words")` in a kernel cell searches what you and Yi said in
+- **Past sessions.** `compact.search("words")` in a kernel cell searches what you and Yi said in
   earlier sessions in this repository, using the same ranking.
 
 Design: [docs/memory.md](docs/memory.md).
@@ -538,11 +479,11 @@ next message) and `abort`. Any language that can start a process can embed Yi:
 ```python
 import json, subprocess
 
-yi = subprocess.Popen(["yi", "rpc", "--here"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-yi.stdin.write(json.dumps({"id": "1", "type": "prompt", "message": "list the TODOs in src/"}) + "\n")
-yi.stdin.flush()
+agent = subprocess.Popen(["yi", "rpc", "--here"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+agent.stdin.write(json.dumps({"id": "1", "type": "prompt", "message": "list the TODOs in src/"}) + "\n")
+agent.stdin.flush()
 
-for line in yi.stdout:
+for line in agent.stdout:
     event = json.loads(line)
     if event["type"] == "message_update":
         delta = event["assistantMessageEvent"]
@@ -589,7 +530,7 @@ Point a client at the command `yi acp`; this is what a client sends:
 
 ```console
 $ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2}}' | yi acp
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2,"info":{"name":"yi","version":"0.942.0"},"capabilities":{"session":{"delete":{}}},"authMethods":[]}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2,"info":{"name":"yi","version":"<your yi version>"},"capabilities":{"session":{"delete":{}}},"authMethods":[]}}
 ```
 
 - **Sessions.** `session/new` takes a `cwd` and answers a `sessionId` and the settings you can
@@ -611,9 +552,9 @@ Design and the full method table: [YI_DESIGN.md §17.2](docs/YI_DESIGN.md).
 ## SDK
 
 ```bash
-yi ask --json "hello"   # the event stream
-yi acp                  # ACP v2
-yi serve                # the daemon's socket
+yi ask --model faux/faux-1 --json "hello"   # the event stream
+yi acp                                       # ACP v2
+yi serve                                     # the daemon's socket
 ```
 
 A full SDK is coming; today build on those, or on `~/.yi/sessions/` (Pi's v4 JSONL).
@@ -640,7 +581,6 @@ Pi-written session files and write each one back identical, so Yi and Pi tooling
 - **A torn write.** If the last line was cut off by a crash, Yi trims the file to its last whole
   line. Any other bad line fails the load and is named.
 
-`yi rpc` speaks Pi's JSON-RPC protocol on stdio, and `.pi/skills` is read like any skills folder.
 Design: [YI_DESIGN.md §4.1](docs/YI_DESIGN.md).
 
 ## Contributing
