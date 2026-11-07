@@ -1,4 +1,5 @@
 ---
+version: 0.980.0
 issue: Closes #1202
 raise: crate runtime +122, crate tools +5, tests +142, comments +8
 ledger~: `yi plugin` | t on PATH | t on PATH, the kernel refreshing it before each cell so a plugin added mid-session reaches `!`, `%%bash` and `subprocess`
