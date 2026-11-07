@@ -139,6 +139,10 @@ impl GitLane {
             ("maintenance.auto".to_owned(), "false".to_owned()),
             ("protocol.allow".to_owned(), "never".to_owned()),
             ("protocol.file.allow".to_owned(), "always".to_owned()),
+            ("protocol.https.allow".to_owned(), "never".to_owned()),
+            ("protocol.http.allow".to_owned(), "never".to_owned()),
+            ("protocol.ssh.allow".to_owned(), "never".to_owned()),
+            ("protocol.git.allow".to_owned(), "never".to_owned()),
         ]);
         memo.insert(cwd.to_path_buf(), block.clone());
         block
@@ -211,8 +215,8 @@ impl GitLane {
         .map(drop)
     }
 
-    /// Before a spawn whose text reads origin. A script that fetches gets what the last refresh
-    /// saw: nothing here reads a script.
+    /// Before a spawn whose segments run `git fetch`, `git pull` or `git ls-remote`. A script that
+    /// only mentions one gets what the last refresh saw: nothing here reads a script's text.
     pub(crate) fn refresh(&self, command: &str) -> Vec<String> {
         if !reads_a_remote(command) {
             return Vec::new();
@@ -242,8 +246,16 @@ impl GitLane {
         let mut rows = Vec::new();
         if taken.refused > 0 {
             rows.push(format!(
-                "[not pushed: {} entries in the outbox were no ref (a link, a FIFO or a directory too deep)]",
+                "[not pushed: {} entries in the outbox were no ref (a link or a FIFO), and are gone]",
                 taken.refused
+            ));
+        }
+        if taken.too_deep > 0 {
+            rows.push(format!(
+                "[not pushed: {} entries in the outbox are directories past {} deep, so no sweep clears them (outbox.depth {}); delete the outbox beside this repository's git dir]",
+                taken.too_deep,
+                yi_permission::outbox::DEPTH_MAX,
+                yi_permission::outbox::DEPTH_MAX
             ));
         }
         for (name, value) in &taken.refs {
