@@ -26,7 +26,6 @@ const READ_LINE_CLIP: usize = super::patcher::SEEN_LINE_REVEAL_MAX_COLUMNS;
 /// Incident: 182 byte-identical no-op edits on one path in 205 calls before an
 /// abort; this many consecutive no-ops now escalate the soft hint to an error.
 const NOOP_HARD_LIMIT: u32 = 3;
-const EDIT_CONTEXT_LINES: u64 = 3;
 
 #[derive(Default)]
 pub struct HashlineState {
@@ -459,7 +458,15 @@ impl HashlineReadTool {
                 .to_string_lossy()
                 .into_owned();
             let opened = gate.open(path, &context.deny_read);
-            let bytes = opened.and_then(crate::tool::read_all).unwrap_or_default();
+            let cap = crate::tool::Cap::Text;
+            let bytes = match opened.and_then(|file| crate::tool::read_capped(file, path, cap)) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                    sections.push(format!("{display}  (not read: {error})"));
+                    continue;
+                }
+                Err(_) => Vec::new(),
+            };
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
             let size = match &document {
                 Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
@@ -471,7 +478,7 @@ impl HashlineReadTool {
                 let output = self.read_file(&display, path, &Map::new(), context);
                 spent = spent.saturating_add(size);
                 whole = whole.saturating_add(1);
-                sections.push(output_text_of(&output));
+                sections.push(yi_types::message::join_text(&output.result.content, ""));
                 continue;
             }
             if !budget_named {
@@ -568,7 +575,6 @@ impl HashlineReadTool {
                 .max(limit.saturating_mul(256))
                 .min(READ_BYTE_CEIL)
         });
-
         let mut rows: Vec<String> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
         let mut spent = 0_usize;
@@ -740,19 +746,6 @@ impl HashlineReadTool {
     }
 }
 
-fn output_text_of(output: &ToolOutput) -> String {
-    output
-        .result
-        .content
-        .iter()
-        .map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => text.as_str(),
-            _ => "",
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 /// The requested line windows, 1-based inclusive, merged and clamped. `ranges` and
 /// `offset`/`limit` are two spellings of the same thing and never combine.
 fn read_windows(
@@ -831,61 +824,6 @@ pub struct HashlineEditTool {
     pub state: SharedHashline,
     /// `edit.freeformGrammar`; the JSON argument is the default.
     pub freeform_grammar: bool,
-}
-
-fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
-    let mut out = vec![result.header.clone()];
-    let op = match result.op {
-        SectionOp::Update => "updated",
-        SectionOp::Delete => "deleted",
-        SectionOp::Noop => "unchanged",
-    };
-    match (&result.move_dest, result.first_changed_line) {
-        (Some(dest), _) => out.push(format!("{op}; moved to {dest}")),
-        (None, Some(line)) => out.push(format!("{op}; first change at line {line}")),
-        (None, None) => out.push(op.to_owned()),
-    }
-    if result.op != SectionOp::Delete {
-        let lines: Vec<&str> = result.after.split('\n').collect();
-        let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
-        // Invariant: an unchanged line the model saw is still a line it saw, so the prior
-        // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
-        let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
-            Some(prior) => {
-                let map = super::rebase::LineMap::between(&result.before, &result.after);
-                prior
-                    .seen_lines
-                    .iter()
-                    .flatten()
-                    .filter_map(|line| map.line(*line))
-                    .collect()
-            }
-            None => Vec::new(),
-        };
-        let mut seen: Vec<u64> = Vec::new();
-        // Every hunk gets a window, not just the first: a window the model cannot see is a
-        // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
-        for changed in crate::diff::changed_after_lines(&result.before, &result.after) {
-            let lo = changed.saturating_sub(EDIT_CONTEXT_LINES).max(1);
-            let hi = changed.saturating_add(EDIT_CONTEXT_LINES).min(total);
-            let start = seen
-                .last()
-                .map_or(lo, |last| lo.max(last.saturating_add(1)));
-            for line_num in start..=hi {
-                let index = usize::try_from(line_num.saturating_sub(1)).unwrap_or(usize::MAX);
-                if let Some(text) = lines.get(index) {
-                    out.push(format_numbered_line(line_num, text));
-                    seen.push(line_num);
-                }
-            }
-        }
-        seen.extend(carried);
-        snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
-    }
-    for warning in &result.warnings {
-        out.push(format!("warning: {warning}"));
-    }
-    out.join("\n")
 }
 
 impl Tool for HashlineEditTool {
@@ -1015,7 +953,6 @@ impl Tool for HashlineEditTool {
                 return crate::tool::error_output_kind(format!("{message}{pointer}"), kind);
             }
         };
-
         let hash = input_hash(&patch_text);
         let mut rendered: Vec<String> = Vec::new();
         let mut diff = String::new();
@@ -1048,18 +985,16 @@ impl Tool for HashlineEditTool {
                 continue;
             }
             noop.remove(&result.canonical_path);
-            diff.push_str(
-                crate::diff::patch(
-                    &result.before,
-                    &result.after,
-                    Path::new(&result.canonical_path),
-                )
-                .as_str(),
+            let patch = crate::diff::patch(
+                &result.before,
+                &result.after,
+                Path::new(&result.canonical_path),
             );
+            diff.push_str(patch.as_str());
             if result.op != SectionOp::Delete {
                 checked.push((rendered.len(), result.canonical_path.as_str()));
             }
-            rendered.push(render_section_result(result, snapshots));
+            rendered.push(super::messages::section_reply(result, snapshots));
         }
         let (verdicts, layer) = post_edit_checks(&checked, &results, context);
         let mut syntax: Option<String> = None;
@@ -1147,11 +1082,7 @@ fn post_edit_checks(
     })
 }
 
-pub fn record_write_snapshot(
-    state: &SharedHashline,
-    path: &Path,
-    content: &str,
-) -> super::format::FileTag {
+pub fn record_write_snapshot(state: &SharedHashline, path: &Path, content: &str) -> FileTag {
     let line_count = u64::try_from(content.split('\n').count()).unwrap_or(u64::MAX);
     let seen: Vec<u64> = (1..=line_count).collect();
     record_view_snapshot(state, path, content, &seen)

@@ -1,5 +1,5 @@
-//! `yi stats --since 7d --by model|upstream|day|prices|plan [--top N]`: the sessions directory
-//! folded into one table, the per-route prices it implies, or the plan engine's ops.
+//! `yi stats --since 7d --by model|upstream|day|prices|plan|skills [--top N]`: the sessions directory
+//! folded into one table, the per-route prices it implies, the plan engine's ops, or skill uptake.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -26,6 +26,7 @@ enum By {
     Day,
     Prices,
     Plan,
+    Skills,
 }
 
 /// What `--since`, `--by` and `--top` asked for; all unset means `yi stats` is the one-session view.
@@ -61,10 +62,11 @@ impl Flags {
             "day" => Ok(By::Day),
             "prices" => Ok(By::Prices),
             "plan" => Ok(By::Plan),
+            "skills" => Ok(By::Skills),
             _ => Err(bad(
                 "by",
                 &raw,
-                "wants model, upstream, day, prices or plan",
+                "wants model, upstream, day, prices, plan or skills",
             )),
         });
         let top = self.top.map(|raw| {
@@ -178,6 +180,7 @@ fn grouped(scan: &Scan, by: By, zone: &Zone) -> Vec<(String, Group)> {
             By::Model | By::Prices | By::Plan => route(request).0,
             By::Upstream => route(request).1,
             By::Day => day_label(zone, request.at_ms),
+            By::Skills => continue,
         };
         groups.entry(key).or_default().add(request);
     }
@@ -410,6 +413,19 @@ fn observed(scan: &Scan) -> (Vec<Observed>, usize) {
     (fits, unfit)
 }
 
+fn scan_json(scanned: &Scan, window: &str) -> Value {
+    json!({
+        "since": window, "files": scanned.files,
+        "unreadable": scanned.unreadable, "badLines": scanned.bad_lines,
+    })
+}
+
+fn print_skipped(skipped: Option<&str>) {
+    if let Some(note) = skipped {
+        println!("{note}");
+    }
+}
+
 /// The prices view: every route's fit, its drift from the catalog, and the routes left out.
 fn prices_view(scanned: &Scan, window: &str, skipped: Option<String>, json_out: bool) -> i32 {
     let (fits, unfit) = observed(scanned);
@@ -427,10 +443,11 @@ fn prices_view(scanned: &Scan, window: &str, skipped: Option<String>, json_out: 
                 })
             })
             .collect();
-        println!(
-            "{}",
-            json!({"since": window, "prices": rows, "unfit": unfit, "skipped": skipped})
-        );
+        let mut output = scan_json(scanned, window);
+        output["prices"] = json!(rows);
+        output["unfit"] = json!(unfit);
+        output["skipped"] = json!(skipped);
+        println!("{output}");
         return 0;
     }
     println!(
@@ -449,9 +466,7 @@ fn prices_view(scanned: &Scan, window: &str, skipped: Option<String>, json_out: 
     if unfit > 0 {
         println!("{unfit_note}");
     }
-    if let Some(note) = skipped {
-        println!("{note}");
-    }
+    print_skipped(skipped.as_deref());
     0
 }
 
@@ -487,14 +502,12 @@ fn plan_view(
             .iter()
             .map(|(op, actor, count)| json!({"op": op, "actor": actor, "count": count}))
             .collect();
-        println!(
-            "{}",
-            json!({
-                "since": window, "files": scanned.files, "journals": scanned.journals,
-                "planOps": total, "rows": table, "totals": totals,
-                "unreadable": scanned.unreadable, "badLines": scanned.bad_lines,
-            })
-        );
+        let mut output = scan_json(scanned, window);
+        output["journals"] = json!(scanned.journals);
+        output["planOps"] = json!(total);
+        output["rows"] = json!(table);
+        output["totals"] = json!(totals);
+        println!("{output}");
         return 0;
     }
     println!(
@@ -524,9 +537,20 @@ fn plan_view(
             rows.len()
         );
     }
-    if let Some(note) = skipped {
-        println!("{note}");
+    print_skipped(skipped.as_deref());
+    0
+}
+
+fn skills_view(scanned: &Scan, window: &str, skipped: Option<String>, json_out: bool) -> i32 {
+    if json_out {
+        let mut output = scan_json(scanned, window);
+        output["skills"] = scanned.skills.json();
+        println!("{output}");
+        return 0;
     }
+    println!("{window}: {} session file(s)", scanned.files);
+    println!("{}", scanned.skills.line());
+    print_skipped(skipped.as_deref());
     0
 }
 
@@ -554,6 +578,9 @@ pub fn run(query: &Query, dir: &Path, plans: &Path, json_out: bool) -> i32 {
     if by == By::Plan {
         return plan_view(&scanned, window, plans, skipped, json_out);
     }
+    if by == By::Skills {
+        return skills_view(&scanned, window, skipped, json_out);
+    }
     let zone = Zone::local();
     let rows = grouped(&scanned, by, &zone);
     let sessions: HashSet<&str> = scanned
@@ -574,14 +601,12 @@ pub fn run(query: &Query, dir: &Path, plans: &Path, json_out: bool) -> i32 {
                 })
                 .collect()
         });
-        println!(
-            "{}",
-            json!({
-                "since": window, "files": scanned.files, "sessions": sessions.len(),
-                "requests": scanned.requests.len(), "rows": table, "top": costly,
-                "unreadable": scanned.unreadable, "badLines": scanned.bad_lines,
-            })
-        );
+        let mut output = scan_json(&scanned, window);
+        output["sessions"] = json!(sessions.len());
+        output["requests"] = json!(scanned.requests.len());
+        output["rows"] = json!(table);
+        output["top"] = json!(costly);
+        println!("{output}");
         return 0;
     }
     println!(
@@ -617,9 +642,7 @@ pub fn run(query: &Query, dir: &Path, plans: &Path, json_out: bool) -> i32 {
             );
         }
     }
-    if let Some(note) = skipped {
-        println!("{note}");
-    }
+    print_skipped(skipped.as_deref());
     0
 }
 

@@ -4,11 +4,11 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 
-use crate::session::AnswerHandle;
+use crate::session::{AnswerHandle, StatusLine};
 
 const ANSWER_ECHO_BYTES: usize = 4096;
 const HELD: &str = "The answer is held, not shown. Fix what this names, patch any draft below with `edit`, then call `answer` with only `summary`, or with a new `text`.";
-pub(crate) const GUIDE: &str = "# answer\n\nThe last call of a turn: `text` is the whole answer, `summary` one line on what changed or was found.\n\nIt is checked before anyone sees it: open todos, numbers no tool printed, an open plan step. A refusal holds the draft and prints it as `[path#TAG]` rows: do the missing work, patch those rows with `edit`, and call `answer` with only `summary`. Nothing after an accepted answer reaches the user.";
+pub(crate) const GUIDE: &str = "# answer\n\nThe last call of a turn: `summary` is the reply's first line, the status the user reads first, and `text` the rest. A summary alone is a whole reply.\n\nIt is checked before anyone sees it: open todos, numbers no tool printed, an open plan step. A refusal holds the draft and prints it as `[path#TAG]` rows: do the missing work, patch those rows with `edit`, and call `answer` with only `summary`. Nothing after an accepted answer reaches the user.";
 
 pub(crate) struct AnswerTool {
     handle: AnswerHandle,
@@ -54,6 +54,22 @@ impl AnswerTool {
         shown.push(&row);
         Some((path, shown.join("\n")))
     }
+
+    /// Invariant: a reply on screen is kept as written or replaced by a new `text`; a status line
+    /// under it is all a parent reads, and one over it prints the reply twice.
+    fn stand(&self, line: &str, draft: &str) -> ToolOutput {
+        let hidden = StatusLine::of(line).is_some_and(StatusLine::hides_a_standing_reply)
+            && crate::session::headed(line, draft) != draft;
+        let refusal = (hidden.then(|| "This status line would not be shown.".to_owned()))
+            .or_else(|| self.handle.judge(draft));
+        if let Some(refusal) = refusal {
+            return error_output(format!("{refusal}\n{}", crate::session::FINISH));
+        }
+        self.handle.stand();
+        let mut output = text_output("The reply above stands as the answer; the turn ends.");
+        output.result.terminate = Some(true);
+        output
+    }
 }
 
 impl Tool for AnswerTool {
@@ -62,7 +78,7 @@ impl Tool for AnswerTool {
     }
 
     fn description(&self) -> &str {
-        "End the turn, called alone and last: `text` is the final answer, `summary` one line. Checked before it is shown; a refusal holds the draft for `edit`. Guide: read(\"yi://tools/answer\")."
+        "End the turn, called alone and last: `summary` heads the reply, `text` the rest. Checked before it is shown; a refusal holds the draft for `edit`. Guide: read(\"yi://tools/answer\")."
     }
 
     fn schema(&self) -> Value {
@@ -81,6 +97,8 @@ impl Tool for AnswerTool {
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
+        let summary = input.get("summary").and_then(Value::as_str);
+        let line = summary.unwrap_or_default().trim();
         let given = input.get("text").and_then(Value::as_str).map(str::trim_end);
         let (draft, stands) = match (given.filter(|text| !text.is_empty()), self.handle.held()) {
             (Some(text), _) => (text.to_owned(), false),
@@ -88,17 +106,15 @@ impl Tool for AnswerTool {
                 Some(text) => (text, false),
                 None => (held.text, true),
             },
+            (None, None) if !line.is_empty() => (String::new(), false),
             (None, None) => return error_output("No draft is held: pass the answer as `text`."),
         };
-        let Some(refusal) = self.handle.judge(&draft) else {
-            if stands {
-                self.handle.stand();
-                let mut output =
-                    text_output("The reply above stands as the answer; the turn ends.");
-                output.result.terminate = Some(true);
-                return output;
-            }
-            self.handle.accept(draft);
+        if stands {
+            return self.stand(line, &draft);
+        }
+        let reply = crate::session::headed(line, &draft);
+        let Some(refusal) = self.handle.judge(&reply) else {
+            self.handle.accept(reply);
             return text_output("Answer delivered; the turn ends.");
         };
         let held = self.hold_file(&draft, context);

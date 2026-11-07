@@ -107,7 +107,7 @@ pub struct ProviderStream {
     long_cache: bool,
     /// What the session ledger says of the next gap and write, for its loop requests' TTL
     /// (D315); `None` for a stream no ledger feeds, a child's included.
-    ttl_estimate: Mutex<Option<crate::cache_miss::TtlEstimate>>,
+    cache_advice: Mutex<Option<crate::cache_miss::CacheAdvice>>,
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
@@ -144,7 +144,7 @@ impl ProviderStream {
             faux_hold: Arc::default(),
             faux_time: Arc::default(),
             long_cache: false,
-            ttl_estimate: Mutex::new(None),
+            cache_advice: Mutex::new(None),
             proxy: None,
             routing: None,
             telemetry: None,
@@ -181,7 +181,7 @@ impl ProviderStream {
             faux_hold: Arc::default(),
             faux_time: Arc::default(),
             long_cache: false,
-            ttl_estimate: Mutex::new(None),
+            cache_advice: Mutex::new(None),
             proxy: self.proxy.clone(),
             routing: self.routing.clone(),
             telemetry: self.telemetry.clone(),
@@ -272,9 +272,9 @@ impl ProviderStream {
     }
 
     /// The session ledger's latest estimate (`cache_miss::attach`).
-    pub fn set_ttl_estimate(&self, estimate: Option<crate::cache_miss::TtlEstimate>) {
-        if let Ok(mut held) = self.ttl_estimate.lock() {
-            *held = estimate;
+    pub fn set_cache_advice(&self, advice: Option<crate::cache_miss::CacheAdvice>) {
+        if let Ok(mut held) = self.cache_advice.lock() {
+            *held = advice;
         }
     }
 
@@ -333,10 +333,22 @@ impl StreamFn for ProviderStream {
     }
 
     fn cache_ttl(&self, model: &Model) -> yi_types::model::Ttl {
-        let estimate = self.ttl_estimate.lock().ok().and_then(|held| *held);
-        estimate.map_or(yi_types::model::Ttl::Min5, |estimate| {
-            estimate.cheapest(model, yi_session::now_ms())
+        self.advice().map_or(yi_types::model::Ttl::Min5, |advice| {
+            advice.cheapest(model, yi_session::now_ms())
         })
+    }
+
+    fn cache_tail(&self, model: &Model) -> bool {
+        let route = format!("{}/{}", model.provider, model.id);
+        self.advice()
+            .is_none_or(|advice| advice.tail(yi_session::now_ms(), &route))
+    }
+}
+
+impl ProviderStream {
+    /// The fold's latest advice, cloned: the loop asks once per request, never in a hot path.
+    fn advice(&self) -> Option<crate::cache_miss::CacheAdvice> {
+        self.cache_advice.lock().ok().and_then(|held| held.clone())
     }
 }
 
@@ -849,6 +861,7 @@ mod tests {
         let model = resolve_model("cursor", "composer-2.5-fast").ok_or("cursor id")?;
         let context = LlmContext {
             cache_ttl: yi_types::model::Ttl::Min5,
+            cache_tail: true,
             system_prompt: String::new(),
             messages: Vec::new(),
             transient: Vec::new(),
@@ -948,6 +961,7 @@ mod tests {
         };
         let mut context = LlmContext {
             cache_ttl: yi_types::model::Ttl::Min5,
+            cache_tail: true,
             system_prompt: String::new(),
             messages: Vec::new(),
             transient: Vec::new(),

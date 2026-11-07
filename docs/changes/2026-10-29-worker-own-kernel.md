@@ -1,0 +1,7 @@
+---
+version: 0.963.0
+issue: Closes #1584
+raise: crate runtime +72, tests +107
+ledger~: kernel + ipython + rlm() subagents | n mode | n mode (`tools=[..., "ipython"]` boots it its own kernel at worker prices, a walled one refused with the root's `WALLED_KERNEL_UNCONFINED` text where there is no Seatbelt, `kernel_across_sessions::a_walled_worker_naming_ipython_keeps_the_kernel_boundary`)
+---
+A worker (`rlm.run(role="worker")`) may now name `ipython` in `tools=`, which boots it a kernel of its own at worker prices; it is allowed, not a default, so a bare worker is unchanged. Root and worker sessions share `attach_kernel` and the fetch, history and memory registration; the worker has no spawn or messaging handlers, so a cell in a worker cannot spawn. Its `rlm.fetch` reads live values such as `kernel://main/<var>` through its own resolver. `reader::session` is the one admission check and builds the kernel only when the worker keeps `ipython`, so a one-turn worker builds none. A walled worker where the kernel would run unconfined (no Seatbelt) keeps the loud refusal, `WALLED_KERNEL_UNCONFINED`. The proofs are `kernel_across_sessions::a_worker_fetches_a_parent_kernel_value`, `kernel_across_sessions::a_walled_worker_naming_ipython_keeps_the_kernel_boundary`, and `reader_e2e::a_one_turn_worker_naming_ipython_builds_no_kernel`.

@@ -43,6 +43,7 @@ mod plan_cli;
 mod plan_ops;
 mod rpc_protocol;
 mod serve_daemon;
+mod tool_import;
 mod tui_cells;
 mod tui_drive;
 #[cfg(target_os = "linux")]
