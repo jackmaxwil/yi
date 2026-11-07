@@ -27,6 +27,10 @@ pub(crate) struct Args {
     pub(crate) cwd: Option<String>,
     pub(crate) here: bool,
     pub(crate) fix: bool,
+    /// `worker replace --binary`: the built binary the root serves from now on.
+    pub(crate) binary: Option<String>,
+    /// `worker replace --if-running`: no daemon is a success, not an error.
+    pub(crate) if_running: bool,
     pub(crate) socket: Option<String>,
     pub(crate) headless: bool,
     pub(crate) solo: bool,
@@ -60,6 +64,16 @@ pub(crate) enum Resume {
     Named(String),
 }
 
+impl Resume {
+    fn from_flags(session: Option<String>, continue_leaf: bool) -> Self {
+        match (session, continue_leaf) {
+            (Some(id), _) => Self::Named(id),
+            (None, true) => Self::Leaf,
+            (None, false) => Self::Fresh,
+        }
+    }
+}
+
 pub(crate) fn parse_args() -> Result<Args, lexopt::Error> {
     parse_from(std::env::args_os())
 }
@@ -83,6 +97,8 @@ pub(super) fn parse_from(
     let mut cwd = None;
     let mut here = false;
     let mut fix = false;
+    let mut binary = None;
+    let mut if_running = false;
     let mut socket = None;
     let mut headless = false;
     let mut lanes = false;
@@ -128,6 +144,8 @@ pub(super) fn parse_from(
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("here") => here = true,
             Long("fix") => fix = true,
+            Long("binary") => binary = Some(parser.value()?.string()?),
+            Long("if-running") => if_running = true,
             Long("socket") => socket = Some(parser.value()?.string()?),
             Long("headless") => headless = true,
             Long("lanes") => lanes = true,
@@ -186,6 +204,8 @@ pub(super) fn parse_from(
         cwd,
         here,
         fix,
+        binary,
+        if_running,
         socket,
         headless,
         solo,
@@ -198,11 +218,7 @@ pub(super) fn parse_from(
         size,
         eval,
         deadline,
-        resume: match (session, continue_leaf) {
-            (Some(id), _) => Resume::Named(id),
-            (None, true) => Resume::Leaf,
-            (None, false) => Resume::Fresh,
-        },
+        resume: Resume::from_flags(session, continue_leaf),
         schema,
         check,
         stats: stats_flags.typed()?,
