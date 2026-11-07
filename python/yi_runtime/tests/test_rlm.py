@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import io
 import inspect
+import errno
 import json
 import pathlib
 import pydoc
@@ -1028,10 +1029,11 @@ class ContainedPutTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_read_only_board_refusal_names_a_remedy_that_works(self) -> None:
         """Dies with the bare EPERM text: a contained child's put named nothing it could do."""
         root = pathlib.Path(tempfile.mkdtemp())
-        self.addCleanup(lambda: (os.chmod(root / "board", 0o755), shutil.rmtree(root)))
-        (root / "board").mkdir()
-        os.chmod(root / "board", 0o555)
-        with mock.patch.dict(os.environ, {"RLM_FAMILY_DIR": str(root / "board")}):
+        self.addCleanup(shutil.rmtree, root)
+        # Incident: a 0o555 board refused nothing on the forge runner, whose tests run as root.
+        sandboxed = PermissionError(errno.EPERM, "Operation not permitted")
+        with mock.patch.dict(os.environ, {"RLM_FAMILY_DIR": str(root / "board")}), \
+                mock.patch.object(rlm, "_put", side_effect=sandboxed):
             with self.assertRaises(PermissionError) as refused:
                 rlm.put("shard_auth", {"findings": [1, 2]})
         self.assertIn("local://", str(refused.exception))

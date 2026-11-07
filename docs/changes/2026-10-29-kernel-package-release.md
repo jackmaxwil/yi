@@ -14,5 +14,6 @@ The kernel's `rlm.harness` store is gone: `rlm.harness`, `rlm.get_harness_state`
 - `test_a_value_reads_only_the_keys_it_received`: `AttributeError not raised` when `total_lines` silently resolved the `totalLines` key.
 - `test_search_rows_keep_the_signature_and_whole_description`: the row was `{'name': 'fetch', 'summary': 'Read a URL'}` instead of the signature and full description.
 - `test_a_result_by_child_id_digests_the_wait_by_session_name`: `RuntimeError: child sub-1 (sub-1) is no longer registered with the parent` with a wait reply keyed by session name `n`, the host's wait-map shape.
+- `test_a_result_by_child_id_is_not_told_a_siblings_state`: `RuntimeError: child sub-1 is stuck (repeat break)` when the one child in the wait reply was a sibling, against the single-candidate guess this change deletes.
 - `test_mcp_public_names_remain_importable`: `AttributeError: module 'rlm' has no attribute 'McpToolError'` against the public names shipped before this release.
 - `a_new_runtime_identity_leaves_the_running_one_and_the_dependencies_alone`: `left: 4`, `right: 12` for missing-source warnings from one dependency venv and two overlays, using the existing fake uv fixture.

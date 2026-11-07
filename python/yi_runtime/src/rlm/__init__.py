@@ -223,7 +223,7 @@ async def _await_child(name: str, target: str, schema: Any, timeout: float) -> d
         if isinstance(next_cursor, int):
             cursor = next_cursor
         try:
-            state, note = await _digest_child(reply, name, resolve_target=name == target)
+            state, note = await _digest_child(reply, name)
         except NoSuchChild as error:
             if name != target:
                 raise RuntimeError(
@@ -269,18 +269,12 @@ def _merge_digest(reply: dict[str, Any], states: dict, notes: dict) -> tuple[dic
     return states, notes
 
 
-async def _digest_child(reply: dict[str, Any], name: str, resolve_target: bool = False) -> tuple[Any, Any]:
+async def _digest_child(reply: dict[str, Any], name: str) -> tuple[Any, Any]:
     states = reply.get("states")
     if not isinstance(states, dict):
         raise RuntimeError("rlm.wait returned an invalid state map")
     causes = reply.get("causes")
     digest_name = name
-    if resolve_target and digest_name not in states:
-        candidates = set(states)
-        if isinstance(causes, dict):
-            candidates.update(causes)
-        if len(candidates) == 1:
-            digest_name = next(iter(candidates))
     if isinstance(causes, dict) and causes.get(digest_name) == "reaped":
         raise NoSuchChild(name)
     if digest_name not in states:
