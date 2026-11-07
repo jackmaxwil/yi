@@ -35,6 +35,7 @@ pub enum Event {
     SessionStart {
         cwd: PathBuf,
         reason: StartReason,
+        restored: BTreeSet<String>,
     },
     PromptSubmitted {
         prompt: String,
@@ -322,8 +323,10 @@ impl Host {
         }
         self.started = true;
         self.state.seal_build();
+        let mut restored = BTreeSet::new();
         if let Some(snapshot) = store.and_then(last_snapshot) {
             self.late = self.state.restore(&snapshot);
+            restored = self.state.yard_sources();
         }
         let reason = if resumed {
             StartReason::Resume
@@ -331,7 +334,14 @@ impl Host {
             StartReason::Fresh
         };
         let cwd = self.cwd.clone();
-        self.dispatch(&Event::SessionStart { cwd, reason }, store);
+        self.dispatch(
+            &Event::SessionStart {
+                cwd,
+                reason,
+                restored,
+            },
+            store,
+        );
     }
 
     pub fn prompt_event(&self, prompt: &str) -> Event {
