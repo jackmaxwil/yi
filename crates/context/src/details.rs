@@ -42,6 +42,15 @@ fn note_paths(name: &str, paths: impl IntoIterator<Item = String>, file_ops: &mu
 
 /// A cell's own calls ride its `ipython` result: a program's edit is still an edit.
 pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut FileOps) {
+    extract_file_ops_kept(message, file_ops, |_| true);
+}
+
+/// As [`extract_file_ops_from_message`], noting only the cell rows `keep` accepts.
+pub fn extract_file_ops_kept(
+    message: &AgentMessage,
+    file_ops: &mut FileOps,
+    keep: impl Fn(&NestedCall) -> bool,
+) {
     match message {
         AgentMessage::Assistant { content, .. } => {
             for block in content {
@@ -55,7 +64,9 @@ pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut File
         }
         AgentMessage::ToolResult { details, .. } => {
             for call in nested_calls(details.as_ref()) {
-                note_paths(&call.tool, call.paths, file_ops);
+                if keep(&call) {
+                    note_paths(&call.tool, call.paths, file_ops);
+                }
             }
             let dropped =
                 (details.as_ref()).and_then(|details| details.get(NESTED_READS_DROPPED)?.as_u64());
