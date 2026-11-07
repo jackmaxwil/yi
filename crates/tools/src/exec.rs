@@ -321,7 +321,7 @@ mod tests {
     }
 
     /// The bound the pool holds is what keeps a large tools directory from forking it whole; each
-    /// probe counts the siblings alive beside it in this scratch dir, so the peak is observed.
+    /// probe counts the distinct sibling scripts alive (a pipeline fork shares argv), so the peak is observed.
     #[test]
     fn exec_tool_probes_run_under_a_fixed_pool() -> TestResult {
         let dir = crate::scratch::Scratch::new("yi-tools-exec-pool")?;
@@ -334,7 +334,7 @@ mod tests {
                     &name,
                     format!(
                         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  \
-                         pgrep -f '{dir}/tool-[0-9]' | wc -l > '{dir}/seen-{name}'\n  \
+                         ps -wweo args= | grep '{dir}/tool-[0-9]' | sort -u | wc -l > '{dir}/seen-{name}'\n  \
                          sleep 30\n  \
                          printf '{{\"name\":\"{name}\",\"input_schema\":{{\"type\":\"object\"}}}}'\nfi\n",
                         dir = dir.display(),
