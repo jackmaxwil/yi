@@ -1,4 +1,6 @@
 ---
+version: 0.972.0
+decisions: D561
 issue: Refs #1242
 decision: the edit side is the `[path#TAG]` headers a direct `edit` or `write` prints plus the `ok` `edit` and `write` rows on a cell's `ipython` result, matched by path suffix as before (revises D398) | a program's edit reached the session only in its cell's `calls` rows, so the read whose tags the next edit needs was cut once it aged | delete the `ipython` arm in `reclaim::newest_reads`
 raise: crate context +11, crate runtime +58, tests +48, comments +1
