@@ -151,7 +151,7 @@ flowchart TB
     tools["yi-tools<br/>read · grep · edit · bash · ipython"]
     perm["yi-permission<br/>allow · contain · ask · deny"]
     kernel["yi-kernel<br/>Jupyter client"]
-    py[["Python kernel<br/>in ~/.yi/kernel-venv<br/>rlm · yi"]]
+    py[["Python kernel<br/>in ~/.yi/kernel-venv-&lt;hash&gt;<br/>rlm · yi"]]
 
     you --> tui & ask & console
     tui --> runtime
@@ -589,7 +589,7 @@ Point a client at the command `yi acp`; this is what a client sends:
 
 ```console
 $ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2}}' | yi acp
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2,"info":{"name":"yi","version":"0.942.0"},"capabilities":{"session":{"delete":{}}},"authMethods":[]}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2,"info":{"name":"yi","version":"<your yi version>"},"capabilities":{"session":{"delete":{}}},"authMethods":[]}}
 ```
 
 - **Sessions.** `session/new` takes a `cwd` and answers a `sessionId` and the settings you can
