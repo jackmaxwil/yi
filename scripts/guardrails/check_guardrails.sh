@@ -192,6 +192,7 @@ run "$PY" scripts/intake/bridge.py --selfcheck
 # The autofixer pushes to people's branches, so its table, its wall and its marker check are
 # proved here on a scratch merge with a stand-in model, never a forge.
 run "$PY" scripts/pr_autofix.py --selfcheck
+run "$PY" scripts/checkout_guard.py --selfcheck
 # Every bot comment's spend is read back from its meta line, so the parse and the totals are proved here.
 run "$PY" scripts/bot_meter.py --selfcheck
 # The orphan scans are heuristics over text, so the flag is where they are proved to

@@ -36,6 +36,7 @@ def job_secs(workflow):
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import forge_tracking  # noqa: E402
+import checkout_guard  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 from _common import base_commit  # noqa: E402
 
@@ -657,6 +658,11 @@ def cmd_merge(args):
 
 def refresh_from_main():
     """Merge origin/main in, let the baseline driver take the conflicts it owns, re-measure."""
+    # Incident: a merge into a checkout holding a person's uncommitted edits mixed them into a conflict.
+    why = checkout_guard.refusal(ROOT, "forge_pr")
+    if why:
+        print(f"land: {why}")
+        return 1
     git("fetch", "--no-tags", "origin", "main", check=True)
     subprocess.run(("git", "-C", str(ROOT), "config", "merge.baseline.driver",
                     f"{sys.executable} scripts/merge_baseline.py %O %A %B"), check=False)
@@ -1030,7 +1036,28 @@ def selfcheck():
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green.
     linux_clippy_selfcheck()
     commit_selfcheck()
+    land_guard_selfcheck()
     print("ok   forge_pr selfcheck")
+
+
+def land_guard_selfcheck():
+    """`just land` in a checkout holding someone's uncommitted edit stops before it fetches or merges."""
+    import contextlib, io
+    global ROOT, git
+    called = []
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = ROOT, git
+        ROOT, git = pathlib.Path(tmp), lambda *args, **kw: called.append(args) or ""
+        try:
+            subprocess.run(("git", "-C", tmp, "init", "-q"), check=True)
+            (ROOT / "README.md").write_text("the owner's uncommitted edit\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = refresh_from_main()
+        finally:
+            ROOT, git = saved
+    assert code == 1 and "README.md" in out.getvalue() and not called, (
+        "land went on to fetch and merge into a checkout with uncommitted work", code, called, out.getvalue())
 
 
 def linux_clippy_selfcheck():
