@@ -25,6 +25,22 @@ mod todo_record;
 mod url;
 mod wire_roundtrip;
 
+fn workspace_root() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let current = std::env::current_dir()?;
+    if let Some(root) = current
+        .ancestors()
+        .find(|path| path.join("crates/types").is_dir())
+    {
+        return Ok(root.to_path_buf());
+    }
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .ancestors()
+        .find(|path| path.join("crates/types").is_dir())
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| "workspace root".into())
+}
+
 #[test]
 fn the_suite_wrapper_can_observe_tmpdir() {
     let tmp = std::env::temp_dir();

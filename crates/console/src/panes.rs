@@ -77,104 +77,267 @@ pub fn hunk_lines(patch: &str) -> Vec<u32> {
     lines
 }
 
-pub fn review_view(
+/// What a click in the review's pinned header picks: a scope chip or a file row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewPick {
+    Scope(crate::model::ReviewScope),
+    File(usize),
+}
+
+/// A review pane's state beside what it shows: the file the body should scroll to on the next draw,
+/// and where the last draw put each pick.
+#[derive(Default)]
+pub struct ReviewUi {
+    pub(crate) jump: Option<usize>,
+    pub(crate) hits: Vec<(ratatui::layout::Rect, ReviewPick)>,
+}
+
+/// A review as drawn: a header pinned above the pane's scroll, and the diff that scrolls under it.
+pub struct Review {
+    pub(crate) title: String,
+    pub(crate) head: Vec<Line<'static>>,
+    pub(crate) body: Vec<Line<'static>>,
+    /// Each scope chip's column, width and scope, from the pane's left edge.
+    pub(crate) scopes: Vec<(u16, u16, crate::model::ReviewScope)>,
+    /// Each drawn file row's place in `head`, and which file it is.
+    pub(crate) files: Vec<(usize, usize)>,
+    /// The row of `body` each file's header sits on.
+    pub(crate) heads: Vec<usize>,
+}
+
+/// Rows the file list shows at most; the rest are named in a row of its own.
+const FILE_ROWS: usize = 8;
+const BAR: usize = 5;
+
+fn scope_count(
+    diff: Option<&crate::model::SessionDiff>,
+    scope: crate::model::ReviewScope,
+) -> usize {
+    use crate::model::ReviewScope;
+    let Some(diff) = diff else { return 0 };
+    match scope {
+        ReviewScope::Branch => diff.branch.as_ref().map_or(0, |branch| branch.files.len()),
+        ReviewScope::Turn => diff
+            .files
+            .iter()
+            .filter(|(_, file)| file.turn == diff.turn)
+            .count(),
+        ReviewScope::Session => diff.files.len(),
+    }
+}
+
+/// A for a file the patch creates, D for one it deletes, U for one git does not track yet.
+fn status_of(patch: &str, tracked: bool) -> char {
+    let made = patch.contains("\nnew file mode") || patch.contains("--- /dev/null");
+    let gone = patch.contains("\ndeleted file mode") || patch.contains("+++ /dev/null");
+    match (tracked, made, gone) {
+        (false, _, _) => 'U',
+        (_, true, _) => 'A',
+        (_, _, true) => 'D',
+        _ => 'M',
+    }
+}
+
+fn status_style(status: char, theme: &Theme) -> Style {
+    let color = match status {
+        'A' | 'U' => theme.success,
+        'D' => theme.error,
+        _ => theme.warning,
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+/// Five cells of the change's shape: green for what it adds, red for what it removes.
+fn change_bar(added: u64, removed: u64, theme: &Theme) -> Vec<Span<'static>> {
+    let total = added.saturating_add(removed);
+    if total == 0 {
+        return Vec::new();
+    }
+    let cells = u64::try_from(BAR).unwrap_or(5);
+    let mut green = added.saturating_mul(cells).saturating_add(total / 2) / total;
+    if added > 0 && green == 0 {
+        green = 1;
+    }
+    if removed > 0 && green >= cells {
+        green = cells.saturating_sub(1);
+    }
+    let (green, red) = (
+        usize::try_from(green).unwrap_or(0),
+        usize::try_from(
+            cells
+                .saturating_sub(green)
+                .min(if removed > 0 { cells } else { 0 }),
+        )
+        .unwrap_or(0),
+    );
+    vec![
+        Span::styled("█".repeat(green), Style::default().fg(theme.success)),
+        Span::styled("█".repeat(red), Style::default().fg(theme.error)),
+    ]
+}
+
+/// The review of `scope`: its header with `room` rows for the file list, and its diff body.
+pub fn review_parts(
     diff: Option<&crate::model::SessionDiff>,
     scope: crate::model::ReviewScope,
     note: &str,
-    width: usize,
+    (width, room): (usize, usize),
     theme: &Theme,
-) -> (String, Vec<Line<'static>>) {
+) -> Review {
     use crate::model::ReviewScope;
     let unbased = scope == ReviewScope::Branch && diff.is_none_or(|diff| diff.branch.is_none());
     let scope = if unbased { ReviewScope::Session } else { scope };
-    let serving = |path: &str| {
-        diff.and_then(|diff| diff.files.iter().find(|(known, _)| same_file(known, path)))
-            .and_then(|(_, file)| file.serving.clone())
-    };
-    let (files, patch, base): (Vec<(String, u64, u64)>, String, String) = match (scope, diff) {
+    let patches: Vec<(String, String)> =
+        diff.map_or_else(Vec::new, |diff| review_files(diff, scope));
+    let (counts, untracked): (Vec<(u64, u64, bool)>, String) = match (scope, diff) {
         (ReviewScope::Branch, Some(diff)) => diff.branch.as_ref().map_or_else(
-            || (Vec::new(), String::new(), String::new()),
+            || (Vec::new(), String::new()),
             |branch| {
                 let loose = if branch.untracked == 0 {
                     String::new()
                 } else {
                     format!(" · {} untracked", branch.untracked)
                 };
-                let base = format!("branch vs base {}{loose}", branch.base);
-                (branch.files.clone(), branch.patch.clone(), base)
+                (
+                    branch
+                        .files
+                        .iter()
+                        .map(|(_, add, rem)| (*add, *rem, true))
+                        .collect(),
+                    format!("branch vs base {}{loose}", branch.base),
+                )
             },
         ),
         (_, Some(diff)) => {
-            let chosen: Vec<&(String, crate::model::FileDiff)> = diff
+            let chosen: Vec<&crate::model::FileDiff> = diff
                 .files
                 .iter()
                 .filter(|(_, file)| scope == ReviewScope::Session || file.turn == diff.turn)
+                .map(|(_, file)| file)
                 .collect();
+            let loose = match chosen.iter().filter(|file| !file.tracked).count() {
+                0 => String::new(),
+                loose => format!(" · {loose} untracked"),
+            };
             (
                 chosen
                     .iter()
-                    .map(|(path, file)| (path.clone(), file.added, file.removed))
+                    .map(|file| (file.added, file.removed, file.tracked))
                     .collect(),
-                chosen
-                    .iter()
-                    .map(|(_, file)| file.patch.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                match chosen.iter().filter(|(_, file)| !file.tracked).count() {
-                    0 => String::new(),
-                    loose => format!(" · {loose} untracked"),
-                },
+                loose,
             )
         }
-        (_, None) => (Vec::new(), String::new(), String::new()),
+        (_, None) => (Vec::new(), String::new()),
     };
-    let (added, removed) = files.iter().fold((0_u64, 0_u64), |(a, r), (_, add, rem)| {
+    let serving = |path: &str| {
+        diff.and_then(|diff| diff.files.iter().find(|(known, _)| same_file(known, path)))
+            .and_then(|(_, file)| file.serving.clone())
+    };
+    let (added, removed) = counts.iter().fold((0_u64, 0_u64), |(a, r), (add, rem, _)| {
         (a.saturating_add(*add), r.saturating_add(*rem))
     });
-    let noun = if files.len() == 1 { "file" } else { "files" };
+    let noun = if patches.len() == 1 { "file" } else { "files" };
     let title = format!(
         "Review · {} · {} {noun} +{added} −{removed}{note}",
         scope.label(),
-        files.len()
+        patches.len()
     );
     let base = match (unbased, scope) {
-        (true, _) => format!("no branch diff from git, so this session's edits{base}"),
-        (false, ReviewScope::Branch) => base,
-        (false, ReviewScope::Turn) => format!("the last turn's edits{base}"),
-        (false, ReviewScope::Session) => format!("this session's edits{base}"),
+        (true, _) => format!("no branch diff from git, so this session's edits{untracked}"),
+        (false, ReviewScope::Branch) => untracked,
+        (false, ReviewScope::Turn) => format!("the last turn's edits{untracked}"),
+        (false, ReviewScope::Session) => format!("this session's edits{untracked}"),
     };
-    let mut lines: Vec<Line<'static>> = vec![Line::styled(base, theme.dim_style())];
+    // The chips: each scope and how many files it holds, the live one lit.
+    let mut chips: Vec<Span<'static>> = Vec::new();
+    let mut scopes = Vec::new();
+    let mut at = 0_u16;
+    for chip in [ReviewScope::Branch, ReviewScope::Turn, ReviewScope::Session] {
+        let label = format!(" {} {} ", chip.label(), scope_count(diff, chip));
+        let span = u16::try_from(label.chars().count()).unwrap_or(0);
+        let style = if chip == scope {
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            theme.muted_style()
+        };
+        chips.push(Span::styled(label, style));
+        chips.push(Span::raw(" "));
+        scopes.push((at, span, chip));
+        at = at.saturating_add(span).saturating_add(1);
+    }
+    let sums = format!("+{added} −{removed} ");
+    let pad = width
+        .saturating_sub(usize::from(at))
+        .saturating_sub(sums.chars().count());
+    chips.push(Span::raw(" ".repeat(pad)));
+    chips.push(Span::styled(
+        format!("+{added} "),
+        Style::default().fg(theme.success),
+    ));
+    chips.push(Span::styled(
+        format!("−{removed} "),
+        Style::default().fg(theme.error),
+    ));
+    let mut head: Vec<Line<'static>> =
+        vec![Line::from(chips), Line::styled(base, theme.dim_style())];
     if let Some(title) = diff.and_then(|diff| diff.land_armed.as_deref()) {
-        lines.push(Line::styled(
+        head.push(Line::styled(
             format!("l again to /land {title} · any other key cancels"),
             Style::default().fg(theme.warning),
         ));
     }
-    let selected = diff.map_or(0, |diff| diff.selected.min(files.len().saturating_sub(1)));
-    for (index, (path, add, rem)) in files.iter().enumerate() {
-        let todo = serving(path).map_or_else(String::new, |label| format!("  · {label}"));
-        let mark = if index == selected { "▸" } else { "●" };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{mark} {path}"), Style::default().fg(theme.text)),
-            Span::styled(format!("  +{add} −{rem}"), theme.dim_style()),
-            Span::styled(todo, theme.muted_style()),
-        ]));
-        let chain = diff
-            .and_then(|diff| diff.why.get(path))
-            .filter(|_| index == selected);
-        for row in chain.into_iter().flatten() {
-            lines.push(Line::styled(row.clone(), theme.muted_style()));
+    let selected = diff.map_or(0, |diff| diff.selected.min(patches.len().saturating_sub(1)));
+    let shown = room.clamp(1, FILE_ROWS).min(patches.len().max(1));
+    let first = selected
+        .saturating_sub(shown / 2)
+        .min(patches.len().saturating_sub(shown));
+    let mut files = Vec::new();
+    for (index, (path, patch)) in patches.iter().enumerate().skip(first).take(shown) {
+        let (add, rem, tracked) = counts.get(index).copied().unwrap_or((0, 0, true));
+        let status = status_of(patch, tracked);
+        let mark = if index == selected { "▸" } else { " " };
+        let band = if index == selected {
+            Style::default().bg(theme.selection_bg())
+        } else {
+            Style::default()
+        };
+        let mut spans = vec![
+            Span::styled(format!("{mark} "), band.fg(theme.text)),
+            Span::styled(
+                format!("{status} "),
+                band.patch(status_style(status, theme)),
+            ),
+            Span::styled(path.clone(), band.fg(theme.text)),
+            Span::styled(format!("  +{add} −{rem} "), band.patch(theme.dim_style())),
+        ];
+        spans.extend(change_bar(add, rem, theme));
+        if let Some(label) = serving(path) {
+            spans.push(Span::styled(format!("  · {label}"), theme.muted_style()));
         }
+        files.push((head.len(), index));
+        head.push(Line::from(spans));
+    }
+    if patches.len() > shown {
+        head.push(Line::styled(
+            format!(
+                "  […] {shown} of {} files listed · ↑/↓ moves the list · the diff below scrolls",
+                patches.len()
+            ),
+            theme.muted_style(),
+        ));
     }
     let read_only = diff.map_or(0, |diff| {
         diff.reads
             .keys()
-            .filter(|path| !files.iter().any(|(changed, _, _)| same_file(path, changed)))
+            .filter(|path| !patches.iter().any(|(changed, _)| same_file(path, changed)))
             .count()
     });
     if read_only > 0 {
         let noun = if read_only == 1 { "file" } else { "files" };
-        lines.push(Line::styled(
+        head.push(Line::styled(
             format!("○ {read_only} {noun} read only"),
             theme.dim_style(),
         ));
@@ -194,26 +357,119 @@ pub fn review_view(
             crate::model::MAX_DIFF_FILES,
             crate::model::MAX_DIFF_BYTES / (1 << 20)
         );
-        lines.push(cap_row(
+        head.push(cap_row(
             &format!("{dropped} older {noun} not shown"),
             &cap,
             "git diff lists them",
             theme,
         ));
     }
-    if files.is_empty() {
-        lines.push(Line::styled(
-            "nothing changed in this scope",
-            theme.dim_style(),
-        ));
-    }
-    lines.push(Line::styled(
+    head.push(Line::styled(
         "s scope · ↑/↓ file · w why each hunk · l land under the session's title",
         theme.dim_style(),
     ));
-    lines.push(Line::default());
-    lines.extend(diffview::render(&patch, width, theme, DiffBudget::FULL));
-    (title, lines)
+    let mut body: Vec<Line<'static>> = Vec::new();
+    let mut heads = Vec::new();
+    if patches.is_empty() {
+        let others: Vec<String> = [ReviewScope::Branch, ReviewScope::Turn, ReviewScope::Session]
+            .iter()
+            .map(|other| format!("{} {}", other.label(), scope_count(diff, *other)))
+            .collect();
+        body.push(Line::default());
+        body.push(Line::styled(
+            "nothing changed in this scope",
+            theme.dim_style(),
+        ));
+        body.push(Line::styled(
+            format!("{} · click a scope above", others.join(" · ")),
+            theme.dim_style(),
+        ));
+    }
+    for (index, (path, patch)) in patches.iter().enumerate() {
+        let (add, rem, tracked) = counts.get(index).copied().unwrap_or((0, 0, true));
+        let status = status_of(patch, tracked);
+        heads.push(body.len());
+        body.push(
+            Line::from(vec![
+                Span::styled(format!("{status} "), status_style(status, theme)),
+                Span::styled(
+                    path.clone(),
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("  +{add} −{rem}"), theme.dim_style()),
+            ])
+            .style(Style::default().bg(theme.selection_bg())),
+        );
+        if let Some(chain) = diff.and_then(|diff| diff.why.get(path)) {
+            body.extend(
+                chain
+                    .iter()
+                    .map(|row| Line::styled(row.clone(), theme.muted_style())),
+            );
+        }
+        body.extend(diffview::render(patch, width, theme, DiffBudget::FULL));
+        body.push(Line::default());
+    }
+    Review {
+        title,
+        head,
+        body,
+        scopes,
+        files,
+        heads,
+    }
+}
+
+/// Where each chip and file row of a drawn review sits in a pane whose text starts at `inner`.
+pub(crate) fn review_hits(
+    review: &Review,
+    inner: ratatui::layout::Rect,
+) -> Vec<(ratatui::layout::Rect, ReviewPick)> {
+    use ratatui::layout::Rect;
+    let chips = review.scopes.iter().map(|(x, w, scope)| {
+        let at = inner.x.saturating_add(*x);
+        (Rect::new(at, inner.y, *w, 1), ReviewPick::Scope(*scope))
+    });
+    let rows = review.files.iter().map(|(row, index)| {
+        let y = inner.y.saturating_add(u16::try_from(*row).unwrap_or(0));
+        (
+            Rect::new(inner.x, y, inner.width, 1),
+            ReviewPick::File(*index),
+        )
+    });
+    chips.chain(rows).collect()
+}
+
+/// Each chip and file row the last draw laid out is a control, for this frame's panels only.
+pub(crate) fn offer_review(app: &mut crate::app::App) {
+    let mut found = Vec::new();
+    for id in crate::hit::drawn(app) {
+        let Some(pane) = app.state.panes.get(&id) else {
+            continue;
+        };
+        if let crate::model::PaneContent::SessionDiff { ui, .. } = &pane.content {
+            found.extend(
+                ui.hits
+                    .iter()
+                    .map(|(rect, pick)| (*rect, crate::hit::Hit::Review(id, *pick))),
+            );
+        }
+    }
+    crate::hit::offer(app, found);
+}
+
+/// The review as one column of text: header rows, then the diff.
+pub fn review_view(
+    diff: Option<&crate::model::SessionDiff>,
+    scope: crate::model::ReviewScope,
+    note: &str,
+    width: usize,
+    theme: &Theme,
+) -> (String, Vec<Line<'static>>) {
+    let review = review_parts(diff, scope, note, (width, FILE_ROWS), theme);
+    let mut lines = review.head;
+    lines.extend(review.body);
+    (review.title, lines)
 }
 
 pub(crate) fn cached<K: PartialEq, V>(
@@ -550,18 +806,9 @@ pub fn notebook_lines(
     width: usize,
     full: bool,
     theme: &Theme,
-    close: &str,
 ) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let Some(first) = cells.first() else {
-        out.push(Line::styled(
-            "no kernel cells yet — they appear as the agent computes",
-            theme.dim_style(),
-        ));
-        out.push(Line::styled(
-            format!("{close} closes · an idle notebook closes itself"),
-            theme.dim_style(),
-        ));
         return out;
     };
     if first.number > 1 {

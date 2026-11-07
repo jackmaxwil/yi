@@ -679,6 +679,7 @@ pub fn paint_pane(
     app.pane_rows = crate::app::PaneRows {
         top: area.top(),
         left: area.left(),
+        blank: shown.is_empty().then(|| u16::try_from(above).unwrap_or(0)),
         rows,
     };
     let rows = u16::try_from(shown.len()).unwrap_or(0);

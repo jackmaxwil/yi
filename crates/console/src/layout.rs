@@ -19,6 +19,31 @@ pub(crate) fn pane_margin(framed: bool, fills: bool) -> Margin {
     Margin::new(if framed && !fills { 2 } else { 1 }, u16::from(framed))
 }
 
+pub(crate) fn split_off_bottom(area: Rect, height: u16) -> (Rect, Rect) {
+    let height = height.min(area.height);
+    let top = Rect {
+        height: area.height.saturating_sub(height),
+        ..area
+    };
+    let bottom = Rect {
+        y: area.y.saturating_add(top.height),
+        height,
+        ..area
+    };
+    (top, bottom)
+}
+
+pub(crate) fn split_off_top(area: Rect, height: u16) -> (Rect, Rect) {
+    let height = height.min(area.height);
+    let top = Rect { height, ..area };
+    let rest = Rect {
+        y: area.y.saturating_add(height),
+        height: area.height.saturating_sub(height),
+        ..area
+    };
+    (top, rest)
+}
+
 /// Allocator lives on the tab so ids stay deterministic under drive scripts.
 #[derive(Debug, Default)]
 pub struct PaneIds(u32);
@@ -52,6 +77,18 @@ pub enum NavDirection {
     Right,
     Up,
     Down,
+}
+
+/// Where a panel lands on the screen, whatever the tiling around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Snap {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    LeftThird,
+    MiddleThird,
+    RightThird,
 }
 
 pub enum Node {
@@ -148,6 +185,31 @@ impl TileLayout {
         self.focus = new_focus;
         self.prev_focus = None;
         Some(target)
+    }
+
+    /// Take `id` out of the tree and put it on the screen's `snap` edge, the panels that were
+    /// there keeping their arrangement beside it; false when it is the only one.
+    pub fn snap(&mut self, id: PaneId, snap: Snap) -> bool {
+        if self.pane_count() <= 1 || !self.pane_ids().contains(&id) {
+            return false;
+        }
+        let old = std::mem::replace(&mut self.root, Node::Pane(id));
+        let Some(rest) = remove_pane(old, id) else {
+            self.root = Node::Pane(id);
+            return false;
+        };
+        self.root = place(rest, id, snap);
+        self.set_focus(id);
+        true
+    }
+
+    /// A new panel on the screen's `snap` edge; it takes focus.
+    pub fn snap_new(&mut self, ids: &mut PaneIds, snap: Snap) -> PaneId {
+        let id = ids.allocate();
+        let old = std::mem::replace(&mut self.root, Node::Pane(id));
+        self.root = place(old, id, snap);
+        self.set_focus(id);
+        id
     }
 
     pub fn focus_pane(&mut self, id: PaneId) {
@@ -272,6 +334,60 @@ fn overlap_amount(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> u16 {
     let a_end = a_start.saturating_add(a_len);
     let b_end = b_start.saturating_add(b_len);
     a_end.min(b_end).saturating_sub(a_start.max(b_start))
+}
+
+const THIRD: f32 = 1.0 / 3.0;
+
+fn halves(direction: Direction, ratio: f32, first: Node, second: Node) -> Node {
+    Node::Split {
+        direction,
+        ratio,
+        first: Box::new(first),
+        second: Box::new(second),
+    }
+}
+
+/// `ids` stacked top to bottom in equal rows; `None` for no panels.
+fn column(ids: &[PaneId]) -> Option<Node> {
+    let (first, rest) = ids.split_first()?;
+    let Some(below) = column(rest) else {
+        return Some(Node::Pane(*first));
+    };
+    let share = 1.0 / f32::from(u16::try_from(ids.len()).unwrap_or(u16::MAX));
+    Some(halves(
+        Direction::Vertical,
+        share,
+        Node::Pane(*first),
+        below,
+    ))
+}
+
+/// `rest` with `id` on the `snap` edge. The middle third restacks the others into a column each
+/// side of it, first half left; a lone other panel takes the left third.
+fn place(rest: Node, id: PaneId, snap: Snap) -> Node {
+    let this = Node::Pane(id);
+    match snap {
+        Snap::Left => halves(Direction::Horizontal, 0.5, this, rest),
+        Snap::Right => halves(Direction::Horizontal, 0.5, rest, this),
+        Snap::Top => halves(Direction::Vertical, 0.5, this, rest),
+        Snap::Bottom => halves(Direction::Vertical, 0.5, rest, this),
+        Snap::LeftThird => halves(Direction::Horizontal, THIRD, this, rest),
+        Snap::RightThird => halves(Direction::Horizontal, 1.0 - THIRD, rest, this),
+        Snap::MiddleThird => {
+            let mut ids = Vec::new();
+            collect_ids(&rest, &mut ids);
+            let (left, right) = ids.split_at(ids.len() / 2);
+            match (column(left), column(right)) {
+                (Some(left), Some(right)) => halves(
+                    Direction::Horizontal,
+                    THIRD,
+                    left,
+                    halves(Direction::Horizontal, 0.5, this, right),
+                ),
+                _ => halves(Direction::Horizontal, THIRD, rest, this),
+            }
+        }
+    }
 }
 
 fn collect_ids(node: &Node, ids: &mut Vec<PaneId>) {
@@ -472,6 +588,80 @@ fn clamp_span(ideal: f32, total: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn three() -> (TileLayout, PaneIds, [PaneId; 3]) {
+        let mut ids = PaneIds::default();
+        let (mut layout, a) = TileLayout::new(&mut ids);
+        let b = layout.split_focused(&mut ids, Direction::Horizontal);
+        let c = layout.split_focused(&mut ids, Direction::Vertical);
+        (layout, ids, [a, b, c])
+    }
+
+    fn rect(layout: &TileLayout, id: PaneId) -> Rect {
+        let panes = layout.panes(Rect::new(0, 0, 90, 30));
+        panes
+            .iter()
+            .find(|pane| pane.id == id)
+            .map_or(Rect::default(), |pane| pane.rect)
+    }
+
+    #[test]
+    fn a_panel_snapped_to_a_third_takes_that_third_of_the_screen() {
+        for (snap, x, width) in [
+            (Snap::LeftThird, 0, 30),
+            (Snap::RightThird, 60, 30),
+            (Snap::Left, 0, 45),
+            (Snap::Right, 45, 45),
+        ] {
+            let (mut layout, _, [a, _, c]) = three();
+            assert!(layout.snap(c, snap));
+            let got = rect(&layout, c);
+            assert_eq!(
+                (
+                    got.x.abs_diff(x) <= 1,
+                    got.width.abs_diff(width) <= 1,
+                    got.height
+                ),
+                (true, true, 30),
+                "{snap:?}: {got:?}"
+            );
+            assert_eq!(layout.pane_count(), 3);
+            assert_eq!(layout.focused(), c);
+            assert!(layout.pane_ids().contains(&a));
+        }
+    }
+
+    #[test]
+    fn the_middle_third_puts_the_others_on_both_sides_of_it() {
+        let (mut layout, _, [a, b, c]) = three();
+        assert!(layout.snap(a, Snap::MiddleThird));
+        let (left, mid, right) = (rect(&layout, b), rect(&layout, a), rect(&layout, c));
+        assert!(left.right() <= mid.x.saturating_add(1), "{left:?} {mid:?}");
+        assert!(
+            mid.right() <= right.x.saturating_add(1),
+            "{mid:?} {right:?}"
+        );
+        assert!(
+            mid.width.abs_diff(30) <= 1,
+            "the middle is not a third: {mid:?}"
+        );
+    }
+
+    #[test]
+    fn a_lone_panel_has_nowhere_to_snap_and_a_new_one_lands_on_the_edge() {
+        let mut ids = PaneIds::default();
+        let (mut layout, only) = TileLayout::new(&mut ids);
+        assert!(!layout.snap(only, Snap::Left), "a lone panel moved");
+        let fresh = layout.snap_new(&mut ids, Snap::Right);
+        assert_eq!(layout.pane_count(), 2);
+        let got = layout.panes(Rect::new(0, 0, 80, 24));
+        let at = |id| {
+            got.iter()
+                .find(|pane| pane.id == id)
+                .map(|pane| pane.rect.x)
+        };
+        assert!(at(fresh) > at(only), "the new panel is not on the right");
+    }
 
     #[test]
     fn split_close_and_navigate() {

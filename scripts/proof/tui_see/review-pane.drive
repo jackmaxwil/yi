@@ -1,0 +1,11 @@
+#! console --size 140x34
+# The review pane's empty state: scope chips with each scope's file count, and the way out named.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+key alt-g
+wait-frame 5000 Review
+snap review
+mouse down 8 2
+snap chip-clicked
+quit
