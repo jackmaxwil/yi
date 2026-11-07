@@ -480,6 +480,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         sidebar: console
             .sidebar
             .map_or(yi_console::model::SidebarMode::Rail, Into::into),
+        project_order: console.project_order.unwrap_or_default(),
         pace: reveal_pace(args),
         follow: configured_follow(),
         browser: config()

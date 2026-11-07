@@ -64,6 +64,7 @@ pub struct ConsoleOptions {
     pub title: Option<TitleOptions>,
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
+    pub project_order: Vec<String>,
     pub pace: u16,
     pub follow: yi_types::config::FollowMode,
     pub browser: Option<PathBuf>,
@@ -801,6 +802,7 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
         .and_then(|title| yi_tui::title::pick(&title.weights, title.seed));
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
+    app.state.side.order = options.project_order.clone();
     app.state.chat_pace = options.pace;
     app.state.chat_follow = options.follow;
     app.state.follow_fallback = options.follow;

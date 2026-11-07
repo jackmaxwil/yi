@@ -315,6 +315,8 @@ pub struct ConsoleConfig {
     pub title_intro: Option<bool>,
     pub title_weights: Option<std::collections::BTreeMap<String, u32>>,
     pub sidebar: Option<SidebarState>,
+    /// Project directories in the order the sidebar lists them; one with no sessions is ignored.
+    pub project_order: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

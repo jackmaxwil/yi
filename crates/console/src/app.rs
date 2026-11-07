@@ -882,7 +882,7 @@ impl App {
                 self.state.select_tab(prev);
             }
             Action::SelectTab(n) => self.state.select_tab(usize::from(n).saturating_sub(1)),
-            Action::Snap(_) | Action::Shift(_) => self.layout_action(action),
+            Action::Snap(_) | Action::Shift(_) => self.layout_action(outbound, action),
             Action::NewSession => self.new_session(outbound),
             Action::Navigator => {
                 self.state.mode = Mode::Navigator {

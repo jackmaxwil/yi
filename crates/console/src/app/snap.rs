@@ -394,6 +394,9 @@ impl App {
                     }
                     return false;
                 }
+                if matches!(drag.source, Source::Group(_)) {
+                    self.save_order(outbound);
+                }
                 if let Some(drop) = drag.over {
                     self.snap_drop(outbound, drag.source, drop);
                 }
@@ -421,7 +424,7 @@ impl App {
     }
 
     /// ⌥⇧↑↓: the project under the cursor swaps with its neighbour.
-    fn shift_project(&mut self, step: isize) {
+    fn shift_project(&mut self, step: isize) -> bool {
         let roots: Vec<String> = self
             .state
             .groups()
@@ -438,10 +441,12 @@ impl App {
             let at = roots.iter().position(|known| known == root)?;
             roots.get(at.checked_add_signed(step)?)
         });
-        if let (Some(root), Some(other)) = (here, neighbour) {
-            crate::sidebar::move_group(&mut self.state, &root, other);
-            self.dirty = true;
-        }
+        let (Some(root), Some(other)) = (here, neighbour) else {
+            return false;
+        };
+        crate::sidebar::move_group(&mut self.state, &root, other);
+        self.dirty = true;
+        true
     }
 
     /// A new empty panel on the screen's `snap` edge, focused.
@@ -492,13 +497,30 @@ impl App {
         self.state.focus_panes();
     }
 
-    pub(super) fn layout_action(&mut self, action: Action) {
+    /// The project order as the sidebar lists it, written to config so the next console starts in it.
+    fn save_order(&mut self, outbound: &Outbound) {
+        let roots: Vec<String> = self
+            .state
+            .groups()
+            .into_iter()
+            .filter_map(|group| group.root)
+            .collect();
+        let params = serde_json::json!({"id": "console.projectOrder", "value": roots});
+        self.send_request(
+            outbound,
+            super::RequestKind::Sidebar,
+            "_yi/set_default",
+            params,
+        );
+    }
+
+    pub(super) fn layout_action(&mut self, outbound: &Outbound, action: Action) {
         match action {
             Action::Snap(snap) => self.snap_focused(snap),
             Action::Shift(Shift::FileBack) => self.file_tab(-1),
             Action::Shift(Shift::FileForward) => self.file_tab(1),
-            Action::Shift(Shift::ProjectUp) => self.shift_project(-1),
-            Action::Shift(Shift::ProjectDown) => self.shift_project(1),
+            Action::Shift(Shift::ProjectUp) if self.shift_project(-1) => self.save_order(outbound),
+            Action::Shift(Shift::ProjectDown) if self.shift_project(1) => self.save_order(outbound),
             _ => {}
         }
     }

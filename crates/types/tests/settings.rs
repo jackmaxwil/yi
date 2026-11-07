@@ -97,7 +97,8 @@ fn leaves() -> Vec<String> {
                 auto_side,
                 title_intro,
                 title_weights,
-                sidebar
+                sidebar,
+                project_order
             }),
         ),
         ("browser", fields!(BrowserConfig { path })),
@@ -302,6 +303,34 @@ fn the_sidebar_row_takes_the_hidden_state_it_saves() -> Result<(), Box<dyn std::
     assert_eq!(
         config.console.and_then(|console| console.sidebar),
         Some(yi_types::config::SidebarState::Hidden)
+    );
+    Ok(())
+}
+
+/// The sidebar's project order is a list of directories: the row takes one, refuses a bare string
+/// or a list holding a non-string, and the strict config parse loads what the console saves.
+#[test]
+fn the_project_order_row_takes_a_list_of_directories_and_the_parse_loads_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let row = rows()
+        .into_iter()
+        .find(|row| row.id == "console.projectOrder")
+        .ok_or("no console.projectOrder row")?;
+    assert_eq!(refusal(&row, &json!(["/work/b", "/work/a"])), None);
+    assert!(
+        refusal(&row, &json!("/work/a")).is_some(),
+        "a bare string was taken"
+    );
+    assert!(
+        refusal(&row, &json!(["/work/a", 7])).is_some(),
+        "a number in the list was taken"
+    );
+    let (config, _) = yi_types::config::parse(
+        &json!({"console": {"projectOrder": ["/work/b", "/work/a"]}}).to_string(),
+    )?;
+    assert_eq!(
+        config.console.and_then(|console| console.project_order),
+        Some(vec!["/work/b".to_owned(), "/work/a".to_owned()])
     );
     Ok(())
 }

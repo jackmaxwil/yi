@@ -665,6 +665,7 @@ fn run_console(
             follow,
             browser: None,
             chrome_pin: None,
+            project_order: Vec::new(),
             home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
@@ -709,6 +710,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             follow: yi_types::config::FollowMode::Page,
             browser: None,
             chrome_pin: None,
+            project_order: Vec::new(),
             home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
@@ -2275,6 +2277,36 @@ fn the_sidebars_new_row_starts_a_session() -> TestResult {
          mouse down 3 0\n\
          mouse up 3 0\n\
          wait-frame 3000 SN  s-new\n\
+         quit\n",
+    )
+}
+
+fn project_order_saved(frame: &Value) -> Vec<Value> {
+    let two = frame["params"]["value"]
+        .as_array()
+        .is_some_and(|roots| roots.len() == 2);
+    if frame["params"]["id"] != "console.projectOrder" || !two {
+        return vec![];
+    }
+    vec![ok(frame, json!({"rows": []}))]
+}
+
+/// Moving a project with ⌥⇧↓ asks the daemon to save the order as a list of both projects, so the
+/// next console starts in it: the fixture only answers a `console.projectOrder` save of two roots.
+#[test]
+fn moving_a_project_saves_the_order_to_config() -> TestResult {
+    run(
+        "project-order",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_root_ledger),
+            Step::Expect("_yi/set_default", project_order_saved),
+        ],
+        "wait-frame 5000 s-beta\n\
+         wait-frame 3000 demo-root 2 ▾\n\
+         key alt-shift-down\n\
+         wait-idle 3000\n\
          quit\n",
     )
 }
