@@ -253,20 +253,11 @@ fn run_check_typed_under(
     timeout_ms: u64,
     checker: &Checker,
 ) -> Result<(), CheckFailure> {
-    checker.guard(check, cwd).map_err(CheckFailure::Refused)?;
-    // Invariant: a check placed in a container is judged there, so its first word is not on the
-    // host's PATH and the host probe would refuse a program the image has.
-    if checker.wall.container.is_none()
-        && let Some(refusal) = probe(check, cwd)
-    {
-        return Err(CheckFailure::Refused(refusal));
-    }
-    let command = checker.shell("sh", check, cwd);
-    let deadline = Instant::now()
-        .checked_add(std::time::Duration::from_millis(timeout_ms))
-        .unwrap_or_else(Instant::now);
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = captured(command, None, &cancelled).map_err(CheckFailure::Spawn)?;
+    let runner = ShellCheck::new(check, cwd, checker)
+        .within(timeout_ms)
+        .probe();
+    runner.guard().map_err(CheckFailure::Refused)?;
+    let capture = runner.capture().map_err(CheckFailure::Spawn)?;
     if capture.cancelled {
         return Err(CheckFailure::TimedOut(timeout_ms));
     }
@@ -358,36 +349,8 @@ fn probe_assignment(token: &str) -> bool {
 /// The environment a checker may see beyond what its manifest declares (plan section 6.3).
 pub const CHECKER_ENV_BASE: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
 
-/// # Errors
-/// No spawn, or a Claude Code Bash hook refused it. `/bin/sh -c`, `env_clear()` plus the allowlist.
-pub(crate) fn run_check_in(
-    cwd: &std::path::Path,
-    command: &str,
-    env_names: &[String],
-    stdin: Option<Vec<u8>>,
-    deadline: Instant,
-    stop: Option<&yi_tools::CancelFlag>,
-    checker: &Checker,
-) -> Result<yi_tools::CommandCapture, String> {
-    checker.guard(command, cwd)?;
-    let mut shell = checker.shell("/bin/sh", command, cwd);
-    shell.command.env_clear();
-    let proxy: Vec<(String, String)> = lease_env(shell.lease.as_ref()).collect();
-    shell.command.envs(proxy);
-    for name in CHECKER_ENV_BASE
-        .iter()
-        .map(|name| (*name).to_owned())
-        .chain(env_names.iter().cloned())
-    {
-        if let Some(value) = std::env::var_os(&name) {
-            shell.command.env(name, value);
-        }
-    }
-    let stop = stop.cloned();
-    let cancelled: yi_tools::CancelFlag =
-        Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
-    captured(shell, stdin, &cancelled)
-}
+mod shell_check;
+pub(crate) use shell_check::{ShellCheck, run_check_in};
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
 
@@ -990,8 +953,90 @@ pub fn attach_goal(
 }
 
 #[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::shell_check::Env;
+    use super::{CHECKER_ENV_BASE, Checker, ShellCheck};
+
+    fn names(env_dump: &str) -> Vec<&str> {
+        env_dump
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    #[test]
+    fn the_env_policy_decides_what_the_check_sees() -> Result<(), Box<dyn Error>> {
+        let cwd = std::env::current_dir()?;
+        let declared = ["DUP_SMOKE_UNSET".to_owned()];
+        let allowlisted = ShellCheck::new("env", &cwd, &Checker::default())
+            .env(Env::Allowlist(&declared))
+            .run()?;
+        let seen = names(&allowlisted.stdout);
+        assert!(seen.contains(&"PATH"), "{seen:?}");
+        let allowed: Vec<&str> = CHECKER_ENV_BASE
+            .iter()
+            .copied()
+            .chain(declared.iter().map(String::as_str))
+            .collect();
+        // `/bin/sh` sets these itself after `env_clear()`; anything else is inheritance.
+        let shell_own = ["PWD", "SHLVL", "OLDPWD", "_"];
+        for name in &seen {
+            assert!(
+                allowed.contains(name) || shell_own.contains(name),
+                "{name} reached the allowlisted check: {seen:?}"
+            );
+        }
+        let host: Vec<String> = std::env::vars_os()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .filter(|name| !allowed.contains(&name.as_str()))
+            .filter(|name| !shell_own.contains(&name.as_str()))
+            .collect();
+        for name in &host {
+            assert!(
+                !seen.contains(&name.as_str()),
+                "{name} was inherited past the allowlist: {seen:?}"
+            );
+        }
+        let keyless = ShellCheck::new("env", &cwd, &Checker::default()).run()?;
+        let inherited = names(&keyless.stdout);
+        assert!(
+            inherited.len() >= seen.len(),
+            "the keyless check inherits what the allowlisted one was denied: {inherited:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_check_past_its_deadline_is_cancelled() -> Result<(), Box<dyn Error>> {
+        let cwd = std::env::current_dir()?;
+        let capture = ShellCheck::new("sleep 5", &cwd, &Checker::default())
+            .within(50)
+            .run()?;
+        assert!(capture.cancelled, "{capture:?}");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod checker_tests {
     use super::*;
+
+    #[test]
+    fn a_probe_refusal_stays_typed_through_the_shared_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let failure = run_check_typed(
+            "yi-missing-check-2009f3389",
+            &std::env::current_dir()?,
+            30_000,
+        )
+        .err()
+        .ok_or("a missing check program passed")?;
+        assert!(matches!(failure, CheckFailure::Refused(_)), "{failure:?}");
+        Ok(())
+    }
 
     /// Dies with a container child's check running on the host, which that child's wall forbids.
     #[test]
