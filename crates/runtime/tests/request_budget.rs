@@ -21,7 +21,6 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// A fixed model, not a catalog lookup: the budget measures Yi's own prompt and
 /// tool table, and must not move when a bundled model's metadata changes.
 fn model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
     Model {
         id: "claude-opus-4-5".to_owned(),
         name: "Opus".to_owned(),
@@ -30,18 +29,13 @@ fn model() -> Model {
         base_url: "https://api.anthropic.com".to_owned(),
         reasoning: true,
         input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window: 200_000,
         max_tokens: 32_000,
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     }
 }
 
@@ -858,9 +852,8 @@ async fn role_bodies(
         tools,
         max_depth,
     )?;
-    if matches!(workspace, Workspace::Bare) {
-        upstream::git(&ws, &["init", "-q", "-b", "main"])?;
-    } else {
+    upstream::git(&ws, &["init", "-q", "-b", "main"])?;
+    if !matches!(workspace, Workspace::Bare) {
         std::fs::copy(checkout().join("AGENTS.md"), ws.join("AGENTS.md"))?;
         std::fs::write(ws.join("Cargo.toml"), "[workspace]\n")?;
         upstream::git(&ws, &["add", "."])?;

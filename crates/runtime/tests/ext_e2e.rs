@@ -1463,7 +1463,7 @@ async fn a_session_marks_the_attach_its_host_parked_before_the_first_request() -
     let session = yi_runtime::AgentSession::new(
         yi_runtime::SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: crate::support::faux_model(),
+            model: crate::support::faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         },
