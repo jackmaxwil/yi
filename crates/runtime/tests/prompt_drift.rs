@@ -41,6 +41,7 @@ fn a_leaf_is_taught_no_delegation_and_the_root_all_of_it() -> TestResult {
             schema_instruction: None,
             context_window: 128_000,
             global_skills: Vec::new(),
+            pointer: None,
             can_delegate,
         });
         host.start(None, false);
@@ -387,6 +388,7 @@ fn installed(dir: &std::path::Path, mode: yi_runtime::PermissionMode) -> yi_runt
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     })
 }

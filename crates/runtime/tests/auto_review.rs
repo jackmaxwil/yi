@@ -494,6 +494,7 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             schema_instruction: None,
             context_window: 128_000,
             global_skills: Vec::new(),
+            pointer: None,
             can_delegate: true,
         }));
         let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();

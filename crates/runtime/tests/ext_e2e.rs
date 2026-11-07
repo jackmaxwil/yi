@@ -28,6 +28,7 @@ fn started(cwd: &Path, home: &Path) -> Host {
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     });
     host.start(None, false);
@@ -224,6 +225,7 @@ fn the_slot_table_survives_a_resume() -> TestResult {
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     });
     resumed.start(Some(&store), true);
@@ -317,6 +319,7 @@ fn a_session_that_cannot_delegate_is_not_sent_the_orchestrate_protocol() -> Test
                 schema_instruction: None,
                 context_window: 128_000,
                 global_skills: Vec::new(),
+                pointer: None,
                 can_delegate,
             });
             host.start(None, false);
@@ -1164,6 +1167,7 @@ fn the_catalog_lists_a_home_skill_only_when_config_names_it() -> TestResult {
             schema_instruction: None,
             context_window: 128_000,
             global_skills,
+            pointer: None,
             can_delegate: true,
         });
         host.start(None, false);
@@ -1197,6 +1201,7 @@ fn the_memory_block_waits_for_the_first_prompt_at_zero_notes() -> TestResult {
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     });
     let feed = std::sync::Arc::new(yi_runtime::memory::Activity::default());
@@ -1259,6 +1264,7 @@ fn the_first_prompt_replaces_the_index_with_the_notes_it_earns() -> TestResult {
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     });
     host.register(Box::new(yi_runtime::memory::MemoryExt::new(
@@ -1299,6 +1305,7 @@ fn a_resume_keeps_the_block_the_first_prompt_earned() -> TestResult {
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     };
     let mut original = install(options());
@@ -1348,6 +1355,7 @@ fn a_resume_without_a_snapshot_earns_memory_at_its_first_prompt() -> TestResult 
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     });
     resumed.register(Box::new(yi_runtime::memory::MemoryExt::new(
