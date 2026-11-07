@@ -148,6 +148,10 @@ fn carry(old: &TodoList, row: &mut Todo) {
     if row.id.is_none() {
         row.id = prior.id.clone();
     }
+    if let Some(check) = prior.extra.get(yi_types::todo::CHECK_KEY) {
+        row.extra
+            .insert(yi_types::todo::CHECK_KEY.to_owned(), check.clone());
+    }
     if row.cites.intent.is_empty() {
         row.cites.intent = prior.cites.intent.clone();
     }

@@ -307,6 +307,7 @@ fn a_mirrored_item_refuses_start_with_the_plan_road() -> TestResult {
     let before = todos.list();
     let refused = todos.apply(
         TodoOp::Start {
+            check: None,
             label: TodoLabel::new("gate")?,
         },
         None,
@@ -549,6 +550,7 @@ fn an_unknown_label_on_a_mirrored_list_is_not_found() -> TestResult {
     let (_session, todos, _engine) = mirrored(&dir)?;
     let refused = todos.apply(
         TodoOp::Start {
+            check: None,
             label: TodoLabel::new("t999")?,
         },
         None,

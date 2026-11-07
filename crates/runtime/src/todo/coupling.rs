@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
 use yi_types::plan::doc::{BlockedOn, TodoState, TodoStateName};
-use yi_types::todo::{TodoInterceptRecord, TodoList};
+use yi_types::todo::{RowCheck, TodoInterceptRecord, TodoList};
 
 use super::{TodoStore, text, tool};
 use crate::goal::StoreHandle;
@@ -356,7 +356,19 @@ const ASK_USER: &str =
 
 pub fn intercept_text(rung: u8, list: &TodoList) -> String {
     let moves = open_moves(list);
-    match rung {
+    let reds: Vec<String> = (list.items())
+        .filter(|item| !item.state.is_terminal())
+        .filter_map(|item| {
+            let check = RowCheck::of(item)?;
+            (!check.last.is_green()).then(|| format!("still red: {}", check.command))
+        })
+        .collect();
+    let still = if reds.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", reds.join("\n"))
+    };
+    let base = match rung {
         1 => format!(
             "Open todos remain. Continue the running item, or move each open item to the state that is true: done with its evidence, blocked with what would unblock it, dropped with a reason. {ASK_USER}\n{moves}"
         ),
@@ -366,7 +378,8 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
         _ => format!(
             "The turn ends now. Call `answer`, naming each open item and why it is not done; call no other tools.\n{moves}"
         ),
-    }
+    };
+    format!("{base}{still}")
 }
 
 /// Digit runs of three or more outside closed code spans with no word character, dot or slash on

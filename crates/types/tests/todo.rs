@@ -57,3 +57,64 @@ fn a_todo_at_the_label_cap_is_its_own_label() -> TestResult {
     assert_eq!((item.label.as_str(), item.is_cut()), (at.as_str(), false));
     Ok(())
 }
+
+#[test]
+fn a_row_without_a_check_round_trips_and_keeps_its_old_fingerprint() -> TestResult {
+    let wire = r#"{"label":"ship it","state":"running","by":"owner"}"#;
+    let item: Todo = serde_json::from_str(wire)?;
+    assert_eq!(
+        serde_json::to_string(&item)?,
+        r#"{"label":"ship it","state":"running","by":"owner","attempt":1,"refusals":0}"#
+    );
+    assert_eq!(item.label.as_str(), "ship it");
+    let list = TodoList {
+        phases: vec![TodoPhase {
+            name: PhaseName::new("Tasks")?,
+            items: vec![item],
+            extra: Default::default(),
+        }],
+        ..TodoList::default()
+    };
+    assert_eq!(list.fingerprint(), "ship it=running");
+    Ok(())
+}
+
+#[test]
+fn a_row_carries_its_check_and_a_new_red_moves_the_fingerprint() -> TestResult {
+    let mut item: Todo =
+        serde_json::from_str(r#"{"label":"ship it","state":"running","by":"owner"}"#)?;
+    yi_types::todo::RowCheck {
+        command: "test -s out.txt".to_owned(),
+        last: yi_types::todo::CheckLast::red("abc123"),
+    }
+    .put(&mut item);
+    let again: Todo = serde_json::from_str(&serde_json::to_string(&item)?)?;
+    let check = yi_types::todo::RowCheck::of(&again).ok_or("the check went")?;
+    assert_eq!(check.command, "test -s out.txt");
+    assert_eq!(check.last.digest(), Some("abc123"));
+    let list = TodoList {
+        phases: vec![TodoPhase {
+            name: PhaseName::new("Tasks")?,
+            items: vec![again.clone()],
+            extra: Default::default(),
+        }],
+        ..TodoList::default()
+    };
+    assert_eq!(list.fingerprint(), "ship it=running[red:abc123]");
+    let mut moved = again;
+    yi_types::todo::RowCheck {
+        command: "test -s out.txt".to_owned(),
+        last: yi_types::todo::CheckLast::red("def456"),
+    }
+    .put(&mut moved);
+    let moved = TodoList {
+        phases: vec![TodoPhase {
+            name: PhaseName::new("Tasks")?,
+            items: vec![moved],
+            extra: Default::default(),
+        }],
+        ..TodoList::default()
+    };
+    assert_ne!(list.fingerprint(), moved.fingerprint());
+    Ok(())
+}
