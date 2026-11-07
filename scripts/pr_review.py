@@ -563,8 +563,7 @@ def stacked(pr, other):
     main's tip and every stack member read as its neighbour's twin, a blocking high on six PRs."""
     forge_pr.git("fetch", "-q", "origin", f"refs/pull/{pr['number']}/head", f"refs/pull/{other['number']}/head")
     base = f"origin/{pr['base']['ref']}"
-    mine = set(forge_pr.git("rev-list", pr["head"]["sha"], f"^{base}").split())
-    return bool(mine & set(forge_pr.git("rev-list", other["head"]["sha"], f"^{base}").split()))
+    return bool(forge_pr.ahead(pr["head"]["sha"], base) & forge_pr.ahead(other["head"]["sha"], base))
 
 
 # --- lenses and refuters --------------------------------------------------------------
@@ -640,18 +639,10 @@ def quoted(finding, tree):
 
 def added_at(diff):
     """{path: the head's line numbers this diff added or changed}, from the hunk headers."""
-    out, path, line = {}, None, 0
-    for text in diff.splitlines():
-        if text.startswith("+++ "):
-            path = text[6:] if text.startswith("+++ b/") else None
-        elif text.startswith("@@"):
-            found = re.search(r"\+(\d+)", text)
-            line = int(found.group(1)) if found else 0
-        elif path and text.startswith("+"):
+    out = {}
+    for path, sign, line, _ in check_intent.rows(diff):
+        if sign == "+":
             out.setdefault(path, set()).add(line)
-            line += 1
-        elif path and not text.startswith("-"):
-            line += 1
     return out
 
 

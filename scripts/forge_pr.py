@@ -56,6 +56,11 @@ def git(*args, check=False):
     return out.stdout.strip()
 
 
+def ahead(rev, base, check=False):
+    """The commits `rev` has that `base` does not: two heads sharing one were built one on the other."""
+    return set(git("rev-list", rev, f"^{base}", check=check).split())
+
+
 def repo_of(url):
     """`ssh://git@forge:2222/apex/yi.git` and `https://git/apex/yi` both name apex/yi."""
     found = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url.strip())

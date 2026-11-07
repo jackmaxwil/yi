@@ -27,13 +27,14 @@ FIXTURES = ROOT / "scripts/guardrails/fixtures/intent"
 NEAR = 3
 
 
-def anchors(fields, key):
-    """(path, line) per `cut:` or `keep:` line; the line is every cell between the path and the why."""
+def anchors(fields, key, off=""):
+    """(path, line) per `cut:` or `keep:` line; the line is every cell between the path and the why, `\\|` read as `|`."""
     out = []
     for value in fields.get(key, []):
         cells = CELL.split(value)
         if len(cells) >= 3:
-            out.append((cells[0].strip(), " | ".join(cells[1:-1]).strip()))
+            line = " | ".join(cells[1:-1]).strip()
+            out.append((cells[0].strip(), line if off == "unescape" else line.replace("\\|", "|")))
     return out
 
 
@@ -90,22 +91,22 @@ def records_in(root):
     return out
 
 
-def deleted_at(diff, path, line):
-    """The head-side line numbers where a unified diff deletes `line` from `path`."""
-    out, current, new = [], None, None
+def rows(diff):
+    """(path, sign, head-side line, text) per added, deleted or context row of a unified diff; a deleted
+    row carries the head line it sat before."""
+    path, new = None, None
     for row in diff.splitlines():
         if row.startswith("+++ "):
-            current, new = row[6:] if row.startswith("+++ b/") else None, None
+            path, new = row[6:] if row.startswith("+++ b/") else None, None
         elif (hunk := re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", row)):
             new = int(hunk.group(1))
-        elif new is None or row.startswith("--- "):
-            continue
-        elif row.startswith("-"):
-            if current == path and row[1:].strip() == line:
-                out.append(new)
-        elif row[:1] in ("+", " "):
-            new += 1
-    return out
+        elif path and new is not None and row[:1] in ("+", "-", " ") and not row.startswith("--- "):
+            yield path, row[0], new, row[1:]
+            new += row[0] != "-"
+
+
+def deleted_at(diff, path, line):
+    return [at for where, sign, at, text in rows(diff) if where == path and sign == "-" and text.strip() == line]
 
 
 def contrary(finding, records, diff, off=""):
@@ -160,6 +161,8 @@ def selfcheck(off=""):
               "can reach it, | every reachable feature is taught\n---\nx\n")
     register = [("2026-10-29-plan-cell.md", parse(record)[0])]
     bad = []
+    if anchors(parse("---\ncut: docs/a.md | `a \\| b` | a table cell\n---\nx\n")[0], "cut", off) != [("docs/a.md", "`a | b`")]:
+        bad.append("a recorded line written with `\\|` keeps its backslash, so it never matches the deleted line")
     if anchors(register[0][1], "cut")[0][1] not in net(cut)[plan][1]:
         bad.append("the recorded cut is not a line 3df4661cc deleted")
     if len([h for h in hits(revive, register, [], off) if h.startswith(plan)]) != 1:
@@ -188,7 +191,7 @@ def main():
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
         errs += review_selfcheck()
-        for off in ("cut", "keep", "escape", "decision", "none"):
+        for off in ("cut", "keep", "escape", "decision", "none", "unescape"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} check off, so it refutes nothing")
         for off in ("cut", "keep", "near"):
