@@ -773,26 +773,16 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     scopes
 }
 
+mod redirects;
+pub(crate) use redirects::redirect_targets;
+
 /// What a command writes as an honest agent spells it: redirects (which the lenient splitter
 /// skips), in-place edits, file verbs. `2>&1` names no file.
 pub fn write_targets(command: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for (at, _) in command.match_indices('>') {
-        let from = command.get(at..).unwrap_or_default();
-        let rest = from.trim_start_matches(['>', '|']).trim_start();
-        let target: String = rest
-            .chars()
-            .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | ')'))
-            .collect();
-        let target = target.trim_matches(['\'', '"']);
-        // `>>x` is seen at both of its `>`s.
-        if !target.is_empty()
-            && !from.starts_with(">&")
-            && out.last().is_none_or(|last| last != target)
-        {
-            out.push(target.to_owned());
-        }
-    }
+    let mut out: Vec<String> = redirect_targets(command)
+        .into_iter()
+        .map(|target| target.path)
+        .collect();
     for segment in command.split(crate::catastrophic::SEPARATORS) {
         let words: Vec<&str> = segment
             .split_whitespace()

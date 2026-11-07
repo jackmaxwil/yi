@@ -1029,12 +1029,14 @@ mod tests {
         let (_, prefix) = service
             .kernel_wrap(Some(&sandbox), None)
             .ok_or("no kernel prefix")?;
-        let past_scrub = prefix
-            .iter()
-            .skip_while(|arg| *arg != "--")
-            .any(|arg| arg == "GIT_CONFIG_KEY_1=protocol.allow");
+        let past_scrub = |needle: &str| {
+            prefix
+                .iter()
+                .skip_while(|arg| *arg != "--")
+                .any(|arg| arg == needle)
+        };
         assert!(
-            past_scrub,
+            past_scrub("GIT_CONFIG_KEY_1=protocol.allow") && past_scrub("GIT_CONFIG_VALUE_1=never"),
             "the kernel's git keeps the no-transport env: {prefix:?}"
         );
         Ok(())
