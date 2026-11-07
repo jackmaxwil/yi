@@ -347,12 +347,24 @@ pub struct Pool {
 }
 
 static FOUND: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+static MISSED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
 fn remember_repo(dir: &Path, repo: &Path) {
     if let Ok(mut found) = FOUND.lock()
         && !found.iter().any(|(known, _)| known == dir)
     {
         found.push((dir.to_path_buf(), repo.to_path_buf()));
+    }
+    if let Ok(mut missed) = MISSED.lock() {
+        missed.retain(|known| known != dir);
+    }
+}
+
+fn remember_miss(dir: &Path) {
+    if let Ok(mut missed) = MISSED.lock()
+        && !missed.iter().any(|known| known == dir)
+    {
+        missed.push(dir.to_path_buf());
     }
 }
 
@@ -367,15 +379,29 @@ pub fn canonical_repo(cwd: &Path) -> Option<PathBuf> {
     if hit.is_some() {
         return hit;
     }
+    if MISSED
+        .lock()
+        .is_ok_and(|missed| missed.iter().any(|known| known == cwd))
+    {
+        return None;
+    }
     let _span = yi_types::trace::span("lane.canonical_repo");
-    let common = git(
+    let repo = git(
         cwd,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )
-    .ok()?;
-    let repo = PathBuf::from(common.trim()).parent()?.canonicalize().ok()?;
-    remember_repo(cwd, &repo);
-    Some(repo)
+    .ok()
+    .and_then(|common| {
+        PathBuf::from(common.trim())
+            .parent()
+            .and_then(|path| path.canonicalize().ok())
+    });
+    if let Some(repo) = repo {
+        remember_repo(cwd, &repo);
+        return Some(repo);
+    }
+    remember_miss(cwd);
+    None
 }
 
 impl Pool {

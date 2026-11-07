@@ -18,23 +18,47 @@ impl GitPatch {
         self.0.is_empty()
     }
 
-    /// Counts exclude the `--- a/` and `+++ b/` header pair, which shares the
-    /// sign column with change rows but is not one.
+    /// Counts walk each hunk by its `@@` line counts, so the `--- a/` and `+++ b/` header
+    /// pair is skipped by position and a body row reading `--- ` or `+++ ` is still counted.
     pub fn stats(&self) -> (u64, u64) {
         let mut added: u64 = 0;
         let mut removed: u64 = 0;
+        let (mut old_left, mut new_left) = (0_u64, 0_u64);
         for line in self.0.lines() {
-            if line.starts_with("+++ ") || line.starts_with("--- ") {
+            if old_left == 0 && new_left == 0 {
+                if let Some((old, new)) = hunk_counts(line) {
+                    (old_left, new_left) = (old, new);
+                }
                 continue;
             }
             match line.as_bytes().first() {
-                Some(b'+') => added = added.saturating_add(1),
-                Some(b'-') => removed = removed.saturating_add(1),
-                _ => {}
+                Some(b'+') => {
+                    added = added.saturating_add(1);
+                    new_left = new_left.saturating_sub(1);
+                }
+                Some(b'-') => {
+                    removed = removed.saturating_add(1);
+                    old_left = old_left.saturating_sub(1);
+                }
+                Some(b'\\') => {}
+                _ => {
+                    old_left = old_left.saturating_sub(1);
+                    new_left = new_left.saturating_sub(1);
+                }
             }
         }
         (added, removed)
     }
+}
+
+fn hunk_counts(line: &str) -> Option<(u64, u64)> {
+    let ranges = line.strip_prefix("@@ -")?.split(" @@").next()?;
+    let (old, new) = ranges.split_once(" +")?;
+    let count = |range: &str| match range.split_once(',') {
+        Some((_, count)) => count.parse().ok(),
+        None => Some(1),
+    };
+    Some((count(old)?, count(new)?))
 }
 
 /// The `patch` / `added` / `removed` keys an edit or write result carries so the transcript
@@ -143,10 +167,11 @@ impl EditScript {
         shown
     }
 
-    /// Where each line of the pre text sits in the post text: `Some(n)` for a line whose text
-    /// is unchanged, `None` for one that was removed or rewritten.
-    pub fn line_map(&self) -> Vec<Option<u64>> {
+    /// Where each line of the pre text sits in the post text, and which post lines were added.
+    /// A removed or rewritten pre line maps to `None`; the vector is indexed by pre line minus one.
+    pub fn line_map(&self) -> (Vec<Option<u64>>, Vec<u64>) {
         let mut map: Vec<Option<u64>> = Vec::with_capacity(self.steps.len());
+        let mut authored = Vec::new();
         let mut after_line: u64 = 1;
         for (op, _) in &self.steps {
             match op {
@@ -155,10 +180,13 @@ impl EditScript {
                     after_line = after_line.saturating_add(1);
                 }
                 Op::Remove => map.push(None),
-                Op::Add => after_line = after_line.saturating_add(1),
+                Op::Add => {
+                    authored.push(after_line);
+                    after_line = after_line.saturating_add(1);
+                }
             }
         }
-        map
+        (map, authored)
     }
 }
 
@@ -173,7 +201,9 @@ pub fn shown_after_lines(pre: &str, post: &str) -> Vec<u64> {
     EditScript::between(pre, post).shown_after_lines()
 }
 
-pub fn line_map(pre: &str, post: &str) -> Vec<Option<u64>> {
+/// Where each line of `pre` sits in `post`, and which `post` lines were added. A removed or
+/// rewritten `pre` line maps to `None`; the line vector is indexed by `pre` line minus one.
+pub fn line_map(pre: &str, post: &str) -> (Vec<Option<u64>>, Vec<u64>) {
     EditScript::between(pre, post).line_map()
 }
 
@@ -390,7 +420,10 @@ mod tests {
         assert_eq!(script.shown_after_lines(), vec![1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(
             script.line_map(),
-            vec![Some(1), None, Some(3), Some(4), None, Some(5), Some(6)]
+            (
+                vec![Some(1), None, Some(3), Some(4), None, Some(5), Some(6)],
+                vec![2, 7],
+            )
         );
     }
 
@@ -402,15 +435,18 @@ mod tests {
         assert!(script.changed_after_lines().is_empty());
         assert_eq!(
             script.line_map(),
-            vec![
-                Some(1),
-                Some(2),
-                Some(3),
-                Some(4),
-                Some(5),
-                Some(6),
-                Some(7)
-            ]
+            (
+                vec![
+                    Some(1),
+                    Some(2),
+                    Some(3),
+                    Some(4),
+                    Some(5),
+                    Some(6),
+                    Some(7)
+                ],
+                Vec::new(),
+            )
         );
     }
 
@@ -422,6 +458,6 @@ mod tests {
         );
         assert_eq!(script.changed_after_lines(), vec![2]);
         assert!(script.shown_after_lines().iter().all(|line| *line <= 9));
-        assert_eq!(script.line_map().len(), 10);
+        assert_eq!(script.line_map().0.len(), 10);
     }
 }

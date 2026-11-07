@@ -3175,6 +3175,33 @@ fn the_repository_root_is_found_once_per_directory() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_missing_repository_root_is_found_once_per_directory() -> TestResult {
+    let root = Scratch::new("yi-lanes-canonical-missing")?;
+    let plain = root.join("plain");
+    std::fs::create_dir(&plain)?;
+    let modified = std::fs::metadata(&plain)?.modified()?;
+    let callers: Vec<_> = (0..8)
+        .map(|_| {
+            let dir = plain.clone();
+            std::thread::spawn(move || yi_runtime::lane::canonical_repo(&dir))
+        })
+        .collect();
+    for caller in callers {
+        let found = caller.join().map_err(|_| "repository lookup panicked")?;
+        assert_eq!(found, None);
+    }
+    init_repo(&plain)?;
+    std::fs::File::open(&plain)?.set_modified(modified)?;
+    assert_eq!(
+        yi_runtime::lane::canonical_repo(&plain),
+        None,
+        "git asked for {} after its first miss",
+        plain.display()
+    );
+    Ok(())
+}
+
 /// Incident: a claim ran `git fetch origin main` whenever the last fetch was a minute old,
 /// seconds against a forge; it now starts from the known `origin/main` and fetches beside.
 #[test]
