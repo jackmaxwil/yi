@@ -244,15 +244,15 @@ def ready_problems(rounds, head, holds=on_head):
     """What keeps a PR from leaving draft or merging: a round past intake, the last holding for this
     head and not blocked. A round holds when only merges from the base came after it."""
     errs = []
-    read = [r for r in rounds if not twin_round(r)]
-    if not read:
-        errs.append("0 review round(s) past intake; a PR needs one — just pr review")
+    read = [r for r in rounds if not twin_round(r) and holds(r["sha"], head)]
     if rounds and not holds(rounds[-1]["sha"], head):
         errs.append(f"round {rounds[-1]['n']} reviewed {rounds[-1]['sha'][:8]}, not the head {head[:8]} — just pr review")
     elif rounds and lost_attempt(rounds[-1]):
         errs.append(f"round {rounds[-1]['n']} lost {rounds[-1]['skipped']} lens answer(s) — just pr review --again")
     elif rounds and rounds[-1]["verdict"] == "blocked":
         errs.append(f"round {rounds[-1]['n']} is blocked — the autofixer answers it (just pr autofix), or /override <reason>")
+    if not read:
+        errs.append("0 review round(s) past intake; a PR needs one — just pr review")
     return errs
 
 
@@ -947,7 +947,8 @@ def inherited(rounds, attempts, head, holds=on_head):
     same = [r for r in rounds if holds(r["sha"], head)]
     if not (owed(attempts, head, holds) and same):
         return []
-    return [f for f in same[-1]["findings"] if f.get("severity") in REPORTED and f.get("lens") not in INTAKE]
+    return [{**f, "since": f.get("since") or same[-1]["n"]} for f in same[-1]["findings"]
+            if f.get("severity") in REPORTED and f.get("lens") not in INTAKE]
 
 
 def lost_only(probes, attempts, head, holds=on_head):
@@ -1637,6 +1638,12 @@ def selfcheck():
 
         # Incident: #1888's round 3 lost one lens and a void followed; the next read asked every lens
         # and sent five carried mediums through three refuters each ($1.09 for a round owed one lens).
+        round_at = lambda n, cid, verdict="clean", lost=False, found=(): {
+            "id": cid, "user": {"login": BOT},
+            "body": render(n, 7, "bbbbbbb2", "base000", list(found), 0, None, verdict, 0, ["correctness lens"] if lost else ())}
+        blocked_at = lambda n, cid: {"id": cid, "user": {"login": BOT},
+                                     "body": render(n, 7, "bbbbbbb2", "base000", [finding], 0, None, "blocking")}
+        void = lambda cid: {"user": {"login": BOT}, "id": cid, "body": void_body(7, "bbbbbbb2", "a lens did not answer", 0.1, 0.1)}
         def read_head(notes):
             lenses, refuters = [], []
 
@@ -1660,16 +1667,18 @@ def selfcheck():
                 forge_pr.pull, forge_pr.git = real_pull, real_git
 
         raised = dict(finding, lens="correctness", severity="medium")
-        round_at_head = lambda cid, lost=(), found=(): {
-            "id": cid, "user": {"login": BOT}, "body": render(1, 7, "bbbbbbb2", "base000", list(found), 0, None, "blocking", 0, lost)}
-        void_at_head = {"id": 30, "user": {"login": BOT}, "body": void_body(7, "bbbbbbb2", "a lens did not answer", 0.1, 0.1)}
         every_lens = read_head([])[1]
         assert "reuse" in every_lens and len(every_lens) > 1, every_lens
-        for notes in ([round_at_head(10, ["reuse lens"], [raised])], [round_at_head(10, ["reuse lens"], [raised]), void_at_head]):
+        for notes in ([round_at(3, 10, lost=True, found=[raised])], [round_at(3, 10, lost=True, found=[raised]), void(30)]):
             read, lenses, refuters = read_head(notes)
-            assert lenses == ["reuse"], f"a lost-lens read asked {lenses}, not only the lens it lost"
+            assert lenses == ["correctness"], f"a lost-lens read asked {lenses}, not only the lens it lost"
             assert not refuters, "the findings that arrived are not sent through refuters again"
-            assert read["kept"] == [raised] and read["n"] == 2, "the answers that arrived stand in the round that finishes the head"
+            assert read["kept"] == [dict(raised, since=3)] and read["n"] == 4, "the answers that arrived keep their age in the round that finishes the head"
+        finished = {"n": read["n"], "sha": "bbbbbbb2", "verdict": "clean", "findings": read["kept"]}
+        assert not promotes([finished], "bbbbbbb2ff"), "an inherited medium still holds the finishing round's draft"
+        old_head = dict(clean(1), sha="aaaaaaa1")
+        overridden_twin = dict(clean(2), verdict="override", findings=[dict(finding, lens="duplicate")])
+        assert ready_problems([old_head, overridden_twin], "abc1234ff"), "an overridden twin on the head is not a lens read"
         prompts = []
         read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
                    lambda p, sch, cwd: (prompts.append(p), answer(p, sch, cwd))[1], probes, full_read=False)
@@ -2037,12 +2046,6 @@ def selfcheck():
     # A head whose last round lost a lens answer is a sweep target: nobody has to run `--again`.
     head_7 = {"number": 7, "title": DRAFT + "t", "head": {"sha": "bbbbbbb2", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
     lost_head = [head_7]
-    round_at = lambda n, cid, verdict="clean", lost=False: {
-        "id": cid, "user": {"login": BOT},
-        "body": render(n, 7, "bbbbbbb2", "base000", [], 0, None, verdict, 0, ["correctness lens"] if lost else ())}
-    blocked_at = lambda n, cid: {"id": cid, "user": {"login": BOT},
-                                 "body": render(n, 7, "bbbbbbb2", "base000", [finding], 0, None, "blocking")}
-    void = lambda cid: {"user": {"login": BOT}, "id": cid, "body": void_body(7, "bbbbbbb2", "a lens did not answer", 0.1, 0.1)}
     assert sweep_heads(lost_head, notes={7: [round_at(11, 11), round_at(12, 12, lost=True)]}) == [7], \
         "a lost answer is retried by the sweep"
     # A loss is re-read while the newest attempt on the head is that loss and the head has at most
