@@ -201,6 +201,7 @@ impl CustomProvider {
                     compat: Some(serde_json::json!({"plainMaxTokens": true})),
                     thinking_level_map: None,
                     headers: None,
+                    read_timeout_secs: None,
                 }
             })
             .collect()
