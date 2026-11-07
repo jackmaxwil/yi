@@ -228,6 +228,8 @@ impl SubagentHost {
         exit: ChildExit,
         error: Option<String>,
     ) {
+        let messages = session.messages();
+        let (exit, error) = self.lease_ending(child_id, &messages, exit, error);
         let Some((exit, error)) = self.respawn(child_id, exit, error) else {
             return;
         };
@@ -235,7 +237,6 @@ impl SubagentHost {
         let _settling = crate::plan::finish::Settling::hold(self);
         // A retired child has no record left: `retire` already published its terminal update,
         // so a second one, a notice or a bill would only echo a closed slot.
-        let messages = session.messages();
         let mut ended = None;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(child_id)
@@ -324,6 +325,44 @@ impl SubagentHost {
         let (host, key) = (Arc::downgrade(self), child_id.to_owned());
         let news = Arc::new(move || host.upgrade().is_some_and(|host| host.unseen(&key, epoch)));
         (self.options.notice)(&notice, Some(news));
+    }
+
+    /// Invariant: a run stopped at its lease wears that class, whatever its aborted turn reads as.
+    fn lease_ending(
+        &self,
+        child_id: &str,
+        messages: &[AgentMessage],
+        exit: ChildExit,
+        error: Option<String>,
+    ) -> (ChildExit, Option<String>) {
+        let state = self.children.lock().ok().and_then(|children| {
+            children
+                .get(child_id)
+                .map(|record| (record.spent.crossed, record.lease.tokens))
+        });
+        let Some((crossed, Some(_))) = state else {
+            return (exit, error);
+        };
+        if !crossed {
+            self.refold_messages(child_id, messages);
+        }
+        let spent = self.children.lock().ok().and_then(|children| {
+            children
+                .get(child_id)
+                .filter(|record| record.spent.crossed)
+                .map(|record| record.lease.tokens)
+        });
+        let Some(cap) =
+            spent.filter(|_| matches!(exit, ChildExit::Completed | ChildExit::Interrupted))
+        else {
+            return (exit, error);
+        };
+        let why = format!(
+            "it spent the {} token lease its parent drew, and was stopped at the reply that crossed it",
+            cap.map_or_else(|| "whole".to_owned(), |cap| cap.to_string())
+        );
+        let class = FailClass::LeaseSpent;
+        (ChildExit::Failed { class }, Some(why))
     }
 
     /// Another run on a concluded record reads running again, and one reader concludes it.
@@ -481,6 +520,50 @@ mod tests {
         assert_eq!(
             crate::subagent::answer_text(selected).as_deref(),
             Some("{\"answer\":\"sea\"}")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lease_ending_refolds_a_final_reply_the_watcher_has_not_charged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut reply = crate::plan::rig::reply("done");
+        if let AgentMessage::Assistant { usage, .. } = &mut reply {
+            usage.input = 1_200;
+            usage.total_tokens = 1_200;
+        }
+        let rig = crate::plan::rig::rig_of(vec![reply], false)?;
+        let kwargs = serde_json::Map::from_iter([
+            ("name".to_owned(), serde_json::Value::from("kid")),
+            ("tokens".to_owned(), serde_json::Value::from(1_000)),
+        ]);
+        rig.host.spawn("finish".to_owned(), kwargs)?;
+        for _ in 0..400 {
+            if rig
+                .host
+                .children_view()
+                .iter()
+                .any(|child| child.update.exit.is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let (key, session) = {
+            let mut children = rig.host.children.lock().map_err(|_| "poisoned")?;
+            let (key, record) = children.iter_mut().next().ok_or("no child")?;
+            record.spent = crate::subagent::record::Billing::default();
+            (key.clone(), std::sync::Arc::clone(&record.session))
+        };
+        let messages = session.messages();
+        let (exit, _) = rig
+            .host
+            .lease_ending(&key, &messages, ChildExit::Completed, None);
+        assert_eq!(
+            exit,
+            ChildExit::Failed {
+                class: FailClass::LeaseSpent
+            }
         );
         Ok(())
     }
