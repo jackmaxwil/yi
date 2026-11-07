@@ -1364,10 +1364,15 @@ def quiet_for(pr, notes, now):
 
 
 def queue_builds(pr, labels):
-    """Whether the queue will build this PR, so a push here drops a candidate it would otherwise land."""
-    return ("queue" in labels and "autofix" not in labels and pr["base"]["ref"] == "main"
-            and forge_pr.queue_mode() != "off" and pr_queue.enqueued_at(pr["number"]) is not None
-            and pr_queue.eligible_problem(pr, forge_pr.jobs_of(pr)) is None)
+    """Whether to leave this PR for the queue, including when the queue's state cannot be read."""
+    if "queue" not in labels or "autofix" in labels or pr["base"]["ref"] != "main":
+        return False
+    try:
+        return (forge_pr.queue_mode() != "off" and pr_queue.enqueued_at(pr["number"]) is not None
+                and pr_queue.eligible_problem(pr, forge_pr.jobs_of(pr)) is None)
+    except (SystemExit, Exception) as err:
+        print(f"#{pr['number']}: the queue's state could not be read ({err}); leaving the branch alone")
+        return True
 
 
 def attempt(repo, pr, ids, asked=False):
@@ -2854,6 +2859,16 @@ def selfcheck():
             pr_queue.enqueued_at = lambda number: None
             if attempt("o/r", queued, {}) == "queued" or len(attempted) != 5:
                 errs.append("a label no merger added held the PR, and the queue skips what it never enqueued")
+            for fault in (SystemExit("database is locked"), RuntimeError("forge refused")):
+                def unreadable(number, fault=fault):
+                    raise fault
+                pr_queue.enqueued_at = unreadable
+                try:
+                    said = attempt("o/r", queued, {})
+                except (SystemExit, Exception) as err:
+                    said = f"raised {err}"
+                if said != "queued" or len(attempted) != 5:
+                    errs.append(f"an unreadable queue timeline raised {type(fault).__name__} and read {said!r}, so one PR can escape or stop the pass")
         finally:
             forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem = real_queue
         def moved(pr):
