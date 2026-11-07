@@ -193,7 +193,7 @@ report to another agent) and to a user who asks, and never soften one in a reply
 - Every baseline has a reader (check_orphans.py). A new baseline seeds with its gate in one
   commit — the carve-out check_commit_style already grants — and goes when its gate goes.
 - A new YI_* env var is a row in scripts/guardrails/baselines/env_vars.json first (hard cap 40).
-- The dist profile is what binary-size and startup budgets measure — never release.
+- The dist profile is what the startup budget measures — never release.
 - No tracking check runs offline. A green `just check` says nothing about whether the work is
   registered, sized or dated — it cannot reach the forge and never tries. The PR job
   (check_pr_metadata.py) and the weekly hygiene job are where that is enforced.
@@ -307,8 +307,7 @@ enforced by deny.toml. default-features = false everywhere; enable the minimum. 
 inside a wrapped dependency's own tree (rmcp→chrono, zeromq→rand) get a scoped deny.toml
 wrapper exception, never a repo-wide unban. `regex` left the banned list for grep v2 and is a
 direct dependency; `syntect` left it for the highlighter, on `regex-fancy` only. Budgets are
-whatever baselines/deps_budget.json currently reads; dist binary ≤ 9 MiB, a hard cap independent
-of the baseline (D249), `yi --version` ≤ 5 ms.
+whatever baselines/deps_budget.json currently reads; `yi --version` ≤ 5 ms.
 
 
 
@@ -413,10 +412,15 @@ Tests are tiered by where they run and what they may spend:
 
 # A skill for every tool
 
-The owner, 2026-10-10: "every major agent tool/feature needs a corresponding skill".
+The owner, 2026-10-10: "every major agent tool/feature needs a corresponding skill". Again
+2026-10-30, reviewing #1891: "every new feature, tool, pattern, etc available to Yi, MUST BE TAUGHT
+TO YI with a visible schema and skill. Skills are lazy loaded with a pointer but always a
+representative description and compact info."
 
 - **Major** is every tool a root session's model can call and every row of the plugin table
-  (`yi_tools::plugin::PLUGINS`).
+  (`yi_tools::plugin::PLUGINS`). Beyond those, a `yi` subcommand or flag the model may run, a config
+  key, or a marker or file format it reads or writes is taught the same way, in a skill; no gate
+  reads those kinds yet, so the reviewer enforces them.
 - **Covered** means a shipped `SKILL.md` (under `skills/` or `python/skills/`) whose frontmatter
   says `covers: tool:<name>` or `covers: plugin:<name>` (a comma list), or an on-demand tool guide
   served at `yi://tools/<name>`.
@@ -428,6 +432,13 @@ The owner, 2026-10-10: "every major agent tool/feature needs a corresponding ski
 - The content bar: a skill teaches what the tool description cannot — when to reach for this tool
   over another, how its calls combine, and how to recover from its failures. It never restates
   the schema or the description; the duplication gate refuses that.
+- A feature with no tool schema carries its shape in the skill's opening lines: a subcommand's usage
+  line and output shape, a config key's type and default, a marker's grammar. A tool's own schema is
+  already visible to the model, so its skill points at it.
+- The catalog line is the first 60 characters of `description` (`DESCRIPTION_CLIP`), so lead with
+  what the feature is and when to reach for it. Under budget pressure the trailing skills fall to a
+  bare-name list.
+- The pull request body says where Yi is taught: the skill path and the catalog line as rendered.
 - Skills load lazily: one catalog line each, the body on `read("yi://skills/<name>")`. A plugin's
   own skills sit behind one pointer skill and are never listed.
 

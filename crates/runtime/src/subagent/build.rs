@@ -208,29 +208,41 @@ impl SubagentHost {
     /// A lagged watch missed events: counters and activity are read again from the session, and
     /// true means a run is live whose start event may be lost, so no reader would conclude it.
     pub(crate) fn refold(&self, child_id: &str) -> bool {
+        let session = self.children.lock().ok().and_then(|children| {
+            children
+                .get(child_id)
+                .map(|record| std::sync::Arc::clone(&record.session))
+        });
+        let messages = session
+            .map(|session| session.messages())
+            .unwrap_or_default();
+        let running = self.refold_messages(child_id, &messages);
+        self.publish(child_id);
+        running
+    }
+
+    pub(super) fn refold_messages(&self, child_id: &str, messages: &[AgentMessage]) -> bool {
         let mut running = false;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(child_id)
         {
             // ponytail: `messages` trails a live turn, so counters only ever move up here.
-            let messages = record.session.messages();
             let mut fresh = (0_u64, 0_u64, 0.0_f64);
-            for message in record.billable(&messages) {
+            for message in record.billable(messages) {
                 if let AgentMessage::Assistant { usage, content, .. } = message {
                     let calls = content
                         .iter()
                         .filter(|block| matches!(block, Content::ToolCall { .. }))
                         .count();
                     fresh.0 = fresh.0.saturating_add(u64::try_from(calls).unwrap_or(0));
-                    fresh.1 = fresh
-                        .1
-                        .saturating_add(u64::try_from(usage.total_tokens).unwrap_or(0));
+                    fresh.1 = fresh.1.saturating_add(usage.fresh());
                     fresh.2 += usage.cost.total.as_f64().unwrap_or(0.0);
                 }
             }
             record.tool_use_count = record.tool_use_count.max(fresh.0);
-            record.token_count = record.token_count.max(fresh.1);
+            record.spent.tokens = record.spent.tokens.max(fresh.1);
             record.cost = record.cost.max(fresh.2);
+            record.enforce();
             let live = record.session.status() == crate::session::Status::Running;
             running = live || (record.exit.is_none() && !record.concluding);
             record.activity = if live {
@@ -239,7 +251,6 @@ impl SubagentHost {
                 ChildActivity::Waiting
             };
         }
-        self.publish(child_id);
         running
     }
 }

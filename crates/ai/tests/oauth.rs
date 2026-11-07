@@ -7,7 +7,8 @@ use yi_ai::auth::{self, AuthKind};
 use yi_oauth::store::{Credential, Kind, Store};
 use yi_types::model::{LlmContext, Model};
 
-type Res = Result<(), Box<dyn std::error::Error>>;
+type Res = crate::harness::Res;
+use crate::harness::drain;
 
 /// These tests set HOME and the provider env vars, which are process-wide.
 fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -74,30 +75,7 @@ fn model(port: u16) -> Result<Model, Box<dyn std::error::Error>> {
 }
 
 fn context() -> LlmContext {
-    LlmContext {
-        cache_ttl: yi_types::model::Ttl::Min5,
-        system_prompt: String::new(),
-        messages: vec![],
-        transient: Vec::new(),
-        schema: None,
-        shared_through: None,
-        reuse: yi_types::model::Reuse::Loop,
-        tools: None,
-        tool_choice: None,
-    }
-}
-
-fn drain(
-    open: impl FnOnce() -> tokio::sync::mpsc::Receiver<yi_types::event::AssistantMessageEvent>,
-) -> Res {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(async {
-        let mut receiver = open();
-        while receiver.recv().await.is_some() {}
-    });
-    Ok(())
+    crate::harness::empty_context()
 }
 
 /// An env key must outrank a stored credential, or a user who exports a key to

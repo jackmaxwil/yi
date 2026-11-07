@@ -609,7 +609,9 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``check`` makes a ``role="root"`` child a protocol child (a reader refuses it) — it owes a ``{"value": …, "discoveries":
     […]}`` answer, and ``result`` withholds that answer while the check is red.
     ``deadline_s`` and ``tokens`` are the child's lease, drawn from this session's own: an
-    ask past what is left here is refused with both numbers, never clamped. ``parent_close``
+    ask past what is left here is refused with both numbers, never clamped, and a ``tokens``
+    cap stops the child after the reply that crosses it, reading ``failed`` with
+    ``class: "lease_spent"``. ``parent_close``
     is ``"terminate"`` (default, 30 s grace) or ``"request_cancel"``; work is kept either way.
     A bare call makes a question-child (``role="reader"``, the default; ``role="root"`` is a
     full child with this session's prompt and tools): a short reader prompt instead of this session's,
@@ -985,8 +987,7 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     """Block until a child reports or finishes; returns what moved since ``cursor``.
 
     The reply carries ``cursor`` (pass it back on the next call and no other
-    waiter can steal your updates), ``changed`` and its one-release alias
-    ``updated`` (the names that moved), ``causes`` (why each moved, by name:
+    waiter can steal your updates), ``changed`` (the names that moved), ``causes`` (why each moved, by name:
     ``mail``, ``finished``, ``asked``, ``reaped`` and the like), ``counts`` (the whole
     roster's totals by state), and ``states`` and ``notes`` for the members named by
     ``causes``: ``running``, ``finished``, ``failed``, ``needs_you`` or ``stuck``.
