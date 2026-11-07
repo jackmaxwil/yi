@@ -1,5 +1,6 @@
 //! The rail and the full sidebar: pinned sessions, then one foldable group per workspace.
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -9,6 +10,7 @@ use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 
 use crate::app::App;
 use crate::avatar::Placement;
+use crate::client::Outbound;
 use crate::keys::{self, Action};
 use crate::model::{
     Group, Mode, Painted, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms,
@@ -306,13 +308,22 @@ pub(crate) fn refine(state: &crate::model::ConsoleState, mut groups: Vec<Group>)
     groups
 }
 
+pub(crate) fn project_roots(state: &crate::model::ConsoleState) -> Vec<String> {
+    let mut roots = state.roots();
+    roots.sort_by_key(|root| {
+        state
+            .side
+            .order
+            .iter()
+            .position(|known| known == root)
+            .unwrap_or(usize::MAX)
+    });
+    roots
+}
+
 /// Move project `root` to where `to` is in the painted order of projects.
 pub(crate) fn move_group(state: &mut crate::model::ConsoleState, root: &str, to: &str) {
-    let mut roots: Vec<String> = state
-        .groups()
-        .into_iter()
-        .filter_map(|group| group.root)
-        .collect();
+    let mut roots = project_roots(state);
     let (Some(from), Some(at)) = (
         roots.iter().position(|known| known == root),
         roots.iter().position(|known| known == to),
@@ -795,5 +806,73 @@ impl App {
         self.state.side.query = Some(String::new());
         self.state.side.scroll = None;
         self.dirty = true;
+    }
+
+    /// Panels have the keys while a drag is up (any key cancels it) and while the tree is focused.
+    /// Keys while the inline search is up. True when it took the key.
+    pub(super) fn search_key(
+        &mut self,
+        outbound: &crate::client::Outbound,
+        key: ratatui::crossterm::event::KeyEvent,
+    ) -> bool {
+        if self.state.side.query.is_some()
+            && matches!(
+                key.code,
+                ratatui::crossterm::event::KeyCode::Up | ratatui::crossterm::event::KeyCode::Down
+            )
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::ALT)
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::SHIFT)
+        {
+            self.shift_project(if key.code == ratatui::crossterm::event::KeyCode::Down {
+                1
+            } else {
+                -1
+            });
+            self.state.side.scroll = None;
+            self.state.settle_visible();
+            self.dirty = true;
+            return true;
+        }
+        use ratatui::crossterm::event::KeyCode;
+        let Some(query) = self.state.side.query.as_mut() else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Esc => self.state.side.query = None,
+            KeyCode::Char(c) if !c.is_control() => query.push(c),
+            KeyCode::Backspace => {
+                query.pop();
+            }
+            KeyCode::Up | KeyCode::Down => self.state.move_cursor(key.code == KeyCode::Down),
+            KeyCode::Enter => {
+                self.state.side.query = None;
+                self.state.settle_visible();
+                self.open_selected(outbound);
+            }
+            _ => return true,
+        }
+        self.state.side.scroll = None;
+        self.state.settle_visible();
+        self.dirty = true;
+        true
+    }
+
+    pub(super) fn keys_held(&self) -> bool {
+        self.state.snap.is_some() || self.state.side.query.is_some() || self.files_focused()
+    }
+
+    pub(super) fn held_key(&mut self, outbound: &Outbound, key: KeyEvent) {
+        if self.search_key(outbound, key) {
+            return;
+        }
+        if self.state.snap.take().is_some() {
+            self.dirty = true;
+            return;
+        }
+        self.files_key(key);
     }
 }

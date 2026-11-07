@@ -298,6 +298,7 @@ pub struct Editor {
     pub scroll_top: usize,
     /// Drawn columns scrolled off the left edge; a long line is reached by sliding, not wrapping.
     pub scroll_left: usize,
+    pub widest: Option<usize>,
     pub lang: Option<String>,
     pub primed: Option<(usize, yi_tui::highlight::Lang)>,
     pub last_cursor: (usize, usize),

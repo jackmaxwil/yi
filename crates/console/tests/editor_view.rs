@@ -27,6 +27,7 @@ fn commented_file(rows: usize) -> Editor {
         mtime: None,
         stale: false,
         scroll_top: 0,
+        widest: None,
         scroll_left: 0,
         primed: None,
         last_cursor: (0, 0),

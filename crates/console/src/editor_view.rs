@@ -52,15 +52,11 @@ impl Tabs {
         self.shown
     }
 
-    pub fn len(&self) -> usize {
+    pub fn count(&self) -> usize {
         self.before
             .len()
             .saturating_add(self.after.len())
             .saturating_add(1)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        false
     }
 
     /// Every file, in strip order.
@@ -112,7 +108,7 @@ impl Tabs {
 
     /// Step to the next (or previous) tab, wrapping.
     pub fn step(&mut self, delta: isize) {
-        let len = isize::try_from(self.len()).unwrap_or(1);
+        let len = isize::try_from(self.count()).unwrap_or(1);
         let at = isize::try_from(self.before.len()).unwrap_or(0);
         let to = at.saturating_add(delta).rem_euclid(len);
         self.show(usize::try_from(to).unwrap_or(0));
@@ -130,7 +126,7 @@ impl Tabs {
     /// Take tab `index` out of the strip; `None` when it is the only one.
     pub fn take(&mut self, index: usize) -> Option<Editor> {
         let here = self.before.len();
-        if self.len() <= 1 {
+        if self.count() <= 1 {
             return None;
         }
         if index < here {
@@ -270,13 +266,20 @@ pub(crate) fn char_at(line: &str, col: usize) -> usize {
 
 /// The spans of an already tab-expanded line from drawn column `skip` on.
 fn crop(spans: Vec<Span<'static>>, skip: usize) -> Vec<Span<'static>> {
+    if skip == 0 {
+        return spans;
+    }
     let mut left = skip;
     let mut out = Vec::new();
     for span in spans {
         let mut kept = String::new();
         for c in span.content.chars() {
             if left > 0 {
-                left = left.saturating_sub(c.width().unwrap_or(0));
+                let width = c.width().unwrap_or(0);
+                if left < width {
+                    kept.push(' ');
+                }
+                left = left.saturating_sub(width);
             } else {
                 kept.push(c);
             }
@@ -288,15 +291,19 @@ fn crop(spans: Vec<Span<'static>>, skip: usize) -> Vec<Span<'static>> {
     out
 }
 
-/// The widest line in drawn columns: how far the text can slide left.
-pub(crate) fn widest(editor: &Editor) -> usize {
-    editor
+pub(crate) fn widest(editor: &mut Editor) -> usize {
+    if let Some(widest) = editor.widest {
+        return widest;
+    }
+    let widest = editor
         .text
         .lines()
         .iter()
         .map(|line| expand(line, 0).width())
         .max()
-        .unwrap_or(0)
+        .unwrap_or(0);
+    editor.widest = Some(widest);
+    widest
 }
 
 pub(crate) fn cursor_cell(tabs: &Tabs, area: Rect) -> Option<(u16, u16)> {
@@ -441,6 +448,7 @@ mod tests {
             mtime: None,
             stale: false,
             scroll_top: 0,
+            widest: None,
             scroll_left: 0,
             lang: None,
             primed: None,
@@ -509,6 +517,13 @@ mod tests {
             "with nothing to its right, the left one shows"
         );
         assert!(tabs.take(0).is_none(), "the only tab was taken");
-        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs.count(), 1);
+    }
+
+    #[test]
+    fn cropping_into_a_wide_character_keeps_the_rest_of_the_row_aligned() {
+        let spans = crop(vec![Span::raw("界x")], 1);
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, " x");
     }
 }

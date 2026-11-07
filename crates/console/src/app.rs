@@ -792,7 +792,7 @@ impl App {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Notebook { .. }))
     }
 
-    fn open_selected(&mut self, outbound: &Outbound) {
+    pub(crate) fn open_selected(&mut self, outbound: &Outbound) {
         if !self.connected() {
             self.note("not connected");
             return;
@@ -815,13 +815,7 @@ impl App {
             .values()
             .any(|pane| pane.session().is_some());
         if !bound {
-            self.new_session(outbound);
-        }
-    }
-
-    fn new_session(&mut self, outbound: &Outbound) {
-        if let Some(pane_id) = self.state.focused_pane_id() {
-            self.new_session_into(outbound, pane_id, self.state.root.clone());
+            self.new_session(outbound, (0, 0));
         }
     }
 
@@ -883,7 +877,7 @@ impl App {
             }
             Action::SelectTab(n) => self.state.select_tab(usize::from(n).saturating_sub(1)),
             Action::Snap(_) | Action::Shift(_) => self.layout_action(action),
-            Action::NewSession => self.new_session(outbound),
+            Action::NewSession => self.new_session(outbound, (0, 0)),
             Action::Navigator => {
                 self.state.mode = Mode::Navigator {
                     query: String::new(),

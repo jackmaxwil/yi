@@ -2,7 +2,6 @@
 //! session", a session row or a pane title lights the zone under the pointer and drops there.
 
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use yi_tui::colors::Theme;
@@ -126,14 +125,7 @@ fn rect_of(app: &App, drop: Drop) -> Option<Rect> {
             width: area.width / 3,
             ..area
         },
-        Drop::Onto(pane) => {
-            app.hits
-                .as_ref()?
-                .panes
-                .iter()
-                .find(|(id, _)| *id == pane)?
-                .1
-        }
+        Drop::Onto(pane) => app.hits.as_ref()?.rect_of(pane)?,
     })
 }
 
@@ -233,52 +225,6 @@ fn drop_label(drag: &Drag) -> &'static str {
 }
 
 impl App {
-    /// Panels have the keys while a drag is up (any key cancels it) and while the tree is focused.
-    /// Keys while the inline search is up. True when it took the key.
-    pub(super) fn search_key(
-        &mut self,
-        outbound: &crate::client::Outbound,
-        key: ratatui::crossterm::event::KeyEvent,
-    ) -> bool {
-        use ratatui::crossterm::event::KeyCode;
-        let Some(query) = self.state.side.query.as_mut() else {
-            return false;
-        };
-        match key.code {
-            KeyCode::Esc => self.state.side.query = None,
-            KeyCode::Char(c) if !c.is_control() => query.push(c),
-            KeyCode::Backspace => {
-                query.pop();
-            }
-            KeyCode::Up | KeyCode::Down => self.state.move_cursor(key.code == KeyCode::Down),
-            KeyCode::Enter => {
-                self.state.side.query = None;
-                self.state.settle_visible();
-                self.open_selected(outbound);
-            }
-            _ => return true,
-        }
-        self.state.side.scroll = None;
-        self.state.settle_visible();
-        self.dirty = true;
-        true
-    }
-
-    pub(super) fn keys_held(&self) -> bool {
-        self.state.snap.is_some() || self.state.side.query.is_some() || self.files_focused()
-    }
-
-    pub(super) fn held_key(&mut self, outbound: &Outbound, key: KeyEvent) {
-        if self.search_key(outbound, key) {
-            return;
-        }
-        if self.state.snap.take().is_some() {
-            self.dirty = true;
-            return;
-        }
-        self.files_key(key);
-    }
-
     /// The focused panel moves to `snap`; a lone panel has nowhere to go.
     pub(super) fn snap_focused(&mut self, snap: Snap) {
         let moved = self.state.focused_pane_id().is_some_and(|id| {
@@ -302,7 +248,7 @@ impl App {
             .is_some_and(|tab| tab.layout.pane_count() > 1);
         let top = || {
             let pane = hits.pane_at(x, y)?;
-            let rect = hits.panes.iter().find(|(id, _)| *id == pane)?.1;
+            let rect = hits.rect_of(pane)?;
             (y == rect.y && hits.split_at(x, y).is_none()).then_some(pane)
         };
         match hits.hit_at(x, y).map(|(_, hit)| hit) {
@@ -421,7 +367,7 @@ impl App {
     }
 
     /// ⌥⇧↑↓: the project under the cursor swaps with its neighbour.
-    fn shift_project(&mut self, step: isize) {
+    pub(crate) fn shift_project(&mut self, step: isize) {
         let roots: Vec<String> = self
             .state
             .groups()
@@ -456,7 +402,7 @@ impl App {
 
     /// The file at tab `index`, out of its panel; a lone file takes its panel with it.
     fn extract_tab(&mut self, from: PaneId, index: usize) -> Option<crate::model::Editor> {
-        let many = self.tabs_of(from).map(|tabs| tabs.len() > 1)?;
+        let many = self.tabs_of(from).map(|tabs| tabs.count() > 1)?;
         if many {
             return self.tabs_of(from)?.take(index);
         }
@@ -506,7 +452,7 @@ impl App {
     fn snap_drop(&mut self, outbound: &Outbound, source: Source, drop: Drop) {
         let whole = match &source {
             Source::Pane(id) => Some(*id),
-            Source::Tab(id, _) if self.tabs_of(*id).is_some_and(|tabs| tabs.len() <= 1) => {
+            Source::Tab(id, _) if self.tabs_of(*id).is_some_and(|tabs| tabs.count() <= 1) => {
                 Some(*id)
             }
             _ => None,
@@ -537,9 +483,14 @@ impl App {
             }
         };
         match source {
-            Source::New(root) => {
-                let root = root.unwrap_or_else(|| self.state.root.clone());
+            Source::New(Some(root)) => {
                 self.new_session_into(outbound, pane, root);
+            }
+            Source::New(None) => {
+                if let Some(tab) = self.state.tab_mut() {
+                    tab.layout.focus_pane(pane);
+                }
+                self.new_session(outbound, (0, 0));
             }
             Source::Session(index) => {
                 self.state.header = None;

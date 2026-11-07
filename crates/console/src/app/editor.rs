@@ -52,6 +52,7 @@ pub(super) fn load(path: &str, workdir: String) -> Result<Editor, String> {
         mtime: mtime_of(path),
         stale: false,
         scroll_top: 0,
+        widest: None,
         scroll_left: 0,
         primed: None,
         last_cursor: (0, 0),
@@ -111,6 +112,7 @@ impl Editor {
         let fresh = load(&self.path, self.workdir.clone())?;
         let (row, col) = self.text.cursor();
         self.text = fresh.text;
+        self.widest = None;
         self.crlf = fresh.crlf;
         self.final_newline = fresh.final_newline;
         self.text.move_cursor(CursorMove::Jump(
@@ -150,6 +152,7 @@ impl Editor {
         let before = self.text.cursor().0;
         if yi_tui::composer::edit_key(&mut self.text, key) {
             self.dirty = true;
+            self.widest = None;
             // Only an edit above the viewport can change what the visible rows sit inside.
             let touched = before.min(self.text.cursor().0);
             if touched < self.scroll_top {
@@ -339,6 +342,9 @@ impl App {
             Action::Redo => (!editor.text.redo()).then(|| "nothing to redo".to_owned()),
             _ => return false,
         };
+        if matches!(action, Action::Undo | Action::Redo) {
+            editor.widest = None;
+        }
         if matches!(action, Action::Undo | Action::Redo) && note.is_none() {
             editor.dirty = true;
         }

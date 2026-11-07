@@ -38,6 +38,7 @@ pub use crate::hit::Hit;
 
 #[derive(Default)]
 pub struct Hits {
+    pub area: Rect,
     pub sidebar_width: u16,
     pub sidebar_height: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
@@ -78,6 +79,13 @@ impl Hits {
         let at = ratatui::layout::Position::new(x, y);
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
         Some(*pane)
+    }
+
+    pub fn rect_of(&self, pane: PaneId) -> Option<Rect> {
+        self.panes
+            .iter()
+            .find(|(id, _)| *id == pane)
+            .map(|(_, rect)| *rect)
     }
 
     pub fn covered(&self, rect: ratatui::layout::Rect) -> bool {
@@ -205,7 +213,8 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     };
     let gear_rows = crate::chrome::gear_height(sidebar_width, app.kitty);
     let (sidebar, gear) = split_off_bottom(sidebar, gear_rows);
-    let files = crate::files::side(area, app.state.files.is_some());
+    let files_open = app.state.files.is_some() && area.width.saturating_sub(sidebar_width) >= 60;
+    let files = crate::files::side(area, files_open);
     let reserved = sidebar_width.saturating_add(files.width);
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
@@ -302,6 +311,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         .last()
         .map_or(0, |(rect, _)| rect.right().saturating_sub(header.x));
     app.hits = Some(Hits {
+        area,
         sidebar_width,
         sidebar_height: sidebar.height,
         sidebar_rows,
