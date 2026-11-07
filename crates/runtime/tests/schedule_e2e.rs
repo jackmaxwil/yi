@@ -18,39 +18,15 @@ use yi_runtime::schedule::{
 use yi_runtime::todo::{Op, Target, TodoStore};
 use yi_runtime::{AgentSession, HostRegistry, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Model, ModelCost};
 use yi_types::plan::doc::{BlockedOn, Todo, TodoState};
 use yi_types::schedule::{
     CatchUp, CronSchedule, DispatchRecord, JobSource, JobStatus, Overlap, ScheduleKind,
     ScheduleState,
 };
 
-type TestResult = Result<(), Box<dyn Error>>;
+use crate::faux_model::faux_model;
 
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
+type TestResult = Result<(), Box<dyn Error>>;
 
 fn temp_store(name: &str) -> std::io::Result<(Scratch, Arc<JobStore>)> {
     let dir = Scratch::new(&format!("yi-sched-{name}"))?;
@@ -101,7 +77,7 @@ fn clock_session(reply: &str) -> Result<(AgentSession, Arc<TodoStore>), Box<dyn 
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -219,7 +195,7 @@ async fn a_heartbeat_due_mid_compaction_is_deferred() -> TestResult {
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1147,7 +1123,7 @@ async fn a_configured_dollar_alert_reaches_the_session() -> TestResult {
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1279,7 +1255,7 @@ async fn a_configured_day_alert_reaches_the_session() -> TestResult {
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1307,7 +1283,7 @@ fn alarmed() -> Result<AgentSession, Box<dyn Error>> {
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1558,7 +1534,7 @@ async fn the_kill_switch_holds_the_clock_and_a_turn_until_resume() -> TestResult
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1639,7 +1615,7 @@ fn wired_root(root: &std::path::Path, reply: &str) -> Result<AgentSession, Box<d
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

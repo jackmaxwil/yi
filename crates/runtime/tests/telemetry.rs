@@ -7,41 +7,16 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::Arc;
 
+use crate::faux_model::faux_model;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Telemetry};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
 use yi_types::telemetry::{Span, SpanKind};
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 200_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn reply_with_usage(text: &str, input: i64, output: i64) -> AgentMessage {
     let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
@@ -75,7 +50,7 @@ async fn a_faux_turn_leaves_a_request_and_a_turn_span_beside_the_session() -> Te
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -128,7 +103,7 @@ async fn a_wake_built_before_a_model_switch_runs_the_woken_turn_on_the_new_model
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -137,7 +112,7 @@ async fn a_wake_built_before_a_model_switch_runs_the_woken_turn_on_the_new_model
     session.set_telemetry(Arc::clone(&telemetry));
     session.attach_store(store)?;
     let wake = yi_runtime::wiring::lifecycle_notice(&session);
-    let mut switched = faux_model();
+    let mut switched = faux_model(128_000);
     switched.id = "faux-2".to_owned();
     session.set_model(switched);
     wake(
@@ -227,7 +202,7 @@ async fn an_error_span_is_classed_from_its_error_message() -> TestResult {
         faux_assistant_message(vec![faux_text("HTTP 503: overloaded")], StopReason::Error);
     for error in [rate_limited, text_only] {
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        let mut wrapped = telemetry.wrap(&faux_model(), receiver);
+        let mut wrapped = telemetry.wrap(&faux_model(128_000), receiver);
         sender
             .send(AssistantMessageEvent::Error {
                 reason: StopReason::Error,
@@ -265,7 +240,7 @@ async fn an_unreported_usage_records_no_cost() -> TestResult {
             usage.unknown = unknown;
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        let mut wrapped = telemetry.wrap(&faux_model(), receiver);
+        let mut wrapped = telemetry.wrap(&faux_model(128_000), receiver);
         sender
             .send(AssistantMessageEvent::Error {
                 reason: StopReason::Error,

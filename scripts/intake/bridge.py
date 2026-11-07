@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -555,24 +556,20 @@ def branch_name(case: Case) -> str:
 def signer_lines(contributor: dict[str, Any], registry: str) -> list[str]:
     return [raw for raw in registry.splitlines() if raw and not raw.startswith("#") and raw.split(maxsplit=1)[0] in contributor["emails"]]
 
+def key_fingerprint(key: str) -> str:
+    fields = key.split()
+    if len(fields) < 2:
+        raise ValueError(f"allowed_signers key {key[:40]!r} carries no keytype and blob")
+    keytype, body = fields[0], fields[1]
+    blob = base64.b64decode(body, validate=True)
+    size = struct.unpack(">I", blob[:4])[0] if len(blob) >= 4 else 0
+    if blob[4:4 + size] != keytype.encode():
+        raise ValueError(f"allowed_signers keytype {keytype} is not the type its blob declares")
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).rstrip(b"=").decode()
+
 
 def commit_verified(repo: pathlib.Path, signers: pathlib.Path, sha: str) -> bool:
     return git(["-C", str(repo), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", sha], check=False).returncode == 0
-
-
-def ssh_fingerprint(public: str) -> str:
-    fields = public.split()
-    if len(fields) < 2:
-        raise ValueError("SSH public key needs a type and base64 blob")
-    key_type, encoded = fields[:2]
-    key = base64.b64decode(encoded, validate=True)
-    if len(key) < 4:
-        raise ValueError("SSH public key blob is truncated")
-    size = int.from_bytes(key[:4], "big")
-    if len(key) < 4 + size or key[4:4 + size] != key_type.encode():
-        raise ValueError("SSH public key type does not match its blob")
-    digest = base64.b64encode(hashlib.sha256(key).digest()).rstrip(b"=").decode()
-    return f"SHA256:{digest}"
 
 
 def validate_registry(allowed_path: Optional[pathlib.Path] = None, signers_path: Optional[pathlib.Path] = None) -> None:
@@ -587,7 +584,7 @@ def validate_registry(allowed_path: Optional[pathlib.Path] = None, signers_path:
         login = emails.get(principal)
         if login is None:
             raise ValueError(f"allowed_signers:{number}: principal {principal} is not pinned")
-        actual[login].append(ssh_fingerprint(key))
+        actual[login].append(key_fingerprint(key))
     for login, row in allowed.items():
         if sorted(actual[login]) != sorted(row["fingerprints"]):
             raise ValueError(f"allowed.json fingerprints do not match allowed_signers for {login}")
