@@ -6,7 +6,9 @@ use scratch::Scratch;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::faux_model::faux_model;
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
@@ -16,37 +18,11 @@ use yi_runtime::{
     attach_runtime,
 };
 use yi_types::message::StopReason;
-use yi_types::model::{Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 const POLL_ATTEMPTS: usize = 400;
 const POLL_INTERVAL_MS: u64 = 50;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 async fn wait_for_status(host: &Arc<SubagentHost>, name: &str, status: &str) -> bool {
     for _ in 0..POLL_ATTEMPTS {
@@ -64,15 +40,21 @@ async fn wait_for_status(host: &Arc<SubagentHost>, name: &str, status: &str) -> 
     false
 }
 
-#[tokio::test]
-async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
+async fn child_kernel_answer(
+    role: &str,
+    tools: Option<&str>,
+    code: &str,
+    expected: &str,
+    extra: Map<String, Value>,
+) -> TestResult {
     let root = Scratch::new("yi-kernel-across")?;
+    std::fs::write(root.join("walled.txt"), "42")?;
     let provider = Arc::new(ProviderStream::new(None));
-    let mut code = Map::new();
-    code.insert("code".to_owned(), Value::String("answer = 42".to_owned()));
+    let mut call = Map::new();
+    call.insert("code".to_owned(), Value::String(code.to_owned()));
     provider.queue_faux(vec![
         faux_assistant_message(
-            vec![faux_tool_call("call-1", "ipython", code)],
+            vec![faux_tool_call("call-1", "ipython", call)],
             StopReason::ToolUse,
         ),
         faux_assistant_message(vec![faux_text("bound it")], StopReason::Stop),
@@ -81,7 +63,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     let mut parent = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -120,16 +102,38 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
             kernels: Arc::clone(&kernels),
         },
     );
+    let parent_kernel = parent
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    printed(&parent_kernel, "parent_answer = 42").await?;
+    let contained = extra.contains_key("deny_read");
 
-    let mut kwargs = Map::new();
+    let mut kwargs = extra;
     kwargs.insert("name".to_owned(), Value::String("helper".to_owned()));
-    kwargs.insert("role".to_owned(), Value::String("root".to_owned()));
+    kwargs.insert("role".to_owned(), Value::String(role.to_owned()));
+    if let Some(tools) = tools {
+        kwargs.insert(
+            "tools".to_owned(),
+            Value::Array(vec![Value::String(tools.to_owned())]),
+        );
+    }
     host.spawn("bind the answer".to_owned(), kwargs)?;
     assert!(
         wait_for_status(&host, "helper", "completed").await,
         "the child never finished its cell: {:?}",
         host.list()
     );
+    if contained && !yi_tools::Sandbox::available() {
+        let store = host
+            .transcript("helper")
+            .ok_or("the worker has no transcript")?;
+        let transcript = serde_json::to_string(&yi_runtime::family::recent_entries(&store))?;
+        assert!(
+            transcript.contains("ipython is unavailable to a walled session here"),
+            "{transcript}"
+        );
+        return Ok(());
+    }
 
     let family = root.join("family");
     let resolver = Arc::new(
@@ -140,8 +144,11 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     let url: yi_types::url::Url = "kernel://helper/answer".parse()?;
     let reader = Arc::clone(&resolver);
     let fetched = tokio::task::spawn_blocking(move || reader.fetch(&url)).await??;
-    assert_eq!(fetched.text, "42");
+    assert_eq!(fetched.text, expected);
     assert_eq!(fetched.served_by, "kernel-namespace helper");
+    if contained {
+        return Ok(());
+    }
     // D164: the same variable as an object, dilled by the child's own kernel.
     let object: yi_types::url::Url = "kernel://helper/answer".parse()?;
     let dumper = Arc::clone(&resolver);
@@ -154,6 +161,47 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
+    child_kernel_answer("root", None, "answer = 42", "42", Map::new()).await
+}
+
+#[tokio::test]
+async fn a_worker_naming_ipython_holds_its_own_kernel() -> TestResult {
+    child_kernel_answer("worker", Some("ipython"), "answer = 42", "42", Map::new()).await
+}
+
+#[tokio::test]
+async fn a_worker_fetches_a_parent_kernel_value() -> TestResult {
+    child_kernel_answer(
+        "worker",
+        Some("ipython"),
+        "answer = await rlm.fetch('kernel://main/parent_answer')",
+        "42",
+        Map::new(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_walled_worker_naming_ipython_keeps_the_kernel_boundary() -> TestResult {
+    let code = concat!(
+        "from pathlib import Path\n",
+        "try:\n",
+        "    Path('walled.txt').read_text()\n",
+        "except OSError:\n",
+        "    answer = True\n",
+        "else:\n",
+        "    answer = False",
+    );
+    let mut wall = Map::new();
+    wall.insert(
+        "deny_read".to_owned(),
+        Value::Array(vec!["walled.txt".into()]),
+    );
+    child_kernel_answer("worker", Some("ipython"), code, "True", wall).await
+}
+
 /// One root session wired as `build_session` wires it once the session id is known.
 pub(crate) fn root_session(
     root: &std::path::Path,
@@ -164,7 +212,7 @@ pub(crate) fn root_session(
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -212,12 +260,7 @@ async fn printed(
     kernel: &Arc<yi_runtime::KernelService>,
     code: &'static str,
 ) -> Result<String, Box<dyn Error>> {
-    let service = Arc::clone(kernel);
-    let outcome = tokio::task::spawn_blocking(move || {
-        let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
-        yi_tools::KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
-    })
-    .await??;
+    let outcome = run_cell(kernel, &Arc::new(AtomicBool::new(false)), code).await??;
     Ok(format!(
         "{}{}",
         outcome.result.stdout, outcome.result.stderr
@@ -285,38 +328,33 @@ fn read_main(
     Ok(tokio::task::spawn_blocking(move || resolver.fetch(&url)))
 }
 
+type Cell = tokio::task::JoinHandle<Result<yi_tools::KernelCellOutcome, String>>;
+
+const SLEEP: &str = "import time\nopen('sleeping', 'w').close()\ntime.sleep(20)";
+
+fn run_cell(service: &Arc<KernelService>, stop: &Arc<AtomicBool>, code: &'static str) -> Cell {
+    let (service, stop) = (Arc::clone(service), Arc::clone(stop));
+    tokio::task::spawn_blocking(move || {
+        let cancelled: yi_tools::CancelFlag = Arc::new(move || stop.load(Ordering::SeqCst));
+        yi_tools::KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
+    })
+}
+
 /// Incident: a read of an agent mid-cell waited for the whole cell, up to the 600 s ceiling,
 /// then failed with an empty detail; its 5 s timer never raced the execution queue.
 #[tokio::test]
 async fn a_read_of_a_busy_kernel_gives_up_within_its_deadline() -> TestResult {
     let root = Scratch::new("yi-kernel-busy-read")?;
     let service = bare_service(&root)?;
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let run = |code: &'static str| {
-        let (service, stop) = (Arc::clone(&service), Arc::clone(&stop));
-        tokio::task::spawn_blocking(move || {
-            let cancelled: yi_tools::CancelFlag =
-                Arc::new(move || stop.load(std::sync::atomic::Ordering::SeqCst));
-            yi_tools::KernelBridge::execute_cell(service.as_ref(), code, "", &cancelled, None)
-        })
-    };
-    run("x = 1").await??;
-    let sleeper = run("import time\nopen('sleeping', 'w').close()\ntime.sleep(20)");
-    for _ in 0..600 {
-        if root.join("sleeping").is_file() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert!(
-        root.join("sleeping").is_file(),
-        "the sleeper cell never started"
-    );
+    let stop = Arc::new(AtomicBool::new(false));
+    run_cell(&service, &stop, "x = 1").await??;
+    let sleeper = run_cell(&service, &stop, SLEEP);
+    crate::support::wait_for_path(&root.join("sleeping"), "the sleeper cell never started").await?;
 
     let started = std::time::Instant::now();
     let read = read_main(&root, &service, "x")?.await?;
     let waited = started.elapsed();
-    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    stop.store(true, Ordering::SeqCst);
     let _interrupted = sleeper.await?;
     service.dispose().await;
 
@@ -327,9 +365,18 @@ async fn a_read_of_a_busy_kernel_gives_up_within_its_deadline() -> TestResult {
         waited < std::time::Duration::from_secs(8),
         "the read waited {waited:?} for the running cell"
     );
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("running a cell"),
-        "the read failed without saying why: {error}"
+        message.contains("running a cell"),
+        "the read failed without saying why: {message}"
+    );
+    assert!(
+        message.contains("rlm.put") && message.contains("rlm.get"),
+        "the refusal did not name the remedy: {message}"
+    );
+    assert!(
+        message.contains("context_keys") && !message.contains("read family://"),
+        "the refusal sent a kernel-less reader to the sidecar: {message}"
     );
     Ok(())
 }
@@ -358,6 +405,33 @@ async fn a_slow_read_of_an_idle_kernel_is_not_called_busy() -> TestResult {
     assert!(
         !error.to_string().contains("running a cell"),
         "an idle kernel's slow read was called busy: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_put_readback_lands_while_the_parent_cell_still_runs() -> TestResult {
+    let root = Scratch::new("yi-kernel-put-mid-cell")?;
+    let (_parent_session, parent) = root_session(&root, "rlm-1", "family")?;
+    let (_child_session, child) = root_session(&root, "rlm-2", "family")?;
+    printed(&parent, "rlm.put('x', 'from the parent')").await?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let sleeper = run_cell(&parent, &stop, SLEEP);
+    crate::support::wait_for_path(&root.join("sleeping"), "the sleeper cell never started").await?;
+    let seen = printed(&child, "print(rlm.get('x'))").await?;
+    let mid_cell = root.join("sleeping").is_file();
+    stop.store(true, Ordering::SeqCst);
+    let _interrupted = sleeper.await?;
+    for kernel in [parent, child] {
+        kernel.dispose().await;
+    }
+    assert!(
+        mid_cell,
+        "the readback was not taken while the parent cell was still running"
+    );
+    assert!(
+        seen.contains("from the parent"),
+        "the child could not read the put value: {seen}"
     );
     Ok(())
 }

@@ -272,7 +272,7 @@ impl App {
                     evicted,
                     &child,
                 );
-                self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
+                self.fan_out(id, || UiEvent::ChildUpdates(vec![child.as_ref().clone()]));
             }
             Decoded::Committed(committed) => {
                 for chat in self.state.chats_mut(id) {

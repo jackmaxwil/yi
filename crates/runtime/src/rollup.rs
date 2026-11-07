@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Usage};
+use yi_types::message::{AgentMessage, Usage, UserContent};
 use yi_types::plan::canonical::sorted;
 use yi_types::plan::doc::OWNER_AGENT;
 use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
@@ -14,10 +14,12 @@ use yi_types::record::LaneRecord;
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::cache_miss::diagnostic_detail;
+use crate::fetch::FETCH_ENTRY_TYPE;
 use crate::journal::{Damage, Journal, RealFs};
 use crate::plan::ops::{CLASSIFIER_ACTOR, ENGINE_AGENT, HOST_ACTOR};
 use crate::plan::state::{KIND_DONE_REFUSED, KIND_VERIFICATION_STALE};
 use crate::plan::store::JOURNAL_NAME;
+use crate::rules::SKILL_ADDRESS;
 use crate::schedule::Zone;
 
 pub use yi_session::now_ms;
@@ -92,6 +94,7 @@ pub struct Scan {
     /// Applied plan ops by (op, who applied it); an op the table rejected reads `<op> (rejected)`.
     pub plan_ops: BTreeMap<(String, ActorClass), u64>,
     pub journals: usize,
+    pub skills: SkillUptake,
     plan_seen: HashSet<String>,
 }
 
@@ -115,6 +118,145 @@ impl Scan {
             .or_insert(0);
         *count = count.saturating_add(1);
     }
+}
+
+/// Assistant turns after a skill pointer within which a read of that skill counts as following it.
+pub(crate) const FOLLOW_WINDOW: u64 = 3;
+
+/// Served skill reads and the `Relevant:` pointers a read followed, over sessions' messages in
+/// order; [`SkillUptake::next_session`] starts each one's turn count.
+#[derive(Default)]
+pub struct SkillUptake {
+    skill_reads: u64,
+    pointers: u64,
+    followed: u64,
+    pending: Vec<(String, u64)>,
+    turn: u64,
+    seen: HashSet<String>,
+}
+
+impl SkillUptake {
+    pub fn observe(&mut self, entry: &Entry) {
+        if let Entry::Custom {
+            id,
+            custom_type,
+            data,
+            ..
+        } = entry
+            && custom_type == FETCH_ENTRY_TYPE
+        {
+            if let Some(url) = data
+                .as_ref()
+                .and_then(|data| data.get("url"))
+                .and_then(serde_json::Value::as_str)
+                && (url.starts_with(SKILL_ADDRESS)
+                    || url
+                        .strip_prefix("local://")
+                        .is_some_and(|path| path.ends_with("/SKILL.md")))
+                && self.seen.insert(format!("fetch:{id}:{url}"))
+            {
+                self.served(url);
+            }
+            return;
+        }
+        let Entry::Message { message, .. } = entry else {
+            return;
+        };
+        match message {
+            AgentMessage::Assistant { .. } => {
+                self.turn = self.turn.saturating_add(1);
+                let turn = self.turn;
+                self.pending.retain(|(_, deadline)| *deadline >= turn);
+            }
+            AgentMessage::Custom {
+                custom_type,
+                content,
+                ..
+            } => {
+                if custom_type != "reminder" {
+                    return;
+                }
+                let UserContent::Text(text) = content else {
+                    return;
+                };
+                let Some(rest) = text.strip_prefix("Relevant: ") else {
+                    return;
+                };
+                if !rest.starts_with(SKILL_ADDRESS) {
+                    return;
+                }
+                let Ok(serialized) = serde_json::to_string(message) else {
+                    return;
+                };
+                if !self.seen.insert(format!("reminder:{serialized}")) {
+                    return;
+                }
+                for name in skill_names(text) {
+                    self.pointers = self.pointers.saturating_add(1);
+                    let deadline = self.turn.saturating_add(FOLLOW_WINDOW);
+                    self.pending.push((name.to_owned(), deadline));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn served(&mut self, url: &str) {
+        if let Some(address) = url.strip_prefix(SKILL_ADDRESS) {
+            self.skill_read(address);
+            return;
+        }
+        let Some(name) = url
+            .strip_prefix("local://")
+            .and_then(|path| path.strip_suffix("/SKILL.md"))
+            .and_then(|dir| dir.rsplit('/').next())
+        else {
+            return;
+        };
+        self.skill_read(name);
+    }
+
+    fn skill_read(&mut self, address: &str) {
+        let Some(name) = address
+            .split(['#', '/'])
+            .next()
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        self.skill_reads = self.skill_reads.saturating_add(1);
+        let before = self.pending.len();
+        self.pending.retain(|(pointed, _)| pointed != name);
+        let followed = u64::try_from(before.saturating_sub(self.pending.len())).unwrap_or(0);
+        self.followed = self.followed.saturating_add(followed);
+    }
+
+    pub(crate) fn next_session(&mut self) {
+        self.pending.clear();
+        self.turn = 0;
+    }
+
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "skillReads": self.skill_reads,
+            "pointers": self.pointers, "followed": self.followed, "followWindow": FOLLOW_WINDOW,
+        })
+    }
+
+    pub fn line(&self) -> String {
+        format!(
+            "skills  skill reads {}, pointers {} ({} followed by a read within {FOLLOW_WINDOW} turns)",
+            self.skill_reads, self.pointers, self.followed
+        )
+    }
+}
+
+fn skill_names(text: &str) -> impl Iterator<Item = &str> {
+    text.split(SKILL_ADDRESS).skip(1).filter_map(|rest| {
+        rest.split(|c: char| c.is_whitespace() || matches!(c, '#' | '/' | ',' | ']' | ')' | '"'))
+            .next()
+            .filter(|name| !name.is_empty())
+    })
 }
 
 fn jsonl_files(dir: &Path, since_ms: u64, out: &mut Vec<PathBuf>) {
@@ -170,6 +312,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
     let mut scan = Scan::default();
     let mut seen = HashSet::new();
     let plan_op = format!("\"customType\":\"{PLAN_OP_ENTRY_TYPE}\"");
+    let fetch = format!("\"customType\":\"{FETCH_ENTRY_TYPE}\"");
     for path in files {
         let text = std::fs::read(&path)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
@@ -189,10 +332,13 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                 part == "children" || part.starts_with("sub-")
             })
         });
+        scan.skills.next_session();
         for line in lines.filter(|line| {
             line.contains("\"assistant\"")
                 || line.contains(crate::spend::TOOL_USAGE_PREFIX)
                 || line.contains(&plan_op)
+                || line.contains("\"role\":\"custom\"")
+                || line.contains(&fetch)
         }) {
             if entry_stamp(line).is_some_and(|stamp| stamp > 0 && stamp < since_ms) {
                 continue;
@@ -251,17 +397,19 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                 },
                 ..
             } = &parsed
+                && custom_type == PLAN_OP_ENTRY_TYPE
             {
-                if custom_type == PLAN_OP_ENTRY_TYPE {
-                    match data
-                        .clone()
-                        .and_then(|data| serde_json::from_value::<PlanOpRecord>(data).ok())
-                    {
-                        Some(record) => scan.add_plan_op(&record, since_ms),
-                        None => scan.bad_lines = scan.bad_lines.saturating_add(1),
-                    }
+                match data
+                    .clone()
+                    .and_then(|data| serde_json::from_value::<PlanOpRecord>(data).ok())
+                {
+                    Some(record) => scan.add_plan_op(&record, since_ms),
+                    None => scan.bad_lines = scan.bad_lines.saturating_add(1),
                 }
                 continue;
+            }
+            if let Mutation::Entry { entry, .. } = &parsed {
+                scan.skills.observe(entry);
             }
             let Mutation::Entry {
                 entry:
@@ -349,4 +497,32 @@ pub fn spent_today(dir: &Path, now_ms: u64) -> (f64, bool) {
     let scan = scan(dir, local_midnight_ms(now_ms));
     let unknown = scan.requests.iter().any(|request| request.usage.unknown);
     (scan.requests.iter().map(Request::billed).sum(), unknown)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Entry, SkillUptake};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Dies when an ordinary source-file fetch grows the skill-attribution dedupe set: stats
+    /// scans otherwise retain one key per resolved file until the whole scan returns.
+    #[test]
+    fn only_skill_fetches_are_retained_for_dedupe() -> TestResult {
+        for (url, retained) in [
+            ("local://src/lib.rs", false),
+            ("local:///home/me/.claude/skills/debug/SKILL.md", true),
+            ("yi://skills/debug", true),
+        ] {
+            let entry = serde_json::from_value::<Entry>(serde_json::json!({
+                "type": "custom", "id": "f", "customType": "fetch",
+                "data": {"url": url, "hash": "deadbeef", "servedBy": "workspace-file"},
+                "parentId": null, "seq": 1, "timestamp": 1_790_000_000_000_u64,
+            }))?;
+            let mut uptake = SkillUptake::default();
+            uptake.observe(&entry);
+            assert_eq!(!uptake.seen.is_empty(), retained, "{url}");
+        }
+        Ok(())
+    }
 }

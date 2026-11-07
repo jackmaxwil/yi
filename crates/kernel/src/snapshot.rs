@@ -19,6 +19,7 @@ const KERNEL_STATE_BASENAME: &str = "kernel-state";
 // Lowercase deliberately: the env-surface guardrail scans for YI_[A-Z_]+ and
 // this marker is a stdout sentinel, not an env var.
 const RESULT_MARKER: &str = "__yi_kernel_state__";
+pub const RESTORE_FAILURES_VAR: &str = "_yi_restore_failures";
 
 pub fn snapshot_path_in(artifact_dir: &Path) -> PathBuf {
     artifact_dir.join(format!("{KERNEL_STATE_BASENAME}.dill"))
@@ -256,14 +257,19 @@ pub fn build_snapshot_code(
     # Each variable is a content-named blob written once; the index is the commit point, so a
     # cell that changed one small name rewrites one small file, not the whole namespace.
     index = {{name: prior[1] for name, prior in reused.items()}}
+    keep = {{digest + ".pkl" for digest in index.values()}}
     try:
         for name, blob in payload.items():
             digest = hashlib.blake2b(blob, digest_size=16).hexdigest()
             index[name] = digest
+            keep.add(digest + ".pkl")
             path = os.path.join(blobs, digest + ".pkl")
             if not os.path.exists(path):
                 durable(path, blob)
         sync_dir(blobs)
+        # Reserved key: names starting with "_" are skipped above, so it cannot collide with a
+        # variable, and one write commits the names and the skips together.
+        index["_skips"] = _b.list(skipped)
         durable({out}, dill.dumps(index))
         sync_dir(os.path.dirname({out}))
     except _b.BaseException as _err:
@@ -276,7 +282,6 @@ pub fn build_snapshot_code(
     for name, blob in payload.items():
         if seen_of[name] is not None:
             last[name] = (seen_of[name], index[name], _b.len(blob))
-    keep = {{digest + ".pkl" for digest in index.values()}}
     for entry in os.listdir(blobs):
         if entry not in keep:
             try:
@@ -284,7 +289,7 @@ pub fn build_snapshot_code(
             except _b.Exception:
                 pass
 
-    saved = _b.sorted(index.keys())
+    saved = _b.sorted(name for name in index if name != "_skips")
     _b.print({marker} + json.dumps({{"saved": saved, "skipped": skipped, "bytes": total}}))
 
 
@@ -298,6 +303,7 @@ finally:
 pub fn build_restore_code(in_path: &Path) -> String {
     let source = py_path(in_path);
     let marker = py_str(RESULT_MARKER);
+    let failures = py_str(RESTORE_FAILURES_VAR);
     // Builtins via the local _b alias so a shadowed name in the user namespace
     // (list/open/print/…) can't break the restore path.
     let blobs = py_path(&blobs_dir_for(in_path));
@@ -333,6 +339,7 @@ pub fn build_restore_code(in_path: &Path) -> String {
     restored = []
     failed = []
     blobs = {blobs}
+    skipped = payload.pop("_skips", [])
     for name, blob in payload.items():
         try:
             # A digest names a blob beside the index; bytes are the pre-blob single-file form.
@@ -343,6 +350,14 @@ pub fn build_restore_code(in_path: &Path) -> String {
             restored.append(name)
         except _b.Exception as _err:
             failed.append({{"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]}})
+    # A skip entry reaches the marker as a normalised pair, so no stored shape can make the
+    # model read as "nothing was revived".
+    for entry in skipped if _b.isinstance(skipped, _b.list) else []:
+        name = entry.get("name") if _b.isinstance(entry, _b.dict) else None
+        if _b.isinstance(name, _b.str) and name not in ns:
+            reason = entry.get("reason")
+            failed.append({{"name": name, "reason": reason if _b.isinstance(reason, _b.str) else ""}})
+    ns[{failures}] = failed
     _b.print({marker} + json.dumps({{"restored": _b.sorted(restored), "failed": failed}}))
 
 
@@ -826,6 +841,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             result: None,
+            result_mime: None,
             attachments: Vec::new(),
             status: ExecuteStatus::Aborted,
             error: None,
