@@ -3117,7 +3117,7 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
          type fix login\n\
          key enter\n\
          wait-frame 5000 fix login\n\
-         wait-frame 3000 ○ fix login\n\
+         wait-frame 3000 1 FI  fix login  ○\n\
          quit\n",
     )
 }
