@@ -112,6 +112,7 @@ loud caps on runtime lists and echoes | `caps_runtime::todo_error_lists_stop_at_
 loud caps on runtime lists and echoes | `caps_runtime::a_phase_list_stops_at_the_cap_and_names_the_view_call` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::a_refused_answer_echoes_a_bounded_view_naming_the_held_file` (T1)
 loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_lists_a_bounded_number_of_names` (T0)
+loud caps on runtime lists and echoes | `caps_runtime::the_restore_notice_cuts_a_long_list_of_names_it_could_not_restore` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_memory_index_names_what_it_did_not_load` (T0)
 loud caps on runtime lists and echoes | `caps_runtime::the_files_line_names_the_cap_and_the_hidden_names_it_skipped` (T0)
 kernel tool calls (`yi.tools`) | `kernel_tools::a_cell_writes_and_reads_through_the_sessions_own_gated_tools`
@@ -122,6 +123,7 @@ kernel tool calls (`yi.tools`) | `kernel_tools::a_console_cell_running_while_the
 kernel tool calls (`yi.tools`) | `kernel_tools::a_program_gets_whole_values_and_edits_a_line_the_view_never_showed`
 kernel tool calls (`yi.tools`) | `kernel_tools::every_tool_hands_a_program_its_typed_value`
 dill snapshot | `snapshot_e2e::session_dir_snapshot_revives_through_the_service`
+dill snapshot | `snapshot_skips::a_name_the_snapshot_skipped_comes_back_named_at_resume`
 dill snapshot | `snapshot_e2e::post_compaction_sync_reports_only_the_models_names`
 heartbeats: clock subscriptions | `serve_daemon::workers_do_not_lose_heartbeats_or_tear_the_job_ledger` (T2)
 heartbeats: clock subscriptions | `schedule_e2e::a_heartbeat_due_mid_compaction_is_deferred`
@@ -620,6 +622,13 @@ console settings pane | `avatar::tests::the_gear_is_a_thin_outline_with_a_hub_ri
 TUI | `tui_e2e::the_status_rides_the_border_idle_and_drops_below_it_during_a_search` (T0)
 TUI | `tui_unit::the_context_meter_changes_hue_as_the_window_fills` (T0)
 TUI | `tui_e2e::a_dirty_count_follows_the_directory_asked_for_last` (T0)
+cache marks and TTL from the session ledger | `cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes` (T0)
+cache marks and TTL from the session ledger | `cache_miss::an_upstream_pin_needs_two_switch_misses_inside_half_an_hour` (T0)
+cache marks and TTL from the session ledger | `cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour` (T0)
+cache marks and TTL from the session ledger | `openrouter::a_pinned_upstream_rides_the_provider_order` (T0)
+cache marks and TTL from the session ledger | `openrouter::a_suspended_tail_mark_keeps_the_marks_before_it_only` (T0)
+cache marks and TTL from the session ledger | `strip::a_400_naming_a_cache_field_is_resent_once_without_it` (T0)
+cache marks and TTL from the session ledger | `strip::the_reply_records_the_field_the_route_refused` (T0)
 model read deadline | `read_timeout::a_gateway_silent_past_the_models_deadline_names_the_field_and_runs_once` (T0)
 model read deadline | `a_run_that_ends_on_a_provider_error_exits_non_zero_in_json_too` (T0)
 fetch: one addressable read path | `kernel_across_sessions::a_read_of_a_busy_kernel_gives_up_within_its_deadline`
