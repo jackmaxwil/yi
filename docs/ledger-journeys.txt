@@ -668,3 +668,4 @@ heartbeats: clock subscriptions | `channel_e2e::a_file_wait_holds_until_the_file
 `agent-browser` plugin | `kept_rules::what_a_browser_command_prints_comes_back_inside_the_external_fence`
 `agent-browser` plugin | `sandbox::the_browser_box_holds_credentials_writes_sockets_and_all_but_the_web_session_s_internet`
 `agent-browser` plugin | `skills_e2e::the_agent_browser_pointer_is_listed_only_when_its_plugin_is_installed`
+cross-session stats, observed prices and plan-op counters | `cli_surfaces::stats_counts_a_followed_skill_pointer_in_one_session_and_the_fold`
