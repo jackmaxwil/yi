@@ -212,7 +212,11 @@ async fn a_plan_reader_with_a_schema_contract_runs_as_a_reader_and_is_accepted()
     );
     let built = rig.built.lock().map_err(|_| "poisoned")?.clone();
     let (_, reader, prompt) = built.first().ok_or("no child built")?;
-    assert!(*reader && prompt == READER_PROMPT, "{prompt}");
+    let pointer = yi_runtime::skills::CHILD_POINTER;
+    assert!(
+        *reader && prompt.starts_with(READER_PROMPT) && prompt.ends_with(pointer),
+        "{prompt}"
+    );
     let delivered = rig.delivered.lock().map_err(|_| "poisoned")?.clone();
     assert!(
         !delivered
