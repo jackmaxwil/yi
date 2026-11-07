@@ -114,6 +114,14 @@ impl Catalog {
                     continue;
                 }
                 match serde_json::from_value::<Model>(entry) {
+                    // Invariant: the cursor-agent wire bounds its own wait, so the field is refused.
+                    Ok(model)
+                        if model.api == "cursor-agent" && model.read_timeout_secs.is_some() =>
+                    {
+                        self.rejected.push(format!(
+                            "{source}: {id}: readTimeoutSecs is not a cursor-agent deadline"
+                        ));
+                    }
                     Ok(model) => {
                         self.models
                             .insert((model.provider.clone(), model.id.clone()), model);

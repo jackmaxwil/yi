@@ -147,6 +147,19 @@ pub struct ModelCost {
     pub tiers: Option<Vec<CostTier>>,
 }
 
+impl ModelCost {
+    pub fn free() -> Self {
+        let zero = || Number::from(0u64);
+        Self {
+            input: zero(),
+            output: zero(),
+            cache_read: zero(),
+            cache_write: zero(),
+            tiers: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Model {
@@ -166,6 +179,20 @@ pub struct Model {
     pub thinking_level_map: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<Value>,
+    /// Incident: a fixed 60 s read deadline killed four runs on a gateway silent past it, and
+    /// nothing in the catalog or the error said what to change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_timeout_secs: Option<u64>,
+}
+
+/// The read deadline a model without `readTimeoutSecs` keeps: one bound on the whole response
+/// read, which a gateway that answers only when its first token is ready outlives.
+pub const DEFAULT_READ_TIMEOUT_SECS: u64 = 60;
+
+impl Model {
+    pub fn read_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.read_timeout_secs.unwrap_or(DEFAULT_READ_TIMEOUT_SECS))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

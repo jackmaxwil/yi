@@ -3,7 +3,9 @@ use std::error::Error;
 use yi_ai::anthropic::{AnthropicOptions, Mapper, Thinking, build_params};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{LlmContext, Model, ModelCost};
+
+use crate::plain::plain_context as context;
 
 fn model() -> Model {
     let n = |v: u64| serde_json::Number::from(v);
@@ -29,28 +31,7 @@ fn model() -> Model {
         compat: None,
         thinking_level_map: None,
         headers: None,
-    }
-}
-
-fn context() -> LlmContext {
-    LlmContext {
-        cache_ttl: yi_types::model::Ttl::Min5,
-        system_prompt: "be terse".to_owned(),
-        messages: vec![AgentMessage::user_input(
-            UserContent::Text("hi".to_owned()),
-            0,
-        )],
-        transient: Vec::new(),
-        schema: None,
-        shared_through: None,
-        reuse: yi_types::model::Reuse::Loop,
-        tools: Some(vec![ToolDef {
-            name: "bash".to_owned(),
-            description: "run".to_owned(),
-            parameters: json!({"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}),
-            freeform: None,
-        }]),
-        tool_choice: None,
+        read_timeout_secs: None,
     }
 }
 
