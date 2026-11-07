@@ -217,6 +217,27 @@ impl Checkpoints {
         bound.capture()
     }
 
+    /// A handle whose git uses an index of its own, so a background capture never queues a turn's
+    /// behind it; a store from before one was shared keeps the single index it has.
+    #[must_use]
+    pub fn own_index(&self) -> Self {
+        let index = self
+            .index
+            .as_ref()
+            .map(|index| index.with_extension("call"));
+        Self {
+            serial: index
+                .as_ref()
+                .map_or_else(|| Arc::clone(&self.serial), |index| serial_for(index)),
+            git_dir: self.git_dir.clone(),
+            work_tree: self.work_tree.clone(),
+            staged: self.staged.clone(),
+            index,
+            legacy: None,
+            until: None,
+        }
+    }
+
     /// A capture with `excluded` (paths relative to the project) left out of the tree; the
     /// next `add --all` puts them back in the shadow index.
     pub fn capture_excluding(&self, excluded: &[&Path]) -> Result<TreeId, CheckpointError> {
@@ -404,7 +425,7 @@ impl Checkpoints {
             process.env("GIT_INDEX_FILE", index);
         }
         let index = (self.index.clone()).unwrap_or_else(|| self.git_dir.join("index"));
-        let lock = index.with_extension("lock");
+        let lock = lock_for(&index);
         let not_ours = lock.exists();
         let until = self.until;
         let past: crate::tool::CancelFlag =
@@ -413,7 +434,7 @@ impl Checkpoints {
             crate::process::run_captured(process, stdin.map(<[u8]>::to_vec), &past, usize::MAX)
                 .map_err(CheckpointError::GitMissing)?;
         if capture.cancelled {
-            // Invariant: the serial lock is this process's, so a lock there before the spawn is another's.
+            // Invariant: git's lock is the index path with `.lock` appended, and a lock there before the spawn is another's.
             if !not_ours {
                 let _no_lock_is_fine = std::fs::remove_file(&lock);
             }
@@ -431,7 +452,12 @@ impl Checkpoints {
     }
 }
 
-/// The host's git with paths unquoted.
+/// The lock git takes for `index`: `.lock` appended to its name, never a replaced extension.
+fn lock_for(index: &Path) -> PathBuf {
+    let mut name = index.as_os_str().to_os_string();
+    name.push(".lock");
+    PathBuf::from(name)
+}
 fn host_git(cwd: &Path) -> Result<std::process::Command, CheckpointError> {
     let mut process = crate::process::host_command("git", cwd)
         .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;

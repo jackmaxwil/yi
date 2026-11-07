@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.969.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.971.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -343,6 +343,7 @@ A PR never edits a row here: it writes `ledger+`, `ledger~`, `ledger=` or `ledge
 | `yi tool import just` | 7.1, 17.1 | core | M | L | one exec tool per recipe of the project's justfile, into `~/.yi/tools` from just's own `--dump --dump-format json`: the schema is the recipe's parameters (a default makes one optional, `*` and `+` a variadic array) and its doc comment the description, every recipe stays `exec`, `yi: skip`, `[private]` and `[arg(long=..)]` recipes are left out, and a built-in's name or another project's wrapper of the same name refuses the import; a call reaches the recipe as an argv array, never a shell string, and each wrapper's marker line names its justfile and recipe, so a rerun rewrites only what changed and removes the wrappers it wrote for recipes the justfile dropped, while a hand-written tool is never touched (`tool_import::a_space_and_a_quote_survive_as_one_argv_element`; taught: skill `tool-import`) |
 | model read deadline | 5 | core | M | L | a catalog entry's `readTimeoutSecs` (default 60 s) is the wait for one read, so an idle gap between chunks and not the whole body; a timeout is neither retried nor resent, its refusal names the field, the default and the attempts that ran, a `yi ask` run that ends on one exits 1 with `--json` too, and a cursor-agent entry carrying the field is refused at load because that wire bounds its own connect and headers |
 | cache marks and TTL from the session ledger | 6, 7 | core | M | M | a loop request's history marks and their TTL come from the session's own replies: the TTL remains the expected-cost choice D315 landed (`cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes`, T0), four unexplained requests that wrote and read nothing back stop the moving tail mark on that route for an hour (`cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour`, `openrouter::a_suspended_tail_mark_keeps_the_marks_before_it_only`, T0), and a 400 naming a cache field is resent once with only the encoder's cache fields stripped, the field recorded on the reply (`strip::a_400_naming_a_cache_field_is_resent_once_without_it`, `strip::the_reply_records_the_field_the_route_refused`, T0) |
+| `yi doctor` | 17.1 | core | M | L | reads the user's config leniently before the strict global load, judges the daemon socket and ledger named by `--socket`, checks only the configured `lanes.slots`, and names every exec tool whose two-second schema probe times out, exits nonzero, or returns no valid schema |
 
 ## Decision log
 
