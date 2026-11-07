@@ -1,10 +1,13 @@
 use serde_json::Value;
 use yi_types::image::{has_magic_number, strict_base64_head};
 use yi_types::kernel::{
-    ExecuteResult, ExecuteStatus, JupyterMessage, KernelAttachment, KernelError,
+    ExecuteResult, ExecuteStatus, JSON_MIME, JupyterMessage, KernelAttachment, KernelError,
+    RESULT_MIMES,
 };
 
 use crate::{ATTACHMENT_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS};
+
+const PLAIN_MIME: &str = "text/plain";
 
 #[derive(Debug)]
 pub struct CellState {
@@ -16,6 +19,7 @@ pub struct CellState {
     pub stdout_chars: usize,
     pub stderr_chars: usize,
     pub result: Option<String>,
+    pub result_mime: Option<String>,
     pub attachments: Vec<KernelAttachment>,
     pub status: ExecuteStatus,
     pub error: Option<KernelError>,
@@ -32,6 +36,7 @@ impl CellState {
             stdout_chars: 0,
             stderr_chars: 0,
             result: None,
+            result_mime: None,
             attachments: Vec::new(),
             status: ExecuteStatus::Ok,
             error: None,
@@ -116,6 +121,58 @@ pub fn parent_msg_id(message: &JupyterMessage) -> Option<&str> {
     message.parent_header.get("msg_id").and_then(Value::as_str)
 }
 
+/// Incident: a string-valued `application/json` member was stored unquoted, so the pane called the
+/// kernel's own well-formed value a parse failure.
+fn picked_result(data: &Value, max_chars: usize) -> Option<(&'static str, String)> {
+    let (mime, value) = RESULT_MIMES
+        .iter()
+        .find_map(|named| data.get(*named).map(|value| (*named, value)))
+        .or_else(|| data.get(PLAIN_MIME).map(|value| (PLAIN_MIME, value)))?;
+    if let Value::String(text) = value
+        && mime != JSON_MIME
+    {
+        return Some((mime, text.clone()));
+    }
+    let mut sink = Capped {
+        text: String::new(),
+        limit: max_chars.saturating_mul(4).saturating_add(4),
+    };
+    let whole = serde_json::to_writer(&mut sink, value).is_ok();
+    if whole && sink.text.chars().count() <= max_chars {
+        return Some((mime, sink.text));
+    }
+    // Invariant: past the cap the walk's prefix is over `max_chars`, so `finish` cuts it with its
+    // notice; the notice's total is a lower bound, the walk having stopped early.
+    match data.get(PLAIN_MIME).and_then(Value::as_str) {
+        Some(plain) => Some((PLAIN_MIME, plain.to_owned())),
+        None => Some((mime, sink.text)),
+    }
+}
+
+/// Invariant: serializing past four bytes a char is past the cell's char cap, so the walk stops
+/// there instead of materializing a document the cell would cut anyway.
+struct Capped {
+    text: String,
+    limit: usize,
+}
+impl std::io::Write for Capped {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let room = self.limit.saturating_sub(self.text.len());
+        let written = std::str::from_utf8(bytes).unwrap_or_default();
+        let keep = written.floor_char_boundary(room.min(written.len()));
+        self.text.push_str(written.get(..keep).unwrap_or_default());
+        if keep == bytes.len() {
+            Ok(bytes.len())
+        } else {
+            Err(std::io::Error::other("past the cell's character cap"))
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Fold one iopub message into the active cell (design §9). `on_stream` sees every stream chunk
 /// and the displayed value (named `execute_result`) uncapped; only the model's capture is capped.
 pub fn reduce(
@@ -156,17 +213,15 @@ pub fn reduce(
             Reduction::Continue
         }
         "execute_result" => {
-            if let Some(text) = message
-                .content
-                .get("data")
-                .and_then(|data| data.get("text/plain"))
-                .and_then(Value::as_str)
+            if let Some(data) = message.content.get("data")
+                && let Some((mime, text)) = picked_result(data, cell.max_chars)
             {
-                cell.result = Some(text.to_owned());
+                cell.result = Some(text);
+                cell.result_mime = Some(mime.to_owned());
                 if let Some(on_stream) = on_stream.as_mut() {
                     on_stream(StreamChunk {
                         name: "execute_result",
-                        text,
+                        text: cell.result.as_deref().unwrap_or_default(),
                     });
                 }
             }
@@ -233,6 +288,7 @@ pub fn finish(cell: CellState, duration_ms: u64, aborted: bool) -> ExecuteResult
         stdout,
         stderr,
         result,
+        result_mime: cell.result_mime,
         attachments: cell.attachments,
         status,
         error: cell.error,

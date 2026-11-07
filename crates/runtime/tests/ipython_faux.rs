@@ -2,6 +2,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::faux_model::faux_model;
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
 use yi_runtime::kernel_tools::ipython_tool;
@@ -10,31 +11,33 @@ use yi_runtime::{
 };
 use yi_types::event::AgentEvent;
 use yi_types::message::StopReason;
-use yi_types::model::{Model, ModelCost};
 
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
+fn session(provider: Arc<ProviderStream>) -> AgentSession {
+    AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(128_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
         },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
+        provider,
+    )
+}
+
+fn service(registry: HostRegistry) -> Arc<KernelService> {
+    Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: home(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        on_boot: None,
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    }))
 }
 
 fn bare_service(cell_ceiling: Option<std::time::Duration>) -> Arc<KernelService> {
@@ -80,15 +83,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     let service = bare_service(None);
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service), None));
@@ -140,15 +135,7 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     let mut registry = HostRegistry::default();
     let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&spawns);
@@ -159,19 +146,7 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
             handle.as_object().cloned().ok_or_else(|| "handle".to_owned())
         })
     });
-    let service = Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: home(),
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }));
+    let service = service(registry);
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service), None));
     session.use_tools(tools, std::env::temp_dir(), None);
@@ -225,15 +200,7 @@ async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
     ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     let service = bare_service(Some(std::time::Duration::from_secs(1)));
     // The boot (and a cold venv build) stays off the clock under test.
     service.prewarm().await;
