@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 pub use yi_context::Tokens;
 use yi_context::{
     CompiledView, Preparation, Settings, compose_summary, drop_internal, estimate_context,
-    estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
+    estimate_message, is_cut_point, keep_values, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
 
@@ -815,6 +815,11 @@ impl Compactor {
                 let text = match inputs.as_deref() {
                     Some(inputs) => yi_context::mark_unmatched_quotes(&text, inputs),
                     None => text,
+                };
+                let text = if self.render {
+                    text
+                } else {
+                    keep_values(prepared.previous_summary.as_deref(), &text)
                 };
                 let (composed, details) =
                     compose_summary(&text, &prepared.file_ops, &prepared.view);
