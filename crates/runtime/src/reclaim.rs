@@ -42,9 +42,11 @@ pub(crate) struct Sections(Mutex<BTreeMap<u64, Vec<String>>>);
 impl Sections {
     pub(crate) fn paths(&self, content: &[Content]) -> Vec<String> {
         self.memo(content, |text| {
-            let patch = yi_tools::hashline::input::Patch::parse(text, None);
-            let sections = patch.map(|patch| patch.sections).unwrap_or_default();
-            sections.into_iter().map(|section| section.path).collect()
+            text.lines()
+                .filter_map(yi_tools::hashline::tokenizer::try_parse_header)
+                .filter(|header| header.file_hash.is_some())
+                .map(|header| header.path)
+                .collect()
         })
     }
 
@@ -281,17 +283,27 @@ pub(crate) fn newest_reads<M: std::borrow::Borrow<AgentMessage>>(
     messages: &[M],
     sections: &Sections,
 ) -> BTreeSet<usize> {
+    let result = |index: usize| match messages.get(index).map(|message| message.borrow()) {
+        Some(AgentMessage::ToolResult {
+            content, details, ..
+        }) => Some((content, details)),
+        _ => None,
+    };
     let shown = |index: usize| -> Vec<String> {
-        match messages.get(index).map(|message| message.borrow()) {
-            Some(AgentMessage::ToolResult { content, .. }) => sections.paths(content),
-            _ => Vec::new(),
-        }
+        (result(index)).map_or_else(Vec::new, |(content, _)| sections.paths(content))
     };
     let (mut edited, mut latest) = (Vec::new(), BTreeMap::new());
     for (index, call) in calls.iter().enumerate() {
         match call.map(|(name, _)| name) {
             Some("read") => latest.extend(shown(index).into_iter().map(|path| (path, index))),
             Some("edit" | "write") => edited.extend(shown(index)),
+            Some("ipython") => {
+                let mut ops = yi_context::FileOps::default();
+                if let Some(message) = messages.get(index).map(|message| message.borrow()) {
+                    yi_context::details::extract_file_ops_kept(message, &mut ops, |row| row.ok);
+                }
+                edited.extend(ops.edited.into_iter().chain(ops.written));
+            }
             _ => {}
         }
     }
@@ -619,10 +631,7 @@ mod tests {
                 named += usize::from(!paths.is_empty());
             }
         }
-        assert_eq!(
-            named, 10,
-            "the edit and nine of ten reads name a file; one read past the end prints none"
-        );
+        assert_eq!(named, 11, "the edit and all ten reads name a file");
         Ok(())
     }
 
@@ -665,6 +674,33 @@ mod tests {
         );
         assert_eq!(sections.paths(&text("[src/main.rs#11AA]")), ["src/main.rs"]);
         assert_eq!(sections.paths(&text("[src/lib.rs#BDF3]")), ["src/lib.rs"]);
+        Ok(())
+    }
+
+    #[test]
+    fn read_notices_are_not_patch_sections() -> Fallible {
+        use yi_tools::Tool;
+
+        let dir = crate::scratch::Scratch::new("yi-reclaim-read-notices")?;
+        let body: String = (1..=2_001)
+            .map(|line| format!("pub fn row{line}() {{}}\n"))
+            .collect();
+        std::fs::write(dir.join("lib.rs"), body)?;
+        let read = yi_tools::hashline::tool::HashlineReadTool::new(
+            yi_tools::hashline::tool::shared_hashline_state(),
+        )
+        .execute(
+            serde_json::Map::from_iter([("path".to_owned(), json!("lib.rs"))]),
+            &yi_tools::ToolContext::new(dir.to_path_buf()),
+        );
+        assert!(!read.is_error);
+        let text = yi_types::message::join_text(&read.result.content, "");
+        assert!(text.contains("[showing lines 1-2000 of 2001"));
+        assert!(text.contains("[skeleton:"));
+        assert_eq!(
+            super::Sections::default().paths(&read.result.content),
+            ["lib.rs"]
+        );
         Ok(())
     }
 
@@ -839,6 +875,54 @@ mod tests {
         );
         let kept = ["asked", "new-read", "glob-read"];
         assert!(!kept.iter().any(|id| cut.contains(id)), "{cut:?}");
+        Ok(())
+    }
+
+    /// A file a cell edited through `yi.tools.edit` needs its newest read's tags as much as one
+    /// the model edited: the cell's `ipython` result names the edit only in its `calls` rows.
+    #[test]
+    fn the_newest_read_of_a_file_a_cell_edited_stays() -> Fallible {
+        let mut messages = vec![AgentMessage::user_input(
+            UserContent::Text("tidy lib.rs".to_owned()),
+            0,
+        )];
+        messages.push(assistant(
+            &[("lib-read".to_owned(), "read", json!({"path": "src/lib.rs"}))],
+            0,
+        ));
+        let mut read = result("lib-read", "read", 20_000);
+        if let AgentMessage::ToolResult { content, .. } = &mut read {
+            content.insert(
+                0,
+                Content::Text {
+                    text: "[src/lib.rs#BDF3]\n1:fn tidy() {}\n".to_owned(),
+                    text_signature: None,
+                },
+            );
+        }
+        messages.push(read);
+        messages.push(assistant(
+            &[(
+                "cell".to_owned(),
+                "ipython",
+                json!({"code": "await yi.tools.edit(patch=p)"}),
+            )],
+            0,
+        ));
+        let mut cell = result("cell", "ipython", 40);
+        if let AgentMessage::ToolResult { details, .. } = &mut cell {
+            *details = Some(json!({"calls": [
+                {"tool": "edit", "ok": true, "paths": ["src/lib.rs"], "durationMs": 3}
+            ]}));
+        }
+        messages.push(cell);
+        messages.extend(bash_session(6).into_iter().skip(1));
+        let record = decide(&messages, &Cut::default(), &opus()?, 3_600_000).ok_or("no cut")?;
+        let cut: Vec<&str> = (record.items.iter())
+            .map(|item| item.tool_call_id.as_str())
+            .collect();
+        assert!(cut.contains(&"call-0"), "{cut:?}");
+        assert!(!cut.contains(&"lib-read"), "{cut:?}");
         Ok(())
     }
 

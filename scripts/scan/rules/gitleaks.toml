@@ -60,4 +60,5 @@ regexes = [
   '''sk-pro[j]-4fJ9kL2mN7pQ1rS8tV3wX6yZ0aB5cD9eF2gH7iJ4kL1mN8oP3qR6''',
   '''ghp_8Hk2Lm9Np4Qr7St1[U]v6Wx3Yz0Ab5Cd2Ef9Gh''',
   '''AKIAIOSFOD[N]N7EXAMPLE''',
+  '''AKIAIOSFOD[N]NEXAMPLEQ''',
 ]

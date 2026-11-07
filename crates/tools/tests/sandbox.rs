@@ -121,7 +121,51 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
         Some("/usr/bin/env"),
         "the kernel starts through `env -u`, which drops secret-named variables"
     );
+
+    let assign = [
+        "GIT_CONFIG_COUNT=1".to_owned(),
+        "GIT_CONFIG_KEY_0=protocol.https.allow".to_owned(),
+        "GIT_CONFIG_VALUE_0=never".to_owned(),
+    ];
+    let (_, blocked) = sandbox.kernel_prefix(own, &assign);
+    assert!(
+        blocked.ends_with(&assign),
+        "the kernel's git keeps the transport block past the scrub: {blocked:?}"
+    );
     Ok(())
+}
+
+/// Incident: `' not allowed` is a Python `ValueError`'s wording, so a script's own text escalated
+/// the network; only git's fatal line proving a transport block counts as the sandbox's refusal.
+#[test]
+fn a_value_error_is_no_network_refusal() {
+    let cwd = Path::new("/work");
+    let sandbox = Sandbox {
+        writable: vec![cwd.to_path_buf()],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        sealed: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let refused = |code, output: &str, command: &str| {
+        sandbox_refusal(&sandbox, cwd, Some(code), output, command).is_some()
+    };
+    assert!(!refused(
+        1,
+        "ValueError: 'https' not allowed\n",
+        "python3 job.py"
+    ));
+    assert!(!refused(
+        1,
+        "cannot open 'https' not allowed\n",
+        "cat notes.txt"
+    ));
+    assert!(refused(
+        128,
+        "fatal: transport 'https' not allowed\n",
+        "git fetch origin"
+    ));
 }
 
 #[test]
