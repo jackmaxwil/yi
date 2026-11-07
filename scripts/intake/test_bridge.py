@@ -271,6 +271,13 @@ def staged_patch(repo: pathlib.Path) -> bytes:
     return git_in(repo, "diff", "--cached", "--no-renames", "--binary", "--full-index")
 
 
+def keygen_trouble() -> str:
+    """Why ssh-keygen cannot make or verify a key on this host, or "" when it can."""
+    with tempfile.TemporaryDirectory(prefix="intake-keygen-") as temp:
+        made = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(pathlib.Path(temp) / "probe")], capture_output=True, text=True)
+    return "" if made.returncode == 0 else (made.stderr.strip() or "ssh-keygen is not installed")
+
+
 def check_filter_repo() -> None:
     pin = (ROOT / "scripts/mirror/filter-repo.version").read_text().strip()
     result = subprocess.run(["uv", "tool", "run", "--from", f"git-filter-repo=={pin}", "git-filter-repo", "--version"], capture_output=True, text=True)
@@ -669,13 +676,17 @@ EXPECTED = {
 
 
 def selfcheck() -> int:
+    trouble = keygen_trouble()
     assert len(bridge.CHECKS) == 25
     check_real_fixture()
     check_filter_repo()
     check_rewrite_helper()
     check_real_patch_edges()
-    check_forged_headers()
-    check_signed_object()
+    if trouble:
+        print(f"skip check_forged_headers, check_signed_object (no host ssh-keygen can verify a commit signature: {trouble})")
+    else:
+        check_forged_headers()
+        check_signed_object()
     valid = valid_case()
     assert bridge.evaluate(valid) == bridge.ALLOW
     check_caps()
@@ -708,7 +719,7 @@ def selfcheck() -> int:
     assert 'trust="untrusted"' in payload["body"]
     print("\n".join("seen-red " + line for line in red))
     print(f"ok   intake selfcheck ({len(red)} hostile cases, 25 ordered checks, real fixtures)")
-    return 0
+    return 1 if trouble and os.environ.get("CI") else 0
 
 
 if __name__ == "__main__":

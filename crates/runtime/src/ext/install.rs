@@ -20,6 +20,7 @@ pub struct ExtOptions {
     pub schema_instruction: Option<String>,
     pub context_window: u64,
     pub global_skills: Vec<String>,
+    pub pointer: Option<String>,
     /// Invariant: false where the depth cap already refuses this session's spawns, so the
     /// protocol for delegating is never sent to a session that cannot act on it.
     pub can_delegate: bool,
@@ -43,6 +44,7 @@ pub fn install(options: ExtOptions) -> Host {
         schema_instruction,
         context_window,
         global_skills,
+        pointer,
         can_delegate,
     } = options;
     let mut host = Host::new(cwd.clone());
@@ -70,11 +72,13 @@ pub fn install(options: ExtOptions) -> Host {
     if let Some(schema) = schema_instruction {
         host.attach(Slot::new(Rank::Schema, "schema"), schema);
     }
-    host.register(Box::new(
-        ProjectResources::new(cwd.clone(), home.clone())
-            .with_context_window(context_window)
-            .with_global_skills(global_skills),
-    ));
+    let resources = ProjectResources::new(cwd.clone(), home.clone())
+        .with_context_window(context_window)
+        .with_global_skills(global_skills);
+    host.register(Box::new(match pointer {
+        Some(pointer) => resources.with_pointer(pointer),
+        None => resources,
+    }));
     register_packs(&mut host, &cwd, &home);
     if can_delegate {
         host.register(Box::new(Orchestrate::new(ORCHESTRATE.as_str())));
@@ -84,12 +88,14 @@ pub fn install(options: ExtOptions) -> Host {
     host
 }
 
-pub fn narrow(cwd: &Path, home: &Path, identity: &str) -> Host {
+pub fn narrow(cwd: &Path, home: &Path, identity: &str, pointer: Option<String>) -> Host {
     let mut host = Host::new(cwd.to_path_buf());
     host.attach(Slot::new(Rank::Identity, "identity"), identity.to_owned());
-    host.register(Box::new(
-        ProjectResources::new(cwd.to_path_buf(), home.to_path_buf()).without_catalogs(),
-    ));
+    let resources = ProjectResources::new(cwd.to_path_buf(), home.to_path_buf());
+    host.register(Box::new(match pointer {
+        Some(pointer) => resources.with_pointer(pointer),
+        None => resources.without_skills(),
+    }));
     register_packs(&mut host, cwd, home);
     host
 }

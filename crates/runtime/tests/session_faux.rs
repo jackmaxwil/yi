@@ -1035,6 +1035,7 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     }));
     session.prompt("hi")?;
@@ -1138,6 +1139,7 @@ async fn a_mode_flip_and_the_protocol_survive_a_compaction() -> Result<(), Box<d
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     }));
     session.prompt("hi")?;
