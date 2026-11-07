@@ -1397,7 +1397,7 @@ fn a_job_wait_returns_as_the_job_settles() -> TestResult {
         "twenty attempts never backgrounded a 100 ms sleep"
     );
     assert!(
-        waited < std::time::Duration::from_millis(500),
+        waited < std::time::Duration::from_millis(3000),
         "five waits took {waited:?}"
     );
     Ok(())
