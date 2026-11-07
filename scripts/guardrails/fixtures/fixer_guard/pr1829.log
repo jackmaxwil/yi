@@ -1,0 +1,1428 @@
+commit 14851574cffe76290b40a5c74b8e29df9fdb6c17
+
+diff --git a/crates/ai/src/anthropic.rs b/crates/ai/src/anthropic.rs
+index f317f7e14..a202d4184 100644
+--- a/crates/ai/src/anthropic.rs
++++ b/crates/ai/src/anthropic.rs
+@@ -290 +290,2 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
+-        ),
++        )
++        .with_tail(context.cache_tail),
+@@ -824 +825,2 @@ fn run_request(
+-    let resent = crate::request::pump_sse_with_resend(
++    let stripped = crate::request::Stripped::default();
++    let pumped = crate::request::pump_sse_with_resend(
+@@ -826 +828 @@ fn run_request(
+-        || crate::request::send_with_retry(&url, &headers, body, proxy, &retried),
++        || crate::request::send_stripping_cache(&url, &headers, body, proxy, &retried, &stripped),
+@@ -842,5 +844,4 @@ fn run_request(
+-    )
+-    .map_err(|message| crate::request::auth_hint(&message, oauth, &model.provider))?;
+-    if let Some(first_error) = resent {
+-        crate::request::note_resend(&mut mapper.output, &first_error);
+-    }
++    );
++    let resent =
++        pumped.map_err(|message| crate::request::auth_hint(&message, oauth, &model.provider))?;
++    crate::request::note_reply(&mut mapper.output, resent, &stripped);
+diff --git a/crates/ai/src/breakpoints.rs b/crates/ai/src/breakpoints.rs
+index fa0411539..f8f9b4426 100644
+--- a/crates/ai/src/breakpoints.rs
++++ b/crates/ai/src/breakpoints.rs
+@@ -111,0 +112,2 @@ pub struct CachePolicy {
++    /// Whether the moving tail is marked (`LlmContext::cache_tail`).
++    pub tail: bool,
+@@ -129,0 +132 @@ impl CachePolicy {
++            tail: true,
+@@ -131,0 +135,6 @@ impl CachePolicy {
++
++    #[must_use]
++    pub fn with_tail(mut self, tail: bool) -> Self {
++        self.tail = tail;
++        self
++    }
+@@ -180 +189 @@ impl Breakpoints {
+-            tail = last.filter(|_| reuse == Reuse::Loop);
++            tail = last.filter(|_| reuse == Reuse::Loop && policy.tail);
+@@ -247,0 +257,23 @@ impl Encoded {
++    /// The same body with every object field named in `fields` removed (#748).
++    pub fn without(&self, fields: &[&str]) -> Self {
++        fn strip(value: &mut Value, fields: &[&str]) {
++            match value {
++                Value::Object(object) => {
++                    object.retain(|key, _| !fields.contains(&key.as_str()));
++                    for value in object.values_mut() {
++                        strip(value, fields);
++                    }
++                }
++                Value::Array(items) => {
++                    for value in items {
++                        strip(value, fields);
++                    }
++                }
++                _ => {}
++            }
++        }
++        let mut value = self.0.clone();
++        strip(&mut value, fields);
++        Self(value)
++    }
++
+diff --git a/crates/ai/src/openai.rs b/crates/ai/src/openai.rs
+index 8b4f0859e..33ba37b4e 100644
+--- a/crates/ai/src/openai.rs
++++ b/crates/ai/src/openai.rs
+@@ -26,0 +27,2 @@ pub struct OpenAiOptions {
++    /// The upstream the session ledger pinned: a router is asked for that host first (#748).
++    pub pin: Option<String>,
+@@ -43 +45 @@ pub fn routing_params(model: &Model, options: &OpenAiOptions, schema: bool) -> O
+-    let mut routing = options.routing.clone();
++    let mut routing = crate::request::pin_routing(options.routing.clone(), options.pin.as_deref());
+@@ -383 +385,2 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
+-            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl),
++            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl)
++                .with_tail(context.cache_tail),
+@@ -887,0 +891 @@ fn run_request(
++    let stripped = crate::request::Stripped::default();
+@@ -890 +894,10 @@ fn run_request(
+-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra, &retried),
++        || {
++            crate::request::send_stripping_cache(
++                &url,
++                &crate::request::bearer_headers(model, api_key, extra),
++                body,
++                proxy,
++                &retried,
++                &stripped,
++            )
++        },
+@@ -902,0 +916 @@ fn run_request(
++    crate::request::record_stripped(&mut mapper.output, &stripped);
+@@ -918,3 +932 @@ fn run_request(
+-    if let Some(first_error) = resent {
+-        crate::request::note_resend(&mut mapper.output, &first_error);
+-    }
++    crate::request::note_reply(&mut mapper.output, resent, &stripped);
+diff --git a/crates/ai/src/request.rs b/crates/ai/src/request.rs
+index 67bb1e5ae..236a1a6ac 100644
+--- a/crates/ai/src/request.rs
++++ b/crates/ai/src/request.rs
+@@ -251,0 +252,47 @@ fn pooled_idle_from_now() {
++/// The cache fields a 400 may name, the specific ones before the generic `cache`.
++const CACHE_FIELDS: [&str; 6] = [
++    "prompt_cache_retention",
++    "prompt_cache_key",
++    "cache_control",
++    "cache_ttl",
++    "session_id",
++    "cache",
++];
++
++fn cache_field(text: &str) -> Option<&'static str> {
++    CACHE_FIELDS.into_iter().find(|field| text.contains(field))
++}
++
++/// A router's provider order for the pinned upstream, by the slug its display name spells.
++pub fn pin_routing(routing: Option<Value>, pin: Option<&str>) -> Option<Value> {
++    let Some(pin) = pin else {
++        return routing;
++    };
++    let mut routing = routing;
++    let object = routing.get_or_insert_with(|| serde_json::json!({}));
++    if !object.is_object() {
++        *object = serde_json::json!({});
++    }
++    if let Some(object) = object.as_object_mut() {
++        object.insert(
++            "order".to_owned(),
++            serde_json::json!([pin.to_lowercase().replace(' ', "-")]),
++        );
++    }
++    routing
++}
++
++/// What a request dropped when a 400 named a cache field, for its reply's record.
++#[derive(Default)]
++pub struct Stripped(std::cell::Cell<Option<&'static str>>);
++
++impl Stripped {
++    fn set(&self, field: &'static str) {
++        self.0.set(Some(field));
++    }
++
++    pub fn take(&self) -> Option<&'static str> {
++        self.0.take()
++    }
++}
++
+@@ -257,0 +305,12 @@ pub fn send_with_retry(
++) -> Result<ureq::Response, String> {
++    send_stripping_cache(url, headers, body, proxy, on_retry, &Stripped::default())
++}
++
++/// One POST, retried by the policy; a cache-field 400 is asked again without the fields.
++pub fn send_stripping_cache(
++    url: &str,
++    headers: &[(String, String)],
++    body: &crate::breakpoints::Encoded,
++    proxy: Option<&ProxyConfig>,
++    on_retry: &dyn Fn(Wait),
++    stripped: &Stripped,
+@@ -262,4 +321 @@ pub fn send_with_retry(
+-    let body = {
+-        let _span = yi_types::trace::span("ai.serialize");
+-        body.to_string()
+-    };
++    let mut bare: Option<crate::breakpoints::Encoded> = None;
+@@ -274,0 +331,4 @@ pub fn send_with_retry(
++        let serialized = {
++            let _span = yi_types::trace::span("ai.serialize");
++            bare.as_ref().unwrap_or(body).to_string()
++        };
+@@ -277,2 +337,2 @@ pub fn send_with_retry(
+-            .arg("bytes", body.len());
+-        let sent = request.send_string(&body);
++            .arg("bytes", serialized.len());
++        let sent = request.send_string(&serialized);
+@@ -289,0 +350,15 @@ pub fn send_with_retry(
++                if status == 400
++                    && bare.is_none()
++                    && let Some(field) = cache_field(&text)
++                {
++                    stripped.set(field);
++                    bare = Some(body.without(&CACHE_FIELDS));
++                    announce(
++                        on_retry,
++                        attempt.saturating_add(1),
++                        &policy,
++                        None,
++                        format!("HTTP 400 named {field}"),
++                    );
++                    continue;
++                }
+@@ -431,0 +507,36 @@ pub fn resend_dead_stream(delivered: bool, resent: bool) -> bool {
++/// The reply's record of its own request: a dead stream's resend, and the fields a 400 dropped.
++pub fn note_reply(output: &mut AgentMessage, resent: Option<String>, stripped: &Stripped) {
++    if let Some(first_error) = resent {
++        note_resend(output, &first_error);
++    }
++    record_stripped(output, stripped);
++}
++
++/// The cache field a 400 refused, recorded once on the reply that came back without it.
++pub fn record_stripped(output: &mut AgentMessage, stripped: &Stripped) {
++    if let Some(field) = stripped.take() {
++        note_stripped(output, field);
++    }
++}
++
++/// The cache field a 400 refused, kept once on the reply that came back without it.
++pub fn note_stripped(output: &mut AgentMessage, field: &str) {
++    if let AgentMessage::Assistant {
++        diagnostics,
++        timestamp,
++        ..
++    } = output
++    {
++        let mut details = serde_json::Map::new();
++        details.insert("field".to_owned(), Value::from(field));
++        diagnostics.get_or_insert_with(Vec::new).push(
++            yi_types::message::AssistantMessageDiagnostic {
++                diagnostic_type: "cache_stripped".to_owned(),
++                timestamp: *timestamp,
++                error: None,
++                details: Some(details),
++            },
++        );
++    }
++}
++
+@@ -560,2 +671,2 @@ pub fn merge_headers(
+-pub fn openai_bearer_post(
+-    url: &str,
++/// The bearer header a chat-completions route is sent with, live headers merged over it.
++pub fn bearer_headers(
+@@ -564,2 +674,0 @@ pub fn openai_bearer_post(
+-    body: &crate::breakpoints::Encoded,
+-    proxy: Option<&ProxyConfig>,
+@@ -567,2 +676 @@ pub fn openai_bearer_post(
+-    on_retry: &dyn Fn(Wait),
+-) -> Result<ureq::Response, String> {
++) -> Vec<(String, String)> {
+@@ -570,7 +678 @@ pub fn openai_bearer_post(
+-    send_with_retry(
+-        url,
+-        &merge_headers(headers, extra.to_vec()),
+-        body,
+-        proxy,
+-        on_retry,
+-    )
++    merge_headers(headers, extra.to_vec())
+diff --git a/crates/ai/tests/openrouter.rs b/crates/ai/tests/openrouter.rs
+index cc26cb107..5f765c914 100644
+--- a/crates/ai/tests/openrouter.rs
++++ b/crates/ai/tests/openrouter.rs
+@@ -27,0 +28 @@ pub(crate) fn history_context() -> LlmContext {
++        cache_tail: true,
+@@ -349,0 +351,48 @@ fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestR
++/// Dies without the order: a pinned upstream rides `provider.order` on a routed base only.
++#[test]
++fn a_pinned_upstream_rides_the_provider_order() -> TestResult {
++    let model = target_model()?;
++    let options = OpenAiOptions {
++        pin: Some("Amazon Bedrock".to_owned()),
++        ..OpenAiOptions::default()
++    };
++    assert_eq!(
++        build_params(&model, &history_context(), &options)["provider"],
++        json!({"order": ["amazon-bedrock"]})
++    );
++    let mut elsewhere = model.clone();
++    elsewhere.base_url = "https://api.openai.com/v1".to_owned();
++    assert!(
++        build_params(&elsewhere, &history_context(), &options)
++            .get("provider")
++            .is_none(),
++        "a base that routes nothing cannot carry the pin"
++    );
++    Ok(())
++}
++
++/// Dies with the tail marked: a suspended tail leaves the marks before it alone.
++#[test]
++fn a_suspended_tail_mark_keeps_the_marks_before_it_only() -> TestResult {
++    let model = target_model()?;
++    let mut suspended_context = history_context();
++    suspended_context.cache_tail = false;
++    let marked = build_params(&model, &history_context(), &OpenAiOptions::default());
++    let suspended = build_params(&model, &suspended_context, &OpenAiOptions::default());
++    let tail_marked = |params: &serde_json::Value| {
++        params["messages"]
++            .as_array()
++            .and_then(|messages| messages.last())
++            .is_some_and(|message| message.to_string().contains("cache_control"))
++    };
++    assert!(tail_marked(&marked), "{marked}");
++    assert!(!tail_marked(&suspended), "{suspended}");
++    assert!(
++        suspended["messages"][0]
++            .to_string()
++            .contains("cache_control"),
++        "the system end still marks: {suspended}"
++    );
++    Ok(())
++}
++
+diff --git a/crates/ai/tests/strip.rs b/crates/ai/tests/strip.rs
+new file mode 100644
+index 000000000..6002bc27a
+--- /dev/null
++++ b/crates/ai/tests/strip.rs
+@@ -0,0 +1,214 @@
++//! A cache-field 400 is asked again once without the fields, and the reply records it (#748).
++
++use std::error::Error;
++use std::sync::atomic::Ordering;
++
++use serde_json::json;
++use yi_ai::breakpoints::{Encoded, Ttl};
++use yi_ai::request::Stripped;
++use yi_types::event::AssistantMessageEvent;
++use yi_types::message::AgentMessage;
++use yi_types::model::{LlmContext, Reuse};
++
++use crate::common::model;
++use crate::loopback_server::serve;
++
++type TestResult = Result<(), Box<dyn Error>>;
++
++fn refused(message: &str) -> String {
++    let body = json!({"error": {"message": message}}).to_string();
++    format!(
++        "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
++        body.len()
++    )
++}
++
++/// The same stream with the length stated, so the reader never waits on a close.
++fn answer() -> String {
++    format!(
++        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{ANSWER}",
++        ANSWER.len()
++    )
++}
++
++/// Anthropic's Messages stream order, one text block and a stop.
++const ANSWER: &str = r#"event: message_start
++data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-5.5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":500,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}
++
++event: content_block_start
++data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
++
++event: content_block_delta
++data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Checked."}}
++
++event: content_block_stop
++data: {"type":"content_block_stop","index":0}
++
++event: message_delta
++data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}
++
++event: message_stop
++data: {"type":"message_stop"}
++
++"#;
++
++fn marked_body() -> Encoded {
++    let messages = json!([{"role": "user", "content": [{
++        "type": "text",
++        "text": "hi",
++        "cache_control": {"type": "ephemeral"},
++    }]}]);
++    Encoded::provider_prefix(
++        json!({
++            "model": "probe",
++            "messages": messages,
++            "prompt_cache_key": "affinity",
++            "provider": {"order": ["amazon-bedrock"]},
++        }),
++        "messages",
++        Vec::new(),
++    )
++}
++
++fn url(port: u16) -> String {
++    format!("http://127.0.0.1:{port}/v1/messages")
++}
++
++/// Dies with the field kept: a 400 naming `cache_control` resends the body without it.
++#[test]
++fn a_400_naming_a_cache_field_is_resent_once_without_it() -> TestResult {
++    let (port, count, server) = serve(vec![refused("cache_control is not supported"), answer()])?;
++    let stripped = Stripped::default();
++    let answer = yi_ai::request::send_stripping_cache(
++        &url(port),
++        &[],
++        &marked_body(),
++        None,
++        &|_| {},
++        &stripped,
++    )?;
++    let _ = answer.into_string();
++    let requests = server.join().map_err(|_| "server thread panicked")?;
++    assert_eq!(
++        count.load(Ordering::SeqCst),
++        2,
++        "the refusal was not resent"
++    );
++    assert!(requests[0].contains("cache_control"), "{}", requests[0]);
++    assert!(
++        !requests[1].contains("cache_control"),
++        "the resend kept the field the route refused: {}",
++        requests[1]
++    );
++    assert!(
++        !requests[1].contains("prompt_cache_key") && !requests[1].contains("session_id"),
++        "the resend kept an affinity key: {}",
++        requests[1]
++    );
++    assert!(
++        requests[1].contains("amazon-bedrock"),
++        "the resend dropped more than the cache fields: {}",
++        requests[1]
++    );
++    assert_eq!(stripped.take(), Some("cache_control"));
++    Ok(())
++}
++
++/// Dies with a resend: a 400 naming no cache field is reported at once.
++#[test]
++fn a_400_that_names_no_cache_field_is_not_resent() -> TestResult {
++    let (port, count, server) = serve(vec![refused("temperature is not supported")])?;
++    let stripped = Stripped::default();
++    let failed = yi_ai::request::send_stripping_cache(
++        &url(port),
++        &[],
++        &marked_body(),
++        None,
++        &|_| {},
++        &stripped,
++    )
++    .err()
++    .ok_or("a refusal was reported as an answer")?;
++    let _ = server.join().map_err(|_| "server thread panicked")?;
++    assert_eq!(count.load(Ordering::SeqCst), 1, "{failed}");
++    assert!(failed.starts_with("HTTP 400"), "{failed}");
++    assert_eq!(stripped.take(), None);
++    Ok(())
++}
++
++fn context() -> LlmContext {
++    LlmContext {
++        system_prompt: "You are a test.".to_owned(),
++        messages: vec![AgentMessage::user_input(
++            yi_types::message::UserContent::Text("hi".to_owned()),
++            0,
++        )],
++        reuse: Reuse::Loop,
++        transient: Vec::new(),
++        schema: None,
++        shared_through: None,
++        cache_ttl: Ttl::Min5,
++        cache_tail: true,
++        tools: None,
++        tool_choice: None,
++    }
++}
++
++/// Dies with no note: the answered message records the field the route refused.
++#[tokio::test]
++async fn the_reply_records_the_field_the_route_refused() -> TestResult {
++    let (port, count, server) = serve(vec![refused("cache_ttl must be omitted"), answer()])?;
++    let model = model(
++        "claude-opus-5.5",
++        "anthropic-messages",
++        "anthropic",
++        &format!("http://127.0.0.1:{port}"),
++        None,
++    );
++    let mut receiver = yi_ai::anthropic::stream(
++        &model,
++        &context(),
++        &yi_ai::anthropic::AnthropicOptions::default(),
++        "sk-test",
++    );
++    let mut answer = None;
++    while let Some(event) = receiver.recv().await {
++        match event {
++            AssistantMessageEvent::Done { message, .. }
++            | AssistantMessageEvent::Error { error: message, .. } => {
++                answer = Some(message);
++                break;
++            }
++            _ => {}
++        }
++    }
++    let requests = server.join().map_err(|_| "server thread panicked")?;
++    assert_eq!(
++        count.load(Ordering::SeqCst),
++        2,
++        "the refusal was not resent: {requests:?}"
++    );
++    assert!(
++        !requests[1].contains("cache_control"),
++        "the resend kept the field: {}",
++        requests[1]
++    );
++    let Some(AgentMessage::Assistant { diagnostics, .. }) = answer else {
++        return Err("the stream ended without an assistant message".into());
++    };
++    let note = diagnostics
++        .iter()
++        .flatten()
++        .find(|note| note.diagnostic_type == "cache_stripped")
++        .ok_or_else(|| {
++            format!("the reply carries no cache_stripped diagnostic: {diagnostics:?}")
++        })?;
++    assert_eq!(
++        note.details
++            .as_ref()
++            .and_then(|details| details.get("field")),
++        Some(&json!("cache_ttl")),
++        "{note:?}"
++    );
++    Ok(())
++}
+diff --git a/crates/loop/src/run.rs b/crates/loop/src/run.rs
+index ecbd8c2b7..a16ff41ab 100644
+--- a/crates/loop/src/run.rs
++++ b/crates/loop/src/run.rs
+@@ -35,0 +36,3 @@ pub trait StreamFn: Send + Sync {
++    fn cache_tail(&self, _model: &Model) -> bool {
++        true
++    }
+@@ -636,5 +639 @@ async fn stream_assistant_response<S: StreamFn>(
+-        tools: if tool_defs.is_empty() {
+-            None
+-        } else {
+-            Some(tool_defs)
+-        },
++        tools: (!tool_defs.is_empty()).then_some(tool_defs),
+@@ -646,0 +646 @@ async fn stream_assistant_response<S: StreamFn>(
++        cache_tail: reuse == yi_types::model::Reuse::Loop && stream.cache_tail(model),
+diff --git a/crates/runtime/src/cache_miss.rs b/crates/runtime/src/cache_miss.rs
+index be33b0de6..783774885 100644
+--- a/crates/runtime/src/cache_miss.rs
++++ b/crates/runtime/src/cache_miss.rs
+@@ -34,0 +35,4 @@ const SHORT_PSEUDO_GAPS: f64 = 2.0;
++const SWITCH_WINDOW_MS: u64 = 30 * 60 * 1000;
++const DRILL_HOLD_MS: u64 = HOUR_MS;
++/// Consecutive unexplained requests that wrote the prompt and read nothing back, on one route.
++const ZERO_READ_WRITES: u32 = 4;
+@@ -74,0 +79,6 @@ impl MissCause {
++/// The upstream the fold pinned and how long for: the host its cache reads came from.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct Pin {
++    pub upstream: String,
++    pub until: u64,
++}
+@@ -112,0 +123,6 @@ pub struct MissTracker {
++    switch_misses: Vec<u64>,
++    reading: Option<String>,
++    pin: Option<Pin>,
++    zero_read_writes: u32,
++    /// When the tail mark is written again, and the route it was suspended on.
++    tail_suspended: Option<(u64, String)>,
+@@ -263,0 +280 @@ impl MissTracker {
++        self.escalate(&request, cause, read);
+@@ -268,0 +286,38 @@ impl MissTracker {
++    /// Invariant: a switch or a gap explains its own miss, so only an unexplained run moves the
++    /// marks: two switches pin the reading host an hour, four zero-read writes rest the tail.
++    fn escalate(&mut self, request: &Request, cause: Option<MissCause>, read: u64) {
++        let at = request.at;
++        self.switch_misses
++            .retain(|miss| at.saturating_sub(*miss) <= SWITCH_WINDOW_MS);
++        if cause == Some(MissCause::UpstreamSwitch) {
++            self.switch_misses.push(at);
++        }
++        if read > 0
++            && let Some(upstream) = request.upstream.clone()
++        {
++            self.reading = Some(upstream);
++        }
++        let pinned = self.pin.as_ref().is_some_and(|pin| at < pin.until);
++        if !pinned
++            && self.switch_misses.len() >= 2
++            && let Some(upstream) = self.reading.clone()
++        {
++            self.pin = Some(Pin {
++                upstream,
++                until: at.saturating_add(DRILL_HOLD_MS),
++            });
++            self.switch_misses.clear();
++        }
++        let zero_read =
++            read == 0 && request.write > 0 && cause.is_some_and(MissCause::is_unexplained);
++        self.zero_read_writes = if zero_read {
++            self.zero_read_writes.saturating_add(1)
++        } else {
++            0
++        };
++        if self.zero_read_writes >= ZERO_READ_WRITES {
++            self.zero_read_writes = 0;
++            self.tail_suspended = Some((at.saturating_add(DRILL_HOLD_MS), request.route.clone()));
++        }
++    }
++
+@@ -295,0 +351 @@ impl MissTracker {
++        self.zero_read_writes = 0;
+@@ -298,3 +354,2 @@ impl MissTracker {
+-    /// What the fold knows for the next request's TTL; `None` before a first request and after
+-    /// a compaction, whose next request writes a prompt of unknown size.
+-    pub fn estimate(&self) -> Option<TtlEstimate> {
++    /// What the fold advises; `None` before a first request and after a compaction.
++    pub fn advice(&self) -> Option<CacheAdvice> {
+@@ -302 +357 @@ impl MissTracker {
+-        Some(TtlEstimate {
++        Some(CacheAdvice {
+@@ -307,0 +363,2 @@ impl MissTracker {
++            pin: self.pin.clone(),
++            tail_suspended: self.tail_suspended.clone(),
+@@ -317,4 +374,3 @@ impl MissTracker {
+-/// The fold's view of the next request: when the last one started and its history's TTL, its
+-/// prompt, the smoothed prompt growth (`None` until two requests are seen), and the gap bands.
+-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+-pub struct TtlEstimate {
++/// The fold's advice for the next request: the TTL, the upstream to prefer, the tail mark.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct CacheAdvice {
+@@ -325,0 +382,2 @@ pub struct TtlEstimate {
++    pub pin: Option<Pin>,
++    pub tail_suspended: Option<(u64, String)>,
+@@ -339 +397,16 @@ fn tokens_f64(count: u64) -> f64 {
+-impl TtlEstimate {
++impl CacheAdvice {
++    /// The upstream to prefer at `now`, once two switches inside the window pinned one.
++    pub fn pin(&self, now: u64) -> Option<&str> {
++        self.pin
++            .as_ref()
++            .filter(|pin| now < pin.until)
++            .map(|pin| pin.upstream.as_str())
++    }
++
++    /// Whether the request at `now` writes a moving tail mark.
++    pub fn tail(&self, now: u64) -> bool {
++        self.tail_suspended
++            .as_ref()
++            .is_none_or(|(until, _)| now >= *until)
++    }
++
+@@ -396 +469 @@ pub fn attach(session: &AgentSession) {
+-        seeded.set_ttl_estimate(folded.estimate());
++        seeded.set_cache_advice(folded.advice());
+@@ -410 +483 @@ pub fn attach(session: &AgentSession) {
+-        provider.set_ttl_estimate(tracker.estimate());
++        provider.set_cache_advice(tracker.advice());
+diff --git a/crates/runtime/src/provider.rs b/crates/runtime/src/provider.rs
+index 470e0bef5..a0c3fc043 100644
+--- a/crates/runtime/src/provider.rs
++++ b/crates/runtime/src/provider.rs
+@@ -90 +90 @@ pub struct ProviderStream {
+-    ttl_estimate: Mutex<Option<crate::cache_miss::TtlEstimate>>,
++    cache_advice: Mutex<Option<crate::cache_miss::CacheAdvice>>,
+@@ -126 +126 @@ impl ProviderStream {
+-            ttl_estimate: Mutex::new(None),
++            cache_advice: Mutex::new(None),
+@@ -162 +162 @@ impl ProviderStream {
+-            ttl_estimate: Mutex::new(None),
++            cache_advice: Mutex::new(None),
+@@ -252,3 +252,3 @@ impl ProviderStream {
+-    pub fn set_ttl_estimate(&self, estimate: Option<crate::cache_miss::TtlEstimate>) {
+-        if let Ok(mut held) = self.ttl_estimate.lock() {
+-            *held = estimate;
++    pub fn set_cache_advice(&self, advice: Option<crate::cache_miss::CacheAdvice>) {
++        if let Ok(mut held) = self.cache_advice.lock() {
++            *held = advice;
+@@ -313,3 +313,2 @@ impl StreamFn for ProviderStream {
+-        let estimate = self.ttl_estimate.lock().ok().and_then(|held| *held);
+-        estimate.map_or(yi_types::model::Ttl::Min5, |estimate| {
+-            estimate.cheapest(model, yi_session::now_ms())
++        self.advice().map_or(yi_types::model::Ttl::Min5, |advice| {
++            advice.cheapest(model, yi_session::now_ms())
+@@ -317,0 +317,17 @@ impl StreamFn for ProviderStream {
++
++    fn cache_tail(&self, _model: &Model) -> bool {
++        self.advice()
++            .is_none_or(|advice| advice.tail(yi_session::now_ms()))
++    }
++}
++
++impl ProviderStream {
++    /// The fold's latest advice, cloned: the loop asks once per request, never in a hot path.
++    fn advice(&self) -> Option<crate::cache_miss::CacheAdvice> {
++        self.cache_advice.lock().ok().and_then(|held| held.clone())
++    }
++
++    fn pinned_upstream(&self) -> Option<String> {
++        let advice = self.advice()?;
++        advice.pin(yi_session::now_ms()).map(str::to_owned)
++    }
+@@ -391,0 +408 @@ impl ProviderStream {
++            pin: self.pinned_upstream(),
+@@ -828,0 +846 @@ mod tests {
++            cache_tail: true,
+@@ -927,0 +946 @@ mod tests {
++            cache_tail: true,
+diff --git a/crates/runtime/tests/breakpoints.rs b/crates/runtime/tests/breakpoints.rs
+index f62503a7c..aab6426e5 100644
+--- a/crates/runtime/tests/breakpoints.rs
++++ b/crates/runtime/tests/breakpoints.rs
+@@ -182,0 +183 @@ fn context(case: &Case) -> LlmContext {
++        cache_tail: true,
+@@ -381,0 +383 @@ fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<d
++        cache_tail: true,
+@@ -447,0 +450 @@ fn a_shared_partition_is_marked_on_both_wires() -> Result<(), Box<dyn Error>> {
++        cache_tail: true,
+diff --git a/crates/runtime/tests/cache_miss.rs b/crates/runtime/tests/cache_miss.rs
+index 9346c7b67..ee62fc4e9 100644
+--- a/crates/runtime/tests/cache_miss.rs
++++ b/crates/runtime/tests/cache_miss.rs
+@@ -381 +381 @@ fn the_cheapest_ttl_prices_the_written_tokens_against_the_expected_rewrite()
+-            .estimate()
++            .advice()
+@@ -412 +412 @@ fn the_cheapest_ttl_prices_the_written_tokens_against_the_expected_rewrite()
+-    assert_eq!(unseen.estimate().and_then(|estimate| estimate.growth), None);
++    assert_eq!(unseen.advice().and_then(|estimate| estimate.growth), None);
+@@ -417 +417 @@ fn the_cheapest_ttl_prices_the_written_tokens_against_the_expected_rewrite()
+-    assert_eq!(MissTracker::default().estimate(), None);
++    assert_eq!(MissTracker::default().advice(), None);
+@@ -441 +441 @@ fn replay_cost(trace: &[(u64, u32)], rule: TtlRule, read: f64) -> Result<f64, Bo
+-            TtlRule::Cheapest => tracker.estimate().map_or(Ttl::Min5, |estimate| {
++            TtlRule::Cheapest => tracker.advice().map_or(Ttl::Min5, |estimate| {
+@@ -576,0 +577,56 @@ fn the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes() -> Result<
++
++/// Dies with a pin after one switch: two switch misses pin the reading host for an hour.
++#[test]
++fn an_upstream_pin_needs_two_switch_misses_inside_half_an_hour() -> Result<(), Box<dyn Error>> {
++    let minute = 60_000;
++    let mut tracker = MissTracker::default();
++    let mut after = Vec::new();
++    for entry in [
++        request(CLAUDE, (100, 40_000, 0), 0, "Amazon Bedrock")?,
++        request(CLAUDE, (40_100, 0, 0), minute, "Google Vertex")?,
++        request(CLAUDE, (100, 40_000, 0), 2 * minute, "Google Vertex")?,
++        request(CLAUDE, (40_100, 0, 0), 3 * minute, "Amazon Bedrock")?,
++    ] {
++        tracker.observe_entry(&entry);
++        let advice = tracker.advice().ok_or("no advice after a request")?;
++        after.push(advice.pin(4 * minute).map(str::to_owned));
++    }
++    assert_eq!(
++        after,
++        [None, None, None, Some("Google Vertex".to_owned())],
++        "one switch explains its own miss; the second pins the host that read the entry"
++    );
++    let advice = tracker.advice().ok_or("no advice after a request")?;
++    assert_eq!(
++        advice.pin(64 * minute),
++        None,
++        "a pin holds an hour, no longer"
++    );
++    Ok(())
++}
++
++/// Dies with the tail written: four zero-read writes rest the mark, which returns after an hour.
++#[test]
++fn four_zero_read_writes_stop_the_tail_mark_for_an_hour() -> Result<(), Box<dyn Error>> {
++    let second = 1000;
++    let mut tracker = MissTracker::default();
++    let mut tails = Vec::new();
++    for n in 0..5u64 {
++        let at = n * second;
++        tracker.observe_entry(&request(CLAUDE, (0, 0, 40_000), at, "Amazon Bedrock")?);
++        tails.push(
++            tracker
++                .advice()
++                .ok_or("no advice after a request")?
++                .tail(at + second),
++        );
++    }
++    assert_eq!(
++        tails,
++        [true, true, true, true, false],
++        "the fourth unexplained zero-read write suspends the mark, not the third"
++    );
++    let advice = tracker.advice().ok_or("no advice after a request")?;
++    assert!(advice.tail(4 * second + 3_600_000), "the mark is re-probed");
++    Ok(())
++}
+diff --git a/docs/changes/2026-10-29-cache-marks-from-the-ledger.md b/docs/changes/2026-10-29-cache-marks-from-the-ledger.md
+new file mode 100644
+index 000000000..1285451ae
+--- /dev/null
++++ b/docs/changes/2026-10-29-cache-marks-from-the-ledger.md
+@@ -0,0 +1,16 @@
++---
++issue: Closes #748
++raise: crate ai +146, crate runtime +96, crate types +14, tests +303, comments +17
++growth: +256 (measured against the fork; 336 added, 38 deleted across 18 src files): the two drills in `cache_miss` (+120), the strip-retry and its record in `request` (+70), the tail flag through `LlmContext`/`CachePolicy`/`Breakpoints` (+45), the pinned upstream in `OpenAiOptions` and the provider (+35), the fold rename to `CacheAdvice` (+20), and one `cache_tail: true` line on each of the 15 existing `LlmContext` literals (+15); weighed for deletion: `TtlEstimate` and its `estimate()` accessor are gone, replaced by `CacheAdvice`/`advice()` rather than kept beside it, and no second struct was added for the pin and the tail
++decision: a route's cache marks are escalated from the session ledger, never a flag: two upstream-switch misses inside 30 minutes prefer the host that last read the entry for an hour, four unexplained requests that wrote and read nothing back stop the moving tail mark for an hour, and a 400 naming a cache field is retried once with every cache field stripped | TTL choice by expected cost (D315) settled the entry's life but not the marks around it: OpenRouter moves a conversation across hosts under a live entry, and a tail mark a route never reads back buys no read at all; both are visible in the fold the ledger already gives, so no model, probe or stored state is needed | drop the `escalate` call in `cache_miss::MissTrack`::
++---
++
++A route's cache marks now follow what its own session shows (Closes #748). Three behaviours build on the ledger fold D315 landed, and none of them asks a model.
++
++The upstream: OpenRouter may answer a conversation on a different host between two requests, and an entry the old host wrote is then unreadable there. The fold already names that miss (`upstream switch`) and never counted it. Two of them inside thirty minutes now pin the host that last read the entry: `ProviderStream` sends it as `provider.order` on the next request, by its OpenRouter slug, with fallbacks still allowed, so a name no host matches costs the preference and nothing else. The pin lapses after an hour and the switch count restarts, so a route that keeps moving re-pins and one that settles keeps its entry.
++
++The tail mark: a request's own tail is where the next request reads from, and a route that wrote it and read nothing back for four consecutive unexplained requests is writing a mark nothing reads. The fold stops the moving tail for an hour and keeps every mark before it, the previous tail included, since those are what the next request does read. After the hour the mark is written once more: four more zero-read writes suspend it again, a read ends the run and the mark stays.
++
++The refusal: a provider that does not know a cache field answers 400 rather than ignoring it. A 400 whose body names one of `cache_control`, `cache_ttl`, `prompt_cache_key`, `prompt_cache_retention`, `session_id` or `cache` is now asked again once with every cache field removed from the body, and the reply records the field the route refused as a `cache_stripped` diagnostic, so the ledger says the request went out without its marks. A 400 that names none of them is reported unchanged, never resent: the same body would be refused the same way.
++
++The previous tail needed no switch of its own: D295's build already sends it on every loop request, so the escalation it was meant to gate is unconditional.
+commit 5d2d65f83050ae4468f941f24666d85a5da3dddf
+
+diff --git a/crates/runtime/src/cache_miss.rs b/crates/runtime/src/cache_miss.rs
+index 783774885..cc96dbf26 100644
+--- a/crates/runtime/src/cache_miss.rs
++++ b/crates/runtime/src/cache_miss.rs
+@@ -7 +7 @@
+-//! [`TtlEstimate::cheapest`] writes a loop request's history for an hour when the hour's write
++//! [`CacheAdvice::cheapest`] writes a loop request's history for an hour when the hour's write
+commit 30249812ce529c084c4f85c02dc34c13302e8800
+
+diff --git a/crates/ai/src/anthropic.rs b/crates/ai/src/anthropic.rs
+index 570b40230..646e0f765 100644
+--- a/crates/ai/src/anthropic.rs
++++ b/crates/ai/src/anthropic.rs
+@@ -298,2 +298,2 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
+-        )
+-        .with_tail(context.cache_tail),
++            context.cache_tail,
++        ),
+diff --git a/crates/ai/src/breakpoints.rs b/crates/ai/src/breakpoints.rs
+index f7cf24a40..32a665f91 100644
+--- a/crates/ai/src/breakpoints.rs
++++ b/crates/ai/src/breakpoints.rs
+@@ -11,0 +12,15 @@ use yi_types::model::{Model, Reuse};
++#[cfg(test)]
++thread_local! {
++    static SERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
++#[cfg(test)]
++pub(crate) fn reset_serializations() {
++    SERIALIZATIONS.with(|count| count.set(0));
++}
++
++#[cfg(test)]
++pub(crate) fn serializations() -> usize {
++    SERIALIZATIONS.with(std::cell::Cell::get)
++}
++
+@@ -117,2 +132,2 @@ impl CachePolicy {
+-    pub fn of(model: &Model, stable_ttl: Ttl, history_ttl: Ttl) -> Self {
+-        Self::new(Engine::of(model), stable_ttl, history_ttl)
++    pub fn of(model: &Model, stable_ttl: Ttl, history_ttl: Ttl, tail: bool) -> Self {
++        Self::new(Engine::of(model), stable_ttl, history_ttl, tail)
+@@ -123 +138 @@ impl CachePolicy {
+-    pub fn new(engine: Engine, stable_ttl: Ttl, history_ttl: Ttl) -> Self {
++    pub fn new(engine: Engine, stable_ttl: Ttl, history_ttl: Ttl, tail: bool) -> Self {
+@@ -132 +147 @@ impl CachePolicy {
+-            tail: true,
++            tail,
+@@ -135,6 +149,0 @@ impl CachePolicy {
+-
+-    #[must_use]
+-    pub fn with_tail(mut self, tail: bool) -> Self {
+-        self.tail = tail;
+-        self
+-    }
+@@ -250,0 +260,2 @@ impl fmt::Display for Encoded {
++        #[cfg(test)]
++        SERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
+@@ -263 +274 @@ impl Encoded {
+-    /// The same body with every object field named in `fields` removed (#748).
++    /// The same body with cache fields removed only where the request encoder writes them (#748).
+@@ -265,6 +276,14 @@ impl Encoded {
+-        fn strip(value: &mut Value, fields: &[&str]) {
+-            match value {
+-                Value::Object(object) => {
+-                    object.retain(|key, _| !fields.contains(&key.as_str()));
+-                    for value in object.values_mut() {
+-                        strip(value, fields);
++        fn unmark(items: &mut [Value]) {
++            for item in items {
++                if let Some(object) = item.as_object_mut() {
++                    object.remove("cache_control");
++                }
++            }
++        }
++        let mut value = self.0.clone();
++        if let Some(object) = value.as_object_mut() {
++            object.retain(|key, _| !fields.contains(&key.as_str()));
++            if fields.contains(&"cache_control") {
++                for key in ["system", "tools"] {
++                    if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
++                        unmark(items);
+@@ -273,3 +292,7 @@ impl Encoded {
+-                Value::Array(items) => {
+-                    for value in items {
+-                        strip(value, fields);
++                if let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) {
++                    for message in messages {
++                        if let Some(parts) =
++                            message.get_mut("content").and_then(Value::as_array_mut)
++                        {
++                            unmark(parts);
++                        }
+@@ -278 +300,0 @@ impl Encoded {
+-                _ => {}
+@@ -281,2 +302,0 @@ impl Encoded {
+-        let mut value = self.0.clone();
+-        strip(&mut value, fields);
+diff --git a/crates/ai/src/openai.rs b/crates/ai/src/openai.rs
+index a8197169d..9ae986c57 100644
+--- a/crates/ai/src/openai.rs
++++ b/crates/ai/src/openai.rs
+@@ -30,2 +29,0 @@ pub struct OpenAiOptions {
+-    /// The upstream the session ledger pinned: a router is asked for that host first (#748).
+-    pub pin: Option<String>,
+@@ -48 +46 @@ pub fn routing_params(model: &Model, options: &OpenAiOptions, schema: bool) -> O
+-    let mut routing = crate::request::pin_routing(options.routing.clone(), options.pin.as_deref());
++    let mut routing = options.routing.clone();
+@@ -371,2 +369,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
+-            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl)
+-                .with_tail(context.cache_tail),
++            &CachePolicy::of(
++                model,
++                context.cache_ttl,
++                context.cache_ttl,
++                context.cache_tail,
++            ),
+diff --git a/crates/ai/src/request.rs b/crates/ai/src/request.rs
+index 6360f6d58..6f2f463c2 100644
+--- a/crates/ai/src/request.rs
++++ b/crates/ai/src/request.rs
+@@ -326,19 +325,0 @@ fn cache_field(text: &str) -> Option<&'static str> {
+-/// A router's provider order for the pinned upstream, by the slug its display name spells.
+-pub fn pin_routing(routing: Option<Value>, pin: Option<&str>) -> Option<Value> {
+-    let Some(pin) = pin else {
+-        return routing;
+-    };
+-    let mut routing = routing;
+-    let object = routing.get_or_insert_with(|| serde_json::json!({}));
+-    if !object.is_object() {
+-        *object = serde_json::json!({});
+-    }
+-    if let Some(object) = object.as_object_mut() {
+-        object.insert(
+-            "order".to_owned(),
+-            serde_json::json!([pin.to_lowercase().replace(' ', "-")]),
+-        );
+-    }
+-    routing
+-}
+-
+@@ -391,0 +373,4 @@ pub fn send_stripping_cache(
++    let mut serialized = {
++        let _span = yi_types::trace::span("ai.serialize");
++        body.to_string()
++    };
+@@ -401,4 +385,0 @@ pub fn send_stripping_cache(
+-        let serialized = {
+-            let _span = yi_types::trace::span("ai.serialize");
+-            bare.as_ref().unwrap_or(body).to_string()
+-        };
+@@ -430,0 +412,6 @@ pub fn send_stripping_cache(
++                    if let Some(bare) = &bare {
++                        serialized = {
++                            let _span = yi_types::trace::span("ai.serialize");
++                            bare.to_string()
++                        };
++                    }
+@@ -704,48 +691,7 @@ pub fn record_stripped(output: &mut AgentMessage, stripped: &Stripped) {
+-/// The cache field a 400 refused, kept once on the reply that came back without it.
+-pub fn note_stripped(output: &mut AgentMessage, field: &str) {
+-    if let AgentMessage::Assistant {
+-        diagnostics,
+-        timestamp,
+-        ..
+-    } = output
+-    {
+-        let mut details = serde_json::Map::new();
+-        details.insert("field".to_owned(), Value::from(field));
+-        diagnostics.get_or_insert_with(Vec::new).push(
+-            yi_types::message::AssistantMessageDiagnostic {
+-                diagnostic_type: "cache_stripped".to_owned(),
+-                timestamp: *timestamp,
+-                error: None,
+-                details: Some(details),
+-            },
+-        );
+-    }
+-}
+-
+-pub fn note_resend(output: &mut AgentMessage, first_error: &str) {
+-    if let AgentMessage::Assistant {
+-        diagnostics,
+-        timestamp,
+-        ..
+-    } = output
+-    {
+-        let mut details = serde_json::Map::new();
+-        details.insert("resends".to_owned(), Value::from(1u32));
+-        diagnostics.get_or_insert_with(Vec::new).push(
+-            yi_types::message::AssistantMessageDiagnostic {
+-                diagnostic_type: "stream_resent".to_owned(),
+-                timestamp: *timestamp,
+-                error: Some(yi_types::message::DiagnosticErrorInfo {
+-                    name: None,
+-                    message: first_error.to_owned(),
+-                    stack: None,
+-                    code: None,
+-                }),
+-                details: Some(details),
+-            },
+-        );
+-    }
+-}
+-
+-/// The upstream an OpenRouter turn ran on, kept once: every chunk names it, and so does the record.
+-pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
++fn push_diagnostic(
++    output: &mut AgentMessage,
++    kind: &str,
++    key: &str,
++    value: Value,
++    error: Option<yi_types::message::DiagnosticErrorInfo>,
++) {
+@@ -759 +705 @@ pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
+-        if notes.iter().any(|note| note.diagnostic_type == "upstream") {
++        if kind == "upstream" && notes.iter().any(|note| note.diagnostic_type == kind) {
+@@ -763 +709 @@ pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
+-        details.insert("provider".to_owned(), Value::from(upstream));
++        details.insert(key.to_owned(), value);
+@@ -765 +711 @@ pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
+-            diagnostic_type: "upstream".to_owned(),
++            diagnostic_type: kind.to_owned(),
+@@ -767 +713 @@ pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
+-            error: None,
++            error,
+@@ -772,0 +719,26 @@ pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
++/// The cache field a 400 refused, kept once on the reply that came back without it.
++pub fn note_stripped(output: &mut AgentMessage, field: &str) {
++    push_diagnostic(output, "cache_stripped", "field", Value::from(field), None);
++}
++
++pub fn note_resend(output: &mut AgentMessage, first_error: &str) {
++    let error = yi_types::message::DiagnosticErrorInfo {
++        name: None,
++        message: first_error.to_owned(),
++        stack: None,
++        code: None,
++    };
++    push_diagnostic(
++        output,
++        "stream_resent",
++        "resends",
++        Value::from(1u32),
++        Some(error),
++    );
++}
++
++/// The upstream an OpenRouter turn ran on, kept once: every chunk names it, and so does the record.
++pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
++    push_diagnostic(output, "upstream", "provider", Value::from(upstream), None);
++}
++
+@@ -961,0 +934,44 @@ pub(crate) fn transport_cause(transport: &ureq::Transport) -> String {
++
++#[cfg(test)]
++mod tests {
++    use std::io::{Read, Write};
++
++    use serde_json::json;
++
++    #[test]
++    fn a_retry_reuses_the_serialized_request_body() -> Result<(), Box<dyn std::error::Error>> {
++        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
++        let port = listener.local_addr()?.port();
++        let server = std::thread::spawn(move || -> std::io::Result<()> {
++            for status in [
++                "HTTP/1.1 429 Too Many Requests\r\nretry-after-ms: 0\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
++                "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
++            ] {
++                let (mut stream, _) = listener.accept()?;
++                let mut request = [0; 4096];
++                let _ = stream.read(&mut request)?;
++                stream.write_all(status.as_bytes())?;
++            }
++            Ok(())
++        });
++        let body = crate::breakpoints::Encoded::provider_prefix(
++            json!({"messages": []}),
++            "messages",
++            Vec::new(),
++        );
++        crate::breakpoints::reset_serializations();
++        let response = super::send_with_retry(
++            &format!("http://127.0.0.1:{port}/v1/messages"),
++            &[],
++            &body,
++            None,
++            None,
++            &|_| {},
++        )
++        .map_err(|error| format!("request failed: {error}"))?;
++        let _ = response.into_string();
++        server.join().map_err(|_| "server thread panicked")??;
++        assert_eq!(crate::breakpoints::serializations(), 1);
++        Ok(())
++    }
++}
+diff --git a/crates/ai/tests/openrouter.rs b/crates/ai/tests/openrouter.rs
+index 8c1733215..8a0f3b39b 100644
+--- a/crates/ai/tests/openrouter.rs
++++ b/crates/ai/tests/openrouter.rs
+@@ -351,23 +350,0 @@ fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestR
+-/// Dies without the order: a pinned upstream rides `provider.order` on a routed base only.
+-#[test]
+-fn a_pinned_upstream_rides_the_provider_order() -> TestResult {
+-    let model = target_model()?;
+-    let options = OpenAiOptions {
+-        pin: Some("Amazon Bedrock".to_owned()),
+-        ..OpenAiOptions::default()
+-    };
+-    assert_eq!(
+-        build_params(&model, &history_context(), &options)["provider"],
+-        json!({"order": ["amazon-bedrock"]})
+-    );
+-    let mut elsewhere = model.clone();
+-    elsewhere.base_url = "https://api.openai.com/v1".to_owned();
+-    assert!(
+-        build_params(&elsewhere, &history_context(), &options)
+-            .get("provider")
+-            .is_none(),
+-        "a base that routes nothing cannot carry the pin"
+-    );
+-    Ok(())
+-}
+-
+diff --git a/crates/ai/tests/strip.rs b/crates/ai/tests/strip.rs
+index dccddccd8..a2080f4d4 100644
+--- a/crates/ai/tests/strip.rs
++++ b/crates/ai/tests/strip.rs
+@@ -72,0 +73,49 @@ fn marked_body() -> Encoded {
++#[test]
++fn stripping_keeps_fields_inside_tool_schemas_and_payloads() -> TestResult {
++    let body = Encoded::provider_prefix(
++        json!({
++            "prompt_cache_key": "affinity",
++            "tools": [{"input_schema": {
++                "properties": {"session_id": {"type": "string"}, "cache": {"type": "boolean"}},
++                "required": ["session_id", "cache"]
++            }}],
++            "messages": [
++                {"role": "user", "content": [
++                    {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
++                ]},
++                {"role": "assistant", "content": [
++                    {"type": "tool_use", "input": {"session_id": "keep", "cache_control": "keep"}}
++                ]}
++            ]
++        }),
++        "messages",
++        Vec::new(),
++    );
++    let stripped = body
++        .without(&["prompt_cache_key", "cache_control", "session_id", "cache"])
++        .into_value();
++    assert!(stripped.get("prompt_cache_key").is_none());
++    assert_eq!(
++        stripped.pointer("/messages/0/content/0/cache_control"),
++        None,
++        "the encoder's mark must be removed"
++    );
++    assert_eq!(
++        stripped.pointer("/tools/0/input_schema/properties/session_id/type"),
++        Some(&json!("string"))
++    );
++    assert_eq!(
++        stripped.pointer("/tools/0/input_schema/properties/cache/type"),
++        Some(&json!("boolean"))
++    );
++    assert_eq!(
++        stripped.pointer("/messages/1/content/0/input/session_id"),
++        Some(&json!("keep"))
++    );
++    assert_eq!(
++        stripped.pointer("/messages/1/content/0/input/cache_control"),
++        Some(&json!("keep"))
++    );
++    Ok(())
++}
++
+diff --git a/crates/loop/src/run.rs b/crates/loop/src/run.rs
+index 8cc988b68..741dd1717 100644
+--- a/crates/loop/src/run.rs
++++ b/crates/loop/src/run.rs
+@@ -599 +599 @@ async fn stream_assistant_response<S: StreamFn>(
+-        cache_tail: reuse == yi_types::model::Reuse::Loop && stream.cache_tail(model),
++        cache_tail: stream.cache_tail(model),
+diff --git a/crates/runtime/src/cache_miss.rs b/crates/runtime/src/cache_miss.rs
+index cc96dbf26..34fedd198 100644
+--- a/crates/runtime/src/cache_miss.rs
++++ b/crates/runtime/src/cache_miss.rs
+@@ -35 +34,0 @@ const SHORT_PSEUDO_GAPS: f64 = 2.0;
+-const SWITCH_WINDOW_MS: u64 = 30 * 60 * 1000;
+@@ -79,6 +77,0 @@ impl MissCause {
+-/// The upstream the fold pinned and how long for: the host its cache reads came from.
+-#[derive(Clone, Debug, PartialEq, Eq)]
+-pub struct Pin {
+-    pub upstream: String,
+-    pub until: u64,
+-}
+@@ -123,3 +115,0 @@ pub struct MissTracker {
+-    switch_misses: Vec<u64>,
+-    reading: Option<String>,
+-    pin: Option<Pin>,
+@@ -228,0 +219,2 @@ impl MissTracker {
++            self.zero_read_writes = 0;
++            self.tail_suspended = None;
+@@ -286,2 +278 @@ impl MissTracker {
+-    /// Invariant: a switch or a gap explains its own miss, so only an unexplained run moves the
+-    /// marks: two switches pin the reading host an hour, four zero-read writes rest the tail.
++    /// Invariant: only an unexplained run on a route whose tail is being probed moves the mark.
+@@ -290,5 +280,0 @@ impl MissTracker {
+-        self.switch_misses
+-            .retain(|miss| at.saturating_sub(*miss) <= SWITCH_WINDOW_MS);
+-        if cause == Some(MissCause::UpstreamSwitch) {
+-            self.switch_misses.push(at);
+-        }
+@@ -296 +282,4 @@ impl MissTracker {
+-            && let Some(upstream) = request.upstream.clone()
++            && self
++                .tail_suspended
++                .as_ref()
++                .is_some_and(|(_, route)| route == &request.route)
+@@ -298 +287 @@ impl MissTracker {
+-            self.reading = Some(upstream);
++            self.tail_suspended = None;
+@@ -300,13 +289,8 @@ impl MissTracker {
+-        let pinned = self.pin.as_ref().is_some_and(|pin| at < pin.until);
+-        if !pinned
+-            && self.switch_misses.len() >= 2
+-            && let Some(upstream) = self.reading.clone()
+-        {
+-            self.pin = Some(Pin {
+-                upstream,
+-                until: at.saturating_add(DRILL_HOLD_MS),
+-            });
+-            self.switch_misses.clear();
+-        }
+-        let zero_read =
+-            read == 0 && request.write > 0 && cause.is_some_and(MissCause::is_unexplained);
++        let suspended = self
++            .tail_suspended
++            .as_ref()
++            .is_some_and(|(until, route)| route == &request.route && at < *until);
++        let zero_read = !suspended
++            && read == 0
++            && request.write > 0
++            && cause.is_some_and(MissCause::is_unexplained);
+@@ -351,0 +336 @@ impl MissTracker {
++        self.tail_suspended = None;
+@@ -363 +347,0 @@ impl MissTracker {
+-            pin: self.pin.clone(),
+@@ -374 +358 @@ impl MissTracker {
+-/// The fold's advice for the next request: the TTL, the upstream to prefer, the tail mark.
++/// The fold's advice for the next request: the TTL and the moving tail mark.
+@@ -382 +365,0 @@ pub struct CacheAdvice {
+-    pub pin: Option<Pin>,
+@@ -398,10 +381,2 @@ impl CacheAdvice {
+-    /// The upstream to prefer at `now`, once two switches inside the window pinned one.
+-    pub fn pin(&self, now: u64) -> Option<&str> {
+-        self.pin
+-            .as_ref()
+-            .filter(|pin| now < pin.until)
+-            .map(|pin| pin.upstream.as_str())
+-    }
+-
+-    /// Whether the request at `now` writes a moving tail mark.
+-    pub fn tail(&self, now: u64) -> bool {
++    /// Whether `route`'s request at `now` writes a moving tail mark.
++    pub fn tail(&self, now: u64, route: &str) -> bool {
+@@ -410 +385 @@ impl CacheAdvice {
+-            .is_none_or(|(until, _)| now >= *until)
++            .is_none_or(|(until, suspended)| suspended != route || now >= *until)
+diff --git a/crates/runtime/src/provider.rs b/crates/runtime/src/provider.rs
+index 1f31cc3a1..fa37c5508 100644
+--- a/crates/runtime/src/provider.rs
++++ b/crates/runtime/src/provider.rs
+@@ -321 +321,2 @@ impl StreamFn for ProviderStream {
+-    fn cache_tail(&self, _model: &Model) -> bool {
++    fn cache_tail(&self, model: &Model) -> bool {
++        let route = format!("{}/{}", model.provider, model.id);
+@@ -323 +324 @@ impl StreamFn for ProviderStream {
+-            .is_none_or(|advice| advice.tail(yi_session::now_ms()))
++            .is_none_or(|advice| advice.tail(yi_session::now_ms(), &route))
+@@ -332,5 +332,0 @@ impl ProviderStream {
+-
+-    fn pinned_upstream(&self) -> Option<String> {
+-        let advice = self.advice()?;
+-        advice.pin(yi_session::now_ms()).map(str::to_owned)
+-    }
+@@ -411 +406,0 @@ impl ProviderStream {
+-            pin: self.pinned_upstream(),
+diff --git a/crates/runtime/tests/breakpoints.rs b/crates/runtime/tests/breakpoints.rs
+index aab6426e5..e5d8d79a4 100644
+--- a/crates/runtime/tests/breakpoints.rs
++++ b/crates/runtime/tests/breakpoints.rs
+@@ -200 +200 @@ fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError>
+-    let policy = CachePolicy::new(case.engine, case.stable, case.ttl);
++    let policy = CachePolicy::new(case.engine, case.stable, case.ttl, ctx.cache_tail);
+diff --git a/crates/runtime/tests/cache_miss.rs b/crates/runtime/tests/cache_miss.rs
+index ee62fc4e9..5e4761fd0 100644
+--- a/crates/runtime/tests/cache_miss.rs
++++ b/crates/runtime/tests/cache_miss.rs
+@@ -578,30 +577,0 @@ fn the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes() -> Result<
+-/// Dies with a pin after one switch: two switch misses pin the reading host for an hour.
+-#[test]
+-fn an_upstream_pin_needs_two_switch_misses_inside_half_an_hour() -> Result<(), Box<dyn Error>> {
+-    let minute = 60_000;
+-    let mut tracker = MissTracker::default();
+-    let mut after = Vec::new();
+-    for entry in [
+-        request(CLAUDE, (100, 40_000, 0), 0, "Amazon Bedrock")?,
+-        request(CLAUDE, (40_100, 0, 0), minute, "Google Vertex")?,
+-        request(CLAUDE, (100, 40_000, 0), 2 * minute, "Google Vertex")?,
+-        request(CLAUDE, (40_100, 0, 0), 3 * minute, "Amazon Bedrock")?,
+-    ] {
+-        tracker.observe_entry(&entry);
+-        let advice = tracker.advice().ok_or("no advice after a request")?;
+-        after.push(advice.pin(4 * minute).map(str::to_owned));
+-    }
+-    assert_eq!(
+-        after,
+-        [None, None, None, Some("Google Vertex".to_owned())],
+-        "one switch explains its own miss; the second pins the host that read the entry"
+-    );
+-    let advice = tracker.advice().ok_or("no advice after a request")?;
+-    assert_eq!(
+-        advice.pin(64 * minute),
+-        None,
+-        "a pin holds an hour, no longer"
+-    );
+-    Ok(())
+-}
+-
+@@ -611,0 +582 @@ fn four_zero_read_writes_stop_the_tail_mark_for_an_hour() -> Result<(), Box<dyn
++    let route = format!("{}/{}", CLAUDE.0, CLAUDE.1);
+@@ -614 +585 @@ fn four_zero_read_writes_stop_the_tail_mark_for_an_hour() -> Result<(), Box<dyn
+-    for n in 0..5u64 {
++    for n in 0..9u64 {
+@@ -621 +592 @@ fn four_zero_read_writes_stop_the_tail_mark_for_an_hour() -> Result<(), Box<dyn
+-                .tail(at + second),
++                .tail(at + second, &route),
+@@ -626 +597 @@ fn four_zero_read_writes_stop_the_tail_mark_for_an_hour() -> Result<(), Box<dyn
+-        [true, true, true, true, false],
++        [true, true, true, true, false, false, false, false, false],
+@@ -630 +601,29 @@ fn four_zero_read_writes_stop_the_tail_mark_for_an_hour() -> Result<(), Box<dyn
+-    assert!(advice.tail(4 * second + 3_600_000), "the mark is re-probed");
++    assert!(
++        advice.tail(4 * second + 3_600_000, &route),
++        "requests during the suspension must not push the re-probe later"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_suspended_tail_applies_only_to_the_route_that_earned_it() -> Result<(), Box<dyn Error>> {
++    let started = yi_session::now_ms();
++    let mut tracker = MissTracker::default();
++    for n in 0..5u64 {
++        tracker.observe_entry(&request(
++            CLAUDE,
++            (0, 0, 40_000),
++            started + n * 1000,
++            "Amazon Bedrock",
++        )?);
++    }
++    let provider = yi_runtime::provider::ProviderStream::new(None);
++    provider.set_cache_advice(tracker.advice());
++    let claude = claude_at(0.05)?;
++    let mut glm = claude.clone();
++    glm.id = GLM.1.to_owned();
++    assert!(!yi_loop::run::StreamFn::cache_tail(&provider, &claude));
++    assert!(
++        yi_loop::run::StreamFn::cache_tail(&provider, &glm),
++        "one route's suspension must not strip another route's tail mark"
++    );
+diff --git a/docs/changes/2026-10-29-cache-marks-from-the-ledger.md b/docs/changes/2026-10-29-cache-marks-from-the-ledger.md
+index 0d7114d80..501748dca 100644
+--- a/docs/changes/2026-10-29-cache-marks-from-the-ledger.md
++++ b/docs/changes/2026-10-29-cache-marks-from-the-ledger.md
+@@ -2,5 +2,5 @@
+-issue: Closes #748
+-raise: crate ai +170, crate runtime +96, crate types +14, tests +307, comments +16
+-growth: +256 (measured against the fork; 336 added, 38 deleted across 18 src files): the two drills in `cache_miss` (+120), the strip-retry and its record in `request` (+70), the tail flag through `LlmContext`/`CachePolicy`/`Breakpoints` (+45), the pinned upstream in `OpenAiOptions` and the provider (+35), the fold rename to `CacheAdvice` (+20), and one `cache_tail: true` line on each of the 15 existing `LlmContext` literals (+15); weighed for deletion: `TtlEstimate` and its `estimate()` accessor are gone, replaced by `CacheAdvice`/`advice()` rather than kept beside it, and no second struct was added for the pin and the tail
+-decision: a route's cache marks are escalated from the session ledger, never a flag: two upstream-switch misses inside 30 minutes prefer the host that last read the entry for an hour, four unexplained requests that wrote and read nothing back stop the moving tail mark for an hour, and a 400 naming a cache field is retried once with every cache field stripped | TTL choice by expected cost (D315) settled the entry's life but not the marks around it: OpenRouter moves a conversation across hosts under a live entry, and a tail mark a route never reads back buys no read at all; both are visible in the fold the ledger already gives, so no model, probe or stored state is needed | drop the `escalate` call in `cache_miss::MissTrack`::
+-ledger=: cache marks and TTL from the session ledger | 6, 7 | core | M | M | a loop request's history marks and their TTL come from the session's own replies: the TTL is the one whose expected cost over this request and the next is lower at the catalog's own prices (D315, `cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes`, T0), two upstream-switch misses inside half an hour put the host that last read the entry first in `provider.order` for an hour (`cache_miss::an_upstream_pin_needs_two_switch_misses_inside_half_an_hour`, `openrouter::a_pinned_upstream_rides_the_provider_order`, T0), four unexplained requests that wrote and read nothing back stop the moving tail mark for an hour (`cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour`, `openrouter::a_suspended_tail_mark_keeps_the_marks_before_it_only`, T0), and a 400 naming a cache field is resent once with every cache field stripped, the field recorded on the reply (`strip::a_400_naming_a_cache_field_is_resent_once_without_it`, `strip::the_reply_records_the_field_the_route_refused`, T0)
++issue: Refs #748
++raise: crate ai +208, crate runtime +66, crate types +14, tests +389, comments +11
++growth: +288 (measured against the fork): the tail drill in `cache_miss`, the strip-retry and its record in `request`, the tail flag through `LlmContext`/`CachePolicy`/`Breakpoints`, and their regression tests; weighed for deletion: `TtlEstimate` and its `estimate()` accessor are replaced by `CacheAdvice`/`advice()`, and upstream routing is left unchanged
++decision: a route's moving tail mark is suspended for an hour after four consecutive unexplained requests that wrote and read nothing back, and a 400 naming a cache field is retried once with only the encoder's cache fields stripped | the session ledger already shows both failures, so no model, probe, stored state or outbound routing change is needed | remove the tail escalation in `cache_miss::MissTracker::escalate` and the strip branch in `request::send_stripping_cache`
++ledger=: cache marks and TTL from the session ledger | 6, 7 | core | M | M | a loop request's history marks and their TTL come from the session's own replies: the TTL remains the expected-cost choice D315 landed (`cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes`, T0), four unexplained requests that wrote and read nothing back stop the moving tail mark on that route for an hour (`cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour`, `openrouter::a_suspended_tail_mark_keeps_the_marks_before_it_only`, T0), and a 400 naming a cache field is resent once with only the encoder's cache fields stripped, the field recorded on the reply (`strip::a_400_naming_a_cache_field_is_resent_once_without_it`, `strip::the_reply_records_the_field_the_route_refused`, T0)
+@@ -9 +9 @@ ledger=: cache marks and TTL from the session ledger | 6, 7 | core | M | M | a l
+-A route's cache marks now follow what its own session shows (Closes #748). Three behaviours build on the ledger fold D315 landed, and none of them asks a model.
++A route's cache marks now follow what its own session shows (Refs #748). Two behaviours build on the ledger fold D315 landed, and neither asks a model nor changes provider routing.
+@@ -11 +11 @@ A route's cache marks now follow what its own session shows (Closes #748). Three
+-The upstream: OpenRouter may answer a conversation on a different host between two requests, and an entry the old host wrote is then unreadable there. The fold already names that miss (`upstream switch`) and never counted it. Two of them inside thirty minutes now pin the host that last read the entry: `ProviderStream` sends it as `provider.order` on the next request, by its OpenRouter slug, with fallbacks still allowed, so a name no host matches costs the preference and nothing else. The pin lapses after an hour and the switch count restarts, so a route that keeps moving re-pins and one that settles keeps its entry.
++The tail mark: a request's own tail is where the next request reads from, and a route that wrote it and read nothing back for four consecutive unexplained requests is writing a mark nothing reads. The fold stops the moving tail on that route for an hour and keeps every mark before it, the previous tail included, since those are what the next request does read. Requests during the suspension do not re-arm it. After the hour the mark is written once more: four more zero-read writes suspend it again, a read ends the run and the mark stays.
+@@ -13,3 +13 @@ The upstream: OpenRouter may answer a conversation on a different host between t
+-The tail mark: a request's own tail is where the next request reads from, and a route that wrote it and read nothing back for four consecutive unexplained requests is writing a mark nothing reads. The fold stops the moving tail for an hour and keeps every mark before it, the previous tail included, since those are what the next request does read. After the hour the mark is written once more: four more zero-read writes suspend it again, a read ends the run and the mark stays.
+-
+-The refusal: a provider that does not know a cache field answers 400 rather than ignoring it. A 400 whose body names one of `cache_control`, `cache_ttl`, `prompt_cache_key`, `prompt_cache_retention`, `session_id` or `cache` is now asked again once with every cache field removed from the body, and the reply records the field the route refused as a `cache_stripped` diagnostic, so the ledger says the request went out without its marks. A 400 that names none of them is reported unchanged, never resent: the same body would be refused the same way.
++The refusal: a provider that does not know a cache field answers 400 rather than ignoring it. A 400 whose body names one of `cache_control`, `cache_ttl`, `prompt_cache_key`, `prompt_cache_retention`, `session_id` or `cache` is asked again once with only the cache fields the encoder wrote removed from the body. Fields inside tool schemas, tool calls and tool results stay unchanged, and the reply records the refused field as a `cache_stripped` diagnostic. A 400 that names none of them is reported unchanged, never resent.
+@@ -17,0 +16,2 @@ The previous tail needed no switch of its own: D295's build already sends it on
++
++The TTL-expiry escalation ladder remains open under #748. This PR keeps D315's cost-minimising TTL choice and does not close that issue.

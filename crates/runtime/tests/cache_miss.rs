@@ -575,6 +575,55 @@ fn the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes() -> Result<
     Ok(())
 }
 
+/// Dies with a pin after one switch: two switch misses pin the reading host for an hour, on
+/// the route that earned it only.
+#[test]
+fn an_upstream_pin_needs_two_switch_misses_inside_half_an_hour() -> Result<(), Box<dyn Error>> {
+    let minute = 60_000;
+    let route = format!("{}/{}", CLAUDE.0, CLAUDE.1);
+    let mut tracker = MissTracker::default();
+    let mut after = Vec::new();
+    for entry in [
+        request(CLAUDE, (100, 40_000, 0), 0, "Amazon Bedrock")?,
+        request(CLAUDE, (40_100, 0, 0), minute, "Google Vertex")?,
+        request(CLAUDE, (100, 40_000, 0), 2 * minute, "Google Vertex")?,
+        request(CLAUDE, (40_100, 0, 0), 3 * minute, "Amazon Bedrock")?,
+    ] {
+        tracker.observe_entry(&entry);
+        let advice = tracker.advice().ok_or("no advice after a request")?;
+        after.push(advice.pin(4 * minute, &route).map(str::to_owned));
+    }
+    assert_eq!(
+        after,
+        [None, None, None, Some("Google Vertex".to_owned())],
+        "one switch explains its own miss; the second pins the host that read the entry"
+    );
+    let notice = tracker.take_notice().ok_or("a pin took hold unannounced")?;
+    assert!(notice.contains("Google Vertex"), "{notice}");
+    let advice = tracker.advice().ok_or("no advice after a request")?;
+    let glm = format!("{}/{}", GLM.0, GLM.1);
+    assert_eq!(advice.pin(4 * minute, &glm), None, "a pin is its route's");
+    assert_eq!(
+        advice.pin(64 * minute, &route),
+        None,
+        "a pin holds an hour, no longer"
+    );
+    tracker.observe_entry(&request(GLM, (40_100, 0, 0), 5 * minute, "Z.AI")?);
+    tracker.observe_entry(&request(
+        CLAUDE,
+        (40_100, 0, 0),
+        6 * minute,
+        "Amazon Bedrock",
+    )?);
+    let advice = tracker.advice().ok_or("no advice after a request")?;
+    assert_eq!(
+        advice.pin(6 * minute, &route),
+        None,
+        "a route change ends the pin"
+    );
+    Ok(())
+}
+
 /// Dies with the tail written: four zero-read writes rest the mark, which returns after an hour.
 #[test]
 fn four_zero_read_writes_stop_the_tail_mark_for_an_hour() -> Result<(), Box<dyn Error>> {

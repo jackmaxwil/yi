@@ -32,6 +32,7 @@ const HOUR_MS: u64 = 60 * 60 * 1000;
 /// Pseudo-gaps added to the short band: one pause early in a short session counts for a third
 /// of its gaps rather than a half.
 const SHORT_PSEUDO_GAPS: f64 = 2.0;
+const SWITCH_WINDOW_MS: u64 = 30 * 60 * 1000;
 const DRILL_HOLD_MS: u64 = HOUR_MS;
 /// Consecutive unexplained requests that wrote the prompt and read nothing back, on one route.
 const ZERO_READ_WRITES: u32 = 4;
@@ -75,6 +76,14 @@ impl MissCause {
     }
 }
 
+/// The host the fold asks a router for first, the route that earned it, and until when.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pin {
+    upstream: String,
+    route: String,
+    until: u64,
+}
+
 struct Request {
     route: String,
     prompt: u64,
@@ -113,6 +122,9 @@ pub struct MissTracker {
     reuse: std::collections::VecDeque<(u64, u64)>,
     reuse_announced: bool,
     notice: Option<String>,
+    switch_misses: Vec<u64>,
+    reading: Option<String>,
+    pin: Option<Pin>,
     zero_read_writes: u32,
     /// When the tail mark is written again, and the route it was suspended on.
     tail_suspended: Option<(u64, String)>,
@@ -216,8 +228,7 @@ impl MissTracker {
             .is_some_and(|last| last.route != request.route)
         {
             self.reuse.clear();
-            self.zero_read_writes = 0;
-            self.tail_suspended = None;
+            self.clear_drills();
         }
         let cause = self
             .last
@@ -275,9 +286,36 @@ impl MissTracker {
         cause
     }
 
-    /// Invariant: only an unexplained run on a route whose tail is being probed moves the mark.
+    /// Invariant: a switch or a gap explains its own miss, so only a run moves the marks: two
+    /// switches pin the reading host an hour, four unexplained zero-read writes rest the tail.
     fn escalate(&mut self, request: &Request, cause: Option<MissCause>, read: u64) {
         let at = request.at;
+        self.switch_misses
+            .retain(|miss| at.saturating_sub(*miss) <= SWITCH_WINDOW_MS);
+        if cause == Some(MissCause::UpstreamSwitch) {
+            self.switch_misses.push(at);
+        }
+        if read > 0
+            && let Some(upstream) = request.upstream.clone()
+        {
+            self.reading = Some(upstream);
+        }
+        let pinned = self.pin.as_ref().is_some_and(|pin| at < pin.until);
+        if !pinned
+            && self.switch_misses.len() >= 2
+            && let Some(upstream) = self.reading.clone()
+        {
+            self.switch_misses.clear();
+            self.notice.get_or_insert_with(|| format!(
+                "[cache] OpenRouter moved {} to another host twice in 30 minutes, and the cached prompt was lost each time; for the next hour it is asked for {upstream} first, fallbacks allowed, unless the routing config sets its own order.",
+                request.route,
+            ));
+            self.pin = Some(Pin {
+                upstream,
+                route: request.route.clone(),
+                until: at.saturating_add(DRILL_HOLD_MS),
+            });
+        }
         if read > 0
             && self
                 .tail_suspended
@@ -332,8 +370,13 @@ impl MissTracker {
     fn reset(&mut self) {
         self.last = None;
         self.reuse.clear();
-        self.zero_read_writes = 0;
-        self.tail_suspended = None;
+        self.clear_drills();
+    }
+
+    /// The drills were earned on one route's prompt: a new route or a rewrite restarts them.
+    fn clear_drills(&mut self) {
+        (self.switch_misses, self.reading, self.pin) = (Vec::new(), None, None);
+        (self.zero_read_writes, self.tail_suspended) = (0, None);
     }
 
     /// What the fold advises; `None` before a first request and after a compaction.
@@ -345,6 +388,7 @@ impl MissTracker {
             last_prompt: last.prompt,
             growth: self.growth,
             gaps: self.gaps,
+            pin: self.pin.clone(),
             tail_suspended: self.tail_suspended.clone(),
         })
     }
@@ -355,7 +399,7 @@ impl MissTracker {
     }
 }
 
-/// The fold's advice for the next request: the TTL and the moving tail mark.
+/// The fold's advice for the next request: the TTL, the upstream to prefer, the tail mark.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheAdvice {
     pub last_start: u64,
@@ -363,6 +407,7 @@ pub struct CacheAdvice {
     pub last_prompt: u64,
     pub growth: Option<u64>,
     pub gaps: [u32; 3],
+    pub pin: Option<Pin>,
     pub tail_suspended: Option<(u64, String)>,
 }
 
@@ -378,6 +423,14 @@ fn tokens_f64(count: u64) -> f64 {
 }
 
 impl CacheAdvice {
+    /// The upstream `route`'s request at `now` asks for first, once two switches pinned one.
+    pub fn pin(&self, now: u64, route: &str) -> Option<&str> {
+        self.pin
+            .as_ref()
+            .filter(|pin| pin.route == route && now < pin.until)
+            .map(|pin| pin.upstream.as_str())
+    }
+
     /// Whether `route`'s request at `now` writes a moving tail mark.
     pub fn tail(&self, now: u64, route: &str) -> bool {
         self.tail_suspended

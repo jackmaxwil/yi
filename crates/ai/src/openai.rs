@@ -27,6 +27,8 @@ pub struct OpenAiOptions {
     pub session_id: Option<String>,
     pub proxy: Option<crate::request::ProxyConfig>,
     pub routing: Option<Value>,
+    /// The upstream the session ledger pinned: a router is asked for that host first (#748).
+    pub pin: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     /// A stored OAuth credential is on the wire (D191): a 401 names `yi login`.
     pub oauth: bool,
@@ -44,14 +46,31 @@ pub fn routing_params(model: &Model, options: &OpenAiOptions, schema: bool) -> O
         return None;
     }
     let mut routing = options.routing.clone();
-    if schema {
-        // Invariant: a schema only reaches a host that takes `response_format`; the rest ignore it.
+    // Invariant: a configured `order` is the owner's, so a pin only fills an absent one; the
+    // slug comes from a reply, so one that is not a plain slug is dropped.
+    let pin = options
+        .pin
+        .as_deref()
+        .map(|host| host.to_lowercase().replace(' ', "-"))
+        .filter(|slug| {
+            !slug.is_empty()
+                && slug
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        })
+        .filter(|_| routing.as_ref().and_then(|r| r.get("order")).is_none());
+    // Invariant: a schema only reaches a host that takes `response_format`; the rest ignore it.
+    let schema = schema.then(|| ("require_parameters", json!(true)));
+    for (key, value) in [schema, pin.map(|slug| ("order", json!([slug])))]
+        .into_iter()
+        .flatten()
+    {
         let object = routing.get_or_insert_with(|| json!({}));
         if !object.is_object() {
             *object = json!({});
         }
         if let Some(object) = object.as_object_mut() {
-            object.insert("require_parameters".to_owned(), json!(true));
+            object.insert(key.to_owned(), value);
         }
     }
     routing

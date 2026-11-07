@@ -87,6 +87,7 @@ run "$PY" scripts/guardrails/check_orphans.py
 run "$PY" scripts/guardrails/check_panic.py
 run "$PY" scripts/guardrails/check_host_git.py
 run "$PY" scripts/guardrails/check_changes.py
+run "$PY" scripts/guardrails/check_intent.py
 run "$PY" scripts/guardrails/check_comments.py
 run "$PY" scripts/guardrails/check_file_size.py
 run "$PY" scripts/guardrails/check_crate_size.py
@@ -170,6 +171,7 @@ run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # Change files are the one place a branch records a change; the format and the view-edit
 # refusals are rules over text, so only this flag proves each refusal fires.
 run "$PY" scripts/guardrails/check_changes.py --selfcheck
+run "$PY" scripts/guardrails/check_intent.py --selfcheck
 # The recorder numbers versions and decisions on main, where a wrong order is a renumbering
 # nobody can undo; only this flag runs it over real change files in their real landing order.
 if [ "$FAST" -eq 1 ]; then
@@ -192,6 +194,7 @@ run "$PY" scripts/intake/bridge.py --selfcheck
 # The autofixer pushes to people's branches, so its table, its wall and its marker check are
 # proved here on a scratch merge with a stand-in model, never a forge.
 run "$PY" scripts/pr_autofix.py --selfcheck
+run "$PY" scripts/fixer_guard.py --selfcheck
 run "$PY" scripts/checkout_guard.py --selfcheck
 # Every bot comment's spend is read back from its meta line, so the parse and the totals are proved here.
 run "$PY" scripts/bot_meter.py --selfcheck

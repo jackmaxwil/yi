@@ -39,6 +39,8 @@ import forge_tracking  # noqa: E402
 import checkout_guard  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 from _common import base_commit  # noqa: E402
+import check_intent  # noqa: E402
+from check_changes import pending  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
 SUBJECT_LIMIT = 72
@@ -391,6 +393,11 @@ def cmd_open(args):
         for err in errs:
             print(err)
         print("open: refused — the title job would fail; fix the above first")
+        return 1
+    base = base_commit()[1]
+    lost = check_intent.unrecorded(check_intent.branch_diff(base), [f for _, f in pending(base)]) if base else []
+    if lost:
+        print("\n".join(lost) + "\nopen: refused — say what this branch deletes on purpose, so no later branch puts it back")
         return 1
     # A host-run recipe never builds: pushing here would run a child's build.rs outside the sandbox.
     if not pushed():

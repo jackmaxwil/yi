@@ -17,6 +17,9 @@ Header keys, each optional:
   ledger~: <feature> | <old> | <new>                    replace text occurring once in the row
   ledger=: <feature> | <§> | <status> | <V> | <C> | <note>      a new row, after the last
   ledger-: <feature>                                    delete the row
+  cut: <path> | <the deleted line, verbatim> | <why>    repeatable; `cut: none <path>` owns a net deletion
+  keep: <path> | <a line that stays, verbatim> | <why>  repeatable; check_intent.py holds both on every branch
+  revives: <change file> <path>  /  drops: <change file> <path>     overturn a cut or keep, beside a decision
 Cells split on an unescaped ` | `; a literal pipe is `\\|`, as the table writes it. Incident: 43 of
 100 conflicted main merges touched a ledger row, a 2-4 KB line every feature appends to.
 scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
@@ -29,20 +32,21 @@ DIR = "docs/changes"
 NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$")
 LEDGER, LEDGER_OPS = "Feature ledger", {"ledger+": 2, "ledger~": 3, "ledger=": 6, "ledger-": 1}
 CELL = re.compile(r"(?<!\\) \| ")
-KEYS = {"issue", "growth", "raise", "decision", "version", "decisions", *LEDGER_OPS}
+INTENT = ("cut", "keep", "revives", "drops")
+KEYS = {"issue", "growth", "raise", "decision", "version", "decisions", *LEDGER_OPS, *INTENT}
 GROWTH = re.compile(r"^\+(\d+)\s+\S")
 RAISE = re.compile(r"^(tests|comments|over-cap|crate [a-z][a-z0-9-]*) \+(\d+)$")
 VERSION = re.compile(r"^version:\s*(\S+)", re.M)
 DECISIONS = "| id | decision | why | reversible via |"
 # The selfcheck switches each check off in turn and must then fail for it (040).
 CHECKS = ("header", "key", "decision", "raise", "growth", "twice", "prose", "name", "stamp", "exact", "rows", "version", "decisions",
-          "ledger-edit", "ledger-apply", "ledger-ops")
+          "ledger-edit", "ledger-apply", "ledger-ops", "intent")
 OFF = set()
 
 
 def parse(text):
     """(fields, errors). Fields: the header's values, `raise` summed per key, `body` the prose."""
-    fields, errs = {"decision": [], "raise": {}, "ledger": []}, []
+    fields, errs = {"decision": [], "raise": {}, "ledger": [], **{key: [] for key in INTENT}}, []
     head, sep, body = text[4:].partition("\n---\n")
     if text[:4] != "---\n" or not sep:
         if "header" not in OFF:
@@ -57,6 +61,10 @@ def parse(text):
             if "decision" not in OFF and (value.count("|") != 2 or not all(cell.strip() for cell in value.split("|"))):
                 errs.append("a decision is three cells: <decision> | <why> | <reversible via>")
             fields["decision"].append(value)
+        elif key in INTENT:
+            if intent_error(key, value) and "intent" not in OFF:
+                errs.append(intent_error(key, value))
+            fields[key].append(value)
         elif key in LEDGER_OPS:
             cells = [cell.strip() for cell in CELL.split(value)]
             if len(cells) == LEDGER_OPS[key] and all(cells):
@@ -80,6 +88,18 @@ def parse(text):
     if not fields["body"] and "prose" not in OFF:
         errs.append("no changelog prose after the header")
     return fields, errs
+
+
+def intent_error(key, value):
+    if key in ("revives", "drops"):
+        name, _, path = value.partition(" ")
+        return None if NAME.match(name) and path.strip() else f"{key} reads `<change file> <path>`, not {value!r}"
+    if key == "cut" and value.startswith("none ") and value[5:].strip():
+        return None
+    cells = CELL.split(value)
+    if len(cells) < 3 or not all(cell.strip() for cell in cells):
+        return f"{key} reads `<path> | <the line, verbatim> | <why>`, not {value!r}"
+    return None
 
 
 def at(rev, path):
@@ -313,9 +333,13 @@ def cases():
         "a new row on an existing key": apply_ledger(LEDGER_FIXTURE, [("ledger=", ["one", "1", "core", "H", "M", "n"])])[1],
         "a clause on a missing key": apply_ledger(LEDGER_FIXTURE, [("ledger+", ["ghost", "x"])])[1],
         "a delete of a missing key": apply_ledger(LEDGER_FIXTURE, [("ledger-", ["ghost"])])[1],
+        "a cut with no why": parse("---\ncut: a.py | x = 1\n---\nx\n")[1],
+        "a revive naming no change file": parse("---\nrevives: a.py\n---\nx\n")[1],
     }
     passed = {
         "a good file": file_errors([("2026-10-01-change-files.md", GOOD)]),
+        "intent lines": parse("---\ncut: a.md | | x | y | a table row | the owner cut it\ncut: none b.py\n"
+                              "keep: c.py | z = 2 | a rule\nrevives: 2026-10-01-x.md a.md\n---\nx\n")[1],
         "a recorded file's stamp": file_errors([("2026-10-01-x.md", GOOD.replace("---\nissue", "---\nversion: 0.9.0\nissue"))], {"2026-10-01-x.md"}),
         "a raise equal to the growth": raise_errors("tests", 150, 100, 50),
         "no raise and no growth": raise_errors("tests", 90, 100, 0),

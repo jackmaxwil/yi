@@ -719,3 +719,4 @@ TUI | `tui_unit::status_labels_the_worktree_branch_and_session_and_keeps_a_lane_
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::the_index_serves_every_bundled_skill_whole_and_only_where_it_applies`
 skills: catalog ladder, `$name`, Yi's triggered skills | `reader_e2e::a_child_that_can_read_is_pointed_at_the_catalog_and_the_skills_its_parent_loaded`
 cross-session stats, observed prices and plan-op counters | `cli_surfaces::stats_counts_a_followed_skill_pointer_in_one_session_and_the_fold`
+cache marks and TTL from the session ledger | `family_cache::two_upstream_switches_put_the_reading_host_first_in_the_next_request` (T1)

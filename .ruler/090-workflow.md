@@ -7,6 +7,12 @@
   D-rows in merge order, and check_changes.py refuses a branch that edits them. Every PR claimed
   the next number by hand and every landing renumbered, until 9 of 9 conflicted PRs collided on it.
 - Revising a settled decision requires a new decision (a `decision:` line in the change file) before code.
+- What a change removes or holds on purpose is recorded where every later branch is checked against it:
+  `cut: <path> | <the deleted line, verbatim> | <why>` and `keep: <path> | <line> | <why>` in the change
+  file. check_intent.py refuses any branch, by any author, that puts a cut line back or deletes a kept one,
+  unless its change file says `revives:`/`drops: <change file> <path>` beside a `decision:`; `just pr open`
+  asks for a `cut:` line, or `cut: none <path>`, for each file that loses five or more lines on net.
+  Incident: a fixer and two sessions undid three of the owner's deliberate cuts in one week.
 - Feature cuts are discussed before being written into the docs.
 - One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.2
   in the same commit.
