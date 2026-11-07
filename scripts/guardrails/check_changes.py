@@ -20,6 +20,7 @@ Header keys, each optional:
   cut: <path> | <the deleted line, verbatim> | <why>    repeatable; `cut: none <path>` owns a net deletion
   keep: <path> | <a line that stays, verbatim> | <why>  repeatable; check_intent.py holds both on every branch
   revives: <change file> <path>  /  drops: <change file> <path>     overturn a cut or keep, beside a decision
+  shares: #<pr> <why>                                   repeatable; lets owners.py pass a file that PR also changes
 Cells split on an unescaped ` | `; a literal pipe is `\\|`, as the table writes it. Incident: 43 of
 100 conflicted main merges touched a ledger row, a 2-4 KB line every feature appends to.
 scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
@@ -32,7 +33,7 @@ DIR = "docs/changes"
 NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$")
 LEDGER, LEDGER_OPS = "Feature ledger", {"ledger+": 2, "ledger~": 3, "ledger=": 6, "ledger-": 1}
 CELL = re.compile(r"(?<!\\) \| ")
-INTENT = ("cut", "keep", "revives", "drops")
+INTENT = ("cut", "keep", "revives", "drops", "shares")
 KEYS = {"issue", "growth", "raise", "decision", "version", "decisions", *LEDGER_OPS, *INTENT}
 GROWTH = re.compile(r"^\+(\d+)\s+\S")
 RAISE = re.compile(r"^(tests|comments|over-cap|crate [a-z][a-z0-9-]*) \+(\d+)$")
@@ -91,6 +92,8 @@ def parse(text):
 
 
 def intent_error(key, value):
+    if key == "shares":
+        return None if re.match(r"#\d+\s+\S", value) else f"shares reads `#<pr> <why>`, not {value!r}"
     if key in ("revives", "drops"):
         name, _, path = value.partition(" ")
         return None if NAME.match(name) and path.strip() else f"{key} reads `<change file> <path>`, not {value!r}"
@@ -335,11 +338,12 @@ def cases():
         "a delete of a missing key": apply_ledger(LEDGER_FIXTURE, [("ledger-", ["ghost"])])[1],
         "a cut with no why": parse("---\ncut: a.py | x = 1\n---\nx\n")[1],
         "a revive naming no change file": parse("---\nrevives: a.py\n---\nx\n")[1],
+        "a share naming no pull request": parse("---\nshares: crates/a.rs\n---\nx\n")[1],
     }
     passed = {
         "a good file": file_errors([("2026-10-01-change-files.md", GOOD)]),
         "intent lines": parse("---\ncut: a.md | | x | y | a table row | the owner cut it\ncut: none b.py\n"
-                              "keep: c.py | z = 2 | a rule\nrevives: 2026-10-01-x.md a.md\n---\nx\n")[1],
+                              "keep: c.py | z = 2 | a rule\nrevives: 2026-10-01-x.md a.md\nshares: #12 both rename the type\n---\nx\n")[1],
         "a recorded file's stamp": file_errors([("2026-10-01-x.md", GOOD.replace("---\nissue", "---\nversion: 0.9.0\nissue"))], {"2026-10-01-x.md"}),
         "a raise equal to the growth": raise_errors("tests", 150, 100, 50),
         "no raise and no growth": raise_errors("tests", 90, 100, 0),

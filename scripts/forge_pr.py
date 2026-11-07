@@ -398,6 +398,11 @@ def cmd_open(args):
     if lost:
         print("\n".join(lost) + "\nopen: refused — say what this branch deletes on purpose, so no later branch puts it back")
         return 1
+    import owners
+
+    if taken := owners.taken():
+        print("\n".join(taken) + "\nopen: refused — another open pull request owns these files")
+        return 1
     # A host-run recipe never builds: pushing here would run a child's build.rs outside the sandbox.
     if not pushed():
         print("open: this branch is not pushed — just push first")
