@@ -2253,7 +2253,6 @@ dependencies = [
  "landlock",
  "lexopt",
  "miniz_oxide",
- "rustix",
  "serde_json",
  "tokio",
  "ureq",

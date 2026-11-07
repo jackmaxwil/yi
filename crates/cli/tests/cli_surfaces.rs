@@ -2174,6 +2174,19 @@ fn doctor_answers_for_the_classifier_endpoint() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn doctor_tells_how_to_enable_the_classifier() -> TestResult {
+    let workspace = Workspace::new("doctor-classifier-off")?;
+    let off = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let lines = doctor_lines(&off);
+    assert!(
+        lines.iter().any(|line| line.starts_with("ok    classifier")
+            && line.contains("off; set `models.classifier` to turn it on")),
+        "{lines:?}"
+    );
+    Ok(())
+}
+
 /// A dead socket file is the one repair `doctor --fix` makes without asking; a ledger row
 /// whose root is gone is reported and left to the daemon that owns the file.
 #[test]
