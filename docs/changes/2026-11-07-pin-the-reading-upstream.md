@@ -1,4 +1,6 @@
 ---
+version: 0.995.0
+decisions: D573
 issue: Closes #2076
 raise: crate ai +19, crate runtime +60, tests +144, comments +7
 decision: two upstream-switch misses inside 30 minutes put the host that last read the route's cache entry first in OpenRouter's `provider.order` for an hour, on that route only, and only where the routing config sets no order of its own | OpenRouter moves a conversation between hosts under a live entry and the new host cannot read it; the session ledger already names the switch, and a configured order is the owner's, so the pin only fills an absent one, with fallbacks still allowed | remove the pin branch in `cache_miss::MissTracker::escalate` and the `order` field in `openai::routing_params`
