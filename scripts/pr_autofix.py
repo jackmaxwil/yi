@@ -39,6 +39,7 @@ import _common  # noqa: E402
 import forge_pr  # noqa: E402
 import merge_baseline  # noqa: E402
 import pr_review  # noqa: E402
+import pr_queue  # noqa: E402
 
 LABELS = {
     "autofix": ("1d76db", "Fix this PR's conflicts on the next autofix pass, without the quiet wait"),
@@ -1387,6 +1388,18 @@ def quiet_for(pr, notes, now):
     return now - max(times) if times else float("inf")
 
 
+def queue_builds(pr, labels):
+    """Whether to leave this PR for the queue, including when the queue's state cannot be read."""
+    if "queue" not in labels or "autofix" in labels or pr["base"]["ref"] != "main":
+        return False
+    try:
+        return (forge_pr.queue_mode() != "off" and pr_queue.enqueued_at(pr["number"]) is not None
+                and pr_queue.eligible_problem(pr, forge_pr.jobs_of(pr)) is None)
+    except (SystemExit, Exception) as err:
+        print(f"#{pr['number']}: the queue's state could not be read ({err}); leaving the branch alone")
+        return True
+
+
 def attempt(repo, pr, ids, asked=False):
     """Decide and, when owed, fix one PR. Returns the decision made."""
     number = pr["number"]
@@ -1400,6 +1413,11 @@ def attempt(repo, pr, ids, asked=False):
     behind = sh(ROOT, "git", "merge-base", "--is-ancestor", f"origin/{pr['base']['ref']}", pr["head"]["sha"], check=False).returncode != 0
     if behind and time.time() - when(pr.get("updated_at")) < 5 * 60:
         return "recent"
+    # Incident: a clean main merge into a queued PR moved its head and the queue dropped a green
+    # candidate; the queue builds on main itself and labels a real conflict `autofix`. A PR the queue
+    # skips has no candidate to protect and needs the gate fix nobody else gives it.
+    if behind and queue_builds(pr, labels):
+        return "queued"
     try:
         conflicted = merge_clean(pr) if behind else []
     except LookupError as err:
@@ -2876,6 +2894,41 @@ def selfcheck():
         held = dict(sample, labels=[{"name": "autofix:hold"}])
         if attempt("o/r", held, {}) != "hold" or len(attempted) != 1:
             errs.append("an autofix:hold PR reached the clean-merge path")
+        # Incident: a clean main merge moved a queued head and the queue dropped a green candidate.
+        # The first case pins the queue read, not just the decision; the rest refute the label-only guard.
+        real_queue = (forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem)
+        reads = []
+        forge_pr.jobs_of, forge_pr.queue_mode = (lambda pr: {"title": "success"}), (lambda: "on")
+        pr_queue.enqueued_at, pr_queue.eligible_problem = (lambda number: reads.append(number) or "2026-01-01"), (lambda pr, jobs: None)
+        queued = dict(sample, labels=[{"name": "queue"}])
+        try:
+            if attempt("o/r", queued, {}) != "queued" or len(attempted) != 1 or reads != [1]:
+                errs.append("a queued PR only behind main was merged, or held without its queue asked, so its candidate is dropped or frozen")
+            if attempt("o/r", dict(queued, base={"ref": "feature"}), {}) == "queued" or len(attempted) != 2:
+                errs.append("a queued PR based elsewhere was held, so the merge its base needs never happens")
+            pr_queue.eligible_problem = lambda pr, jobs: "its own gate reads red"
+            if attempt("o/r", queued, {}) == "queued" or len(attempted) != 3:
+                errs.append("a queued PR whose own gate reads red was left alone, so neither bot fixes it")
+            pr_queue.eligible_problem = lambda pr, jobs: None
+            forge_pr.queue_mode = lambda: "off"
+            if attempt("o/r", queued, {}) == "queued" or len(attempted) != 4:
+                errs.append("a queued PR under MERGE_QUEUE=off was frozen, since no tick reads its label")
+            forge_pr.queue_mode = lambda: "on"
+            pr_queue.enqueued_at = lambda number: None
+            if attempt("o/r", queued, {}) == "queued" or len(attempted) != 5:
+                errs.append("a label no merger added held the PR, and the queue skips what it never enqueued")
+            for fault in (SystemExit("database is locked"), RuntimeError("forge refused")):
+                def unreadable(number, fault=fault):
+                    raise fault
+                pr_queue.enqueued_at = unreadable
+                try:
+                    said = attempt("o/r", queued, {})
+                except (SystemExit, Exception) as err:
+                    said = f"raised {err}"
+                if said != "queued" or len(attempted) != 5:
+                    errs.append(f"an unreadable queue timeline raised {type(fault).__name__} and read {said!r}, so one PR can escape or stop the pass")
+        finally:
+            forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem = real_queue
         def moved(pr):
             raise LookupError("non-fast-forward")
         module.merge_clean = moved

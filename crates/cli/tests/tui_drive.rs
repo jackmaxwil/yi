@@ -512,11 +512,13 @@ fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> Test
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    // Incident: the status row ends in the session id, a v7 id whose first eight digits tick
-    // every 65 s, so two runs a minute apart (a loaded lane) differed in that row alone.
+    // Incident: the status row shows the session id's last eight hexadecimal digits, so two runs
+    // differed in that row alone; the old mask only recognized a timestamp-prefixed display.
     let snap = |frames: &std::path::Path, name: &str| {
         std::fs::read_to_string(frames.join(format!("snap-{name}.txt"))).map(|frame| {
-            let masked = |word: &str| match word.len() == 8 && word.starts_with("01a") {
+            let masked = |word: &str| match word.len() == 8
+                && word.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
                 true => "<id>".to_owned(),
                 false => word.to_owned(),
             };

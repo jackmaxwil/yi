@@ -20,7 +20,7 @@ use super::{App, RequestKind};
 use crate::client::Outbound;
 use crate::keys::Action;
 use crate::layout::PaneId;
-use crate::model::{Chat, PaneContent, PendingAsk, SessionId, SessionRow};
+use crate::model::{Chat, PaneContent, PendingAsk, SessionId};
 
 const CHILD_ROW_CAP: usize = 32;
 
@@ -66,7 +66,7 @@ impl App {
         let row = self.state.sessions.get(session);
         let options = TuiOptions {
             model: yi_tui::model::model_or_stub("", ""),
-            session_name: row.map_or_else(|| session.0.clone(), SessionRow::label),
+            session_name: session.0.clone(),
             cwd: row.map_or_else(|| self.state.root.clone(), |row| row.root.clone()),
             lane: None,
             context_window: 0,
@@ -83,7 +83,6 @@ impl App {
         let mut app = yi_tui::app::App::new(options, theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
         app.set_clock(self.clock);
-        app.set_status_name_shown(false);
         app.set_pane();
         Box::new(Chat {
             app,
@@ -242,9 +241,6 @@ impl App {
                 if let Some(row) = self.state.sessions.get_mut(id) {
                     row.name = Some(name.clone());
                 }
-                for chat in self.state.chats_mut(id) {
-                    chat.app.set_session_name(name.clone());
-                }
                 self.dirty = true;
             }
             Decoded::Claims(claims) => {
@@ -346,9 +342,6 @@ impl App {
             if let Some(stats) = replay.stats.as_ref().filter(|_| replay.child.is_none()) {
                 chat.app.seed_ledger(stats);
             }
-            if let Some(name) = &replay.name {
-                chat.app.set_session_name(name.clone());
-            }
             if let Some(window) = replay.context_window {
                 chat.app.set_context_window(window);
             }
@@ -405,31 +398,14 @@ impl App {
         self.dirty = true;
     }
 
-    pub(super) fn sync_chat_names(&mut self) {
-        let labels: Vec<(SessionId, String)> = self
-            .state
-            .sessions
-            .values()
-            .map(|row| (row.id.clone(), row.label()))
-            .collect();
-        for (id, label) in labels {
-            for chat in self.state.chats_mut(&id) {
-                chat.app.set_session_name(label.clone());
-            }
-        }
-    }
-
     pub(super) fn absorb_result(&mut self, id: &SessionId, result: &Value) {
         let Ok(result) = serde_json::from_value::<AcpSessionResult>(result.clone()) else {
             return;
         };
-        if let Some(name) = result.meta.as_ref().and_then(|meta| meta.yi.name.as_ref()) {
-            if let Some(row) = self.state.sessions.get_mut(id) {
-                row.name = Some(name.clone());
-            }
-            for chat in self.state.chats_mut(id) {
-                chat.app.set_session_name(name.clone());
-            }
+        if let Some(name) = result.meta.as_ref().and_then(|meta| meta.yi.name.as_ref())
+            && let Some(row) = self.state.sessions.get_mut(id)
+        {
+            row.name = Some(name.clone());
         }
         let config = config_of(&result.config_options);
         self.apply_config(id, &config, false);
@@ -1036,6 +1012,64 @@ mod tests {
             crate::chat_wake(&app),
             yi_tui::reveal::FRAME
         );
+        Ok(())
+    }
+
+    /// Dies with the console chat's status row naming only the lane's repo: no session id (the
+    /// title above carries the name, not the id) and no branch.
+    #[test]
+    fn a_lane_chat_status_row_labels_the_session_id_and_the_branch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-console-status-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".git"))?;
+        std::fs::write(dir.join(".git/HEAD"), "ref: refs/heads/yi/lane-branch\n")?;
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        let session = SessionId("01a1af4a-dce0-7a45-8a37-173c4f977fca".to_owned());
+        app.state.upsert_row(crate::model::SessionRow {
+            id: session.clone(),
+            root: "/r".to_owned(),
+            status: crate::model::SessionStatus::Idle,
+            attached: true,
+            name: Some("alpha".to_owned()),
+            created_ms: 0,
+            last_ms: 0,
+            pinned: None,
+        });
+        let chat = app.make_chat(&session);
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::Session {
+                session: Some(session.clone()),
+                chat: Some(chat),
+            };
+        }
+        for chat in app.state.chats_mut(&session) {
+            chat.app
+                .set_workdir(dir.display().to_string(), Some("yi".to_owned()));
+        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 30))?;
+        terminal.draw(|frame| {
+            let mut view = crate::render::compute_view(&mut app, frame.area(), &theme);
+            crate::render::render(&mut app, frame, &mut view, &theme);
+        })?;
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+                    .collect()
+            })
+            .collect();
+        std::fs::remove_dir_all(&dir)?;
+        let row = rows
+            .iter()
+            .find(|row| row.contains("worktree yi"))
+            .ok_or_else(|| format!("no status row: {rows:#?}"))?;
+        assert!(
+            row.contains("session ") && row.contains("4f977fca"),
+            "{row}"
+        );
+        assert!(row.contains("branch ⎇ yi/lane-branch"), "{row}");
         Ok(())
     }
 
