@@ -744,12 +744,14 @@ fn report_the_prefix_size() -> TestResult {
 }
 
 /// Bare is a TB container's root: no instruction file, Yolo. Lane adds the tracked AGENTS.md
-/// and a Cargo.toml in Auto; main adds the checkout's untracked CLAUDE.md when it has one.
+/// and a Cargo.toml in Auto; main adds the checkout's untracked CLAUDE.md when it has one, and
+/// skills carries a project skill beside them so a catalog has something to list.
 #[derive(Clone, Copy)]
 enum Workspace {
     Bare,
     Lane,
     Main,
+    Skills,
 }
 
 /// Each role's brief and spawn kwargs, `None` for the root's own turn. A brief is the needle
@@ -826,7 +828,7 @@ async fn role_bodies(
     upstream::git(&ws, &["init", "-q", "-b", "main"])?;
     let mode = match workspace {
         Workspace::Bare => PermissionMode::Yolo,
-        Workspace::Lane | Workspace::Main => PermissionMode::Auto,
+        Workspace::Lane | Workspace::Main | Workspace::Skills => PermissionMode::Auto,
     };
     if matches!(workspace, Workspace::Bare) {
         upstream::git(&ws, &["init", "-q", "-b", "main"])?;
@@ -869,6 +871,14 @@ async fn role_bodies(
     }
     if matches!(workspace, Workspace::Main) && checkout().join("CLAUDE.md").is_file() {
         std::fs::copy(checkout().join("CLAUDE.md"), ws.join("CLAUDE.md"))?;
+    }
+    if matches!(workspace, Workspace::Skills) {
+        let skill = ws.join(".yi/skills/probe/SKILL.md");
+        std::fs::create_dir_all(skill.parent().ok_or("no parent")?)?;
+        std::fs::write(
+            &skill,
+            "---\nname: probe\ndescription: A project skill a worker cannot read.\n---\nStep one.\n",
+        )?;
     }
     for (_, brief, kwargs) in ROLES {
         match kwargs {
@@ -986,6 +996,12 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
     assert!(
         !editor.contains("yi://skills"),
         "a worker with no read is pointed nowhere: {editor}"
+    );
+    let skilled = role_bodies(Workspace::Skills, 1).await?;
+    let editor = role_text(&skilled, "worker_editor")?;
+    assert!(
+        !editor.contains("<skills>"),
+        "a worker with no read attaches no catalog, not even a project skill's: {editor}"
     );
     let delegation = yi_runtime::delegation_fragment();
     assert!(

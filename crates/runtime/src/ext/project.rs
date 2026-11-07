@@ -120,6 +120,7 @@ pub struct ProjectResources {
 enum Catalogs {
     Listed,
     Pointer(String),
+    None,
 }
 impl ProjectResources {
     pub fn new(cwd: PathBuf, home: PathBuf) -> Self {
@@ -142,6 +143,11 @@ impl ProjectResources {
     }
 
     #[must_use]
+    pub fn without_skills(mut self) -> Self {
+        self.skills = Catalogs::None;
+        self
+    }
+
     pub fn with_global_skills(mut self, names: Vec<String>) -> Self {
         self.global_skills = names;
         self
@@ -332,6 +338,7 @@ impl Extension for ProjectResources {
                 slot: Slot::new(Rank::Catalog, "skills"),
                 text: pointer.clone(),
             }),
+            Catalogs::None => {}
         }
     }
 }

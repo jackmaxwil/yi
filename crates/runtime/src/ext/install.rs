@@ -94,7 +94,7 @@ pub fn narrow(cwd: &Path, home: &Path, identity: &str, pointer: Option<String>) 
     let resources = ProjectResources::new(cwd.to_path_buf(), home.to_path_buf());
     host.register(Box::new(match pointer {
         Some(pointer) => resources.with_pointer(pointer),
-        None => resources,
+        None => resources.without_skills(),
     }));
     register_packs(&mut host, cwd, home);
     host
