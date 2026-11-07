@@ -48,6 +48,7 @@ _yi() {
         '--auto[let the policy judge each call (the default)]'
         '--confirm[ask before every write or command]'
         '--allow-write[let the sandbox write dir too; repeatable]:dir:_files -/'
+        '--scope[with ask: confine writes in the tree to this glob; repeatable]:glob:'
         '--session-dir[session storage root]:dir:_files -/'
         '--cwd[working directory]:dir:_files -/'
         '--here[work in this directory and claim no lane]'
