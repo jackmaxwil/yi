@@ -952,4 +952,60 @@ mod tests {
         );
         Ok(())
     }
+
+    /// A tree with a remote and no lane gets no transport at all, on any remote and every protocol
+    /// name: a fork's `upstream` carries the token, and `protocol.<name>.allow` outranks the fallback.
+    #[test]
+    fn a_tree_with_a_remote_and_no_lane_is_given_no_transport() -> Result<(), String> {
+        let run = |dir: &std::path::Path, args: &[&str]| -> Result<(), String> {
+            std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+            let mut command = yi_tools::keyless_command("git");
+            let status = command
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .map_err(|error| error.to_string())?;
+            match status.success() {
+                true => Ok(()),
+                false => Err(format!("git {args:?} failed")),
+            }
+        };
+        let bare = std::env::temp_dir().join("yi-lane-no-remote-assign");
+        let _ = std::fs::remove_dir_all(&bare);
+        run(&bare, &["init", "-q"])?;
+        assert_eq!(
+            remote::GitLane::assign_for(None, &bare),
+            Vec::<String>::new()
+        );
+        let forked = std::env::temp_dir().join("yi-lane-upstream-assign");
+        let _ = std::fs::remove_dir_all(&forked);
+        run(&forked, &["init", "-q"])?;
+        run(
+            &forked,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "https://user:s3cret@example.com/x/y.git",
+            ],
+        )?;
+        let assign = remote::GitLane::assign_for(None, &forked);
+        assert!(
+            assign.contains(&"GIT_CONFIG_COUNT=7".to_owned()),
+            "{assign:?}"
+        );
+        for protocol in [
+            "protocol.allow",
+            "protocol.https.allow",
+            "protocol.git.allow",
+        ] {
+            assert!(
+                assign
+                    .iter()
+                    .any(|entry| entry.ends_with(&format!("={protocol}"))),
+                "{protocol} missing: {assign:?}"
+            );
+        }
+        Ok(())
+    }
 }
