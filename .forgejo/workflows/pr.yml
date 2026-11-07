@@ -1,7 +1,6 @@
 # A thin caller of the justfile the git hooks already run — never a second copy
 # of the rules. CI=true makes the aggregator announce-skip startup, since a
-# shared runner cannot resolve a 5 ms budget; the guardrails lane builds the dist
-# binary and measures it against binary_size_budget_linux.json.
+# shared runner cannot resolve a 5 ms budget.
 #
 # The estate has no macOS runner, so the macOS matrix arm of .github/workflows/
 # pr.yml is dropped here rather than faked: `just prepush` runs the same three
