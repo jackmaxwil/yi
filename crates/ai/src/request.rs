@@ -7,6 +7,9 @@ use yi_types::telemetry::{QUOTA_STAMP, REFUSED_STAMP};
 
 use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, server_wait, wait_for};
 use crate::sse::SseEvent;
+mod reply;
+
+pub use reply::{Stripped, note_reply, note_resend, note_stripped, note_upstream, record_stripped};
 
 pub fn empty_assistant(model: &Model) -> AgentMessage {
     AgentMessage::Assistant {
@@ -395,6 +398,20 @@ fn pooled_idle_from_now(read_timeout: std::time::Duration) {
     }
 }
 
+/// The cache fields a 400 may name, the specific ones before the generic `cache`.
+const CACHE_FIELDS: [&str; 6] = [
+    "prompt_cache_retention",
+    "prompt_cache_key",
+    "cache_control",
+    "cache_ttl",
+    "session_id",
+    "cache",
+];
+
+fn cache_field(text: &str) -> Option<&'static str> {
+    CACHE_FIELDS.into_iter().find(|field| text.contains(field))
+}
+
 pub fn send_with_retry(
     url: &str,
     headers: &[(String, String)],
@@ -402,13 +419,26 @@ pub fn send_with_retry(
     proxy: Option<&ProxyConfig>,
     retry: &Retry<'_>,
 ) -> Result<ureq::Response, String> {
+    send_stripping_cache(url, headers, body, proxy, retry, &Stripped::default())
+}
+
+/// One POST, retried by the policy; a cache-field 400 is asked again without the fields.
+pub fn send_stripping_cache(
+    url: &str,
+    headers: &[(String, String)],
+    body: &crate::breakpoints::Encoded,
+    proxy: Option<&ProxyConfig>,
+    retry: &Retry<'_>,
+    stripped: &Stripped,
+) -> Result<ureq::Response, String> {
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
     let agent = stream_agent(
         proxy.and_then(|config| config.proxy_for(host_of(url))),
         retry.deadline,
     );
-    let body = {
+    let mut bare: Option<crate::breakpoints::Encoded> = None;
+    let mut serialized = {
         let _span = yi_types::trace::span("ai.serialize");
         body.to_string()
     };
@@ -423,9 +453,9 @@ pub fn send_with_retry(
         }
         let sending = yi_types::trace::span("ai.http_send")
             .arg("attempt", attempt)
-            .arg("bytes", body.len());
+            .arg("bytes", serialized.len());
         retry.bump();
-        let sent = request.send_string(&body);
+        let sent = request.send_string(&serialized);
         drop(sending);
         match sent {
             Ok(response) => return Ok(response),
@@ -442,6 +472,27 @@ pub fn send_with_retry(
                     _ => None,
                 };
                 let text = response.into_string().unwrap_or_default();
+                if status == 400
+                    && bare.is_none()
+                    && let Some(field) = cache_field(&text)
+                {
+                    stripped.set(field);
+                    bare = Some(body.without(&CACHE_FIELDS));
+                    if let Some(bare) = &bare {
+                        serialized = {
+                            let _span = yi_types::trace::span("ai.serialize");
+                            bare.to_string()
+                        };
+                    }
+                    announce(
+                        retry.on_wait,
+                        attempt.saturating_add(1),
+                        &policy,
+                        None,
+                        format!("HTTP 400 named {field}"),
+                    );
+                    continue;
+                }
                 if quota_exhausted(status, &text, url) {
                     return Err(format!("HTTP {status} {QUOTA_STAMP} {text}"));
                 }
@@ -704,54 +755,6 @@ pub fn resend_dead_stream(delivered: bool, resent: bool) -> bool {
     !delivered && !resent
 }
 
-pub fn note_resend(output: &mut AgentMessage, first_error: &str) {
-    if let AgentMessage::Assistant {
-        diagnostics,
-        timestamp,
-        ..
-    } = output
-    {
-        let mut details = serde_json::Map::new();
-        details.insert("resends".to_owned(), Value::from(1u32));
-        diagnostics.get_or_insert_with(Vec::new).push(
-            yi_types::message::AssistantMessageDiagnostic {
-                diagnostic_type: "stream_resent".to_owned(),
-                timestamp: *timestamp,
-                error: Some(yi_types::message::DiagnosticErrorInfo {
-                    name: None,
-                    message: first_error.to_owned(),
-                    stack: None,
-                    code: None,
-                }),
-                details: Some(details),
-            },
-        );
-    }
-}
-
-/// The upstream an OpenRouter turn ran on, kept once: every chunk names it, and so does the record.
-pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
-    if let AgentMessage::Assistant {
-        diagnostics,
-        timestamp,
-        ..
-    } = output
-    {
-        let notes = diagnostics.get_or_insert_with(Vec::new);
-        if notes.iter().any(|note| note.diagnostic_type == "upstream") {
-            return;
-        }
-        let mut details = serde_json::Map::new();
-        details.insert("provider".to_owned(), Value::from(upstream));
-        notes.push(yi_types::message::AssistantMessageDiagnostic {
-            diagnostic_type: "upstream".to_owned(),
-            timestamp: *timestamp,
-            error: None,
-            details: Some(details),
-        });
-    }
-}
-
 pub fn fail_message(output: &mut AgentMessage, text: &str) -> crate::EventOut {
     if let AgentMessage::Assistant {
         stop_reason,
@@ -838,17 +841,19 @@ pub fn openai_bearer_post(
     body: &crate::breakpoints::Encoded,
     wire: Wire<'_>,
     retry: &Retry<'_>,
+    stripped: &Stripped,
 ) -> Result<ureq::Response, String> {
     let headers = headers_for(
         model,
         vec![("authorization", format!("Bearer {}", wire.api_key))],
     );
-    send_with_retry(
+    send_stripping_cache(
         url,
         &merge_headers(headers, wire.extra.to_vec()),
         body,
         wire.proxy,
         retry,
+        stripped,
     )
 }
 
@@ -937,4 +942,49 @@ pub(crate) fn transport_cause(transport: &ureq::Transport) -> String {
         .map(|source| format!(": {source}"))
         .unwrap_or_default();
     format!("{}{message}{source}", transport.kind())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+
+    use serde_json::json;
+
+    #[test]
+    fn a_retry_reuses_the_serialized_request_body() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let server = std::thread::spawn(move || -> std::io::Result<()> {
+            for status in [
+                "HTTP/1.1 429 Too Many Requests\r\nretry-after-ms: 0\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept()?;
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request)?;
+                stream.write_all(status.as_bytes())?;
+            }
+            Ok(())
+        });
+        let body = crate::breakpoints::Encoded::provider_prefix(
+            json!({"messages": []}),
+            "messages",
+            Vec::new(),
+        );
+        crate::breakpoints::reset_serializations();
+        let quiet = |_| {};
+        let retry = super::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
+        let response = super::send_with_retry(
+            &format!("http://127.0.0.1:{port}/v1/messages"),
+            &[],
+            &body,
+            None,
+            &retry,
+        )
+        .map_err(|error| format!("request failed: {error}"))?;
+        let _ = response.into_string();
+        server.join().map_err(|_| "server thread panicked")??;
+        assert_eq!(crate::breakpoints::serializations(), 1);
+        Ok(())
+    }
 }
