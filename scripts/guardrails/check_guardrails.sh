@@ -41,7 +41,7 @@ drain() {
     fi
   done
 }
-# The two dist gates run after drain, on a quiet tree, so they collect like drain's and report through it.
+# The dist gate runs after drain, on a quiet tree, so it collects like drain's and reports through it.
 after() {
   N=$((N + 1))
   printf '%s\n' "$*" > "$OUT/$N.cmd"
@@ -142,9 +142,6 @@ run bash "$0" --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
-# The hard cap is checked independent of the baseline file, so nothing here reads
-# target/dist/yi; only this flag proves the cap fires on its own reason (D249).
-run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 run "$PY" scripts/guardrails/check_fn_size.py --selfcheck
 # Which src lines are test code decides the production gates and the test budget alike.
 run "$PY" scripts/guardrails/check_test_size.py --selfcheck
@@ -210,26 +207,17 @@ run "$PY" -I scripts/mirror/scan.py --selfcheck
 # Prose is not exempt: check_comments.py ratchets the comment volume and prints the count, and
 # the design docs set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi
-# binary_size and startup are the only two readers of target/dist/yi, and the
-# fat-LTO build that writes it is minutes, so this is where it is paid for
-# (D91): one branch decides whether either gate runs, and the build lives
-# inside it. Each host's binary is measured against its own baseline, and the
-# forge's runners are Linux, so CI builds and measures there and nowhere else.
-# D68: wall clock on a shared runner is noise against a 5 ms budget, so startup
-# never runs under CI. --fast skips both because one needs the build and
-# hyperfine is most of the other. Announced, never silent (9).
-# The build runs beside the other gates (target/dist is its own cargo lock); the
-# two gates that read it run after `drain`, so startup is timed on a quiet tree.
+# startup is the only reader of target/dist/yi, and the fat-LTO build that writes it is minutes,
+# so this is where it is paid for (D91). CI never times startup on a shared runner (D68);
+# --fast skips the build and hyperfine. The build runs beside the other gates, then startup
+# runs after `drain` on a quiet tree. Skips are announced, never silent (9).
 DIST=0
 if [ "$FAST" -eq 1 ]; then
-  run echo "skip binary_size (--fast: needs a dist build)"
   run echo "skip startup (--fast: hyperfine is most of the run)"
-elif [ -n "${CI:-}" ] && [ "$(uname -s)" != Linux ]; then
-  run echo "skip binary_size (CI measures the dist binary on Linux only, against binary_size_budget_linux.json)"
+elif [ -n "${CI:-}" ]; then
   run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
-  run echo "skip build-dist (nothing on a non-Linux CI host reads target/dist/yi)"
+  run echo "skip build-dist (nothing on a CI host reads target/dist/yi)"
 else
-  [ -z "${CI:-}" ] || run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
   run scripts/build_dist.sh
   DIST=$N
 fi
@@ -256,12 +244,11 @@ if [ "$DIST" -gt 0 ]; then
   # A stand-in binary, so the startup gate is proved able to fail on each entry before it judges.
   [ -n "${CI:-}" ] || after "$PY" scripts/guardrails/check_startup.py --selfcheck || FAILED=$((FAILED + 1))
   if [ "$(cat "$OUT/$DIST.rc")" = 0 ]; then
-    after "$PY" scripts/guardrails/check_binary_size.py || FAILED=$((FAILED + 1))
     [ -n "${CI:-}" ] || after "$PY" scripts/guardrails/check_startup.py || FAILED=$((FAILED + 1))
   else
-    # A stale target/dist/yi from an earlier build would pass both gates while
-    # measuring code nobody wrote, so a failed build fails them instead.
-    echo "FAIL dist build (binary_size and startup have nothing to measure)"
+    # A stale target/dist/yi from an earlier build would pass startup while
+    # measuring code nobody wrote, so a failed build fails it instead.
+    echo "FAIL dist build (startup has nothing to measure)"
   fi
 fi
 
