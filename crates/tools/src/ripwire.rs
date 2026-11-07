@@ -103,7 +103,12 @@ fn relative(top: &Path, path: &Path) -> Option<String> {
     Some(relative.to_string_lossy().into_owned())
 }
 
-pub(crate) fn regions(top: &Path, path: &str, before: &str, after: &str) -> Vec<(String, u64)> {
+pub(crate) fn regions(
+    top: &Path,
+    path: &str,
+    script: &crate::diff::EditScript,
+    after: &str,
+) -> Vec<(String, u64)> {
     let Some(relative) = relative(top, Path::new(path)) else {
         return Vec::new();
     };
@@ -114,7 +119,8 @@ pub(crate) fn regions(top: &Path, path: &str, before: &str, after: &str) -> Vec<
             .and_then(|index| lines.get(index))
             .is_none_or(|text| text.trim().is_empty())
     };
-    crate::diff::changed_after_lines(before, after)
+    script
+        .changed_after_lines()
         .into_iter()
         .filter(|line| !blank(*line))
         .map(|line| (relative.clone(), line))
