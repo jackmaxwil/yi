@@ -2,7 +2,6 @@
 
 use std::error::Error;
 
-use serde_json::Value;
 use yi_types::model::LlmContext;
 
 pub type Res = Result<(), Box<dyn Error>>;
@@ -19,30 +18,6 @@ pub fn drain(
         while receiver.recv().await.is_some() {}
     });
     Ok(())
-}
-
-/// A loop request with one user turn and a bash tool: the shape every mapper test drives.
-pub fn loop_context(parameters: Value) -> LlmContext {
-    LlmContext {
-        system_prompt: "be terse".to_owned(),
-        messages: vec![yi_types::message::AgentMessage::user_input(
-            yi_types::message::UserContent::Text("hi".to_owned()),
-            0,
-        )],
-        reuse: yi_types::model::Reuse::Loop,
-        transient: Vec::new(),
-        schema: None,
-        shared_through: None,
-        cache_ttl: yi_types::model::Ttl::Min5,
-        cache_tail: true,
-        tools: Some(vec![yi_types::model::ToolDef {
-            name: "bash".to_owned(),
-            description: "run".to_owned(),
-            parameters,
-            freeform: None,
-        }]),
-        tool_choice: None,
-    }
 }
 
 /// A loop request with no messages and no tools: the shape a header or auth test sends.

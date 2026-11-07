@@ -264,8 +264,10 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
     };
     let mut tools: BTreeMap<String, ToolRow> = BTreeMap::new();
     let mut totals = Totals::default();
+    let mut skills = yi_runtime::rollup::SkillUptake::default();
     for entry in &entries {
         reduce_entry(entry, &mut tools, &mut totals);
+        skills.observe(entry);
     }
     for row in tools.values_mut() {
         row.durations_ms.sort_unstable();
@@ -314,6 +316,7 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
             "cost": totals.cost(),
             "bashCategories": totals.categories,
             "editOps": totals.edit_ops,
+            "skills": skills.json(),
         });
         crate::print_json(&value);
         return 0;
@@ -325,6 +328,7 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
             println!("  {model}  {}", tokens.line());
         }
     }
+    println!("{}", skills.line());
     if tools.is_empty() {
         println!("no tool calls");
         return 0;

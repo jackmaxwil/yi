@@ -472,8 +472,11 @@ fn an_interrupt_during_a_backoff_sends_no_further_request() -> TestResult {
         &[],
         &body,
         None,
-        Some(cutting.as_ref()),
-        &|_| cutting.store(true, Ordering::SeqCst),
+        &yi_ai::request::Retry::new(
+            std::time::Duration::from_secs(60),
+            Some(cutting.as_ref()),
+            &|_| cutting.store(true, Ordering::SeqCst),
+        ),
     )
     .err()
     .ok_or("a 429 was taken as a success")?;
@@ -498,8 +501,7 @@ fn a_wait_past_the_cap_ends_the_turn_and_one_inside_it_retries() -> TestResult {
         &[],
         &body,
         None,
-        None,
-        &|_| {},
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|_| {}),
     )
     .err()
     .ok_or("a 429 was taken as a success")?;
@@ -517,8 +519,7 @@ fn a_wait_past_the_cap_ends_the_turn_and_one_inside_it_retries() -> TestResult {
         &[],
         &body,
         None,
-        None,
-        &|_| {},
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|_| {}),
     )
     .err()
     .ok_or("a 429 was taken as a success")?;
@@ -543,8 +544,7 @@ fn a_400_body_ends_the_turn_at_once() -> TestResult {
         &[],
         &body,
         None,
-        None,
-        &|_| {},
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|_| {}),
     )
     .err()
     .ok_or("a 400 was taken as a success")?;
@@ -629,8 +629,7 @@ fn sends(port: u16) -> Result<ureq::Response, String> {
         &[],
         &body,
         None,
-        None,
-        &|_| {},
+        &yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &|_| {}),
     )
 }
 

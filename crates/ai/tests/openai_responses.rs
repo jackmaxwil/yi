@@ -4,7 +4,9 @@ use yi_ai::openai::OpenAiOptions;
 use yi_ai::openai_responses::{EventMapper, build_params};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason};
-use yi_types::model::{Effort, LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{Effort, Model, ModelCost, ToolDef};
+
+use crate::plain::plain_context as context;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -31,11 +33,8 @@ fn model(reasoning: bool) -> Model {
         compat: Some(json!({"supportsExplicitPromptCacheMode": true})),
         thinking_level_map: Some(json!({"off": "none", "high": "high"})),
         headers: None,
+        read_timeout_secs: None,
     }
-}
-
-fn context() -> LlmContext {
-    crate::harness::loop_context(json!({"type":"object","properties":{"cmd":{"type":"string"}}}))
 }
 
 fn canned() -> Vec<Value> {

@@ -128,13 +128,14 @@ fn url(port: u16) -> String {
 fn a_400_naming_a_cache_field_is_resent_once_without_it() -> TestResult {
     let (port, count, server) = serve(vec![refused("cache_control is not supported"), answer()])?;
     let stripped = Stripped::default();
+    let quiet = |_| {};
+    let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
     let answer = yi_ai::request::send_stripping_cache(
         &url(port),
         &[],
         &marked_body(),
         None,
-        None,
-        &|_| {},
+        &retry,
         &stripped,
     )?;
     let _ = answer.into_string();
@@ -169,13 +170,14 @@ fn a_400_naming_a_cache_field_is_resent_once_without_it() -> TestResult {
 fn a_400_that_names_no_cache_field_is_not_resent() -> TestResult {
     let (port, count, server) = serve(vec![refused("temperature is not supported")])?;
     let stripped = Stripped::default();
+    let quiet = |_| {};
+    let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
     let failed = yi_ai::request::send_stripping_cache(
         &url(port),
         &[],
         &marked_body(),
         None,
-        None,
-        &|_| {},
+        &retry,
         &stripped,
     )
     .err()

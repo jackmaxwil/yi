@@ -846,13 +846,11 @@ fn run_request(
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
     let stripped = crate::request::Stripped::default();
+    let retry = crate::request::Retry::new(model.read_timeout(), stop, &retried);
     let resent = match crate::request::pump_sse_with_resend(
         stop,
-        || {
-            crate::request::send_stripping_cache(
-                &url, &headers, body, proxy, stop, &retried, &stripped,
-            )
-        },
+        &retry,
+        || crate::request::send_stripping_cache(&url, &headers, body, proxy, &retry, &stripped),
         |sse| {
             let kind = sse.event.as_deref().unwrap_or("");
             if kind == "error" {

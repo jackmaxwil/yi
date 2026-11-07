@@ -5,6 +5,8 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ModelCost};
 
+use crate::plain::plain_context as context;
+
 fn model() -> Model {
     let n = |v: u64| serde_json::Number::from(v);
     Model {
@@ -29,13 +31,8 @@ fn model() -> Model {
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     }
-}
-
-fn context() -> LlmContext {
-    crate::harness::loop_context(
-        json!({"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}),
-    )
 }
 
 #[test]

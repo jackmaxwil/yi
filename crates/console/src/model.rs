@@ -225,6 +225,9 @@ pub struct NbCell {
     pub stdout: String,
     pub stderr: String,
     pub result: Option<String>,
+    /// The display-bundle mime the kernel named for `result`, absent when it named none.
+    pub result_mime: Option<String>,
+    pub result_capped: bool,
     pub error: Option<String>,
     /// Invariant: only the session's newest cell with images keeps their base64; every cell keeps
     /// `image_bytes`, their lengths, for its size rows.

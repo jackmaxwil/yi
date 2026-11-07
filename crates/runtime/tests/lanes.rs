@@ -3089,7 +3089,7 @@ async fn gathered_hand_backs_all_merge() -> TestResult {
     let store = support::memory_store("lanes-gathered");
     let hold = "echo unsaved > draft.txt; : > \"own-$$\"";
     let root = rig.root.to_path_buf();
-    let family = support::family_with_slots(root, rig.repo.clone(), store, Some(hold), 6);
+    let family = support::family_with_slots(root, rig.repo.clone(), store, Some(hold), 6, 0, 1);
     let names = ["first", "second", "third"];
     for name in names {
         spawn_writer(&family, name).await?;
@@ -3788,7 +3788,7 @@ async fn an_ending_host_repossesses_its_children_side_by_side() -> TestResult {
     let store = support::memory_store("lanes-two");
     let hold = "echo unsaved > draft.txt; sleep 30";
     let (dir, repo) = (rig.root.to_path_buf(), rig.repo.clone());
-    let family = support::family_with_slots(dir, repo, store, Some(hold), 3);
+    let family = support::family_with_slots(dir, repo, store, Some(hold), 3, 0, 1);
     spawn_writer(&family, "first").await?;
     spawn_writer(&family, "second").await?;
     let trees = ["first", "second"].map(|name| family.host.cwd_of(name));

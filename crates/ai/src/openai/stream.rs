@@ -64,9 +64,11 @@ pub(super) fn run_request(
     let _ = sender.blocking_send(mapper.start_event());
     let retried = crate::request::waiting(sender);
     let stripped = crate::request::Stripped::default();
+    let retry = crate::request::Retry::new(model.read_timeout(), wire.stop, &retried);
     let pumped = crate::request::pump_sse_with_resend(
         wire.stop,
-        || crate::request::openai_bearer_post(&url, model, body, wire, &retried, &stripped),
+        &retry,
+        || crate::request::openai_bearer_post(&url, model, body, wire, &retry, &stripped),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
