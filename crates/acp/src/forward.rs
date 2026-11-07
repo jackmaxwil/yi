@@ -78,7 +78,7 @@ pub(crate) struct Parent {
     pub(crate) titled: bool,
     pub(crate) launch_cwd: std::path::PathBuf,
     pub(crate) last_active: Arc<AtomicU64>,
-    pub(crate) last_committed_seq: Option<u64>,
+    pub(crate) last_committed_id: Option<String>,
 }
 
 impl Parent {
@@ -93,7 +93,7 @@ impl Parent {
     ) -> Self {
         let store = lock_session(store);
         let titled = store.name().is_some();
-        let last_committed_seq = store.find_on_branch("main", |entry| Some(entry.seq()));
+        let last_committed_id = store.find_on_branch("main", |entry| Some(entry.id().to_owned()));
         Self {
             forward,
             session,
@@ -108,7 +108,7 @@ impl Parent {
             titled,
             launch_cwd,
             last_active,
-            last_committed_seq,
+            last_committed_id,
         }
     }
 
@@ -132,7 +132,7 @@ impl Parent {
     /// later one by the time this lags through, so the entry is found by the message it holds.
     fn committed(&mut self, message: &AgentMessage) {
         let _span = yi_types::trace::span("acp.committed");
-        let last_committed_seq = self.last_committed_seq;
+        let last_committed_id = self.last_committed_id.clone();
         let committed = self.session.store().and_then(|store| {
             let session = lock_session(&store);
             let id = session.find_on_branch("main", |entry| {
@@ -143,34 +143,69 @@ impl Parent {
                 .find_entries_on_branch(
                     "main",
                     &EntryQuery {
-                        order: EntryOrder::OldestFirst,
-                        after_seq: last_committed_seq,
+                        order: EntryOrder::NewestFirst,
                         ..EntryQuery::default()
                     },
                     &BranchBounds {
                         start: Some(id.clone()),
+                        stop_at_id: last_committed_id,
                         ..BranchBounds::default()
                     },
                 )
                 .ok()?;
-            if suffix.last().is_none_or(|entry| entry.id() != id.as_str()) {
-                return None;
+            let entry = suffix.first().cloned().filter(|entry| entry.id() == id)?;
+            let mut ancestors = suffix.split_off(1);
+            if ancestors
+                .last()
+                .is_some_and(|entry| Some(entry.id()) == self.last_committed_id.as_deref())
+            {
+                ancestors.pop();
             }
-            let entry = suffix.pop()?;
+            ancestors.reverse();
             Some((
-                entry.seq(),
+                id,
                 yi_types::acp::AcpCommitted {
                     entry,
-                    ancestors: suffix,
+                    ancestors,
+                    ancestors_notice: None,
                 },
             ))
         });
-        if let Some((seq, committed)) = committed
-            && let Some(Value::Object(fields)) = serde_json::to_value(committed).ok()
-        {
-            self.forward.emit(extension("_yi/committed", fields));
-            self.last_committed_seq = Some(seq);
+        if let Some((id, mut committed)) = committed {
+            Self::cap_committed(&mut committed);
+            if let Ok(Value::Object(fields)) = serde_json::to_value(committed) {
+                self.forward.emit(extension("_yi/committed", fields));
+                self.last_committed_id = Some(id);
+            }
         }
+    }
+
+    fn cap_committed(committed: &mut yi_types::acp::AcpCommitted) {
+        let total = committed.ancestors.len();
+        committed.ancestors.reverse();
+        let frames = crate::replay::frames(&committed.ancestors);
+        let first_bytes = frames.first().map_or(0, |frame| {
+            frame.iter().fold(0_usize, |bytes, entry| {
+                bytes.saturating_add(serde_json::to_vec(entry).map_or(0, |encoded| encoded.len()))
+            })
+        });
+        if frames.len() <= 1 && first_bytes <= crate::replay::REPLAY_BYTES {
+            committed.ancestors.reverse();
+            return;
+        }
+        let mut ancestors = if first_bytes > crate::replay::REPLAY_BYTES {
+            Vec::new()
+        } else {
+            frames.first().map_or_else(Vec::new, |frame| frame.to_vec())
+        };
+        let kept = ancestors.len();
+        ancestors.reverse();
+        committed.ancestors = ancestors;
+        committed.ancestors_notice = Some(format!(
+            "[…] kept {kept} of {total} committed ancestors (replay frame caps {} entries and {} MiB); session/resume with replayFrom: 0 returns the complete branch",
+            crate::replay::REPLAY_CHUNK,
+            crate::replay::REPLAY_BYTES / (1024 * 1024),
+        ));
     }
 
     fn watch_goal(&mut self) {
@@ -329,4 +364,60 @@ pub(crate) fn session_name(store: &SharedSession) -> Option<String> {
         } => yi_runtime::session_store::session_title(&crate::update::plain(content, " ")),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod committed_tests {
+    use super::*;
+    use yi_types::acp::AcpCommitted;
+    use yi_types::message::UserContent;
+
+    fn message(id: &str, seq: u64, text: String) -> Entry {
+        Entry::Message {
+            id: id.to_owned(),
+            parent_id: None,
+            seq,
+            timestamp: 0,
+            message: AgentMessage::user_input(UserContent::Text(text), 0),
+            terminate: None,
+        }
+    }
+
+    #[test]
+    fn an_oversized_committed_ancestor_is_dropped_with_a_resume_notice()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let overhead = serde_json::to_vec(&message("large", 1, String::new()))?.len();
+        let fits = crate::replay::REPLAY_BYTES
+            .checked_sub(overhead)
+            .ok_or("entry overhead exceeds budget")?;
+        let mut exact = AcpCommitted {
+            entry: message("target", 2, "target".to_owned()),
+            ancestors: vec![message("large", 1, "x".repeat(fits))],
+            ancestors_notice: None,
+        };
+        Parent::cap_committed(&mut exact);
+        assert_eq!(exact.ancestors.len(), 1);
+        assert_eq!(exact.ancestors_notice, None);
+
+        let large = "x".repeat(crate::replay::REPLAY_BYTES.saturating_add(1));
+        let mut committed = AcpCommitted {
+            entry: message("target", 2, "target".to_owned()),
+            ancestors: vec![message("large", 1, large)],
+            ancestors_notice: None,
+        };
+        Parent::cap_committed(&mut committed);
+        assert!(committed.ancestors.is_empty());
+        let notice = committed
+            .ancestors_notice
+            .as_deref()
+            .ok_or("no cap notice")?;
+        assert!(
+            notice.starts_with("[…] kept 0 of 1 committed ancestors"),
+            "{notice}"
+        );
+        assert!(notice.contains("8 MiB"), "{notice}");
+        assert!(notice.contains("session/resume"), "{notice}");
+        assert!(notice.contains("replayFrom: 0"), "{notice}");
+        Ok(())
+    }
 }

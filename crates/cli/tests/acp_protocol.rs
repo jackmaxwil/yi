@@ -22,6 +22,15 @@ fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
     Ok(dir)
 }
 
+fn blocking_tool(dir: &std::path::Path) -> (std::path::PathBuf, String) {
+    let go = dir.join("go");
+    let wait = format!(
+        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
+        go.display()
+    );
+    (go, wait)
+}
+
 struct AcpClient {
     child: Child,
     stdin: ChildStdin,
@@ -872,11 +881,7 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
 #[test]
 fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
     let dir = temp_dir("rewind-running")?;
-    let go = dir.join("go");
-    let wait = format!(
-        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
-        go.display()
-    );
+    let (go, wait) = blocking_tool(&dir);
     let script = faux_script(
         &dir,
         &[
@@ -1758,11 +1763,7 @@ fn typed_on(frames: &[Value]) -> Vec<String> {
 #[test]
 fn committed_updates_include_ordered_model_and_tool_entries() -> TestResult {
     let dir = temp_dir("committed-ancestors")?;
-    let go = dir.join("go");
-    let wait = format!(
-        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
-        go.display()
-    );
+    let (go, wait) = blocking_tool(&dir);
     let script = faux_script(
         &dir,
         &[
@@ -1782,16 +1783,29 @@ fn committed_updates_include_ordered_model_and_tool_entries() -> TestResult {
         frame["params"]["update"]["sessionUpdate"] == "tool_call_update"
             && frame["params"]["update"]["status"] == "in_progress"
     })?;
-    client.request(
-        "model",
-        "session/set_config_option",
-        json!({
-            "sessionId": session_id,
-            "configId": "model",
-            "type": "id",
-            "value": "openrouter/anthropic/claude-opus-5",
-        }),
-    )?;
+    for change in 0..512 {
+        let model = if change % 2 == 0 {
+            "openrouter/anthropic/claude-opus-5"
+        } else {
+            "openrouter/anthropic/claude-sonnet-5"
+        };
+        let response = client.request(
+            &format!("model-{change}"),
+            "session/set_config_option",
+            json!({
+                "sessionId": session_id,
+                "configId": "model",
+                "type": "id",
+                "value": model,
+            }),
+        )?;
+        assert!(
+            response
+                .last()
+                .is_some_and(|frame| frame.get("error").is_none()),
+            "{response:?}"
+        );
+    }
     std::fs::write(&go, "")?;
     let frames = read_allowing(&mut client, is_idle)?;
     let updates = updates_of(&frames, "_yi/committed");
@@ -1801,6 +1815,22 @@ fn committed_updates_include_ordered_model_and_tool_entries() -> TestResult {
     let ancestors = update["ancestors"]
         .as_array()
         .ok_or("no committed ancestors")?;
+    assert_eq!(
+        ancestors.len(),
+        512,
+        "the live suffix kept its entry budget"
+    );
+    let notice = update["ancestors_notice"]
+        .as_str()
+        .ok_or("no committed ancestors cap notice")?;
+    assert!(
+        notice.starts_with("[…] kept 512 of 515 committed ancestors"),
+        "{notice}"
+    );
+    assert!(notice.contains("512 entries"), "{notice}");
+    assert!(notice.contains("8 MiB"), "{notice}");
+    assert!(notice.contains("session/resume"), "{notice}");
+    assert!(notice.contains("replayFrom: 0"), "{notice}");
     let model_index = ancestors
         .iter()
         .position(|entry| entry["type"] == "model_change")

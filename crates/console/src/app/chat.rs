@@ -279,6 +279,9 @@ impl App {
                     chat.port
                         .commit(committed.entry.clone(), committed.ancestors.clone());
                 }
+                if let Some(notice) = &committed.ancestors_notice {
+                    self.fan_out(id, || UiEvent::Reply(Reply::Notice(notice.clone())));
+                }
             }
             Decoded::Notice(text) => {
                 self.fan_out(id, || UiEvent::Reply(Reply::Notice(text.clone())))

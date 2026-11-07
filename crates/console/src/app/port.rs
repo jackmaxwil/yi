@@ -66,6 +66,9 @@ impl RemotePort {
 
     pub fn commit(&mut self, entry: Entry, ancestors: Vec<Entry>) {
         self.committed.extend(ancestors);
+        if !self.entries.iter().any(|seen| seen.id() == entry.id()) {
+            self.leaf = Some(entry.id().to_owned());
+        }
         self.committed.push(entry);
     }
 
@@ -104,15 +107,9 @@ impl SessionPort for RemotePort {
     }
 
     fn entries(&mut self) -> Answer {
-        let leaf = self
-            .committed
-            .iter()
-            .rfind(|entry| !self.entries.iter().any(|seen| seen.id() == entry.id()))
-            .map(|entry| entry.id().to_owned())
-            .or_else(|| self.leaf.clone());
         Answer::now(Reply::Entries {
             entries: self.drawn().into_iter().cloned().collect(),
-            leaf,
+            leaf: self.leaf.clone(),
         })
     }
 

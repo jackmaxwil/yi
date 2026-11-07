@@ -374,6 +374,9 @@ pub struct AcpCommitted {
     /// [`AcpCommitted::entry`] is the suffix's final item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ancestors: Vec<crate::entry::Entry>,
+    /// Cut row after a capped ancestry suffix, naming the replay limits and the full-branch call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ancestors_notice: Option<String>,
 }
 
 /// A `select` session config option; `currentValue` is one of the `options` values.
