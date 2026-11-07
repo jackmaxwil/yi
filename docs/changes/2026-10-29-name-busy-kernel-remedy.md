@@ -1,4 +1,5 @@
 ---
+version: 0.964.0
 issue: Closes #1554
 raise: tests +33
 ledger~: fetch: one addressable read path | y` | y`, whose message names the route that works (the agent `rlm.put`s the value before it awaits, a member with a kernel reads it back with `rlm.get`, a reader without one takes it through `context_keys`, and `family://<name>` is the sidecar rather than the object)
