@@ -1,4 +1,6 @@
 ---
+version: 0.973.0
+decisions: D562
 issue: Closes #1816
 growth: +273 the typed `providers` shape, its validation and its catalog builder in yi-types (+147), the doctor row (+39), the catalog and key merge in yi-ai (+42); weighed deleting the doctor row's own key walk for a runtime helper, which costs the same lines in yi-runtime, and moved the provider list into yi-types instead of a second copy
 decision: `~/.yi/config.json` declares custom OpenAI-compatible providers under `providers`, merged into the catalog after the bundle and the cache, keyed by `apiKeyEnv`, a literal `apiKey` or a token the yi-oauth store holds, refused at load when the id is a built-in one | a local gateway that speaks chat completions could only be reached by overwriting the `openai` catalog cache, which the next refresh rewrote within minutes | delete the `providers` key and its merge; a config carrying the key then refuses as an unknown field, naming it
