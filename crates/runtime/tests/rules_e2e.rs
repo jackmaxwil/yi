@@ -311,7 +311,6 @@ async fn gate_rule_denies_through_the_real_adapter_before_execution() -> TestRes
     use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
     use yi_types::model::{Model, ModelCost};
 
-    let zero = || serde_json::Number::from(0u64);
     let model = Model {
         id: "faux-1".to_owned(),
         name: "Faux".to_owned(),
@@ -320,18 +319,13 @@ async fn gate_rule_denies_through_the_real_adapter_before_execution() -> TestRes
         base_url: "http://localhost:0".to_owned(),
         reasoning: false,
         input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window: 128_000,
         max_tokens: 16_384,
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     };
     let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();

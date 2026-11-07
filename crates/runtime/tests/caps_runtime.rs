@@ -450,7 +450,7 @@ fn revived(restored: usize, failed: usize) -> KernelRestoreResult {
                 reason: "PicklingError".to_owned(),
             })
             .collect(),
-        path: String::new(),
+        path: "/tmp/kernel-state.dill".to_owned(),
     }
 }
 
@@ -468,13 +468,37 @@ fn the_restore_notice_lists_a_bounded_number_of_names() -> TestResult {
     );
     assert!(over.contains("var039"), "{over}");
     assert!(!over.contains("var040"), "{over}");
+    Ok(())
+}
 
-    let failed = yi_runtime::restore_notice_text(&revived(1, 100));
+#[test]
+fn the_restore_notice_points_at_the_failure_reasons_below_its_cap() {
+    let notice = yi_runtime::restore_notice_text(&revived(1, 1));
+    assert!(row_in(&notice).is_none(), "{notice}");
     assert!(
-        failed.contains("gone099."),
-        "names to recreate stay whole: {failed}"
+        notice.contains(&format!(
+            "gone000. Why each failed: {}.",
+            yi_kernel::snapshot::RESTORE_FAILURES_VAR
+        )),
+        "an uncut failure list still names where its reasons live: {notice}"
     );
-    assert!(row_in(&failed).is_none(), "{failed}");
+}
+
+#[test]
+fn the_restore_notice_cuts_a_long_list_of_names_it_could_not_restore() -> TestResult {
+    let failed = yi_runtime::restore_notice_text(&revived(1, 100));
+    let row = row_of(&failed)?;
+    assert_eq!(
+        (row.kept, row.total, row.what, row.cap, row.limit),
+        (40, 100, "names not revived", "RESTORE_FAILED_SHOWN", 40)
+    );
+    assert_eq!(
+        row.next,
+        yi_kernel::snapshot::RESTORE_FAILURES_VAR,
+        "the row names the restored kernel list that holds every failure"
+    );
+    assert!(failed.contains("gone039"), "{failed}");
+    assert!(!failed.contains("gone040"), "{failed}");
     Ok(())
 }
 

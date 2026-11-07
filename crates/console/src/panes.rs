@@ -2,6 +2,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_tui::colors::Theme;
 use yi_tui::diffview::{self, DiffBudget};
+use yi_types::kernel::{JSON_MIME, MARKDOWN_MIME, PYTHON_MIME};
 
 /// An edit's patch names its file absolutely, while git and a model's read may name it from
 /// the repository root: one file either way.
@@ -524,6 +525,27 @@ const STREAM_ROWS: usize = 40;
 const RESULT_ROWS: usize = 20;
 const TRACE_ROWS: usize = 12;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Renderer {
+    Markdown,
+    Json,
+    Code(&'static str),
+    Text,
+}
+
+const RESULT_RENDERERS: [(&str, Renderer); 3] = [
+    (MARKDOWN_MIME, Renderer::Markdown),
+    (JSON_MIME, Renderer::Json),
+    (PYTHON_MIME, Renderer::Code("python")),
+];
+
+fn renderer_for(mime: Option<&str>) -> Renderer {
+    RESULT_RENDERERS
+        .iter()
+        .find(|(known, _)| Some(*known) == mime)
+        .map_or(Renderer::Text, |(_, renderer)| *renderer)
+}
+
 fn cap_row(what: &str, cap: &str, next: &str, theme: &Theme) -> Line<'static> {
     Line::styled(
         format!("  […] {what} · {cap} · {next}"),
@@ -581,29 +603,6 @@ fn cap_rows(
     };
     with_notice(kept, notice, tail)
 }
-
-fn capped(
-    text: &str,
-    lead: Span<'static>,
-    style: Style,
-    (width, cap, tail, full): (usize, usize, bool, bool),
-    noun: &str,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let indent = " ".repeat(lead.width());
-    let rows: Vec<Line<'static>> = text
-        .lines()
-        .flat_map(|line| {
-            let line = Line::from(vec![
-                lead.clone(),
-                Span::styled(yi_tui::transcript::show_controls(line), style),
-            ]);
-            yi_tui::wrap::wrap_line(&line, width, &indent)
-        })
-        .collect();
-    cap_rows(rows, (cap, tail, full), noun, theme)
-}
-
 fn trace_rows(
     text: &str,
     code: &str,
@@ -645,6 +644,116 @@ fn trace_rows(
     }
 }
 
+fn highlight_line(
+    line: &str,
+    lang: Option<&mut yi_tui::highlight::Lang>,
+    theme: &Theme,
+    base: Style,
+) -> Vec<Span<'static>> {
+    match lang {
+        Some(lang) => yi_tui::highlight::spans(line, lang, theme, base),
+        None => vec![Span::styled(line.to_owned(), base)],
+    }
+}
+
+fn capped(
+    text: &str,
+    lead: Span<'static>,
+    style: Style,
+    language: Option<&str>,
+    (width, cap, tail, full): (usize, usize, bool, bool),
+    noun: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let indent = " ".repeat(lead.width());
+    let mut lang = language.and_then(yi_tui::highlight::lang_for);
+    let rows: Vec<Line<'static>> = text
+        .lines()
+        .flat_map(|line| {
+            let clean = yi_tui::transcript::show_controls(line);
+            let mut spans = vec![lead.clone()];
+            spans.extend(highlight_line(&clean, lang.as_mut(), theme, style));
+            yi_tui::wrap::wrap_line(&Line::from(spans), width, &indent)
+        })
+        .collect();
+    cap_rows(rows, (cap, tail, full), noun, theme)
+}
+
+fn markdown_rows(
+    source: &str,
+    lead: &Span<'static>,
+    (width, cap, tail, full): (usize, usize, bool, bool),
+    noun: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let cleaned = source
+        .lines()
+        .map(yi_tui::transcript::show_controls)
+        .collect::<Vec<String>>()
+        .join("\n");
+    let rendered = yi_tui::markdown::render(&cleaned, width.saturating_sub(lead.width()), theme);
+    let rows = rendered
+        .into_iter()
+        .map(|mut row| {
+            row.spans.insert(0, lead.clone());
+            row
+        })
+        .collect();
+    cap_rows(rows, (cap, tail, full), noun, theme)
+}
+
+/// Incident: the notebook's byte-cap notice rode inside a markdown table or fence and drew as a
+/// cell or as code; only a result the cell says was byte-capped has its notice peeled off.
+fn split_notice(result: &str, byte_capped: bool) -> (&str, Option<&str>) {
+    match result.rsplit_once('\n') {
+        Some((body, row)) if byte_capped => (body, Some(row)),
+        _ => (result, None),
+    }
+}
+
+fn result_rows(
+    result: &str,
+    mime: Option<&str>,
+    byte_capped: bool,
+    lead: Span<'static>,
+    style: Style,
+    shape: (usize, usize, bool, bool),
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if result.trim().is_empty() {
+        return Vec::new();
+    }
+    match renderer_for(mime) {
+        Renderer::Markdown => {
+            let (body, notice) = split_notice(result, byte_capped);
+            let mut rows = markdown_rows(body, &lead, shape, "result", theme);
+            rows.extend(notice.map(|row| Line::styled(format!("  {row}"), theme.muted_style())));
+            rows
+        }
+        Renderer::Json => match serde_json::from_str::<serde_json::Value>(result) {
+            Ok(value) => {
+                let pretty =
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| result.to_owned());
+                capped(&pretty, lead, style, Some("json"), shape, "result", theme)
+            }
+            Err(_) => {
+                let mut rows = capped(result, lead, style, None, shape, "result", theme);
+                let why = if byte_capped {
+                    "application/json result is past the cell's byte cap · the transcript holds all of it"
+                } else {
+                    "application/json result did not parse as JSON · shown as text"
+                };
+                rows.push(Line::styled(format!("  […] {why}"), theme.muted_style()));
+                rows
+            }
+        },
+        Renderer::Code(language) => {
+            capped(result, lead, style, Some(language), shape, "result", theme)
+        }
+        Renderer::Text => capped(result, lead, style, None, shape, "result", theme),
+    }
+}
+
 /// Incident: a `│` gutter read as part of the `cargo tree` box-drawing a cell parsed, so rows
 /// are numbered; a wrapped row hangs past its own indent so the Python still reads.
 fn code_rows(code: &str, width: usize, full: bool, theme: &Theme) -> Vec<Line<'static>> {
@@ -662,10 +771,7 @@ fn code_rows(code: &str, width: usize, full: bool, theme: &Theme) -> Vec<Line<'s
     let base = Style::default().fg(theme.text);
     let mut out = Vec::new();
     for (index, line) in lines.iter().take(shown).enumerate() {
-        let spans = match lang.as_mut() {
-            Some(lang) => yi_tui::highlight::spans(line.as_str(), lang, theme, base),
-            None => vec![Span::styled(line.clone(), base)],
-        };
+        let spans = highlight_line(line, lang.as_mut(), theme, base);
         let depth = line.chars().take_while(|c| c.is_whitespace()).count();
         let hang = " ".repeat(depth.min(width / 2).saturating_add(4));
         let body = width.saturating_sub(gutter.saturating_add(1));
@@ -746,6 +852,7 @@ pub fn notebook_lines(
             &cell.stdout,
             pad.clone(),
             text,
+            None,
             shape(STREAM_ROWS, false),
             "stdout",
             theme,
@@ -754,20 +861,20 @@ pub fn notebook_lines(
             &cell.stderr,
             pad,
             warn,
+            None,
             shape(STREAM_ROWS, false),
             "stderr",
             theme,
         ));
         let teal = Style::default().fg(theme.teal);
         if let Some(result) = &cell.result {
-            let lead = Span::styled("↳ ", teal);
-            let bold = teal.add_modifier(Modifier::BOLD);
-            out.extend(capped(
+            out.extend(result_rows(
                 result,
-                lead,
-                bold,
+                cell.result_mime.as_deref(),
+                cell.result_capped,
+                Span::styled("↳ ", teal),
+                teal.add_modifier(Modifier::BOLD),
                 shape(RESULT_ROWS, false),
-                "result",
                 theme,
             ));
         }
@@ -804,4 +911,22 @@ pub fn notebook_lines(
         out.push(Line::default());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Renderer, renderer_for};
+    use yi_types::kernel::RESULT_MIMES;
+
+    /// Dies with the kernel able to name a bundle the pane draws as flat text: the mime would
+    /// reach the cell and the pane would show the repr the richer bundle replaced.
+    #[test]
+    fn every_mime_the_kernel_ranks_by_has_a_renderer() {
+        for mime in RESULT_MIMES {
+            assert!(
+                !matches!(renderer_for(Some(mime)), Renderer::Text),
+                "{mime} draws as flat text"
+            );
+        }
+    }
 }

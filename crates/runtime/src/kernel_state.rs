@@ -117,25 +117,6 @@ fn replace_store(file: &Path, text: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// A kernel `bash()` job's profile, built as it spawns: the kernel's own plus every write
-/// grant kept since, so a grant reaches a kernel that was running before it (#600).
-pub(crate) fn job_profile(
-    wiring: &crate::wiring::RuntimeWiring,
-    session: &crate::session::AgentSession,
-) -> impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static {
-    let (profile, broker) = (wiring.exec_sandbox(), wiring.broker.clone());
-    let (own, state) = (wiring.own_paths(session), wiring.writable_kernel_dir());
-    move || {
-        let mut profile = profile.clone()?;
-        let kept = broker.iter().flat_map(|broker| broker.kept_writes());
-        profile.writable.extend(kept);
-        profile
-            .spared
-            .extend(own.iter().flat_map(|own| own(state.as_deref())));
-        Some(profile)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};

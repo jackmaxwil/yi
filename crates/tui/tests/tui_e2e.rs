@@ -2,6 +2,7 @@ use crate::common;
 
 use crate::common::flat as flat_lines;
 use std::error::Error;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,40 +15,41 @@ use yi_tui::cell::Cell;
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::keymap::default_keymap;
 use yi_types::message::StopReason;
-use yi_types::model::{Model, ModelCost};
 
 use crate::scratch;
 use scratch::Scratch;
+#[path = "../../runtime/tests/support/faux_model.rs"]
+mod faux_model;
+
+use self::faux_model::faux_model;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn faux_model() -> Model {
-    let zero = || Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
-
 /// Dies with the second Enter of two quick ones vanishing: the UI had not seen `AgentStart`, so it
 /// sent a prompt, the runtime answered busy, and the bridge dropped the refusal.
+fn host(dir: &Path) -> Arc<SubagentHost> {
+    Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
+        depth: 0,
+        max_depth: 1,
+        max_children: 4,
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
+        home: std::env::temp_dir(),
+        lane_slots: 1,
+        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
+        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
+        notice: Arc::new(|_notice, _| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_message, _| {}),
+        attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
+        plans_dir: dir.join(".yi/plans"),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
+    }))
+}
+
 #[test]
 fn a_prompt_met_by_a_busy_session_steers_the_run_instead_of_vanishing() -> TestResult {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -69,7 +71,7 @@ fn a_prompt_met_by_a_busy_session_steers_the_run_instead_of_vanishing() -> TestR
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_runtime::ExecutionMode::Sequential,
         },
@@ -113,7 +115,7 @@ fn faux_session(reply: &str) -> AgentSession {
     AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_runtime::ExecutionMode::Sequential,
         },
@@ -123,7 +125,7 @@ fn faux_session(reply: &str) -> AgentSession {
 
 fn options() -> TuiOptions {
     TuiOptions {
-        model: faux_model(),
+        model: faux_model(128_000),
         session_name: "e2e".to_owned(),
         ..common::options()
     }
@@ -245,26 +247,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         .enable_all()
         .build()?;
     let dir = Scratch::new("yi-tui-e2e")?;
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 4,
-        parent_session_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        home: std::env::temp_dir(),
-        lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice, _| {}),
-        events: tokio::sync::broadcast::channel(64).0,
-        parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message, _| {}),
-        attribute: Arc::new(|_usage| {}),
-        store: Arc::new(|| None),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }));
+    let host = host(&dir);
     let mut app = app();
     runtime.block_on(async {
         host.spawn("trace the render path".to_owned(), Map::new())
@@ -1321,32 +1304,13 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
     let session = Arc::new(AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_runtime::ExecutionMode::Sequential,
         },
         provider,
     ));
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 4,
-        parent_session_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        home: std::env::temp_dir(),
-        lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice, _| {}),
-        events: tokio::sync::broadcast::channel(64).0,
-        parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message, _| {}),
-        attribute: Arc::new(|_usage| {}),
-        store: Arc::new(|| None),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }));
+    let host = host(&dir);
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let script = yi_tui::parse_script(
         "type ping\nkey enter\nwait-idle 10000\ntype pong\nkey enter\nwait-idle 10000\nquit\n",
@@ -1638,26 +1602,7 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
         .build()?;
     let dir = Scratch::new("yi-tui-cast")?;
     let session = Arc::new(faux_session("recorded reply"));
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 4,
-        parent_session_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        home: std::env::temp_dir(),
-        lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice, _| {}),
-        events: tokio::sync::broadcast::channel(64).0,
-        parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message, _| {}),
-        attribute: Arc::new(|_usage| {}),
-        store: Arc::new(|| None),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }));
+    let host = host(&dir);
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let cast = dir.join("run.cast");
     let still = dir.join("still.cast");
@@ -1832,26 +1777,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
         .enable_all()
         .build()?;
     let dir = Scratch::new("yi-tui-spawn")?;
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 4,
-        parent_session_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        home: std::env::temp_dir(),
-        lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice, _| {}),
-        events: tokio::sync::broadcast::channel(64).0,
-        parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message, _| {}),
-        attribute: Arc::new(|_usage| {}),
-        store: Arc::new(|| None),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }));
+    let host = host(&dir);
     let backend = VT100Backend::with_scrollback(80, 24, 200);
     let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
@@ -2980,26 +2906,7 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
         None,
     )?;
     session.set_todos(todos);
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        provider: Arc::new(ProviderStream::new(None)),
-        depth: 0,
-        max_depth: 1,
-        max_children: 4,
-        parent_session_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        home: std::env::temp_dir(),
-        lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice, _| {}),
-        events: tokio::sync::broadcast::channel(64).0,
-        parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message, _| {}),
-        attribute: Arc::new(|_usage| {}),
-        store: Arc::new(|| None),
-        plans_dir: dir.join(".yi/plans"),
-        family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }));
+    let host = host(&dir);
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let script = yi_tui::parse_script("type hi\nkey enter\nwait-idle 10000\nquit\n")?;
     let code = yi_tui::run_headless(
@@ -3134,7 +3041,7 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
     let session = Arc::new(AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: yi_runtime::ExecutionMode::Sequential,
         },

@@ -473,7 +473,7 @@ async fn a_negative_or_non_numeric_timeout_is_refused_naming_it() -> TestResult 
     family.host.register(&mut registry);
     let config = yi_runtime::SessionConfig {
         system_prompt: "sys".to_owned(),
-        model: support::faux_model(),
+        model: support::faux_model(128_000),
         thinking_level: None,
         tool_execution: yi_loop::ExecutionMode::Sequential,
     };

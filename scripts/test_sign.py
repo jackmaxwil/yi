@@ -3,6 +3,7 @@
 import base64
 import os
 import pathlib
+import shutil
 import struct
 import subprocess
 import sys
@@ -26,7 +27,8 @@ def run(*args, env=None, check=True, stdin_text=None):
 
 
 def passwd_env(directory):
-    if subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True).returncode == 0:
+    # Invariant: macOS has no getent, and resolves the uid through Directory Services already.
+    if not shutil.which("getent") or subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True).returncode == 0:
         return {}
     wrapper = directory / "passwd.so"
     source = """#include <pwd.h>

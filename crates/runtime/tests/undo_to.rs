@@ -4,6 +4,7 @@ use crate::scratch;
 use std::error::Error;
 use std::sync::Arc;
 
+use crate::faux_model::faux_model;
 use scratch::Scratch;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
@@ -12,32 +13,6 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig, UndoOutcome};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn write(id: &str, path: &str, content: &str) -> AgentMessage {
     let args: Map<String, Value> = match json!({"path": path, "content": content}) {
@@ -88,7 +63,7 @@ async fn run(files: &[&str]) -> Result<Run, Box<dyn Error>> {
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

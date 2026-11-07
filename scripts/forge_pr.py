@@ -37,9 +37,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import forge_tracking  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
+from _common import base_commit  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
 SUBJECT_LIMIT = 72
+LINUX_TARGET = "x86_64-unknown-linux-gnu"
 POLL = 20
 WEB = "https://git.example.invalid"
 HOST = WEB.removeprefix("https://")
@@ -253,10 +255,61 @@ def cmd_commit(args):
     return 0
 
 
+def changed_crates(text):
+    paths = (line.split("/") for line in text.splitlines())
+    return sorted({f"yi-{parts[1]}" for parts in paths if len(parts) > 2 and parts[0] == "crates" and parts[1]})
+
+
+def linux_clippy_command(crates, no_tui=False):
+    command = ["cargo", "clippy"]
+    if no_tui:
+        command += ["-p", "yi-cli", "--no-default-features"]
+    else:
+        for crate in crates:
+            command += ["-p", crate]
+        command += ["--all-targets"] if crates else ["--workspace", "--all-targets"]
+    return command + ["--target", LINUX_TARGET, "--", "-D", "warnings"]
+
+
+def linux_clippy():
+    try:
+        targets = subprocess.run(("rustup", "target", "list", "--installed"), capture_output=True, text=True, check=False)
+        if targets.returncode:
+            print((targets.stdout + targets.stderr).strip())
+            return targets.returncode
+        if LINUX_TARGET not in targets.stdout.splitlines():
+            added = subprocess.run(("rustup", "target", "add", LINUX_TARGET), capture_output=True, text=True, check=False)
+            if added.returncode:
+                lines = (added.stdout + added.stderr).strip().splitlines()
+                reason = lines[-1] if lines else f"exit {added.returncode}"
+                print(f"skip linux-clippy (rustup target add {LINUX_TARGET} failed: {reason})")
+                return 0
+        _, base = base_commit()
+        if base is None:
+            print("linux-clippy: no origin/main or main to diff against")
+            return 1
+        diff = git("diff", "--name-only", base, check=True)
+        if not diff:
+            print("skip linux-clippy (no changes relative to main)")
+            return 0
+        crates = changed_crates(diff)
+        print(f"linux-clippy: {', '.join(crates) if crates else 'workspace'}")
+        for command in (linux_clippy_command(crates), linux_clippy_command(crates, no_tui=True)):
+            result = subprocess.run(command, cwd=ROOT, check=False)
+            if result.returncode:
+                return result.returncode
+        return 0
+    except OSError as error:
+        print(f"skip linux-clippy ({error})")
+        return 0
+
+
 def cmd_push(args):
     name = branch()
     if git("status", "--porcelain"):
         print("push: the tree is dirty — just commit first")
+        return 1
+    if linux_clippy():
         return 1
     print(f"push: {name}; the forge gate runs the lanes — `just pr status N` reads the verdict")
     out = subprocess.run(("git", "-C", str(ROOT), "push", "-u", "origin", name), check=False)
@@ -709,6 +762,12 @@ def selfcheck():
     long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "request budget total 100 -> 120"], "the console pane and its avatars")
     assert len(long) <= SUBJECT_LIMIT and long.startswith("Ratchet: test LOC"), long
     assert ratchet_subject([], "x") == "Ratchet: baselines"
+    assert changed_crates("crates/tools/src/document.rs\ncrates/cli/build.rs\ncrates/tools/tests/read.rs\ndocs/FORGE.md\ncrates/README.md\n") == ["yi-cli", "yi-tools"]
+    assert linux_clippy_command(["yi-cli", "yi-tools"]) == [
+        "cargo", "clippy", "-p", "yi-cli", "-p", "yi-tools", "--all-targets", "--target", LINUX_TARGET, "--", "-D", "warnings",
+    ]
+    assert linux_clippy_command([])[:4] == ["cargo", "clippy", "--workspace", "--all-targets"]
+    assert linux_clippy_command([], no_tui=True)[:5] == ["cargo", "clippy", "-p", "yi-cli", "--no-default-features"]
     counted = "<!-- prefilled -->\n\n## Summary\n\nprefill\n\n## Files edited\n\nprefill files\n"
     kept = dedupe_counted("## Summary\n\nmine\n", counted)
     assert "mine" not in kept and "prefill files" in kept and kept.count("## Summary") == 0, kept
@@ -969,8 +1028,81 @@ def selfcheck():
         pass
     assert flags.get("closes") == ["1"] and flags.get("refs") == ["2"], ("pr check takes the flags pr open takes", flags)
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green.
+    linux_clippy_selfcheck()
     commit_selfcheck()
     print("ok   forge_pr selfcheck")
+
+
+def linux_clippy_selfcheck():
+    import contextlib, io
+
+    saved = {name: globals()[name] for name in ("base_commit", "branch", "git")}
+    real_run = subprocess.run
+
+    def drive(diff, installed=LINUX_TARGET, add=0, cargo=0, absent="", base=("main", "base"), push=False):
+        calls = []
+        globals()["base_commit"] = lambda: base
+
+        def fake_git(*args, check=False):
+            if args[0] == "merge-base":
+                return "base"
+            if args[0] == "status":
+                return ""
+            assert args[0] == "diff", args
+            return diff
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if command[:3] == ("rustup", "target", "list"):
+                if absent == "rustup":
+                    raise FileNotFoundError("rustup")
+                return subprocess.CompletedProcess(command, 0, installed + "\n" if installed else "", "")
+            if command[:3] == ("rustup", "target", "add"):
+                return subprocess.CompletedProcess(command, add, "", "error: toolchain download failed\n" if add else "")
+            assert command[0] == "cargo", command
+            if absent == "cargo":
+                raise FileNotFoundError("cargo")
+            return subprocess.CompletedProcess(command, cargo, "", "")
+
+        globals()["git"] = fake_git
+        globals()["branch"] = lambda: "topic"
+        subprocess.run = fake_run
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                code = cmd_push(argparse.Namespace(topic="")) if push else linux_clippy()
+            return code, calls, said.getvalue()
+        finally:
+            subprocess.run = real_run
+
+    try:
+        code, calls, _ = drive("crates/tools/src/document.rs\n", cargo=1, push=True)
+        assert code == 1 and tuple(calls[-1][:4]) == ("cargo", "clippy", "-p", "yi-tools"), "a Linux clippy failure must stop the push"
+        assert "--all-targets" in calls[-1] and "--tests" not in calls[-1], calls[-1]
+        code, calls, _ = drive("crates/cli/src/main.rs\n")
+        cargo = [call for call in calls if call[0] == "cargo"]
+        assert code == 0 and len(cargo) == 2, cargo
+        assert "--no-default-features" in cargo[1] and "--all-targets" in cargo[0], cargo
+        code, calls, _ = drive("Cargo.lock\n")
+        cargo = [call for call in calls if call[0] == "cargo"]
+        assert code == 0 and cargo and "--workspace" in cargo[0], cargo
+        code, calls, _ = drive("")
+        assert code == 0 and not [call for call in calls if call[0] == "cargo"], calls
+        code, calls, _ = drive("crates/cli/src/main.rs\n", installed="")
+        assert code == 0 and any(call[:3] == ("rustup", "target", "add") for call in calls), calls
+        assert any(call[0] == "cargo" for call in calls), "the installed target was not used"
+        code, calls, said = drive("crates/cli/src/main.rs\n", installed="", add=1)
+        assert code == 0 and not [call for call in calls if call[0] == "cargo"], calls
+        assert "skip linux-clippy (rustup target add x86_64-unknown-linux-gnu failed: error: toolchain download failed)" in said, said
+        code, _, said = drive("crates/cli/src/main.rs\n", absent="rustup")
+        assert code == 0 and "skip linux-clippy" in said and "rustup" in said, said
+        code, _, said = drive("crates/cli/src/main.rs\n", absent="cargo")
+        assert code == 0 and "skip linux-clippy" in said and "cargo" in said, said
+        code, calls, said = drive("crates/cli/src/main.rs\n", base=(None, None))
+        assert code == 1 and "no origin/main or main" in said, (code, said)
+        assert not [call for call in calls if call[0] == "cargo"], calls
+    finally:
+        subprocess.run = real_run
+        globals().update(saved)
 
 
 def commit_selfcheck():
@@ -1022,6 +1154,7 @@ def build_parser():
     commit.add_argument("--topic", default="")
     commit.set_defaults(run=cmd_commit)
     verbs.add_parser("push").set_defaults(run=cmd_push)
+    verbs.add_parser("linux-clippy").set_defaults(run=lambda args: linux_clippy())
     pr = verbs.add_parser("pr").add_subparsers(dest="pr_verb", required=True)
 
     def opener(name, run):
