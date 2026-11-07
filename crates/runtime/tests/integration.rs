@@ -68,6 +68,7 @@ mod kernel_sandbox;
 mod kernel_tools;
 mod lanes;
 mod levers;
+mod memory_inject;
 mod memory_journal;
 mod merge_tree;
 mod node;
