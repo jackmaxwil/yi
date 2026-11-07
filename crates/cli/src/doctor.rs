@@ -93,7 +93,9 @@ fn classifier_answers(site: &Site) -> Finding {
         return ok("see config");
     };
     let at = match yi_runtime::classifier::arm(&config) {
-        yi_runtime::classifier::Armed::Off => return ok("off; `yi setup` offers it"),
+        yi_runtime::classifier::Armed::Off => {
+            return ok("off; set `models.classifier` to turn it on");
+        }
         yi_runtime::classifier::Armed::Refused(why) => return fail(why),
         yi_runtime::classifier::Armed::At(at) => at,
     };

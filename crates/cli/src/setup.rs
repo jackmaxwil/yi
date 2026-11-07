@@ -1,12 +1,47 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
+use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
 use serde_json::{Value, json};
+use yi_types::config::{ModeName, UserConfig};
 
-const PROVIDERS: [(&str, &str); 3] = [
-    ("anthropic", "anthropic/claude-sonnet-5"),
-    ("openai", "openai/gpt-5.5"),
-    ("openrouter", "openrouter/anthropic/claude-sonnet-5"),
+const PROVIDERS: [(&str, &str, &str, &str); 4] = [
+    (
+        "anthropic",
+        "anthropic/claude-sonnet-5",
+        "Anthropic",
+        "https://console.anthropic.com/settings/keys",
+    ),
+    (
+        "openai",
+        "openai/gpt-5.5",
+        "OpenAI",
+        "https://platform.openai.com/api-keys",
+    ),
+    (
+        "openrouter",
+        "openrouter/anthropic/claude-sonnet-5",
+        "OpenRouter",
+        "https://openrouter.ai/keys",
+    ),
+    (
+        "google",
+        "google/gemini-2.5-pro",
+        "Google",
+        "https://aistudio.google.com/apikey",
+    ),
+];
+
+const MODES: [(ModeName, &str); 3] = [
+    (
+        ModeName::Auto,
+        "Smart (auto): asks only before something it cannot tell is safe",
+    ),
+    (ModeName::Ask, "Careful (ask): asks before every action"),
+    (
+        ModeName::Yolo,
+        "Hands-off (yolo): never asks, so only if you trust what it will do",
+    ),
 ];
 
 type Edit = (Vec<&'static str>, Value);
@@ -68,116 +103,254 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
     let (stored, _) = crate::user_config::read_config(home)
         .map_err(|error| format!("{error}; fix it, then run `yi setup` again"))?;
     yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
+    say(
+        out,
+        "Two quick questions. Type a number, or press Enter for the one marked [Enter].",
+    )?;
     let mut edits: Vec<Edit> = Vec::new();
-    let provider = ask(
-        input,
-        out,
-        "Provider for the main model (anthropic, openai, openrouter; blank skips): ",
-    )?;
-    if !provider.is_empty() {
-        model_step(&provider, &stored, input, out, &mut edits)?;
-    }
-    let mode = ask(
-        input,
-        out,
-        "Permission mode: auto asks only for what Yi cannot prove safe, ask asks before every call, yolo never asks (blank skips): ",
-    )?;
-    match mode.to_lowercase().as_str() {
-        "" => {}
-        "auto" | "ask" | "yolo" => {
-            edits.push((vec!["permissions", "mode"], json!(mode.to_lowercase())));
-        }
-        other => say(
-            out,
-            &format!("unknown mode {other}; the mode is left as it is"),
-        )?,
-    }
-    let classifier = ask(
-        input,
-        out,
-        "Turn on the optional classifier? It suggests skills from what you mean and approves ordinary commands in auto mode; typed messages and commands go to TypeSafe's Jev through OpenRouter, about $0.00002 a call. [y/N]: ",
-    )?;
-    if yes(&classifier) {
-        classifier_step(out, &stored, &mut edits)?;
-    }
+    model_step(&stored, input, out, &mut edits)?;
+    mode_step(&stored, input, out, &mut edits)?;
     if edits.is_empty() {
-        return say(out, "Nothing to save.");
+        if yi_runtime::settings::config_path(home)
+            .symlink_metadata()
+            .is_err()
+        {
+            yi_runtime::settings::write(home, &[])?;
+        }
+        return say(out, "Nothing to change. Run `yi setup` any time.");
     }
     let path = yi_runtime::settings::write(home, &edits)?;
-    say(out, &format!("Saved {}.", path.display()))
+    say(
+        out,
+        &format!("Saved {}. Run `yi` to start.", path.display()),
+    )
+}
+
+/// OpenRouter names a model "Anthropic: Claude Sonnet 5"; the vendor prefix would make the word
+/// "anthropic" match its row as well as Anthropic's own.
+fn short(name: &str) -> &str {
+    name.split_once(": ").map_or(name, |(_, rest)| rest)
+}
+
+/// Every model a person could pick, as (provider, model id, label, has credential): the four
+/// API-key providers' flagships, then the other providers a stored login already unlocks.
+fn candidates() -> Vec<(String, String, String, bool)> {
+    let mut rows: Vec<(String, String, String, bool)> = Vec::new();
+    for (provider, model, title, _) in PROVIDERS {
+        let Some(found) = crate::resolve(model) else {
+            continue;
+        };
+        let has = yi_runtime::auth::api_key(provider).is_some();
+        let note = if has { "key found" } else { "needs a key" };
+        let label = format!("{} on {title} ({note})", short(&found.name));
+        rows.push((provider.to_owned(), model.to_owned(), label, has));
+    }
+    let mut others: Vec<yi_types::model::Model> = yi_runtime::available_models()
+        .into_iter()
+        .filter(|found| PROVIDERS.iter().all(|(name, ..)| *name != found.provider))
+        .filter(|found| yi_runtime::auth::api_key(&found.provider).is_some())
+        .collect();
+    others.sort_by(|a, b| (&a.provider, &b.id).cmp(&(&b.provider, &a.id)));
+    others.dedup_by(|a, b| a.provider == b.provider);
+    for found in others {
+        let model = format!("{}/{}", found.provider, found.id);
+        let label = format!("{} on {} (login found)", short(&found.name), found.provider);
+        rows.push((found.provider, model, label, true));
+    }
+    rows.sort_by_key(|row| !row.3);
+    rows
 }
 
 fn model_step(
-    provider: &str,
-    stored: &yi_types::config::UserConfig,
+    stored: &UserConfig,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     edits: &mut Vec<Edit>,
 ) -> Result<(), String> {
-    let provider = provider.to_lowercase();
-    let Some((name, default)) = PROVIDERS.iter().find(|(name, _)| *name == provider) else {
-        return say(
-            out,
-            &format!("unknown provider {provider}; the model is left as it is"),
-        );
-    };
-    if yi_runtime::auth::api_key(name).is_none() {
-        say(out, &yi_runtime::auth::missing_message(name))?;
-    }
-    let answer = ask(input, out, &format!("Model [{default}]: "))?;
-    let model = if answer.is_empty() {
-        (*default).to_owned()
-    } else {
-        answer
-    };
-    if crate::resolve(&model).is_none() {
-        return say(
-            out,
-            &format!("unknown model {model}; the model is left as it is"),
-        );
-    }
-    let primary = stored
+    let roles = stored
         .models
         .as_ref()
-        .is_some_and(|models| models.primary.is_some());
-    let key = if primary {
-        vec!["models", "primary"]
+        .and_then(|models| models.primary.clone());
+    let current = roles.clone().or_else(|| stored.model.clone());
+    let rows = candidates();
+    let mut labels: Vec<String> = Vec::new();
+    let mut picks: Vec<Option<usize>> = Vec::new();
+    if let Some(model) = &current {
+        labels.push(format!("Keep {model}"));
+        picks.push(None);
+    }
+    for (index, row) in rows.iter().enumerate() {
+        labels.push(row.2.clone());
+        picks.push(Some(index));
+    }
+    if current.is_none() {
+        labels.push("Decide later".to_owned());
+        picks.push(None);
+    }
+    let default = if current.is_some() || rows.first().is_some_and(|row| row.3) {
+        0
     } else {
-        vec!["model"]
+        labels.len().saturating_sub(1)
     };
-    edits.push((key, json!(model)));
+    let choice = choose(input, out, "Which AI should Yi use?", &labels, default)?;
+    let Some(row) = picks
+        .get(choice)
+        .copied()
+        .flatten()
+        .and_then(|index| rows.get(index))
+    else {
+        return Ok(());
+    };
+    if !row.3 {
+        key_step(&row.0, input, out)?;
+    }
+    if current.as_ref() != Some(&row.1) {
+        let key = if roles.is_some() {
+            vec!["models", "primary"]
+        } else {
+            vec!["model"]
+        };
+        edits.push((key, json!(row.1)));
+    }
     Ok(())
 }
 
-const LAYA_URL: &str = "http://127.0.0.1:8000";
+/// Takes the key for a provider that has none, so a first-time user never has to leave setup
+/// to run `yi login`; a blank answer leaves it for later and says how.
+fn key_step(provider: &str, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), String> {
+    let (title, url) = PROVIDERS
+        .iter()
+        .find(|(name, ..)| *name == provider)
+        .map_or((provider, ""), |(_, _, title, url)| (*title, *url));
+    if !url.is_empty() {
+        say(out, &format!("Get a {title} key at {url}"))?;
+    }
+    let prompt =
+        format!("Paste your {title} key here (it stays hidden), or press Enter to add it later: ");
+    let key = ask_secret(input, out, &prompt)?;
+    if key.is_empty() {
+        return say(out, &yi_runtime::auth::missing_message(provider));
+    }
+    let login = [provider.to_owned(), "--key".to_owned(), key];
+    if yi_runtime::auth::login(&login) == 0 {
+        return Ok(());
+    }
+    say(
+        out,
+        &format!("The key was not saved; run `yi login {provider}` to try again."),
+    )
+}
 
-fn classifier_step(
+fn mode_step(
+    stored: &UserConfig,
+    input: &mut dyn BufRead,
     out: &mut dyn Write,
-    stored: &yi_types::config::UserConfig,
     edits: &mut Vec<Edit>,
 ) -> Result<(), String> {
-    if yi_runtime::auth::api_key("openrouter").is_none() {
-        return say(
-            out,
-            &format!(
-                "{}; the classifier is not saved",
-                yi_runtime::auth::missing_message("openrouter")
-            ),
-        );
-    }
-    edits.push((
-        vec!["models", "classifier"],
-        json!(yi_runtime::classifier::JEV),
-    ));
-    let laya = stored
-        .classifier
-        .as_ref()
-        .and_then(|classifier| classifier.url.as_deref())
-        .is_some_and(|url| url.trim_end_matches('/') == LAYA_URL);
-    if laya {
-        edits.push((vec!["classifier", "url"], Value::Null));
+    let current = (stored.permissions.as_ref())
+        .and_then(|permissions| permissions.mode)
+        .unwrap_or(ModeName::Auto);
+    let labels: Vec<String> = MODES.iter().map(|(_, label)| (*label).to_owned()).collect();
+    let default = MODES
+        .iter()
+        .position(|(mode, _)| *mode == current)
+        .unwrap_or(0);
+    let title = "How much should Yi ask before it acts?";
+    let choice = choose(input, out, title, &labels, default)?;
+    if let Some((mode, _)) = MODES.get(choice).filter(|(mode, _)| *mode != current) {
+        edits.push((vec!["permissions", "mode"], json!(mode)));
     }
     Ok(())
+}
+
+/// A numbered menu; Enter takes `default`, a number picks that row, and a word of three
+/// letters or more picks the one row containing it, so "anthropic" works as well as "1".
+fn choose(
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    title: &str,
+    options: &[String],
+    default: usize,
+) -> Result<usize, String> {
+    say(out, title)?;
+    for (index, option) in options.iter().enumerate() {
+        let mark = if index == default { " [Enter]" } else { "" };
+        say(
+            out,
+            &format!("  {}) {option}{mark}", index.saturating_add(1)),
+        )?;
+    }
+    loop {
+        let answer = ask(input, out, "Your choice: ")?;
+        if answer.is_empty() {
+            return Ok(default);
+        }
+        let by_number = (answer.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| answer.parse::<usize>().ok())
+            .flatten()
+            .and_then(|number| number.checked_sub(1))
+            .filter(|index| *index < options.len());
+        let word = answer.to_lowercase();
+        let hits: Vec<usize> = options
+            .iter()
+            .enumerate()
+            .filter(|(_, option)| {
+                word.chars().count() >= 3 && option.to_lowercase().contains(&word)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let by_word = match hits.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        };
+        match by_number.or(by_word) {
+            Some(index) => return Ok(index),
+            None if hits.len() > 1 => {
+                say(out, "More than one choice has that word; type its number.")?
+            }
+            None => say(
+                out,
+                &format!(
+                    "Type a number from 1 to {}, or a word from the choice you want.",
+                    options.len()
+                ),
+            )?,
+        }
+    }
+}
+
+/// Reads a line with the terminal's echo off when there is a terminal, so a pasted key is
+/// not left in the scrollback.
+fn ask_secret(
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    prompt: &str,
+) -> Result<String, String> {
+    let stdin = std::io::stdin();
+    let before = if stdin.is_terminal() {
+        hide_echo(&stdin)
+    } else {
+        None
+    };
+    let answer = ask(input, out, prompt);
+    if let Some(before) = before {
+        if tcsetattr(&stdin, OptionalActions::Now, &before).is_err() {
+            say(
+                out,
+                "\nwarning: the terminal's echo could not be restored; run `reset`",
+            )?;
+        }
+        say(out, "")?;
+    }
+    answer
+}
+
+fn hide_echo(stdin: &std::io::Stdin) -> Option<Termios> {
+    let before = tcgetattr(stdin).ok()?;
+    let mut quiet = before.clone();
+    quiet.local_modes.remove(LocalModes::ECHO);
+    tcsetattr(stdin, OptionalActions::Now, &quiet).ok()?;
+    Some(before)
 }
 
 fn ask(input: &mut dyn BufRead, out: &mut dyn Write, prompt: &str) -> Result<String, String> {
@@ -197,17 +370,27 @@ fn say(out: &mut dyn Write, text: &str) -> Result<(), String> {
     writeln!(out, "{text}").map_err(|error| error.to_string())
 }
 
-fn yes(answer: &str) -> bool {
-    matches!(answer.to_lowercase().as_str(), "y" | "yes")
-}
-
 fn yes_default(answer: &str) -> bool {
-    answer.is_empty() || yes(answer)
+    matches!(answer.to_lowercase().as_str(), "" | "y" | "yes")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::offers;
+    use super::{choose, offers};
+
+    #[test]
+    fn a_mistyped_choice_is_asked_again_not_taken_as_a_skip() -> Result<(), String> {
+        let options = ["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        let mut out = Vec::new();
+        let picked = choose(&mut "9\nb\n0\n2\n".as_bytes(), &mut out, "T:", &options, 2)?;
+        assert_eq!(picked, 1, "only a number in range is an answer");
+        let named = ["Claude on Anthropic".to_owned(), "GPT on OpenAI".to_owned()];
+        let word = choose(&mut "gpt\n".as_bytes(), &mut out, "T:", &named, 0)?;
+        assert_eq!(word, 1, "one word that names one row picks it");
+        let blank = choose(&mut "\n".as_bytes(), &mut out, "T:", &options, 2)?;
+        assert_eq!(blank, 2, "Enter takes the default");
+        Ok(())
+    }
 
     #[test]
     fn only_a_first_interactive_launch_is_offered_setup() {

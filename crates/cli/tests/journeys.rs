@@ -755,7 +755,21 @@ fn the_agents_own_words_fire_no_skill() -> TestResult {
 
 /// `yi setup` fed its answers on stdin, as a person at the prompts would type them.
 fn setup(journey: &Journey, answers: &str) -> Result<Output, Box<dyn Error>> {
-    feed(journey.command(&["setup"]), answers)
+    setup_with(journey, answers, &[])
+}
+
+/// The menus change with the credentials found, so the machine's own keys are removed first.
+fn setup_with(
+    journey: &Journey,
+    answers: &str,
+    keys: &[(&str, &str)],
+) -> Result<Output, Box<dyn Error>> {
+    let mut command = journey.command(&["setup"]);
+    for (_, variable) in yi_types::PROVIDER_KEY_VARS {
+        command.env_remove(variable);
+    }
+    command.envs(keys.iter().copied());
+    feed(command, answers)
 }
 
 fn feed(mut command: Command, answers: &str) -> Result<Output, Box<dyn Error>> {
@@ -786,14 +800,14 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
     let file = journey.root.join("home/.yi/config.json");
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
     let before = std::fs::read_to_string(&file)?;
-    let skipped = setup(&journey, "\n\n\n")?;
+    let skipped = setup(&journey, "\n\n")?;
     assert!(skipped.status.success(), "{skipped:?}");
     assert_eq!(
         std::fs::read_to_string(journey.root.join("home/.yi/config.json"))?,
         before,
         "every step skipped writes nothing"
     );
-    let saved = setup(&journey, "openrouter\n\nask\nn\n")?;
+    let saved = setup(&journey, "3\n\n2\n")?;
     assert!(saved.status.success(), "{saved:?}");
     let config = config_of(&journey)?;
     assert_eq!(config["model"], "openrouter/anthropic/claude-sonnet-5");
@@ -808,10 +822,7 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
         "a config that may hold keys stays private"
     );
     assert!(!journey.root.join("home/.yi/.config.json.setup").exists());
-    assert!(
-        config.get("models").is_none(),
-        "no classifier was set up: {config}"
-    );
+    assert!(config.get("models").is_none(), "no role was set: {config}");
     let asked: Value = serde_json::from_str(&String::from_utf8_lossy(
         &journey.yi(&["gate", "--json", "echo hi"])?.stdout,
     ))?;
@@ -827,48 +838,54 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
     Ok(())
 }
 
-/// The classifier is saved as Jev only when an OpenRouter key exists; with none it saves nothing.
+/// A found credential is the Enter answer, so the person who already has a key presses Enter twice.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
-fn setup_saves_jev_as_the_classifier_only_with_an_openrouter_key() -> TestResult {
-    let journey = Journey::new("setup-classifier")?;
-    let mut keyless = journey.command(&["setup"]);
-    keyless
-        .env_remove("OPENROUTER_API_KEY")
-        .stderr(Stdio::piped());
-    let refused = feed(keyless, "\n\ny\n")?;
-    assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("the classifier is not saved"),
-        "{refused:?}"
-    );
-    assert!(config_of(&journey)?.get("models").is_none());
-    let file = journey.root.join("home/.yi/config.json");
-    std::fs::write(
-        &file,
-        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:8000"}}"#,
-    )?;
-    let mut keyed = journey.command(&["setup"]);
-    keyed.env("OPENROUTER_API_KEY", "sk-or-journey");
-    let saved = feed(keyed, "\n\ny\n")?;
+fn setup_defaults_to_the_credentialed_model() -> TestResult {
+    let journey = Journey::new("setup-one-key")?;
+    let saved = setup_with(&journey, "\n\n", &[("ANTHROPIC_API_KEY", "sk-journey")])?;
     assert!(saved.status.success(), "{saved:?}");
-    let config = config_of(&journey)?;
-    assert_eq!(config["models"]["classifier"], "typesafe/jev-1.13");
+    let said = String::from_utf8_lossy(&saved.stderr);
     assert!(
-        config.get("classifier").is_none(),
-        "the Laya sidecar's URL is cleared: {config}"
+        said.contains("Claude Sonnet 5 on Anthropic (key found) [Enter]"),
+        "{said}"
     );
-    std::fs::write(
-        &file,
-        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:9000"}}"#,
-    )?;
-    let mut own = journey.command(&["setup"]);
-    own.env("OPENROUTER_API_KEY", "sk-or-journey");
-    assert!(feed(own, "\n\ny\n")?.status.success());
-    assert_eq!(
-        config_of(&journey)?["classifier"]["url"],
-        "http://127.0.0.1:9000",
-        "a URL the user set is kept"
+    assert_eq!(config_of(&journey)?["model"], "anthropic/claude-sonnet-5");
+    journey.reclaim();
+    Ok(())
+}
+
+/// A provider with no key is asked for it inside setup, and the key lands where `yi login` puts it.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_takes_the_key_of_the_provider_picked() -> TestResult {
+    let journey = Journey::new("setup-key")?;
+    let saved = setup(&journey, "anthropic\nsk-journey\n\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    assert_eq!(config_of(&journey)?["model"], "anthropic/claude-sonnet-5");
+    let token = journey
+        .root
+        .join("home/.yi/providers/tokens/anthropic.json");
+    assert!(std::fs::read_to_string(token)?.contains("sk-journey"));
+    let said = String::from_utf8_lossy(&saved.stderr);
+    assert!(
+        !said.contains("sk-journey"),
+        "the key is never echoed: {said}"
     );
+    journey.reclaim();
+    Ok(())
+}
+
+/// Pressing Enter through every question still finishes setup, so the next launch does not ask again.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_with_nothing_chosen_still_records_that_it_ran() -> TestResult {
+    let journey = Journey::new("setup-nothing")?;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::remove_file(&file)?;
+    let done = setup(&journey, "\n\n")?;
+    assert!(done.status.success(), "{done:?}");
+    assert_eq!(config_of(&journey)?, serde_json::json!({}));
     journey.reclaim();
     Ok(())
 }
@@ -882,7 +899,7 @@ fn setup_writes_the_model_where_the_config_reads_it() -> TestResult {
         journey.root.join("home/.yi/config.json"),
         r#"{"kernel":{"prewarm":false},"models":{"primary":"faux/faux-1"}}"#,
     )?;
-    let saved = setup(&journey, "openrouter\n\n\nn\n")?;
+    let saved = setup(&journey, "4\n\n\n")?;
     assert!(saved.status.success(), "{saved:?}");
     let config = config_of(&journey)?;
     assert_eq!(
@@ -901,11 +918,11 @@ fn setup_refuses_a_bad_config_before_asking_anything() -> TestResult {
     let journey = Journey::new("setup-bad")?;
     let file = journey.root.join("home/.yi/config.json");
     std::fs::write(&file, r#"{"modle":"x"}"#)?;
-    let refused = setup(&journey, "openrouter\n\nask\nn\n")?;
+    let refused = setup(&journey, "3\n2\n")?;
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success(), "{refused:?}");
     assert!(said.contains("fix it, then run `yi setup` again"), "{said}");
-    assert!(!said.contains("Provider"), "nothing was asked: {said}");
+    assert!(!said.contains("Which AI"), "nothing was asked: {said}");
     assert_eq!(std::fs::read_to_string(&file)?, r#"{"modle":"x"}"#);
     journey.reclaim();
     Ok(())
@@ -919,7 +936,7 @@ fn setup_writes_through_a_dangling_config_link() -> TestResult {
     let file = journey.root.join("home/.yi/config.json");
     std::fs::remove_file(&file)?;
     std::os::unix::fs::symlink("../dotfiles/yi.json", &file)?;
-    let saved = setup(&journey, "\nask\nn\n")?;
+    let saved = setup(&journey, "\n2\n")?;
     assert!(saved.status.success(), "{saved:?}");
     assert!(std::fs::symlink_metadata(&file)?.file_type().is_symlink());
     let config: Value = serde_json::from_str(&std::fs::read_to_string(
