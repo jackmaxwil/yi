@@ -1,4 +1,6 @@
 ---
+version: 0.984.0
+decisions: D567
 issue: Closes #2054
 growth: +200 first-run setup became menus with an inline key step and word answers; weighed deleting the other-login rows and the word matching, kept both because a kimi or codex login was invisible and a typed provider name was rejected, and deleted the whole classifier step and the free-text provider and model prompts
 raise: crate cli +62
