@@ -2588,18 +2588,18 @@ fn compaction_floors_a_host_notice_and_keeps_the_waking_letter() -> Result<(), B
 
 /// Stage 6: once dropping old results costs less than resending them, the request carries each
 /// as one `[reclaimed: …]` line, and the next request carries the same bytes, so the cut is
-/// paid once; here no cache is priced, so the cut lands as soon as two results are old enough.
+/// paid once; here no cache is priced, so the cut lands as soon as 20,000 tokens are old enough.
 #[tokio::test(flavor = "multi_thread")]
 async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
 -> Result<(), Box<dyn Error>> {
-    let mut replies = read_calls(8);
+    let mut replies = read_calls(26);
     replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
     let (port, served) = openrouter_stand_in(replies)?;
     let session = priced_session_with(port, Settings::default())?;
     session.set_tools(vec![Arc::new(LongResult("read"))]);
     let store = crate::support::memory_store("reclaim-bytes");
     session.attach_store(Arc::clone(&store))?;
-    session.prompt("read the probe eight times")?;
+    session.prompt("read the probe many times")?;
     session.wait_idle().await;
     let bodies = served.join().map_err(|_| "the stand-in panicked")?;
     let cut = |body: &String| -> Result<Vec<String>, serde_json::Error> {
@@ -2754,7 +2754,7 @@ fn cut_lines(body: &serde_json::Value) -> Vec<String> {
 /// the loop rendered them, so its prefix is the loop's previous request and reads the cache.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_in_loop_compaction_repeats_the_loops_reclaimed_prefix() -> Result<(), Box<dyn Error>> {
-    let mut replies = read_calls(8);
+    let mut replies = read_calls(26);
     replies.push(sse_reply(
         &serde_json::json!({"content": "## Goal\nProbe"}),
         "stop",
@@ -2767,7 +2767,7 @@ async fn an_in_loop_compaction_repeats_the_loops_reclaimed_prefix() -> Result<()
         result: LongResult("read"),
         compactor,
         calls: std::sync::atomic::AtomicUsize::new(0),
-        at: 7,
+        at: 25,
     })]);
     let store = crate::support::memory_store("reclaim-compaction");
     session.attach_store(Arc::clone(&store))?;
@@ -2813,7 +2813,7 @@ async fn an_in_loop_compaction_repeats_the_loops_reclaimed_prefix() -> Result<()
 /// request records no new cut.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_manual_compaction_sends_the_cuts_on_record() -> Result<(), Box<dyn Error>> {
-    let mut replies = read_calls(8);
+    let mut replies = read_calls(26);
     replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
     replies.push(sse_reply(
         &serde_json::json!({"content": "## Goal\nProbe"}),

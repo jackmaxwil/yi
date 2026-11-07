@@ -1717,7 +1717,7 @@ async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
 -> Result<(), Box<dyn Error>> {
     let dir = Scratch::new("yi-runtime-reclaim")?;
     let provider = Arc::new(ProviderStream::new(None));
-    let mut script: Vec<AgentMessage> = (0..8)
+    let mut script: Vec<AgentMessage> = (0..20)
         .map(|turn| {
             let args = serde_json::json!({"command": format!("seq 1 1500 # {turn}")});
             let args = args.as_object().cloned().unwrap_or_default();
@@ -1754,7 +1754,7 @@ async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
         .collect();
     assert_eq!(ids.first(), Some(&"call-0"), "{records:?}");
     assert!(
-        !ids.contains(&"call-7"),
+        !ids.contains(&"call-19"),
         "the newest results stay: {records:?}"
     );
     assert!(
