@@ -305,8 +305,6 @@ def skip_reason(rounds, head, holds=on_head, attempts=None):
     lost a lens is read again for that lens alone, RETRIES times at most. Incident: #1888, #1977, #1830
     and #1974 each paid for a second full round on an unchanged head, and a second read is a fresh draw
     that adds to the first (#1043: three mediums, then a high and seven)."""
-    if rounds and not holds(rounds[-1]["sha"], head):
-        return None
     here = [r for r in rounds if holds(r["sha"], head)]
     # Incident: #1415 and #1416 sat blocked on a round-1 twin after it closed; a twin round reads no
     # lens, so its head is read again, and cmd_review posts nothing while the twin still stands.
@@ -319,6 +317,10 @@ def skip_reason(rounds, head, holds=on_head, attempts=None):
         return None if len(seen) <= RETRIES else f"{len(seen)} attempt(s) on this head lost an answer; the fixer or a push is next"
     if here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
+    # Incident: #1852's head was read clean by round 2, then round 7 read another commit, and the queue
+    # wants the latest round on the head, so a clean read a later round superseded is read once more.
+    if not holds(rounds[-1]["sha"], head):
+        return None
     return f"round {here[-1]['n']} read this head; the fixer or the next push is next"
 
 
@@ -1454,6 +1456,8 @@ def selfcheck():
     assert skip_reason(stale, "458d3987") is None and any("not the head" in p for p in ready_problems(stale, "458d3987")), \
         "a head the latest round did not read earns a fresh round"
     assert skip_reason([stale[0], dict(stale[1], sha="458d3987")], "458d3987"), "the latest round on the head still refuses a repeat"
+    assert "blocked" in (skip_reason([dict(stale[0], verdict="blocked"), stale[1]], "458d3987") or ""), \
+        "a head an earlier round blocked stays the fixer's when a later round read another commit"
     began = []
 
     def began_round(*_):
