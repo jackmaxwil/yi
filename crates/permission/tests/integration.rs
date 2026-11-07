@@ -9,3 +9,4 @@ mod decide;
 mod open;
 mod review;
 mod safety;
+mod scope;

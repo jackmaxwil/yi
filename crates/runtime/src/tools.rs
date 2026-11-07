@@ -204,6 +204,7 @@ fn walled_root_refusal(
     // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
     let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
     for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
+        let cd_target = yi_permission::cd_target(word, &mut after_cd);
         let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
         for spelled in std::iter::once(word).chain(glued) {
             let head: String = (spelled.split_inclusive('/'))
@@ -222,7 +223,7 @@ fn walled_root_refusal(
             if let Some(root) = hit {
                 return Some(crate::gate::outside_sandbox_refusal(root));
             }
-            for path in paths.into_iter().filter(|_| after_cd) {
+            for path in paths.into_iter().filter(|_| cd_target) {
                 if !dirs.contains(&path) {
                     dirs.push(path);
                 }
@@ -235,8 +236,6 @@ fn walled_root_refusal(
                 return Some(crate::gate::walled_host_refusal(&why));
             }
         }
-        // A flag (`--`, `-P`) between `cd` and its target keeps the next word the target.
-        after_cd = matches!(word, "cd" | "pushd") || after_cd && word.starts_with('-');
     }
     None
 }

@@ -261,6 +261,7 @@ advisor (LlmReviewer only) | `advisor_e2e::promotion_writes_a_rule_the_discovery
 ACP v2 server | `acp_protocol::a_strict_client_accepts_every_frame_of_a_faux_session`
 ACP v2 server | `acp_protocol::v2_client_drives_a_session_end_to_end`
 ACP v2 server | `acp_protocol::resume_replays_the_stored_branch` (T2)
+ACP v2 server | `acp_protocol::committed_updates_include_ordered_model_and_tool_entries`
 rewind while a turn runs | `rewind_branch::a_rewind_while_a_turn_streams_is_refused_until_it_ends` (T1)
 rewind while a turn runs | `acp_protocol::a_rewind_is_refused_while_a_turn_runs_a_tool`
 rewind while a turn runs | `tui_drive::rewinding_removes_the_exchange_and_restores_the_message`
@@ -306,6 +307,7 @@ console right-click menu and pane close mark | `drive::fork_here_opens_the_answe
 console right-click menu and pane close mark | `drive::re_ask_puts_the_prompt_back_in_a_session_before_it`
 console right-click menu and pane close mark | `drive::a_repeated_prompt_rewinds_to_its_own_turn`
 console right-click menu and pane close mark | `drive::a_live_reply_is_inspectable_once_committed`
+console right-click menu and pane close mark | `drive::a_live_tool_call_with_hidden_ancestors_rewinds_to_itself`
 console right-click menu and pane close mark | `acp_protocol::a_committed_answer_forks_into_a_session_that_ends_at_it` (T2)
 console right-click menu and pane close mark | `drive::open_in_sends_the_reply_to_the_app_picked`
 console right-click menu and pane close mark | `serve_daemon::open_in_runs_the_configured_app_on_the_saved_message` (T2)

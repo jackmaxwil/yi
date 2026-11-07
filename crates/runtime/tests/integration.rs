@@ -134,6 +134,7 @@ mod wall_e2e;
 mod warm_checks;
 mod web_search;
 mod worker_prompt;
+mod write_scope;
 
 /// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict
 /// last, past the view's 16 KiB ceiling and, as JSON, past a channel message's cap.
