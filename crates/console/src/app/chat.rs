@@ -20,7 +20,7 @@ use super::{App, RequestKind};
 use crate::client::Outbound;
 use crate::keys::Action;
 use crate::layout::PaneId;
-use crate::model::{Chat, PaneContent, PendingAsk, SessionId, SessionRow};
+use crate::model::{Chat, PaneContent, PendingAsk, SessionId};
 
 const CHILD_ROW_CAP: usize = 32;
 
@@ -66,7 +66,7 @@ impl App {
         let row = self.state.sessions.get(session);
         let options = TuiOptions {
             model: yi_tui::model::model_or_stub("", ""),
-            session_name: row.map_or_else(|| session.0.clone(), SessionRow::label),
+            session_name: session.0.clone(),
             cwd: row.map_or_else(|| self.state.root.clone(), |row| row.root.clone()),
             lane: None,
             context_window: 0,
@@ -83,7 +83,6 @@ impl App {
         let mut app = yi_tui::app::App::new(options, theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
         app.set_clock(self.clock);
-        app.set_status_name(session.0.clone());
         app.set_pane();
         Box::new(Chat {
             app,
@@ -242,9 +241,6 @@ impl App {
                 if let Some(row) = self.state.sessions.get_mut(id) {
                     row.name = Some(name.clone());
                 }
-                for chat in self.state.chats_mut(id) {
-                    chat.app.set_session_name(name.clone());
-                }
                 self.dirty = true;
             }
             Decoded::Claims(claims) => {
@@ -346,9 +342,6 @@ impl App {
             if let Some(stats) = replay.stats.as_ref().filter(|_| replay.child.is_none()) {
                 chat.app.seed_ledger(stats);
             }
-            if let Some(name) = &replay.name {
-                chat.app.set_session_name(name.clone());
-            }
             if let Some(window) = replay.context_window {
                 chat.app.set_context_window(window);
             }
@@ -405,31 +398,14 @@ impl App {
         self.dirty = true;
     }
 
-    pub(super) fn sync_chat_names(&mut self) {
-        let labels: Vec<(SessionId, String)> = self
-            .state
-            .sessions
-            .values()
-            .map(|row| (row.id.clone(), row.label()))
-            .collect();
-        for (id, label) in labels {
-            for chat in self.state.chats_mut(&id) {
-                chat.app.set_session_name(label.clone());
-            }
-        }
-    }
-
     pub(super) fn absorb_result(&mut self, id: &SessionId, result: &Value) {
         let Ok(result) = serde_json::from_value::<AcpSessionResult>(result.clone()) else {
             return;
         };
-        if let Some(name) = result.meta.as_ref().and_then(|meta| meta.yi.name.as_ref()) {
-            if let Some(row) = self.state.sessions.get_mut(id) {
-                row.name = Some(name.clone());
-            }
-            for chat in self.state.chats_mut(id) {
-                chat.app.set_session_name(name.clone());
-            }
+        if let Some(name) = result.meta.as_ref().and_then(|meta| meta.yi.name.as_ref())
+            && let Some(row) = self.state.sessions.get_mut(id)
+        {
+            row.name = Some(name.clone());
         }
         let config = config_of(&result.config_options);
         self.apply_config(id, &config, false);
@@ -1089,7 +1065,7 @@ mod tests {
             .find(|row| row.contains("worktree yi"))
             .ok_or_else(|| format!("no status row: {rows:#?}"))?;
         assert!(
-            row.contains("session ") && row.contains("01a1af4a"),
+            row.contains("session ") && row.contains("4f977fca"),
             "{row}"
         );
         assert!(row.contains("branch ⎇ yi/lane-branch"), "{row}");

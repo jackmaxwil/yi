@@ -222,12 +222,12 @@ struct Fit {
 
 /// The drop order, applied first to last until the row fits. The order never changes, only
 /// how many apply, and each cut takes a whole field; the model is never cut.
-const CUTS: [fn(&mut Fit); 13] = [
-    |fit| fit.labels = false,
+const CUTS: [fn(&mut Fit); 14] = [
     |fit| fit.input.cache = None,
     |fit| fit.input.landing = None,
     |fit| fit.input.subagents = 0,
     |fit| fit.name_max = NAME_FLOOR,
+    |fit| fit.input.branch = None,
     |fit| fit.path_max = PATH_FLOOR,
     |fit| fit.input.mode = None,
     |fit| fit.input.provider = None,
@@ -236,6 +236,7 @@ const CUTS: [fn(&mut Fit); 13] = [
     |fit| fit.input.context_window = 0,
     |fit| fit.input.cost = None,
     |fit| fit.place = false,
+    |fit| fit.labels = false,
 ];
 
 /// Cells kept empty between the groups, so they never read as one run.
@@ -371,8 +372,13 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
         if !spans.is_empty() {
             spans.push(chevron(theme));
         }
-        let display: String = if input.session_name.chars().count() > 16 {
-            input.session_name.chars().take(8).collect()
+        let length = input.session_name.chars().count();
+        let display = if length > 16 {
+            input
+                .session_name
+                .chars()
+                .skip(length.saturating_sub(8))
+                .collect()
         } else {
             input.session_name.clone()
         };

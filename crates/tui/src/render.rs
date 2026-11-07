@@ -255,10 +255,7 @@ fn status_input(app: &App) -> StatusInput {
         }),
         cost: app.spent.label(),
         cache: app.session_tokens.cache_label(expected),
-        session_name: app
-            .status_name
-            .clone()
-            .unwrap_or_else(|| app.options.session_name.clone()),
+        session_name: app.options.session_name.clone(),
         subagents: app
             .tasks
             .values()

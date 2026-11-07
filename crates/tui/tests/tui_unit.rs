@@ -524,8 +524,7 @@ fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
     Ok(())
 }
 
-/// Dies with a bare `yi`, a bare `01a1b3a9` and a lane branch clipped to its uuid tail: the row
-/// never said what each was, and cut away the only part of `yi/<uuid>` that tells sessions apart.
+/// Dies with a bare place, branch, or session value, and with UUID timestamps mistaken for ids.
 #[test]
 fn status_labels_the_worktree_branch_and_session_and_keeps_a_lane_branch_head() -> TestResult {
     let input = StatusInput {
@@ -537,15 +536,39 @@ fn status_labels_the_worktree_branch_and_session_and_keeps_a_lane_branch_head() 
         ..StatusInput::default()
     };
     let wide = flat(&yi_tui::status::render(&input, 160, &theme()));
-    for needle in ["worktree yi ", "branch ⎇ yi/01a1b3a", "session "] {
+    for needle in [
+        "worktree yi ",
+        "branch ⎇ yi/01a1b3a",
+        "session ",
+        "1b9c1059",
+    ] {
         assert!(wide.contains(needle), "{needle:?} missing: {wide}");
     }
+    let other = StatusInput {
+        branch: Some("yi/01a1b3a9-7dac-af6b-a6081b9c1060".to_owned()),
+        session_name: "01a1b3a9-7dac-af6b-a6081b9c1060".to_owned(),
+        ..input.clone()
+    };
+    let other = flat(&yi_tui::status::render(&other, 160, &theme()));
+    assert!(other.contains("1b9c1060"), "{other}");
+    assert!(!other.contains("1b9c1059"), "{other}");
     let narrow = flat(&yi_tui::status::render(&input, 60, &theme()));
-    assert!(!narrow.contains("worktree "), "labels go first: {narrow}");
+    assert!(narrow.contains("worktree yi"), "{narrow}");
+    let identity = flat(&yi_tui::status::render(&input, 80, &theme()));
+    for needle in ["session", "1b9c1059"] {
+        assert!(identity.contains(needle), "{needle:?} missing: {identity}");
+    }
     assert!(
-        narrow.contains("01a1b3a9"),
-        "the id outlasts them: {narrow}"
+        !identity.contains("branch"),
+        "branch outlasts identity: {identity}"
     );
+    let directory = StatusInput {
+        cwd: "/tmp/w".to_owned(),
+        session_name: "01a1b3a9-7dac-af6b-a6081b9c1059".to_owned(),
+        ..StatusInput::default()
+    };
+    let directory = flat(&yi_tui::status::render(&directory, 40, &theme()));
+    assert!(directory.contains("dir /tmp/w"), "{directory}");
     Ok(())
 }
 
