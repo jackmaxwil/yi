@@ -3927,5 +3927,19 @@ fn stats_bills_a_sessions_usage_records_as_its_ledger_does() -> TestResult {
         "a usage cause is not a model, so the model table holds the reply's model alone: {folded}"
     );
     assert_eq!(models[0]["model"], "faux/faux-1", "{folded}");
+    let records = folded["records"]
+        .as_array()
+        .ok_or("no records in the row")?;
+    assert_eq!(records.len(), 1, "{folded}");
+    assert_eq!(records[0]["cause"], "child_usage_attributed", "{folded}");
+    let parts: f64 = models
+        .iter()
+        .chain(records)
+        .filter_map(|row| row["cost"].as_f64())
+        .sum();
+    assert!(
+        (parts - cost).abs() < 1e-9,
+        "the model and record rows bill {parts} under a {cost} total: {folded}"
+    );
     Ok(())
 }

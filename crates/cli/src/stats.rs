@@ -118,9 +118,20 @@ fn share(part: i64, tokens: &Tokens) -> f64 {
 struct Totals {
     all: Tokens,
     by_model: BTreeMap<String, Tokens>,
+    by_cause: BTreeMap<String, Tokens>,
     last_model: Option<String>,
     categories: BTreeMap<String, u64>,
     edit_ops: BTreeMap<String, u64>,
+}
+
+fn rows(map: &BTreeMap<String, Tokens>, key: &str) -> Vec<Value> {
+    map.iter()
+        .map(|(name, tokens)| {
+            let mut row = tokens.json();
+            row[key] = json!(name);
+            row
+        })
+        .collect()
 }
 
 fn percentile(sorted: &[u64], fraction: f64) -> u64 {
@@ -212,8 +223,15 @@ fn fold_usage(
         ..RecordQuery::default()
     };
     for record in &session.find_records(&query)? {
-        if let Some(usage) = record.billed_usage() {
+        if let (Some(usage), yi_types::record::LaneRecord::Usage { cause, .. }) =
+            (record.billed_usage(), record)
+        {
             totals.all.spend(usage);
+            totals
+                .by_cause
+                .entry(cause.clone())
+                .or_default()
+                .spend(usage);
         }
     }
     Ok(())
@@ -311,15 +329,6 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
                 })
             })
             .collect();
-        let models: Vec<Value> = totals
-            .by_model
-            .iter()
-            .map(|(model, tokens)| {
-                let mut row = tokens.json();
-                row["model"] = json!(model);
-                row
-            })
-            .collect();
         let value = json!({
             "session": id,
             "tools": tool_rows,
@@ -335,7 +344,8 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
                 "writeShare": totals.all.write_share(),
                 "misses": totals.all.misses,
             },
-            "models": models,
+            "models": rows(&totals.by_model, "model"),
+            "records": rows(&totals.by_cause, "cause"),
             "cost": totals.cost(),
             "bashCategories": totals.categories,
             "editOps": totals.edit_ops,
@@ -346,8 +356,8 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
     }
     println!("session {id}");
     println!("{}", totals.all.line());
-    if totals.by_model.len() > 1 {
-        for (model, tokens) in &totals.by_model {
+    if totals.by_model.len() + totals.by_cause.len() > 1 {
+        for (model, tokens) in totals.by_model.iter().chain(&totals.by_cause) {
             println!("  {model}  {}", tokens.line());
         }
     }

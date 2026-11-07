@@ -695,39 +695,28 @@ fn pi_compatibility_surfaces_answer_what_this_build_honours() -> TestResult {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert_eq!(
-        verbs,
-        [
-            "compact",
-            "compact_status",
-            "prompt",
-            "heartbeat",
-            "goal",
-            "plan",
-            "advisor_stats",
-            "steer",
-            "follow_up",
-            "abort",
-            "new_session",
-            "get_state",
-            "set_model",
-            "get_available_models",
-            "set_thinking_level",
-            "get_available_thinking_levels",
-            "set_steering_mode",
-            "set_follow_up_mode",
-            "get_messages",
-            "get_entries",
-            "get_session_stats",
-            "set_session_name",
-            "get_last_assistant_text",
-            "get_commands",
-            "switch_session",
-            "fork",
-            "get_log",
-        ],
-        "get_commands must name the RPC commands, not unrouted slash verbs: {commands}"
+    assert!(
+        verbs.contains(&"prompt") && !verbs.contains(&"model"),
+        "{commands}"
     );
+    let asked: Vec<Value> = verbs
+        .iter()
+        .map(|verb| json!({"id": format!("v-{verb}"), "type": verb}))
+        .collect();
+    let answered = run_rpc(&temp_dir("pi-surfaces-served")?, &asked)?;
+    for verb in &verbs {
+        let frame = self::responses(&answered)
+            .into_iter()
+            .find(|frame| frame["id"] == format!("v-{verb}"))
+            .ok_or_else(|| format!("no reply to served command {verb}"))?;
+        assert!(
+            !frame["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("unsupported command"),
+            "get_commands serves {verb} but the dispatch does not answer it: {frame}"
+        );
+    }
     for id in ["s", "f"] {
         let refused = reply(id)?;
         assert_eq!(refused["success"], false, "{refused}");

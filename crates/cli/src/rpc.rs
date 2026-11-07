@@ -169,6 +169,8 @@ impl RpcState {
     ) -> Value {
         let text_arg = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or("");
         match command_type {
+            // Invariant: an arm whose name `get_commands` does not serve is unreachable.
+            other if !RPC_COMMANDS.contains(&other) => unsupported(id, other),
             "compact" => {
                 let outcome = self.session.compact_now().await;
                 let running = self.session.status() == Status::Running;
@@ -455,13 +457,17 @@ impl RpcState {
                     Err(error) => error_frame(id, "get_log", &error.to_string()),
                 }
             }
-            other => error_frame(
-                id,
-                other,
-                &format!("unsupported command in this build: {other}"),
-            ),
+            other => unsupported(id, other),
         }
     }
+}
+
+fn unsupported(id: Option<&str>, command: &str) -> Value {
+    error_frame(
+        id,
+        command,
+        &format!("unsupported command in this build: {command}"),
+    )
 }
 
 pub fn run_rpc(
