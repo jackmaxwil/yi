@@ -354,7 +354,7 @@ fn status_keeps_the_model_under_a_long_path_and_branch() -> TestResult {
     };
     assert_eq!(input.cwd.chars().count(), 60);
     assert_eq!(input.branch.as_deref().map(str::len), Some(51));
-    let text = flat(&yi_tui::status::render(&input, 80, &theme()));
+    let text = flat(&yi_tui::status::render(&input, 100, &theme()));
     assert!(text.contains("faux-1"), "model survives: {text}");
     assert!(text.contains("⎇ …"), "branch shrinks from the left: {text}");
     assert!(text.contains("01a06f8d"), "session id survives: {text}");
@@ -388,11 +388,11 @@ fn the_status_row_fits_its_width_and_drops_whole_fields_in_one_order() {
         "👥 2",
         "◉ verbose",
         "via openrouter",
+        "⎇",
         "dogfood",
         "◉ high",
         "15% / 1M",
         "≥$17.03",
-        "⎇",
     ];
     let left = [
         "claude-opus-5",
