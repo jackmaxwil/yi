@@ -9,6 +9,32 @@ pub const FAUX_PROVIDER: &str = "faux";
 pub const FAUX_MODEL_ID: &str = "faux-1";
 const CHUNK_CHARS: usize = 16;
 
+pub fn faux_model() -> yi_types::model::Model {
+    let zero = || serde_json::Number::from(0u64);
+    yi_types::model::Model {
+        id: FAUX_MODEL_ID.to_owned(),
+        name: "Faux".to_owned(),
+        api: FAUX_API.to_owned(),
+        provider: FAUX_PROVIDER.to_owned(),
+        base_url: "http://localhost:0".to_owned(),
+        reasoning: false,
+        input: vec!["text".to_owned()],
+        cost: yi_types::model::ModelCost {
+            input: zero(),
+            output: zero(),
+            cache_read: zero(),
+            cache_write: zero(),
+            tiers: None,
+        },
+        context_window: 128_000,
+        max_tokens: 16_384,
+        compat: None,
+        thinking_level_map: None,
+        headers: None,
+        read_timeout_secs: None,
+    }
+}
+
 pub fn zero_usage() -> Usage {
     Usage::zero()
 }

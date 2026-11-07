@@ -192,7 +192,7 @@ fn read_edit_round_trip_replaces_lines_and_mints_a_new_tag() -> TestResult {
     ));
     assert!(!edit.is_error, "{}", output_text(&edit));
     let text = output_text(&edit);
-    assert!(text.contains("updated; first change at line 2"), "{text}");
+    assert!(text.contains("updated; +1 -2 at line 2"), "{text}");
     assert!(
         text.lines()
             .next()
@@ -652,14 +652,16 @@ fn a_multi_hunk_edit_anchors_every_hunk_without_a_re_read() -> TestResult {
     assert!(!edit.is_error, "{}", output_text(&edit));
     let text = output_text(&edit);
 
-    // Both hunks get a window. Before this, only the first did.
-    assert!(text.contains("2:SECOND"), "{text}");
-    assert!(text.contains("10:TENTH"), "{text}");
-    assert!(text.contains("13:"), "{text}");
+    // Both hunks are answered by count and line, and neither body row is reprinted.
+    assert!(text.contains("+2 -2 at line 2"), "{text}");
+    assert!(
+        !text.contains("SECOND") && !text.contains("TENTH"),
+        "{text}"
+    );
 
     // The contract a consumer sees: the second hunk is anchorable straight
-    // away. Without its window the seen-lines guard rejects this and the model
-    // has to re-read the whole file.
+    // away. If the authored rows were not recorded as seen the guard would
+    // reject this and the model would have to re-read the whole file.
     let new_tag = text
         .lines()
         .next()

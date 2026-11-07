@@ -8,7 +8,6 @@ import collections
 import datetime
 import json
 import pathlib
-import re
 import sys
 import threading
 import time
@@ -22,7 +21,15 @@ BOT = "yi-bot"
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
 MARKERS = ("<!-- yi-round-meta ", "<!-- yi-round-void-meta ", "<!-- yi-autofix-meta ")
 FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models")
-SKILL_READ = re.compile(r"(?:\.yi/skills/|yi://skills/)(.+?)(?:/SKILL\.md)?$")
+
+
+def skill_name(url):
+    if url.startswith("yi://skills/"):
+        address = url[len("yi://skills/"):]
+        return address.split("/", 1)[0].split("#", 1)[0]
+    if url.startswith("local://") and url.endswith("/SKILL.md"):
+        return url[:-len("/SKILL.md")].rsplit("/", 1)[-1]
+    return None
 
 
 class Meter:
@@ -41,14 +48,14 @@ class Meter:
         for path in pathlib.Path(directory).rglob("*.jsonl"):
             for line in path.read_text(errors="replace").splitlines():
                 try:
-                    message = json.loads(line).get("message") or {}
-                except (json.JSONDecodeError, AttributeError):
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
                     continue
-                for part in message.get("content") or []:
-                    if isinstance(part, dict) and part.get("type") == "toolCall" and part.get("name") == "read":
-                        read = SKILL_READ.search(str((part.get("arguments") or {}).get("path")))
-                        if read:
-                            skills[read.group(1)] += 1
+                if entry.get("customType") == "fetch":
+                    name = skill_name(str((entry.get("data") or {}).get("url") or ""))
+                    if name:
+                        skills[name] += 1
+                message = entry.get("message") or {}
                 usage = message.get("usage") or {}
                 if message.get("role") != "assistant" or not usage:
                     continue
@@ -175,14 +182,15 @@ def selfcheck():
         if f["skills"] != "none":
             errs.append(f"a session with no read counts a skill: {f['skills']}")
         read = lambda path: json.dumps({"message": {"role": "assistant", "content": [{"type": "toolCall", "name": "read", "arguments": {"path": path}}]}})
+        fetch = lambda url: json.dumps({"type": "custom", "customType": "fetch", "data": {"url": url, "hash": "deadbeef", "servedBy": "skill"}})
         (tmp / "b").mkdir()
-        (tmp / "b/s.jsonl").write_text("\n".join([read("/root/.yi/skills/har/SKILL.md"), read("/root/.yi/skills/har/SKILL.md"), read("yi://skills/har-api"),
-                                                  read("crates/a/src/lib.rs"), read("/root/.yi/skills/har-io/SKILL.md").replace('"read"', '"write"'), json.dumps({"message": {"role": "user", "content": "/root/.yi/skills/har-io/SKILL.md"}})]))
+        (tmp / "b/s.jsonl").write_text("\n".join([read("yi://skills/ghost"), fetch("yi://skills/har-api"), fetch("local:///root/.yi/skills/har/SKILL.md")]))
+        (tmp / "b/t.jsonl").write_text("\n".join([read("/root/.claude/skills/missing/SKILL.md"), fetch("local:///root/.claude/skills/har-io/SKILL.md"), fetch("yi://skills/har")]))
         reads = Meter()
         reads.add_sessions(tmp / "b")
-        if reads.fields()["skills"] != "har:2,har-api:1":
-            errs.append(f"the meter's skill reads: {reads.fields()['skills']}")
-        if "skills read har:2,har-api:1" not in status_line(reads, 0, 0, "round"):
+        if reads.fields()["skills"] != "har:2,har-api:1,har-io:1":
+            errs.append(f"the meter's served skill reads: {reads.fields()['skills']}")
+        if "skills read har:2,har-api:1,har-io:1" not in status_line(reads, 0, 0, "round"):
             errs.append("the status line does not say which skills a round read")
         line = status_line(meter, 1.234, 5.5, "round 2")
         for part in ("round 2", "glm-5.3-flash", "2 call(s), 2 turn(s)", "in 3.0k", "(cached 2.7k)", "out 120", "$0.03", "this PR $1.23", "today $5.50"):
