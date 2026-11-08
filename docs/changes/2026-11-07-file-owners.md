@@ -1,4 +1,5 @@
 ---
+version: 0.999.0
 issue: Closes #2086
 shares: #2081 both add a guard call to forge_pr.py and a selfcheck line to check_guardrails.sh, at different lines
 shares: #2022 it retries runner-failed gate runs in forge_pr.py and pr_review.py; this branch adds the shared stack and diff helpers beside them
