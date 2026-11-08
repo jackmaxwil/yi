@@ -556,13 +556,13 @@ impl TodoTool {
         })
     }
 
-    /// The rows `target` names that carry a check, with the command each one runs.
+    /// The rows a `done` at `target` closes that carry a check, with the command each one runs.
     fn commands_for(&self, target: &Target) -> Vec<(TodoLabel, String)> {
         self.store.resync();
         let list = self.store.list();
         let rows = super::check::targeted(&list, target).unwrap_or_default();
         (rows.into_iter())
-            .filter(|item| !item.state.is_terminal())
+            .filter(|item| !item.state.is_terminal() && super::done::reaches(target, item))
             .filter_map(|item| {
                 super::check::command_of(item).map(|command| (item.label.clone(), command))
             })

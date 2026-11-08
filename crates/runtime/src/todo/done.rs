@@ -1,4 +1,4 @@
-use yi_types::plan::doc::{TodoLabel, TodoState};
+use yi_types::plan::doc::{Todo, TodoLabel, TodoState};
 use yi_types::todo::TodoList;
 
 use super::{Target, TodoError, each_target, illegal, named, resolve};
@@ -24,7 +24,6 @@ pub(super) fn done(
         }
     }
     let by_name = matches!(target, Target::Label(_));
-    let bare = matches!(target, Target::All);
     let mut kept: Vec<String> = Vec::new();
     each_target(list, target, |item| {
         let closed = item.state.is_terminal();
@@ -34,7 +33,7 @@ pub(super) fn done(
         if closed {
             return Ok(());
         }
-        if bare && matches!(item.state, TodoState::Blocked { .. }) {
+        if !reaches(target, item) {
             kept.push(named(item));
             return Ok(());
         }
@@ -58,6 +57,10 @@ pub(super) fn done(
         ));
     }
     Ok(())
+}
+
+pub(super) fn reaches(target: &Target, item: &Todo) -> bool {
+    !(matches!(target, Target::All) && matches!(item.state, TodoState::Blocked { .. }))
 }
 
 fn open_children(list: &mut TodoList, label: &TodoLabel) -> Result<Vec<String>, TodoError> {
