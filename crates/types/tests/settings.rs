@@ -1,9 +1,9 @@
 use serde_json::{Value, json};
 use yi_types::config::{
     BashConfig, BrowserConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig,
-    EditConfig, KernelConfig, MailConfig, McpConfig, ModelRoles, NodeConfig, PermissionsConfig,
-    PlanConfig, PlansConfig, RlmConfig, SandboxConfig, SkillsConfig, SpendConfig, TelemetryConfig,
-    TuiConfig, UserConfig, WebSearchConfig,
+    EditConfig, KernelConfig, MailConfig, McpConfig, MemoryConfig, ModelRoles, NodeConfig,
+    PermissionsConfig, PlanConfig, PlansConfig, RlmConfig, SandboxConfig, SkillsConfig,
+    SpendConfig, TelemetryConfig, TuiConfig, UserConfig, WebSearchConfig,
 };
 use yi_types::lane::LanesConfig;
 use yi_types::settings::{SettingKind, SettingRow, refusal, rows};
@@ -56,6 +56,7 @@ fn leaves() -> Vec<String> {
         permissions,
         sandbox,
         mail,
+        memory,
         open,
         browser,
         providers,
@@ -164,6 +165,7 @@ fn leaves() -> Vec<String> {
             }),
         ),
         ("mail", fields!(MailConfig { hop_limit })),
+        ("memory", fields!(MemoryConfig { import_claude })),
         ("routing", vec!["order", "only"]),
     ];
     top.into_iter()

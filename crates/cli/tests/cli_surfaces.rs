@@ -2207,13 +2207,50 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "daemon-socket",
             "daemon-ledger",
             "lanes",
+            "claude-memory",
             "cache",
             "sandbox-listeners",
             "plugins",
             "exec-tools"
         ]
     );
-    assert_eq!(rows[12]["detail"], "no session here", "{rows}");
+    assert_eq!(rows[13]["detail"], "no session here", "{rows}");
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_the_claude_memory_row_and_its_off_state() -> TestResult {
+    let workspace = Workspace::new("doctor-claude-memory")?;
+    let dir =
+        yi_runtime::memory::claude::project_dir(&workspace.0.join("home"), &workspace.project());
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("alpha.md"),
+        "---\nname: alpha\ndescription: the doctor hook\ntype: project\n---\n\nbody\n",
+    )?;
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    assert_eq!(rows[12]["name"], "claude-memory", "{rows}");
+    let detail = rows[12]["detail"].as_str().ok_or("detail")?;
+    assert!(
+        detail.contains("1 notes in ~/.claude/projects/") && detail.contains("0 imported"),
+        "{detail}"
+    );
+    let import = workspace.yi_env(&["memory", "import-claude"], NO_KERNEL)?;
+    assert_eq!(import.status.code(), Some(0), "{}", stdout(&import));
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    let detail = rows[12]["detail"].as_str().ok_or("detail")?;
+    assert!(detail.contains("1 imported"), "{detail}");
+    write_config(&workspace, r#"{"memory":{"importClaude":false}}"#)?;
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    let detail = rows[12]["detail"].as_str().ok_or("detail")?;
+    assert!(detail.starts_with("memory.importClaude is off"), "{detail}");
+    assert!(
+        detail.contains("1 notes in ~/.claude/projects/"),
+        "{detail}"
+    );
     Ok(())
 }
 
@@ -2238,7 +2275,7 @@ fn doctor_reports_a_cache_notice_and_leaves_the_session_file_alone() -> TestResu
     std::fs::write(&file, &torn)?;
     let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
     let rows: Value = serde_json::from_str(&stdout(&json))?;
-    let row = &rows[12];
+    let row = &rows[13];
     assert_eq!(row["name"], "cache", "{rows}");
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().ok_or("detail")?;
@@ -3122,6 +3159,40 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
     assert_eq!(show.status.code(), Some(1));
     let usage = workspace.yi(&["memory", "frobnicate"])?;
     assert_eq!(usage.status.code(), Some(2));
+    Ok(())
+}
+
+#[test]
+fn yi_memory_import_claude_takes_the_working_directorys_notes() -> TestResult {
+    let workspace = Workspace::new("memory-claude")?;
+    let dir =
+        yi_runtime::memory::claude::project_dir(&workspace.0.join("home"), &workspace.project());
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("alpha.md"),
+        "---\nname: alpha\ndescription: the probe hook\ntype: project\n---\n\nA body about the alpha probe.\n",
+    )?;
+    let import = workspace.yi(&["memory", "import-claude"])?;
+    assert_eq!(import.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&import.stdout);
+    assert!(
+        text.contains("claude · 1 notes in ~/.claude/projects/"),
+        "{text}"
+    );
+    assert!(text.contains("1 imported"), "{text}");
+    let search = workspace.yi(&["memory", "search", "alpha probe"])?;
+    let hits = String::from_utf8_lossy(&search.stdout);
+    assert!(hits.contains("alpha "), "{hits}");
+    assert!(
+        dir.join("alpha.md").is_file(),
+        "the import wrote into the Claude directory"
+    );
+    let again = workspace.yi(&["memory", "import-claude"])?;
+    let second = String::from_utf8_lossy(&again.stdout);
+    assert!(
+        !second.contains("imported") && !second.contains("updated"),
+        "{second}"
+    );
     Ok(())
 }
 

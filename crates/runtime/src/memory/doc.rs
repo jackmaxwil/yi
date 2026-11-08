@@ -1,5 +1,7 @@
 use std::fmt;
 
+use yi_types::plan::canonical::Digest;
+
 const HOOK_CAP: usize = 240;
 const BODY_CAP: usize = 8 * 1024;
 const NAME_CAP: usize = 80;
@@ -550,6 +552,53 @@ impl Memory {
     pub fn index_line(&self) -> String {
         format!("- [{}]({}) — {}", self.name, self.name.file(), self.hook)
     }
+}
+
+/// The note as a tagged copy, `source: <tag>` and the digest of the copy opening its frontmatter,
+/// so a later import tells a note left as imported from one changed since.
+pub fn tagged(text: &str, tag: &str) -> String {
+    let plain = framed(text, tag);
+    let hash = Digest::of(plain.as_bytes()).hex();
+    plain.replacen(
+        &format!("source: {tag}\n"),
+        &format!("source: {tag}\n{HASH_KEY}: {hash}\n"),
+        1,
+    )
+}
+
+const HASH_KEY: &str = "sourceHash";
+
+pub fn untouched(text: &str) -> bool {
+    let key = format!("{HASH_KEY}: ");
+    let Some(hash) = text.lines().find_map(|line| line.strip_prefix(&key)) else {
+        return false;
+    };
+    let plain = text.replacen(&format!("{key}{hash}\n"), "", 1);
+    Digest::of(plain.as_bytes()).hex() == hash
+}
+
+pub fn refused(text: &str) -> bool {
+    loops(text) || secret_in(text).is_some()
+}
+
+fn framed(text: &str, tag: &str) -> String {
+    let opens = text.lines().next().is_some_and(|line| line.trim() == "---");
+    let mut out = format!("---\nsource: {tag}\n");
+    if opens {
+        let start = text
+            .find('\n')
+            .map_or(text.len(), |at| at.saturating_add(1));
+        out.push_str(text.get(start..).unwrap_or_default());
+    } else {
+        out.push_str("---\n\n");
+        out.push_str(text);
+    }
+    out
+}
+
+/// The `source:` a note carries, which is the store's own name for the writer's provenance.
+pub fn source_of(note: &Note) -> Option<&str> {
+    text_of(&note.front, "source")
 }
 
 fn quoted(text: &str) -> String {

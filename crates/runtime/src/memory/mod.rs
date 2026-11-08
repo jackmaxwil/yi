@@ -1,3 +1,4 @@
+pub mod claude;
 mod doc;
 pub(crate) use doc::edit_distance;
 mod ext;

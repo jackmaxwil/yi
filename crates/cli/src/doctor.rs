@@ -44,7 +44,7 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 16] = [
+const ROWS: [(&str, Check); 17] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
@@ -57,11 +57,23 @@ const ROWS: [(&str, Check); 16] = [
     ("daemon-socket", socket_alive_or_absent),
     ("daemon-ledger", ledger_roots_exist),
     ("lanes", lanes_consistent),
+    ("claude-memory", claude_memory),
     ("cache", cache_reads),
     ("sandbox-listeners", sandbox_listeners),
     ("plugins", plugins_pinned),
     ("exec-tools", exec_tools),
 ];
+
+fn claude_memory(site: &Site) -> Finding {
+    let memory = yi_runtime::memory::claude::tally(&site.home, &site.cwd);
+    if !yi_runtime::memory::claude::enabled(&site.home) {
+        return ok(format!(
+            "memory.importClaude is off; `yi memory import-claude` still runs it · {}",
+            memory.line()
+        ));
+    }
+    ok(memory.line())
+}
 
 /// Never a failure: where yi runs decides what a contained command and a placement can reach.
 fn host_environment(_site: &Site) -> Finding {

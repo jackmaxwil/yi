@@ -1,12 +1,14 @@
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::Activity;
+use super::claude::{self, Sources};
 use super::doc::{MemoryType, Note};
 use super::rank::tokens;
 use super::store::{
-    IndexLine, LOAD_BYTES, LOAD_LINES, Store, StoreError, global_dir, loaded, repo_dir,
+    IndexLine, Snapshot, Store, StoreError, global_dir, load_cap_notice, loaded, repo_dir,
 };
 use crate::ext::{Effect, Event, EventMask, Extension, StartReason, Trust};
 
@@ -105,9 +107,20 @@ struct Scoped {
 
 type Index = fn(&Store) -> Result<Vec<IndexLine>, StoreError>;
 
-fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError> {
-    let index = index(store)?;
-    let notes = store.notes();
+fn scoped(
+    store: &Store,
+    root: &Path,
+    index: Index,
+    sources: &Sources,
+    snapshot: Option<&Snapshot>,
+) -> Result<Scoped, StoreError> {
+    let (index, notes) = match snapshot {
+        Some(snapshot) => (
+            Cow::Borrowed(&snapshot.index),
+            Cow::Borrowed(&snapshot.notes),
+        ),
+        None => (Cow::Owned(index(store)?), Cow::Owned(store.notes())),
+    };
     let (shown, not_loaded) = loaded(&index, &store.usage());
     let mut stale = 0usize;
     let rows = shown
@@ -115,13 +128,19 @@ fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError
         .filter_map(|line| match line {
             IndexLine::Note { text, name } => {
                 let note = notes.iter().position(|note| &note.name == name);
-                let hook = note
-                    .and_then(|at| notes.get(at))
-                    .map_or("", |note| note.hook.as_str());
-                let text = match stale_path(text, root).or_else(|| stale_path(hook, root)) {
-                    Some(path) => {
+                let found = note.and_then(|at| notes.get(at));
+                let hook = found.map_or("", |note| note.hook.as_str());
+                let mark = stale_path(text, root)
+                    .or_else(|| stale_path(hook, root))
+                    .or_else(|| {
+                        found
+                            .filter(|note| sources.stale(note))
+                            .map(|_| "stale".to_owned())
+                    });
+                let text = match mark {
+                    Some(mark) => {
                         stale = stale.saturating_add(1);
-                        format!("{text} ⚠ {path}")
+                        format!("{text} ⚠ {mark}")
                     }
                     None => text.clone(),
                 };
@@ -132,7 +151,7 @@ fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError
         .collect();
     Ok(Scoped {
         unparsed: notes.iter().filter(|note| note.trouble.is_some()).count(),
-        notes,
+        notes: notes.into_owned(),
         rows,
         stale,
         not_loaded,
@@ -141,54 +160,50 @@ fn scoped(store: &Store, root: &Path, index: Index) -> Result<Scoped, StoreError
 
 /// The index block, reconciling each store first: explicit renders journal hand edits.
 pub fn block(home: &Path, cwd: &Path) -> (String, Summary) {
-    render(home, cwd, Store::reconcile)
+    render(home, cwd, Store::reconcile, &Sources::discover(home, cwd))
 }
 
 /// The index block's summary as the stores stand, written nowhere: `yi memory list` reads.
 pub fn listed(home: &Path, cwd: &Path) -> Summary {
-    render(home, cwd, Store::indexed).1
+    render(home, cwd, Store::indexed, &Sources::discover(home, cwd)).1
 }
 
 /// The block the first typed prompt earns: the index it would have carried, ranked by the
 /// prompt's words, with the bodies of the few notes that earn them and a row naming the cut.
 pub fn focused(home: &Path, cwd: &Path, prompt: &str) -> (String, Summary) {
-    focus(home, cwd, prompt, Store::indexed)
+    focus(home, cwd, prompt, &Sources::discover(home, cwd))
 }
 
 fn load_cut(scoped: &Scoped) -> Option<String> {
-    if scoped.not_loaded == 0 {
-        return None;
-    }
-    let shown = scoped.rows.len();
-    let (cap, limit) = if shown >= LOAD_LINES {
-        ("LOAD_LINES", LOAD_LINES)
-    } else {
-        ("LOAD_BYTES", LOAD_BYTES)
-    };
-    let all = shown.saturating_add(scoped.not_loaded);
-    let next = "await memory.search(\"words\")";
-    Some(crate::listed::cut_row(
-        shown,
-        all,
-        "notes loaded",
-        cap,
-        limit,
-        next,
-    ))
+    load_cap_notice(scoped.rows.len(), scoped.not_loaded)
 }
 
 fn gather(
     home: &Path,
     cwd: &Path,
     index: Index,
+    sources: &Sources,
+    imported: Option<&claude::Outcome>,
 ) -> (
     Result<Scoped, StoreError>,
     Result<Scoped, StoreError>,
     Summary,
 ) {
     let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let repo = scoped(&Store::new(repo_dir(home, cwd)), &root, index);
-    let global = scoped(&Store::new(global_dir(home)), &root, index);
+    let repo = scoped(
+        &Store::new(repo_dir(home, cwd)),
+        &root,
+        index,
+        sources,
+        imported.and_then(|outcome| outcome.repo.as_ref()),
+    );
+    let global = scoped(
+        &Store::new(global_dir(home)),
+        &root,
+        index,
+        sources,
+        imported.and_then(|outcome| outcome.global.as_ref()),
+    );
     let mut summary = Summary::default();
     for result in [&repo, &global] {
         match result {
@@ -213,8 +228,8 @@ fn assemble(summary: &Summary, body: &[String]) -> String {
     format!("{HEADER}\n{}\n{}", counts(summary), body.join("\n"))
 }
 
-fn render(home: &Path, cwd: &Path, index: Index) -> (String, Summary) {
-    let (repo, global, summary) = gather(home, cwd, index);
+fn render(home: &Path, cwd: &Path, index: Index, sources: &Sources) -> (String, Summary) {
+    let (repo, global, summary) = gather(home, cwd, index, sources, None);
     let mut body: Vec<String> = Vec::new();
     for (label, result) in [("repo", &repo), ("global", &global)] {
         match result {
@@ -309,8 +324,8 @@ fn earned(candidates: &[(&Note, &str)], prompt: &str) -> (Vec<usize>, Vec<usize>
     (ranked, scored_at, deduped)
 }
 
-fn focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summary) {
-    let (repo, global, summary) = gather(home, cwd, index);
+fn focus(home: &Path, cwd: &Path, prompt: &str, sources: &Sources) -> (String, Summary) {
+    let (repo, global, summary) = gather(home, cwd, Store::indexed, sources, None);
     let mut candidates: Vec<(&Note, &str)> = Vec::new();
     let mut budget = 0usize;
     let mut extras: Vec<String> = Vec::new();
@@ -426,7 +441,7 @@ fn focus(home: &Path, cwd: &Path, prompt: &str, index: Index) -> (String, Summar
 pub struct MemoryExt {
     home: PathBuf,
     activity: Arc<Activity>,
-    cwd: Option<PathBuf>,
+    site: Option<(PathBuf, Sources)>,
     focused: bool,
 }
 
@@ -435,7 +450,7 @@ impl MemoryExt {
         Self {
             home,
             activity,
-            cwd: None,
+            site: None,
             focused: false,
         }
     }
@@ -470,10 +485,10 @@ impl Extension for MemoryExt {
                     return;
                 }
                 self.focused = true;
-                let Some(cwd) = self.cwd.clone() else {
+                let Some((cwd, sources)) = &self.site else {
                     return;
                 };
-                let (text, _) = focused(&self.home, &cwd, prompt);
+                let (text, _) = focus(&self.home, cwd, prompt, sources);
                 self.attach(text, out);
             }
             Event::SessionStart {
@@ -481,9 +496,15 @@ impl Extension for MemoryExt {
                 reason,
                 restored,
             } => {
-                self.cwd = Some(cwd.clone());
                 self.focused = *reason == StartReason::Resume && restored.contains(SOURCE);
-                let (_, _, summary) = gather(&self.home, cwd, Store::reconcile);
+                let sources = Sources::discover(&self.home, cwd);
+                let imported = claude::run_at_start(&self.home, cwd, &sources);
+                for report in &imported.reports {
+                    self.activity.push(report.line());
+                }
+                let (_, _, summary) =
+                    gather(&self.home, cwd, Store::reconcile, &sources, Some(&imported));
+                self.site = Some((cwd.clone(), sources));
                 if *reason == StartReason::Fresh {
                     let counted = Store::new(repo_dir(&self.home, cwd))
                         .record(|usage| usage.sessions = usage.sessions.saturating_add(1));
@@ -502,6 +523,7 @@ impl Extension for MemoryExt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::store::LOAD_LINES;
     use crate::scratch::Scratch;
     use std::fs;
 
@@ -524,18 +546,67 @@ mod tests {
     }
 
     #[test]
+    fn a_session_start_imports_the_claude_memories_and_announces_them() {
+        let home = temp("start-home").join("home");
+        let cwd = temp("start-cwd");
+        let dir = crate::memory::claude::project_dir(&home, &cwd);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("alpha.md"),
+            "---\nname: alpha\ndescription: imported at start\nmetadata:\n  type: project\n---\n\nbody\n",
+        )
+        .unwrap();
+        let activity = Arc::new(Activity::default());
+        let mut ext = MemoryExt::new(home.clone(), Arc::clone(&activity));
+        let mut out = Vec::new();
+        let start = Event::SessionStart {
+            cwd: cwd.to_path_buf(),
+            reason: StartReason::Fresh,
+            restored: Default::default(),
+        };
+        ext.on(&start, &mut out);
+        let lines = activity.take_lines();
+        assert!(
+            lines.iter().any(
+                |line| line.starts_with("claude · 1 notes in ~/.claude/projects/")
+                    && line.ends_with("· 1 imported")
+            ),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("memory · 1 repo · 0 global")
+        );
+        let ask = Event::PromptSubmitted {
+            prompt: "what was imported at start".to_owned(),
+            repo_dirty: false,
+            named_paths: 0,
+        };
+        ext.on(&ask, &mut out);
+        assert!(
+            matches!(out.first(), Some(Effect::AttachExternal { .. })),
+            "no first-prompt block: {out:?}"
+        );
+        let Some(Effect::AttachExternal { text, trust, .. }) = out.first() else {
+            return;
+        };
+        assert_eq!(*trust, Trust::Untrusted);
+        assert!(text.contains("## alpha — imported at start"), "{text}");
+    }
+
+    #[test]
     fn the_claude_fixture_imports_and_renders_the_golden_block() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/memory");
         let home = temp("golden-home");
         let cwd = temp("golden-cwd");
         let store = Store::new(repo_dir(&home, &cwd));
-        let report = store.import(&fixtures.join("claude")).unwrap();
+        let report = store.import(&fixtures.join("claude"), None).unwrap();
         assert_eq!((report.imported, report.updated, report.skipped), (3, 0, 0));
         let (text, summary) = block(&home, &cwd);
         let golden = fs::read_to_string(fixtures.join("claude.v3.block")).unwrap();
         assert_eq!(text, golden.trim_end());
         assert_eq!(summary.unparsed, 1);
-        let again = store.import(&fixtures.join("claude")).unwrap();
+        let again = store.import(&fixtures.join("claude"), None).unwrap();
         assert_eq!((again.imported, again.updated, again.skipped), (0, 0, 3));
     }
 

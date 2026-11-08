@@ -64,6 +64,9 @@ pub struct UserConfig {
     pub permissions: Option<PermissionsConfig>,
     pub sandbox: Option<SandboxConfig>,
     pub mail: Option<MailConfig>,
+    /// `memory.importClaude`: import the Claude Code memories of this working directory and
+    /// the user-level one into the stores at session start; on unless set false.
+    pub memory: Option<MemoryConfig>,
     /// `open`: the apps a console message's Open in submenu lists, each a name and a command
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
     pub open: Option<Vec<OpenApp>>,
@@ -206,6 +209,14 @@ impl CustomProvider {
             })
             .collect()
     }
+}
+
+/// `memory.importClaude`: off stops the start-of-session import and nothing else; the
+/// `yi memory import-claude` verb still runs it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryConfig {
+    pub import_claude: Option<bool>,
 }
 
 /// `webSearch.engine`: the OpenRouter server-search engine; unset is `exa`.

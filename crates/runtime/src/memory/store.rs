@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 use yi_types::plan::canonical::Digest;
 
-use super::doc::{Memory, MemoryName, Note, read_note};
+use super::doc::{Memory, MemoryName, Note, read_note, tagged};
 use super::journal::{self, Journal};
 
 const INDEX: &str = "MEMORY.md";
@@ -71,6 +71,12 @@ fn parse_index(text: &str) -> Vec<IndexLine> {
             None => IndexLine::Other(line.to_owned()),
         })
         .collect()
+}
+
+fn refused_line(line: &IndexLine) -> bool {
+    match line {
+        IndexLine::Note { text, .. } | IndexLine::Other(text) => super::doc::refused(text),
+    }
 }
 
 fn render_index(lines: &[IndexLine]) -> String {
@@ -171,6 +177,15 @@ pub struct Imported {
     pub imported: usize,
     pub updated: usize,
     pub skipped: usize,
+    pub kept: usize,
+    pub refused: usize,
+    pub unreadable: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct Snapshot {
+    pub index: Vec<IndexLine>,
+    pub notes: Vec<Note>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,11 +264,17 @@ impl Store {
         }
     }
 
-    fn index(&self) -> Result<Vec<IndexLine>, StoreError> {
+    fn raw_index(&self) -> Result<Vec<IndexLine>, StoreError> {
         Ok(self
             .read_text(INDEX)?
             .map(|text| parse_index(&text))
             .unwrap_or_default())
+    }
+
+    fn index(&self) -> Result<Vec<IndexLine>, StoreError> {
+        let mut lines = self.raw_index()?;
+        lines.retain(|line| !refused_line(line));
+        Ok(lines)
     }
 
     fn usage_strict(&self) -> Result<Usage, StoreError> {
@@ -274,7 +295,7 @@ impl Store {
         Some(read_note(name, &String::from_utf8_lossy(&bytes)))
     }
 
-    pub fn notes(&self) -> Vec<Note> {
+    pub(crate) fn names(&self) -> Vec<MemoryName> {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return Vec::new();
         };
@@ -288,6 +309,10 @@ impl Store {
             .collect();
         names.sort();
         names
+    }
+
+    pub fn notes(&self) -> Vec<Note> {
+        self.names()
             .into_iter()
             .filter_map(|name| self.note_at(name))
             .collect()
@@ -324,20 +349,28 @@ impl Store {
     }
 
     pub fn reconcile(&self) -> Result<Vec<IndexLine>, StoreError> {
-        if !self.dir.is_dir() {
-            return Ok(Vec::new());
-        }
-        let _lock = self.lock()?;
-        self.sync_journal()?;
-        self.reconcile_index()
+        self.reconcile_snapshot().map(|snapshot| snapshot.index)
     }
 
-    fn sync_journal(&self) -> Result<(), StoreError> {
+    fn reconcile_snapshot(&self) -> Result<Snapshot, StoreError> {
+        if !self.dir.is_dir() {
+            return Ok(Snapshot {
+                index: Vec::new(),
+                notes: Vec::new(),
+            });
+        }
+        let _lock = self.lock()?;
+        let notes = self.notes();
+        self.sync_journal(&notes)?;
+        let index = self.reconcile_index(&notes)?;
+        Ok(Snapshot { index, notes })
+    }
+
+    fn sync_journal(&self, notes: &[Note]) -> Result<(), StoreError> {
         let journal = self.journal();
         let replay = journal.replay()?;
         let heads = replay.heads();
-        let notes = self.notes();
-        for note in &notes {
+        for note in notes {
             let Some(text) = self.read_text(&note.name.file())? else {
                 continue;
             };
@@ -369,9 +402,9 @@ impl Store {
         Ok(())
     }
 
-    fn reconcile_index(&self) -> Result<Vec<IndexLine>, StoreError> {
-        let kept = self.indexed()?;
-        if kept != self.index()? {
+    fn reconcile_index(&self, notes: &[Note]) -> Result<Vec<IndexLine>, StoreError> {
+        let kept = self.index_from(notes)?;
+        if kept != self.raw_index()? {
             self.replace(INDEX, &render_index(&kept))?;
         }
         Ok(kept)
@@ -379,8 +412,11 @@ impl Store {
 
     /// The index as reconcile would write it, read without writing anything.
     pub(crate) fn indexed(&self) -> Result<Vec<IndexLine>, StoreError> {
+        self.index_from(&self.notes())
+    }
+
+    fn index_from(&self, notes: &[Note]) -> Result<Vec<IndexLine>, StoreError> {
         let lines = self.index()?;
-        let notes = self.notes();
         let mut seen: Vec<MemoryName> = Vec::new();
         let mut kept: Vec<IndexLine> = Vec::new();
         for line in &lines {
@@ -395,7 +431,7 @@ impl Store {
                 IndexLine::Other(_) => kept.push(line.clone()),
             }
         }
-        for note in &notes {
+        for note in notes {
             if !seen.contains(&note.name) {
                 kept.push(IndexLine::Note {
                     name: note.name.clone(),
@@ -403,6 +439,7 @@ impl Store {
                 });
             }
         }
+        kept.retain(|line| !refused_line(line));
         Ok(kept)
     }
 
@@ -525,7 +562,7 @@ impl Store {
             .notes
             .retain(|name, _| MemoryName::from_stem(name).is_some());
         self.replace(USAGE, &render_usage(&usage))?;
-        self.reconcile_index()?;
+        self.reconcile_index(&self.notes())?;
         Ok(report)
     }
 
@@ -539,28 +576,73 @@ impl Store {
         self.replace(USAGE, &render_usage(&usage))
     }
 
-    pub fn import(&self, from: &Path) -> Result<Imported, StoreError> {
-        let source = Self::new(from.to_path_buf());
+    /// Copies a directory of notes in, tagging each with `source` when one is named; a tagged
+    /// import never replaces a note changed since it wrote it, nor lands one save would refuse.
+    pub fn import(&self, from: &Path, source: Option<&str>) -> Result<Imported, StoreError> {
+        self.import_report(from, source, true)
+            .map(|(report, _)| report)
+    }
+
+    pub(crate) fn import_report(
+        &self,
+        from: &Path,
+        source: Option<&str>,
+        adopt_forgotten: bool,
+    ) -> Result<(Imported, Snapshot), StoreError> {
+        let origin = Self::new(from.to_path_buf());
         let mut report = Imported::default();
         {
             let _lock = self.lock()?;
-            for note in source.notes() {
-                let file = note.name.file();
-                let bytes = fs::read(from.join(&file)).map_err(io(&file))?;
+            let replay = self.journal().replay()?;
+            let heads = replay.heads();
+            for name in origin.names() {
+                if !adopt_forgotten
+                    && heads
+                        .get(name.as_str())
+                        .is_some_and(|head| head.op == journal::FORGET)
+                {
+                    report.kept = report.kept.saturating_add(1);
+                    continue;
+                }
+                let file = name.file();
+                let Ok(bytes) = fs::read(from.join(&file)) else {
+                    report.unreadable = report.unreadable.saturating_add(1);
+                    continue;
+                };
+                let raw = String::from_utf8_lossy(&bytes);
+                if super::doc::refused(&raw) {
+                    report.refused = report.refused.saturating_add(1);
+                    continue;
+                }
+                let text = match source {
+                    Some(tag) => tagged(&raw, tag),
+                    None => raw.into_owned(),
+                };
                 match fs::read(self.dir.join(&file)) {
-                    Ok(existing) if existing == bytes => {
+                    Ok(existing) if existing == text.as_bytes() => {
                         report.skipped = report.skipped.saturating_add(1);
+                        continue;
+                    }
+                    Ok(existing)
+                        if source.is_some()
+                            && !super::doc::untouched(&String::from_utf8_lossy(&existing)) =>
+                    {
+                        report.kept = report.kept.saturating_add(1);
                         continue;
                     }
                     Ok(_) => report.updated = report.updated.saturating_add(1),
                     Err(_) => report.imported = report.imported.saturating_add(1),
                 }
-                let text = String::from_utf8_lossy(&bytes);
                 self.replace(&file, &text)?;
             }
             let mut lines = self.index()?;
-            for line in source.index()? {
-                if let IndexLine::Note { name, .. } = &line {
+            let source_index = origin.read_text(INDEX)?.unwrap_or_default();
+            for line in parse_index(&source_index) {
+                if let IndexLine::Note { name, text } = &line {
+                    if super::doc::refused(text) {
+                        report.refused = report.refused.saturating_add(1);
+                        continue;
+                    }
                     let indexed = lines.iter().any(
                         |own| matches!(own, IndexLine::Note { name: have, .. } if have == name),
                     );
@@ -571,8 +653,8 @@ impl Store {
             }
             self.replace(INDEX, &render_index(&lines))?;
         }
-        self.reconcile()?;
-        Ok(report)
+        let snapshot = self.reconcile_snapshot()?;
+        Ok((report, snapshot))
     }
 }
 
@@ -613,6 +695,24 @@ pub fn loaded<'a>(lines: &'a [IndexLine], usage: &Usage) -> (Vec<&'a IndexLine>,
     (shown, dropped)
 }
 
+pub(super) fn load_cap_notice(shown: usize, dropped: usize) -> Option<String> {
+    (dropped > 0).then(|| {
+        let (cap, limit) = if shown >= LOAD_LINES {
+            ("LOAD_LINES", LOAD_LINES)
+        } else {
+            ("LOAD_BYTES", LOAD_BYTES)
+        };
+        crate::listed::cut_row(
+            shown,
+            shown.saturating_add(dropped),
+            "notes loaded",
+            cap,
+            limit,
+            "await memory.search(\"words\")",
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,6 +748,44 @@ mod tests {
         let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
         assert_eq!(index, "- [beta](beta.md) — second hook\n");
         assert!(!store.dir().join("alpha.md").exists());
+    }
+
+    #[test]
+    fn a_refused_hand_edited_index_line_is_removed_on_reconcile() {
+        let dir = temp("index-refused");
+        let store = Store::new(dir.join("store"));
+        store.save(note("alpha", "safe hook")).unwrap();
+        let secret = ["sk-", "abcdefghijklmnop", "1234"].concat();
+        fs::write(
+            store.dir().join(INDEX),
+            format!("- [alpha](alpha.md) — token {secret}\n"),
+        )
+        .unwrap();
+        let lines = store.reconcile().unwrap();
+        assert!(!render_index(&lines).contains(&secret));
+        let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
+        assert!(!index.contains(&secret), "{index}");
+        assert!(index.contains("safe hook"), "{index}");
+    }
+
+    #[test]
+    fn a_hand_written_note_with_a_refused_hook_is_never_indexed() {
+        let dir = temp("hook-refused");
+        let store = Store::new(dir.join("store"));
+        let secret = ["sk-", "abcdefghijklmnop", "1234"].concat();
+        let hook = format!("token {secret}");
+        fs::create_dir_all(store.dir()).unwrap();
+        let note = format!("---\nname: beta\ndescription: {hook}\ntype: project\n---\nbody\n");
+        fs::write(store.dir().join("beta.md"), note).unwrap();
+        fs::write(
+            store.dir().join(INDEX),
+            format!("- [beta](beta.md) — {hook}\n"),
+        )
+        .unwrap();
+        let lines = store.reconcile().unwrap();
+        assert!(!render_index(&lines).contains(&secret));
+        let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
+        assert!(!index.contains(&secret), "{index}");
     }
 
     fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
