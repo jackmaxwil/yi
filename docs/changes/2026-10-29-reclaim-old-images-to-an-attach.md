@@ -1,4 +1,5 @@
 ---
+version: 0.1005.0
 issue: Closes #1551
 cut: crates/runtime/src/reclaim.rs | Some("a result with an image is never cut, since its placeholder could not say so") | an older image result is now cut to an attach_image call on the source file it was read from, so the blanket refusal goes
 growth: +411 the image rule, its stat of the source the kernel recorded, its placeholder, its unit tests and its real session journey; cutting no image at all was the alternative weighed and the issue refuses it
