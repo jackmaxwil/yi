@@ -565,9 +565,8 @@ fn run(
     }
     if let (Some(blank), Some(total)) = (count("ocr"), count("page_count")) {
         let page = pages.first().copied().unwrap_or(1);
-        let attach = yi_types::image::attach_image_call(["p"]);
         return Err(Converted::Refused(format!(
-            "no text layer on any of the {blank} PDF page(s) read of {total} (image-only or vector art), so there is no text to show; to see page {page}, render it to PNG in ipython, if its kernel has pymupdf: `import pymupdf; p = \"/tmp/page-{page}.png\"; pymupdf.open({source})[{index}].get_pixmap(dpi=200).save(p); {attach}`",
+            "no text layer on any of the {blank} PDF page(s) read of {total} (image-only or vector art), so there is no text to show; to see page {page}, render it to PNG in ipython, if its kernel has pymupdf: `import pymupdf; p = \"/tmp/page-{page}.png\"; pymupdf.open({source})[{index}].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
             source = python_str(source.path),
             index = page.saturating_sub(1),
         )));

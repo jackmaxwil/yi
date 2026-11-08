@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_types::entry::{CustomRecord, Entry};
 use yi_types::image::attach_image_call;
-use yi_types::message::{AgentMessage, Content};
+use yi_types::message::{AgentMessage, Content, has_image};
 use yi_types::model::{CACHE_DIAGNOSTIC, Model, Ttl};
 use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 
@@ -111,8 +111,10 @@ impl Cut {
         }
     }
 
+    /// Invariant: a cut image whose picture can no longer be had goes out whole, so it is no cut
+    /// to the price, the view or annotate either.
     fn get(&self, message: &AgentMessage) -> Option<&Mark> {
-        find(&self.marks, message)
+        find(&self.marks, message).filter(|_| !lost_image(message))
     }
 
     pub(crate) fn cut_at(&self, message: &AgentMessage) -> Option<u64> {
@@ -230,12 +232,6 @@ fn chars(content: &[Content]) -> usize {
     texts(content).map(|text| text.chars().count()).sum()
 }
 
-fn has_image(content: &[Content]) -> bool {
-    content
-        .iter()
-        .any(|part| matches!(part, Content::Image { .. }))
-}
-
 /// The files an image result can be attached again from, the `attachmentMedia` rows the ipython
 /// tool writes; `None` unless every file still has the size and mtime the kernel recorded.
 fn image_paths(message: &AgentMessage) -> Option<Vec<String>> {
@@ -256,6 +252,8 @@ fn image_paths(message: &AgentMessage) -> Option<Vec<String>> {
             let path = row.get("path")?.as_str()?;
             let recorded_bytes = row.get("bytes")?.as_u64()?;
             let recorded_modified_ns = row.get("modified_ns")?.as_u64()?;
+            // Invariant: a kernel-named path is only asked whether it has the exact size and
+            // nanosecond mtime the kernel claimed, which confirms a guess and reveals nothing else.
             let metadata = std::fs::metadata(path).ok()?;
             let modified = metadata.modified().ok()?;
             let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
@@ -267,6 +265,11 @@ fn image_paths(message: &AgentMessage) -> Option<Vec<String>> {
         })
         .collect();
     (paths.len() == images && !paths.is_empty()).then_some(paths)
+}
+
+fn lost_image(message: &AgentMessage) -> bool {
+    matches!(message, AgentMessage::ToolResult { content, .. } if has_image(content))
+        && image_paths(message).is_none()
 }
 
 pub(crate) fn newest_images<M: std::borrow::Borrow<AgentMessage>>(
@@ -421,6 +424,9 @@ pub(crate) fn decide(
     let calls = calls(messages);
     let newest = newest_reads(&calls, messages, &cut.sections);
     let images = newest_images(messages);
+    let marks: Vec<bool> = (messages.iter())
+        .map(|message| cut.get(message).is_some())
+        .collect();
     let (mut turn, mut turns) = (0_u64, Vec::with_capacity(messages.len()));
     for message in messages {
         if matches!(message, AgentMessage::Assistant { .. }) {
@@ -444,16 +450,19 @@ pub(crate) fn decide(
         if !floors {
             return false;
         }
-        let kept = cut.get(message).is_some()
+        let kept = marks.get(index).copied().unwrap_or(false)
             || marked(&cut.pins)
             || never_cut(message, newest.contains(&index), images.contains(&index)).is_some();
         !kept
     };
     // A result already cut costs its placeholder, so a new cut's rewrite is the view's own size.
-    let sizes: Vec<u64> = (messages.iter())
-        .map(|message| match cut.get(message) {
-            Some(_) => PLACEHOLDER_TOKENS,
-            None => yi_context::estimate_message(message).0,
+    let sizes: Vec<u64> = (messages.iter().zip(&marks))
+        .map(|(message, cut)| {
+            if *cut {
+                PLACEHOLDER_TOKENS
+            } else {
+                yi_context::estimate_message(message).0
+            }
         })
         .collect();
     let mut picked: Vec<usize> = (0..messages.len())
@@ -569,7 +578,7 @@ fn render(
         .map(|call| call.map(|(name, args)| brief(name, args)))
         .collect();
     for (message, call) in messages.iter_mut().zip(briefs) {
-        let Some(mark) = cut.get(message) else {
+        let Some(mark) = find(&cut.marks, message) else {
             continue;
         };
         // A discard is refused once its result is cut, so this reads the same on every request.
@@ -649,7 +658,7 @@ pub(crate) fn brief(name: &str, args: &Args) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{Cut, apply, decide};
     use serde_json::json;
     use yi_types::entry::{CustomRecord, Entry};
@@ -1289,7 +1298,7 @@ mod tests {
         Ok(())
     }
 
-    fn image_result(id: &str, path: &str) -> AgentMessage {
+    pub(crate) fn image_result(id: &str, path: &str) -> AgentMessage {
         let metadata = std::fs::metadata(path).ok();
         let bytes = metadata.as_ref().map(std::fs::Metadata::len);
         let modified_ns = metadata.as_ref().and_then(|metadata| {
@@ -1346,12 +1355,12 @@ mod tests {
         messages
     }
 
-    fn plots(missing: usize) -> Result<(crate::scratch::Scratch, Vec<String>), std::io::Error> {
+    pub(crate) fn plots() -> Result<(crate::scratch::Scratch, Vec<String>), std::io::Error> {
         let dir = crate::scratch::Scratch::new("yi-reclaim-images")?;
         let paths: Vec<String> = (0..4)
             .map(|index| dir.join(format!("plot-{index}.png")).display().to_string())
             .collect();
-        for path in paths.iter().skip(missing) {
+        for path in &paths {
             std::fs::write(path, b"\x89PNG\r\n\x1a\n")?;
         }
         Ok((dir, paths))
@@ -1359,7 +1368,7 @@ mod tests {
 
     #[test]
     fn a_same_size_overwrite_of_an_image_source_keeps_its_result_whole() -> Fallible {
-        let (_scratch, paths) = plots(0)?;
+        let (_scratch, paths) = plots()?;
         let messages = image_session(&paths);
         let late = 60_000 * 9 + 6 * 60_000;
         let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
@@ -1384,7 +1393,7 @@ mod tests {
     /// to get the picture back, so a session plotting for an hour resent every plot.
     #[test]
     fn the_newest_three_image_results_are_never_cut_and_an_older_one_is() -> Fallible {
-        let (_scratch, paths) = plots(0)?;
+        let (_scratch, paths) = plots()?;
         let late = 60_000 * 9 + 6 * 60_000;
         let model = opus()?;
         let three = decide(&image_session(&paths[..3]), &Cut::default(), &model, late);
@@ -1432,7 +1441,7 @@ mod tests {
     }
     #[test]
     fn a_compressed_attachment_is_cut_from_its_original_file() -> Fallible {
-        let (_scratch, paths) = plots(0)?;
+        let (_scratch, paths) = plots()?;
         let mut messages = image_session(&paths);
         let Some(AgentMessage::ToolResult { content, .. }) = messages.get_mut(2) else {
             return Err("missing image result".into());
@@ -1463,13 +1472,20 @@ mod tests {
 
     #[test]
     fn a_reclaimed_image_stays_when_its_file_changes_before_apply() -> Fallible {
-        let (_scratch, paths) = plots(0)?;
+        let (_scratch, paths) = plots()?;
         let late = 60_000 * 9 + 6 * 60_000;
         let messages = image_session(&paths);
         let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
         let mut cut = Cut::default();
         cut.add(&record);
+        let image = messages.get(2).ok_or("no image result")?;
+        assert!(cut.cut_at(image).is_some(), "the oldest image is cut");
         std::fs::write(&paths[0], b"new image")?;
+        assert_eq!(
+            cut.cut_at(image),
+            None,
+            "a cut that goes out whole is no cut to the price or annotate"
+        );
         let shown = apply(messages, &cut);
         let content = shown
             .get(2)
@@ -1484,14 +1500,14 @@ mod tests {
 
     #[test]
     fn a_reclaimed_image_stays_when_its_file_disappears_before_apply() -> Fallible {
-        let (_scratch, paths) = plots(0)?;
+        let (_scratch, paths) = plots()?;
         let late = 60_000 * 9 + 6 * 60_000;
-        let record =
-            decide(&image_session(&paths), &Cut::default(), &opus()?, late).ok_or("no cut")?;
+        let messages = image_session(&paths);
+        let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
         let mut cut = Cut::default();
         cut.add(&record);
         std::fs::remove_file(&paths[0])?;
-        let shown = apply(image_session(&paths), &cut);
+        let shown = apply(messages, &cut);
         let content = shown
             .get(2)
             .map(AgentMessage::plain_text)
@@ -1505,22 +1521,24 @@ mod tests {
 
     #[test]
     fn an_image_whose_file_is_gone_is_never_cut() -> Fallible {
-        let (_scratch, paths) = plots(1)?;
-        let record = decide(
-            &image_session(&paths),
-            &Cut::default(),
-            &opus()?,
-            60_000 * 9 + 6 * 60_000,
-        )
-        .ok_or("no cut")?;
-        assert!(
-            !record
+        let (_scratch, paths) = plots()?;
+        let messages = image_session(&paths);
+        let late = 60_000 * 9 + 6 * 60_000;
+        let cut = |messages| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+            let record = decide(messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
+            Ok(record
                 .items
-                .iter()
-                .any(|item| item.tool_call_id == "call-0"),
-            "{:?}",
-            record.items
+                .into_iter()
+                .map(|item| item.tool_call_id)
+                .collect())
+        };
+        assert!(
+            cut(&messages)?.contains(&"call-0".to_owned()),
+            "its file is there"
         );
+        std::fs::remove_file(&paths[0])?;
+        let ids = cut(&messages)?;
+        assert!(!ids.contains(&"call-0".to_owned()), "{ids:?}");
         Ok(())
     }
 }

@@ -505,4 +505,34 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn a_discard_takes_an_old_image_and_never_one_of_the_newest_three() -> Fallible {
+        let (store, _) = session()?;
+        let (_scratch, paths) = crate::reclaim::tests::plots()?;
+        for (turn, path) in paths.iter().enumerate() {
+            let id = format!("plot-{turn}");
+            let code = json!({"code": format!("plot_drift({turn})")});
+            let asked = yi_ai::faux::faux_tool_call(
+                &id,
+                "ipython",
+                code.as_object().cloned().unwrap_or_default(),
+            );
+            let mut store = yi_session::lock_session(&store);
+            store.append_message(
+                "main",
+                yi_ai::faux::faux_assistant_message(vec![asked], StopReason::ToolUse),
+            )?;
+            store.append_message("main", crate::reclaim::tests::image_result(&id, path))?;
+        }
+        let tool = AnnotateTool::new(Arc::new(move || Some(Arc::clone(&store))), Arc::default());
+        let (text, failed) = call(&tool, json!({"kind": "discard", "call": "plot_drift(1)"}));
+        assert!(
+            failed && text.contains("one of the three newest image results is never cut"),
+            "{text}"
+        );
+        let (text, failed) = call(&tool, json!({"kind": "discard", "call": "plot_drift(0)"}));
+        assert!(!failed && text.starts_with("Discarded ipython"), "{text}");
+        Ok(())
+    }
 }

@@ -67,10 +67,7 @@ fn image_block(data: &str, mime_type: &str) -> Value {
 }
 
 fn content_blocks(content: &[Content]) -> Value {
-    let has_images = content
-        .iter()
-        .any(|block| matches!(block, Content::Image { .. }));
-    if !has_images {
+    if !yi_types::message::has_image(content) {
         let joined = yi_types::message::join_text(content, "\n");
         return Value::String(joined);
     }
