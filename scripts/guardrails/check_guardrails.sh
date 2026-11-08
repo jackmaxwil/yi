@@ -196,6 +196,7 @@ run "$PY" scripts/intake/bridge.py --selfcheck
 run "$PY" scripts/pr_autofix.py --selfcheck
 run "$PY" scripts/fixer_guard.py --selfcheck
 run "$PY" scripts/owners.py --selfcheck
+run "$PY" scripts/checkout_guard.py --selfcheck
 # Every bot comment's spend is read back from its meta line, so the parse and the totals are proved here.
 run "$PY" scripts/bot_meter.py --selfcheck
 # The orphan scans are heuristics over text, so the flag is where they are proved to
