@@ -57,6 +57,11 @@ def git(*args, check=False):
     return out.stdout.strip()
 
 
+def ahead(rev, base, check=False):
+    """The commits `rev` has that `base` does not: two heads sharing one were built one on the other."""
+    return set(git("rev-list", rev, f"^{base}", check=check).split())
+
+
 def repo_of(url):
     """`ssh://git@forge:2222/apex/yi.git` and `https://git/apex/yi` both name apex/yi."""
     found = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url.strip())
@@ -398,6 +403,11 @@ def cmd_open(args):
     lost = check_intent.unrecorded(check_intent.branch_diff(base), [f for _, f in pending(base)]) if base else []
     if lost:
         print("\n".join(lost) + "\nopen: refused — say what this branch deletes on purpose, so no later branch puts it back")
+        return 1
+    import owners
+
+    if taken := owners.taken():
+        print("\n".join(taken) + "\nopen: refused — another open pull request owns these files")
         return 1
     # A host-run recipe never builds: pushing here would run a child's build.rs outside the sandbox.
     if not pushed():

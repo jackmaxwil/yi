@@ -13,6 +13,10 @@
   unless its change file says `revives:`/`drops: <change file> <path>` beside a `decision:`; `just pr open`
   asks for a `cut:` line, or `cut: none <path>`, for each file that loses five or more lines on net.
   Incident: a fixer and two sessions undid three of the owner's deliberate cuts in one week.
+- One open pull request owns a file. `just pr open` refuses a branch that changes a file another open PR
+  changes, naming both numbers and the files, unless one is stacked on the other or the change file says
+  `shares: #N <why>`; a new lane or land-fix runs `scripts/owners.py check` the same way. Files the
+  recorder or a ratchet writes for everyone (change files, ledger lines, baselines, Cargo.lock) own nothing.
 - Feature cuts are discussed before being written into the docs.
 - One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.2
   in the same commit.
