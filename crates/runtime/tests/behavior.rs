@@ -22,8 +22,11 @@ use yi_runtime::{AgentSession, PermissionMode, ProviderStream, SessionConfig};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 use yi_types::event::{AgentEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Model, ModelCost};
 use yi_types::schedule::DeliveryMode;
+#[path = "support/faux_model.rs"]
+mod faux_model;
+
+use self::faux_model::faux_model;
 
 /// A malformed cassette, an exhausted stub, or a nondeterministic replay is
 /// fatal: the gate must never read a silent null as a verdict.
@@ -51,31 +54,6 @@ fn items<'a>(value: &'a Value, key: &str) -> &'a [Value] {
 
 fn flag(value: &Value, key: &str) -> bool {
     value.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
-
-fn faux_model(context_window: u64) -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
 }
 
 /// `goal::run_check` hands its string to `sh -c`, so a cassette may only name

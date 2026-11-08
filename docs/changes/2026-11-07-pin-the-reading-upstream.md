@@ -1,0 +1,14 @@
+---
+version: 0.995.0
+decisions: D573
+issue: Closes #2076
+raise: crate ai +19, crate runtime +60, tests +144, comments +7
+decision: two upstream-switch misses inside 30 minutes put the host that last read the route's cache entry first in OpenRouter's `provider.order` for an hour, on that route only, and only where the routing config sets no order of its own | OpenRouter moves a conversation between hosts under a live entry and the new host cannot read it; the session ledger already names the switch, and a configured order is the owner's, so the pin only fills an absent one, with fallbacks still allowed | remove the pin branch in `cache_miss::MissTracker::escalate` and the `order` field in `openai::routing_params`
+ledger~: cache marks and TTL from the session ledger | known_gap_mixes`, T0), four | known_gap_mixes`, T0), two upstream-switch misses inside half an hour put the host that last read the entry first in that route's `provider.order` for an hour unless the config sets one (`cache_miss::an_upstream_pin_needs_two_switch_misses_inside_half_an_hour`, `openrouter::a_pinned_upstream_rides_the_provider_order`, T0; `family_cache::two_upstream_switches_put_the_reading_host_first_in_the_next_request`, T1), four
+---
+
+OpenRouter keeps a conversation on the host that last read its cache (Closes #2076). OpenRouter may answer a conversation on a different host between two requests, and the entry the old host wrote cannot be read there. The ledger already names that miss (`upstream switch`). Two of them inside thirty minutes now pin the host that last read the entry, and the next request on that route sends it first in `provider.order`, spelled as its OpenRouter slug, with fallbacks still allowed. The pin lasts an hour and is announced as a cache notice when it takes hold.
+
+The pin is scoped to the route that earned it. A request for another model never carries it, and a route change or a compaction ends it. It never replaces an `order` the routing config sets, because that order is the owner's. A host name from a reply that does not spell a plain slug is dropped rather than sent.
+
+PR #1829 first built this pin, and an automated fixer commit removed it before the PR merged. This change puts it back and answers the review findings that stood against it: the pin is scoped to its route, a configured order is never replaced, the provider object is built in `routing_params` alone, and a journey test covers the path from the ledger to the wire.

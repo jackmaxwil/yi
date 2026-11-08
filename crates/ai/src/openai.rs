@@ -1,18 +1,20 @@
 use serde_json::{Value, json};
 use std::borrow::Cow;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Receiver;
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{
     AgentMessage, Content, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
 };
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
+mod stream;
+
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::{
     compat_bool, developer_role, moonshot, nested_reasoning, replays_reasoning_content,
 };
-use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
+use crate::json_salvage::parse_streaming_json;
 use crate::reasoning::{self, REASONING_FIELDS, ReasoningCarry};
 use crate::request::{assistant_block_mut, content_end_events, push_assistant_block};
 use crate::request::{image_url, object};
@@ -25,6 +27,8 @@ pub struct OpenAiOptions {
     pub session_id: Option<String>,
     pub proxy: Option<crate::request::ProxyConfig>,
     pub routing: Option<Value>,
+    /// The upstream the session ledger pinned: a router is asked for that host first (#748).
+    pub pin: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     /// A stored OAuth credential is on the wire (D191): a 401 names `yi login`.
     pub oauth: bool,
@@ -42,14 +46,31 @@ pub fn routing_params(model: &Model, options: &OpenAiOptions, schema: bool) -> O
         return None;
     }
     let mut routing = options.routing.clone();
-    if schema {
-        // Invariant: a schema only reaches a host that takes `response_format`; the rest ignore it.
+    // Invariant: a configured `order` is the owner's, so a pin only fills an absent one; the
+    // slug comes from a reply, so one that is not a plain slug is dropped.
+    let pin = options
+        .pin
+        .as_deref()
+        .map(|host| host.to_lowercase().replace(' ', "-"))
+        .filter(|slug| {
+            !slug.is_empty()
+                && slug
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        })
+        .filter(|_| routing.as_ref().and_then(|r| r.get("order")).is_none());
+    // Invariant: a schema only reaches a host that takes `response_format`; the rest ignore it.
+    let schema = schema.then(|| ("require_parameters", json!(true)));
+    for (key, value) in [schema, pin.map(|slug| ("order", json!([slug])))]
+        .into_iter()
+        .flatten()
+    {
         let object = routing.get_or_insert_with(|| json!({}));
         if !object.is_object() {
             *object = json!({});
         }
         if let Some(object) = object.as_object_mut() {
-            object.insert("require_parameters".to_owned(), json!(true));
+            object.insert(key.to_owned(), value);
         }
     }
     routing
@@ -347,7 +368,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         params["response_format"] = crate::schema::chat(schema);
     }
     if let Some(max_tokens) = options.max_tokens {
-        params["max_completion_tokens"] = json!(max_tokens);
+        params[crate::compat::max_tokens_field(model)] = json!(max_tokens);
     }
     if let Some(tools) = &context.tools
         && !tools.is_empty()
@@ -364,7 +385,12 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     // its own prefix and no explicit breakpoint is known to be accepted (design §11).
     if model.base_url.contains("openrouter.ai") {
         let breakpoints = Breakpoints::build(
-            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl),
+            &CachePolicy::of(
+                model,
+                context.cache_ttl,
+                context.cache_ttl,
+                context.cache_tail,
+            ),
             &history,
             context.reuse,
             context.shared_through,
@@ -846,132 +872,6 @@ impl ChunkMapper {
     }
 }
 
-/// A turn whose stream never reached its usage chunk, settled from the generation record
-/// (D163); with a hook, the fetch is returned as a job to start once the turn has ended.
-fn settle_from_record(
-    output: &mut AgentMessage,
-    model: &Model,
-    wire: &crate::request::Wire<'_>,
-) -> Option<crate::settle::Job> {
-    let AgentMessage::Assistant {
-        usage,
-        response_id: Some(id),
-        ..
-    } = output
-    else {
-        return None;
-    };
-    if !usage.unknown || !crate::settle::settles(model) {
-        return None;
-    }
-    if let Some(hook) = wire.settle {
-        let (hook, model, id) = (hook.clone(), model.clone(), id.clone());
-        let (key, proxy) = (wire.api_key.to_owned(), wire.proxy.cloned());
-        return Some(crate::settle::job(move || {
-            if let Some((settled, upstream)) =
-                crate::settle::generation_usage(&model, &key, proxy.as_ref(), &id)
-            {
-                (hook.0)(settled, upstream);
-            }
-        }));
-    }
-    if let Some((settled, upstream)) =
-        crate::settle::generation_usage(model, wire.api_key, wire.proxy, id)
-    {
-        *usage = settled;
-        if let Some(upstream) = upstream {
-            crate::request::note_upstream(output, &upstream);
-        }
-    }
-    None
-}
-
-fn detach_settlement(job: Option<crate::settle::Job>) {
-    if let Some(job) = job {
-        crate::settle::detach(job);
-    }
-}
-
-fn run_request(
-    model: &Model,
-    body: &Encoded,
-    wire: crate::request::Wire<'_>,
-    sender: &Sender<AssistantMessageEvent>,
-) -> Result<(), String> {
-    let url = format!("{}/chat/completions", model.base_url);
-    let mut mapper = ChunkMapper::new(model);
-    let _ = sender.blocking_send(mapper.start_event());
-    let retried = crate::request::waiting(sender);
-    let pumped = crate::request::pump_sse_with_resend(
-        wire.stop,
-        || crate::request::openai_bearer_post(&url, model, body, wire, &retried),
-        |sse| {
-            if sse.data == "[DONE]" {
-                return Ok(true);
-            }
-            let data = sse.data.trim();
-            if data.is_empty() {
-                return Ok(true);
-            }
-            // Incident: an unparsable line was dropped, so a body that stopped being SSE read as
-            // an empty turn; Anthropic has failed its turn on one since the mapper existed.
-            let payload = parse_json_with_repair(data).map_err(|error| {
-                format!(
-                    "Could not parse chat SSE event: {error}: {}",
-                    data.chars().take(200).collect::<String>()
-                )
-            })?;
-            for event in mapper.push_chunk(&payload) {
-                let _ = sender.blocking_send(event);
-            }
-            Ok(true)
-        },
-    );
-    let resent = match pumped {
-        Ok(resent) => resent,
-        // a stream that died after its first chunk was billed for what it generated: the
-        // error turn is settled from the record (D79, #331); one that died before any chunk
-        // has no record and stays unknown
-        Err(message) => {
-            detach_settlement(settle_from_record(&mut mapper.output, model, &wire));
-            let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
-                &message,
-                wire.oauth,
-                &model.provider,
-            )));
-            return Ok(());
-        }
-    };
-    if let Some(first_error) = resent {
-        crate::request::note_resend(&mut mapper.output, &first_error);
-    }
-    // a cut dropped the stream before its finish and usage chunks: the turn ends as a length
-    // stop and is settled from the generation record (D163)
-    let cut = wire
-        .stop
-        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
-    if cut {
-        mapper.cut();
-    }
-    // an in-band error chunk ends the stream before its usage chunk: settled the same way (D175)
-    let failed = matches!(
-        mapper.output,
-        AgentMessage::Assistant {
-            stop_reason: StopReason::Error,
-            ..
-        }
-    );
-    detach_settlement(
-        (cut || failed)
-            .then(|| settle_from_record(&mut mapper.output, model, &wire))
-            .flatten(),
-    );
-    for event in mapper.finish() {
-        let _ = sender.blocking_send(event);
-    }
-    Ok(())
-}
-
 pub fn stream(
     model: &Model,
     context: &LlmContext,
@@ -990,6 +890,6 @@ pub fn stream(
             oauth: options.oauth,
             settle: options.settle.clone(),
         },
-        run_request,
+        stream::run_request,
     )
 }

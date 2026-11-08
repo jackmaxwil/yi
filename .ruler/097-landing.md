@@ -4,7 +4,9 @@ A branch is finished when its pull request is merged on the forge, not when its 
 here. The steps between the two are where sessions fail, so they are verbs, not habits:
 `just ratchet`, `just commit`, `just push`, `just pr open`, `just pr status`, `just pr merge`,
 or `just land` to open the PR as a draft the review bot reads; it merges after `just pr ready`
-passes on two clean rounds. The yi-forge skill is the procedure; this is the law.
+passes on one clean round. A head is reviewed once: a head a round has read whole is never
+read again, a lost lens is the only reread, and only a new head earns a new round. The yi-forge
+skill is the procedure; this is the law.
 
 - The size ceilings move with no commit: a raise is a line in the change file (040). Every
   other baseline moves in its own `Ratchet: …` commit, never beside the code commit: a raised
@@ -22,5 +24,5 @@ passes on two clean rounds. The yi-forge skill is the procedure; this is the law
   base" only to the API. `just pr merge` updates the branch on the forge and retries; a refusal
   is printed verbatim, never retried blind.
 - Job logs are not on the API. `just pr status` says which job failed; the log is
-  `just ci-log <pr>` in the infra repository or the job page.
+  `just ci-log <pr>` in `~/Development/buildhost/the infra repository-apply` or the job page.
 - A branch is never rebased after it is pushed. Recreate it if the history must change.

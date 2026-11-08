@@ -354,7 +354,7 @@ fn status_keeps_the_model_under_a_long_path_and_branch() -> TestResult {
     };
     assert_eq!(input.cwd.chars().count(), 60);
     assert_eq!(input.branch.as_deref().map(str::len), Some(51));
-    let text = flat(&yi_tui::status::render(&input, 80, &theme()));
+    let text = flat(&yi_tui::status::render(&input, 100, &theme()));
     assert!(text.contains("faux-1"), "model survives: {text}");
     assert!(text.contains("⎇ …"), "branch shrinks from the left: {text}");
     assert!(text.contains("01a06f8d"), "session id survives: {text}");
@@ -388,11 +388,11 @@ fn the_status_row_fits_its_width_and_drops_whole_fields_in_one_order() {
         "👥 2",
         "◉ verbose",
         "via openrouter",
+        "⎇",
         "dogfood",
         "◉ high",
         "15% / 1M",
         "≥$17.03",
-        "⎇",
     ];
     let left = [
         "claude-opus-5",
@@ -507,8 +507,8 @@ fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
         context_window: 128_000,
         ..StatusInput::default()
     };
-    let text = flat(&yi_tui::status::render(&input, 80, &theme()));
-    assert!(text.contains(" yi "), "{text}");
+    let text = flat(&yi_tui::status::render(&input, 120, &theme()));
+    assert!(text.contains("worktree yi "), "{text}");
     assert!(
         !text.contains("⎇ lane"),
         "the lane slot suffix is gone: {text}"
@@ -518,9 +518,57 @@ fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
         "the hash stays off the row: {text}"
     );
     assert!(
-        !text.contains("⎇ yi/"),
-        "the branch repeats the session id: {text}"
+        text.contains("⎇ yi/01a06f8d-1234"),
+        "the lane's branch is named beside the repo: {text}"
     );
+    Ok(())
+}
+
+/// Dies with a bare place, branch, or session value, and with UUID timestamps mistaken for ids.
+#[test]
+fn status_labels_the_worktree_branch_and_session_and_keeps_a_lane_branch_head() -> TestResult {
+    let input = StatusInput {
+        model: "faux-1".to_owned(),
+        lane: Some("yi".to_owned()),
+        branch: Some("yi/01a1b3a9-7dac-af6b-a6081b9c1059".to_owned()),
+        session_name: "01a1b3a9-7dac-af6b-a6081b9c1059".to_owned(),
+        context_window: 1_000_000,
+        ..StatusInput::default()
+    };
+    let wide = flat(&yi_tui::status::render(&input, 160, &theme()));
+    for needle in [
+        "worktree yi ",
+        "branch ⎇ yi/01a1b3a",
+        "session ",
+        "1b9c1059",
+    ] {
+        assert!(wide.contains(needle), "{needle:?} missing: {wide}");
+    }
+    let other = StatusInput {
+        branch: Some("yi/01a1b3a9-7dac-af6b-a6081b9c1060".to_owned()),
+        session_name: "01a1b3a9-7dac-af6b-a6081b9c1060".to_owned(),
+        ..input.clone()
+    };
+    let other = flat(&yi_tui::status::render(&other, 160, &theme()));
+    assert!(other.contains("1b9c1060"), "{other}");
+    assert!(!other.contains("1b9c1059"), "{other}");
+    let narrow = flat(&yi_tui::status::render(&input, 60, &theme()));
+    assert!(narrow.contains("worktree yi"), "{narrow}");
+    let identity = flat(&yi_tui::status::render(&input, 80, &theme()));
+    for needle in ["session", "1b9c1059"] {
+        assert!(identity.contains(needle), "{needle:?} missing: {identity}");
+    }
+    assert!(
+        !identity.contains("branch"),
+        "branch outlasts identity: {identity}"
+    );
+    let directory = StatusInput {
+        cwd: "/tmp/w".to_owned(),
+        session_name: "01a1b3a9-7dac-af6b-a6081b9c1059".to_owned(),
+        ..StatusInput::default()
+    };
+    let directory = flat(&yi_tui::status::render(&directory, 40, &theme()));
+    assert!(directory.contains("dir /tmp/w"), "{directory}");
     Ok(())
 }
 

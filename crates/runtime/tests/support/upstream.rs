@@ -93,6 +93,7 @@ pub(crate) fn root_at(
             schema_instruction: None,
             context_window,
             global_skills: Vec::new(),
+            pointer: None,
             can_delegate: true,
         });
         let slot = yi_runtime::ext::Slot::new(yi_runtime::ext::Rank::Mode, "unattended");

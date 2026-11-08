@@ -926,8 +926,7 @@ impl KernelManager {
         self.inner.interrupt();
     }
 
-    /// Resolves true when this call performed the cleanup (false: a concurrent
-    /// teardown won).
+    /// Resolves true when this call performed the cleanup (false: a concurrent teardown won).
     pub async fn shutdown(&self) -> bool {
         let inner = &self.inner;
         if inner.state() == Lifecycle::Shutdown {
@@ -1033,6 +1032,7 @@ fn aborted_result() -> ExecuteResult {
         stdout: String::new(),
         stderr: String::new(),
         result: None,
+        result_mime: None,
         attachments: Vec::new(),
         status: ExecuteStatus::Aborted,
         error: None,

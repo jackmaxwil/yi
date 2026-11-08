@@ -138,6 +138,10 @@ impl PromptState {
         self.yard.is_empty()
     }
 
+    pub(crate) fn yard_sources(&self) -> BTreeSet<String> {
+        self.yard.keys().map(|(_, source)| source.clone()).collect()
+    }
+
     pub fn assemble(&self) -> String {
         self.assemble_except(&BTreeSet::new())
     }

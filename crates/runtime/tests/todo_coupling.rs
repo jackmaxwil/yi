@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+use crate::faux_model::faux_model;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::{ExecutionMode, TurnSnapshot};
@@ -12,36 +13,11 @@ use yi_runtime::todo::coupling::{
 use yi_runtime::todo::{Op, Target, TodoStore, latest_record};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
-use yi_types::model::{Model, ModelCost, ToolChoice};
+use yi_types::model::ToolChoice;
 use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel};
 use yi_types::todo::{PhaseName, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord};
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn memory_store(name: &str) -> yi_session::SharedSession {
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
@@ -64,7 +40,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -378,6 +354,36 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
     let again = (hooks.intercept_stop)(&snapshot(&message)).ok_or("progress restarts")?;
     let (_, display, _) = custom_type(&again);
     assert!(display, "a fresh rung 1 after progress");
+    Ok(())
+}
+
+#[test]
+fn an_answer_does_not_run_a_rows_check() -> TestResult {
+    let r = rig("answer-no-check")?;
+    open_list(&r.todos)?;
+    let work = spec_scratch("answer-no-check")?;
+    let marker = work.join("ran");
+    r.todos.apply(
+        Op::Start {
+            label: TodoLabel::new("first")?,
+            check: Some(format!("touch '{}'", marker.display())),
+        },
+        None,
+    )?;
+    let hooks = coupling(
+        &r.session,
+        Arc::clone(&r.todos),
+        Options {
+            deadline: None,
+            eager: Eager::Prelude,
+            children_running: Arc::new(|| false),
+            inner: None,
+        },
+    );
+    let message = stop("Done");
+    let answered = vec![result("a1", "answer", false)];
+    (hooks.intercept_stop)(&snap(&message, &answered));
+    assert!(!marker.exists(), "answer ran the row's check");
     Ok(())
 }
 

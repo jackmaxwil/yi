@@ -133,5 +133,28 @@ class Tools(unittest.TestCase):
         self.assertEqual([row["name"] for row in tools.search("file")["tools"]], ["grep", "write"])
 
 
+    def test_a_value_reads_only_the_keys_it_received(self) -> None:
+        value = tools.Value({"totalLines": 40})
+        self.assertEqual(value.totalLines, 40)
+        with self.assertRaises(AttributeError):
+            _ = value.total_lines
+        with self.assertRaises(KeyError):
+            _ = value["total_lines"]
+
+    def test_search_rows_keep_the_signature_and_whole_description(self) -> None:
+        description = "Read a URL. " + "x" * 2_000
+        catalog = copy.deepcopy(CATALOG)
+        catalog["tools"].append({"name": "fetch", "description": description,
+                                 "parameters": {"type": "object", "properties": {}}})
+        tools._catalog = catalog
+        row = tools.search("fetch")["tools"][0]
+        self.assertEqual(row, {"name": "fetch", "signature": "yi.tools.fetch()",
+                               "description": description})
+        grep = tools.search("grep")["tools"][0]
+        self.assertEqual(grep["signature"],
+                         "yi.tools.grep(*, pattern: str, path: str = None, context: int = None)")
+        self.assertNotIn("cut", tools.search(""))
+
+
 if __name__ == "__main__":
     unittest.main()

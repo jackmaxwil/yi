@@ -101,7 +101,7 @@ pub(super) fn brief(at: &TodoAddr, delegation: &Delegation, reader: bool) -> Str
     }
     if let Some(budget) = &delegation.spec.budget {
         lines.push(format!(
-            "Token budget (reserved, not enforced): {}",
+            "Token budget: {} fresh tokens, the lease this child is stopped at",
             budget.0
         ));
     }
@@ -197,7 +197,7 @@ pub(super) fn kwargs_of(
 
 #[cfg(test)]
 mod tests {
-    use super::super::dispatch::tests::delegated;
+    use super::super::rig::delegated;
     use super::*;
     use yi_types::plan::doc::{OutputSchema, PlanId, TodoLabel};
 

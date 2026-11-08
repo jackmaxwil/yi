@@ -51,7 +51,7 @@ pub struct CodeLogin {
 }
 
 /// Providers whose login is a pasted key: no endpoints, no identity, nothing to supply.
-pub const API_KEY_IDS: [&str; 3] = ["openai", "openrouter", "google"];
+pub const API_KEY_IDS: [&str; 4] = ["anthropic", "openai", "openrouter", "google"];
 pub const CURSOR_ID: &str = "cursor";
 
 fn home() -> PathBuf {

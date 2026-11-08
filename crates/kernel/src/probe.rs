@@ -1,5 +1,5 @@
 //! Import probes of a kernel python, and the stamp a passing ready probe leaves in its venv.
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const READY_STAMP_FILE: &str = ".ready-stamp";
 
@@ -22,11 +22,7 @@ pub(crate) fn failed_imports(python: &Path, names: &[&str]) -> Vec<String> {
 /// and mtime; `None` when one is unreadable, so the live probe runs.
 fn fingerprint(python: &Path, venv: &Path) -> Option<String> {
     let mut paths = vec![std::fs::canonicalize(python).ok()?];
-    let mut sites: Vec<PathBuf> = std::fs::read_dir(venv.join("lib"))
-        .ok()?
-        .map(|lib| lib.map(|lib| lib.path().join("site-packages")))
-        .collect::<Result<_, _>>()
-        .ok()?;
+    let mut sites = crate::venv::site_packages_dirs(venv).ok()?;
     sites.sort();
     paths.append(&mut sites);
     let check = crate::bootstrap::fnv1a(crate::bootstrap::RUNTIME_READY_CHECK.as_bytes());
@@ -41,14 +37,21 @@ fn fingerprint(python: &Path, venv: &Path) -> Option<String> {
 }
 
 pub(crate) fn stamped(python: &Path, venv: &Path) -> bool {
-    fingerprint(python, venv).is_some_and(|now| {
-        std::fs::read_to_string(venv.join(READY_STAMP_FILE)).is_ok_and(|then| then == now)
-    })
+    stamped_at(python, venv, &venv.join(READY_STAMP_FILE))
 }
 
 pub(crate) fn stamp(python: &Path, venv: &Path) {
+    stamp_at(python, venv, &venv.join(READY_STAMP_FILE));
+}
+
+pub(crate) fn stamped_at(python: &Path, venv: &Path, file: &Path) -> bool {
+    fingerprint(python, venv)
+        .is_some_and(|now| std::fs::read_to_string(file).is_ok_and(|then| then == now))
+}
+
+pub(crate) fn stamp_at(python: &Path, venv: &Path, file: &Path) {
     if let Some(now) = fingerprint(python, venv) {
-        let _best_effort = std::fs::write(venv.join(READY_STAMP_FILE), now);
+        let _best_effort = std::fs::write(file, now);
     }
 }
 

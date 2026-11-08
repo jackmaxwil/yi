@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
 use yi_types::plan::doc::{BlockedOn, TodoState, TodoStateName};
-use yi_types::todo::{TodoInterceptRecord, TodoList};
+use yi_types::todo::{RowCheck, TodoInterceptRecord, TodoList};
 
 use super::{TodoStore, text, tool};
 use crate::goal::StoreHandle;
@@ -380,7 +380,19 @@ const ASK_USER: &str =
 
 pub fn intercept_text(rung: u8, list: &TodoList) -> String {
     let moves = open_moves(list);
-    match rung {
+    let reds: Vec<String> = (list.items())
+        .filter(|item| !item.state.is_terminal())
+        .filter_map(|item| {
+            let check = RowCheck::of(item)?;
+            (!check.last.is_green()).then(|| format!("still red: {}", check.command))
+        })
+        .collect();
+    let still = if reds.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", reds.join("\n"))
+    };
+    let base = match rung {
         1 => format!(
             "Open todos remain. Continue the running item, or move each open item to the state that is true: done with its evidence, blocked with what would unblock it, dropped with a reason. {ASK_USER}\n{moves}"
         ),
@@ -390,7 +402,8 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
         _ => format!(
             "The turn ends now. Call `answer`, naming each open item and why it is not done; call no other tools.\n{moves}"
         ),
-    }
+    };
+    format!("{base}{still}")
 }
 
 /// Digit runs of three or more outside closed code spans with no word character, dot or slash on
@@ -448,6 +461,13 @@ pub fn unsourced_text(numbers: &[String]) -> String {
 
 pub const EMPTY_STOP_TEXT: &str =
     "The turn produced no output. Call `answer` with the final answer, or make the next tool call.";
+
+pub const DONE_BLOCKED_TEXT: &str = "An item is still blocked, so this reply cannot open with Done. Open it with Problem: or Ready: and name what the item waits on.";
+
+fn says_done(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).is_err()
+        && crate::session::StatusLine::of(text) == Some(crate::session::StatusLine::Done)
+}
 
 fn text_of(message: &AgentMessage) -> String {
     let AgentMessage::Assistant { content, .. } = message else {
@@ -863,6 +883,16 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             }
             let list = todos.list();
             let posture = stop_posture(&list, children_running());
+            let blocked = matches!(posture, StopPosture::Ask | StopPosture::Cadence);
+            if blocked && says_done(&text) {
+                let fingerprint = list.fingerprint();
+                if let Some(rung) = cycle.intercept(&fingerprint) {
+                    record_intercept(&store, rung, "done_blocked", &fingerprint, cycle.intercepts);
+                    let note = DONE_BLOCKED_TEXT.to_owned();
+                    return Some(custom(INTERCEPT_CUSTOM_TYPE, note, false));
+                }
+                record_intercept(&store, cycle.rung, LET_GO, &fingerprint, cycle.intercepts);
+            }
             if posture != StopPosture::Continue {
                 drop(cycle);
                 return inner.as_ref().and_then(|inner| inner(snapshot));

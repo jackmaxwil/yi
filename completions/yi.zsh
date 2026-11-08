@@ -23,6 +23,7 @@ _yi() {
         'sessions:list, show, or remove stored sessions'
         'stats:tools and tokens of a session, or a rollup'
         'serve:run the session daemon'
+        'worker:swap a running worker for a fresh binary'
         'console:open the workspace shell'
         'tui:open the solo terminal UI'
         'version:print the version'
@@ -32,6 +33,7 @@ _yi() {
         'logout:remove a provider credential'
         'setup:choose a model and a permission mode'
         'mcp:one-shot MCP client calls, under mcp.enabled'
+        'tool:import a project'\''s just recipes as exec tools'
     )
     flags=(
         '--help[print this table (also -h)]'
@@ -46,10 +48,13 @@ _yi() {
         '--auto[let the policy judge each call (the default)]'
         '--confirm[ask before every write or command]'
         '--allow-write[let the sandbox write dir too; repeatable]:dir:_files -/'
+        '--scope[with ask: confine writes in the tree to this glob; repeatable]:glob:'
         '--session-dir[session storage root]:dir:_files -/'
         '--cwd[working directory]:dir:_files -/'
         '--here[work in this directory and claim no lane]'
         '--fix[let doctor or gc change what it reports]'
+        '--binary[with worker replace: the built yi to serve from now on]:path:_files'
+        '--if-running[with worker replace: no daemon is a success]'
         '--socket[daemon socket path]:path:_files'
         '--headless[drive the tui or console without a terminal]'
         '--lanes[claim a lane in a headless or cassette run]'
@@ -66,9 +71,9 @@ _yi() {
         '--continue[resume the newest session for this directory]'
         '--session[resume this session]:id:'
         '--schema[answer JSON valid against this schema]:schema:_files'
-        '--check[ask: probe the command and exit, running nothing]:command:'
+        '--check[after ask: probe, then re-prompt until this command exits 0]:command:_command_names -e'
         '--since[after stats: fold the sessions of this window]:span:'
-        '--by[after stats: group by model, upstream, day, prices or plan]:axis:'
+        '--by[after stats: group by model, upstream, day, prices, plan or skills]:axis:'
         '--top[after stats: list the n costliest sessions]:n:'
         '--role[after models recommend: only this role]:role:'
     )
@@ -78,6 +83,7 @@ _yi() {
         rest)
             case $words[1] in
                 sessions) _values 'subcommand' list show rm ;;
+                worker) _values 'subcommand' replace ;;
             esac
             ;;
     esac

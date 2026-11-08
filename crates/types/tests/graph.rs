@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::error::Error;
-use std::path::Path;
 
 use serde_json::{Value, json};
 use yi_types::event::ToolErrorKind;
@@ -113,8 +112,7 @@ fn result_error_admits_exactly_the_kinds_a_tool_can_raise() {
 /// so a rule that moves on one side fails on the other.
 #[test]
 fn the_shared_fixture_is_judged_alike_on_both_sides() -> Result<(), Box<dyn Error>> {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../evals/fixtures/graph/structural.json");
+    let path = crate::workspace_root()?.join("evals/fixtures/graph/structural.json");
     let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
     let strings = |value: &Value| -> Vec<String> {
         let items = value.as_array().into_iter().flatten();

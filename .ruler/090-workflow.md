@@ -7,6 +7,16 @@
   D-rows in merge order, and check_changes.py refuses a branch that edits them. Every PR claimed
   the next number by hand and every landing renumbered, until 9 of 9 conflicted PRs collided on it.
 - Revising a settled decision requires a new decision (a `decision:` line in the change file) before code.
+- What a change removes or holds on purpose is recorded where every later branch is checked against it:
+  `cut: <path> | <the deleted line, verbatim> | <why>` and `keep: <path> | <line> | <why>` in the change
+  file. check_intent.py refuses any branch, by any author, that puts a cut line back or deletes a kept one,
+  unless its change file says `revives:`/`drops: <change file> <path>` beside a `decision:`; `just pr open`
+  asks for a `cut:` line, or `cut: none <path>`, for each file that loses five or more lines on net.
+  Incident: a fixer and two sessions undid three of the owner's deliberate cuts in one week.
+- One open pull request owns a file. `just pr open` refuses a branch that changes a file another open PR
+  changes, naming both numbers and the files, unless one is stacked on the other or the change file says
+  `shares: #N <why>`; a new lane or land-fix runs `scripts/owners.py check` the same way. Files the
+  recorder or a ratchet writes for everyone (change files, ledger lines, baselines, Cargo.lock) own nothing.
 - Feature cuts are discussed before being written into the docs.
 - One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.2
   in the same commit.
@@ -21,12 +31,15 @@
   every other `word:` prefix fails, conventional-commit dialect included. Body only when the why
   is not obvious from the diff. check_commit_style.py gates `HEAD --not origin/main`, and the
   same script reads `PR_TITLE` so CI judges the title by the identical rule.
-- No trailers, with three carve-outs: the flywheel plan's §8 `Opt-*` set on optimizer commits, one
-  `Plan: plan://<plan>/<todo>` on a commit that lands work under a plan, and the trailers git writes
-  itself. Assistant co-author trailers stay banned outright. The `Plan:` value is checked as a URL,
-  because a trailer nothing can resolve indexes nothing: it is what makes `git blame` → commit →
-  todo → goal → the user's own words resolve with no inference, and the index only holds what was
-  trailered when it landed, so it is written from the first such commit rather than added later.
+- No trailers, with four carve-outs: the flywheel plan's §8 `Opt-*` set on optimizer commits, one
+  `Plan: plan://<plan>/<todo>` on a commit that lands work under a plan, the trailers git writes
+  itself, and `GitHub-Commit: <40-hex sha>`, written by yi-bot's history-preserving GitHub import
+  on an imported commit to record the GitHub-side commit it came from. The current squash intake in
+  `scripts/intake/bridge.py` spells that source head `GitHub-Head:`. Assistant co-author trailers
+  stay banned outright. The `Plan:` value is checked as a URL, because a trailer nothing can resolve
+  indexes nothing: it is what makes `git blame` → commit → todo → goal → the user's own words resolve
+  with no inference, and the index only holds what was trailered when it landed, so it is written
+  from the first such commit rather than added later.
 - A PR body is the cold-reader narrative in .github/PULL_REQUEST_TEMPLATE.md — why needed,
   summary, user outcomes, seen red, UI changes, files-edited map, schema changes, deleted /
   alternatives, risk and rollback, performance, architecture notes — every section written and
@@ -42,7 +55,8 @@
   construction: they add no ledger row and move no bytes past the band.
 - A user-visible behavior change writes `ledger+`, `ledger~`, `ledger=` or `ledger-` lines in its
   change file, in the same change as the code. The recorder applies them to the ARCHITECTURE
-  feature ledger after the merge; a branch that edits a row is refused and told the lines to write.
+  feature ledger after the merge; a branch that edits a row directly is refused and told the lines
+  to write, whenever that edit was committed.
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
   rendered from the row by the recorder rather than hand-drifted) and a line in the docs/solutions index.
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage

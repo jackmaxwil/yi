@@ -1,7 +1,6 @@
 # A thin caller of the justfile the git hooks already run — never a second copy
 # of the rules. CI=true makes the aggregator announce-skip startup, since a
-# shared runner cannot resolve a 5 ms budget; the guardrails lane builds the dist
-# binary and measures it against binary_size_budget_linux.json.
+# shared runner cannot resolve a 5 ms budget.
 #
 # The estate has no macOS runner, so the macOS matrix arm of .github/workflows/
 # pr.yml is dropped here rather than faked: `just prepush` runs the same three
@@ -13,11 +12,9 @@
 # run reads this head's copy, but intake denies `.forgejo/`, so an imported head is main's copy.
 name: pr
 
+# The merge queue's candidate runs this gate from candidate.yml, on a runner of its own.
 on:
   pull_request:
-  # The merge queue's candidate (scripts/pr_queue.py): the three lanes run on it, and no token does.
-  push:
-    branches: [queue/candidate]
 
 # A newer push to the same PR supersedes the old run; the old one would only
 # hold runners the queue needs (59 of 451 runs kept going after a newer push).
@@ -76,10 +73,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           shared-key: ${{ matrix.lane }}
-          cache-on-failure: true
-          # main saves (postmerge `warm`); a PR's own multi-GB save is readable
-          # only by later runs of that PR and costs the shared disk every push.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Invariant: on the `queue` runner only a candidate lane that passed writes the cache, so a lane
+          # that failed never hands its artifacts to the next batch's landing gate.
+          cache-on-failure: ${{ github.ref != 'refs/heads/queue/candidate' }}
+          # main (postmerge `warm`) and the candidate, whose `queue` runner no main run reaches, save;
+          # a PR's own multi-GB save is readable only by later runs of that PR and costs the disk every push.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/queue/candidate' }}
       # scripts/intake's selfcheck rewrites a scratch repo with the mirror's own filter, which
       # the gate image does not ship; the pin is scripts/mirror/filter-repo.version.
       - if: matrix.lane == 'guardrails'

@@ -150,7 +150,7 @@ pub fn connect_head(head: &[u8]) -> Result<Connect, BadHead> {
 }
 
 /// A public address: anything that reaches this machine or a private network is refused, here on
-/// the address dialed, since a name may resolve to one.
+/// the address dialed, since a name may resolve to one. Incident: Linux routes 0.0.0.0/8 to this host.
 pub fn public_address(address: IpAddr) -> bool {
     let v4 = |ip: Ipv4Addr| {
         let [a, b, ..] = ip.octets();
@@ -160,6 +160,8 @@ pub fn public_address(address: IpAddr) -> bool {
             || ip.is_unspecified()
             || ip.is_broadcast()
             || ip.is_documentation()
+            || a == 0
+            || a >= 224
             || (a == 100 && (64..128).contains(&b)))
     };
     match address {

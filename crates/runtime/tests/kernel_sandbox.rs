@@ -116,7 +116,7 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
         "the file must not exist after a contained write"
     );
 
-    // ~/.yi itself is read-only; the harness store is written by the host (#583). A HOME
+    // ~/.yi itself is read-only, the old harness directory included. A HOME
     // under tmp sits inside a granted root, where no profile can make ~/.yi read-only.
     let yi = home.join(".yi");
     if probe == home {
@@ -468,45 +468,6 @@ async fn a_root_kernel_cannot_write_another_sessions_state() -> TestResult {
         !cell_wrote && !job_wrote,
         "the root kernel wrote into the session corpus (cell {cell_wrote}, bash {job_wrote}): {}",
         ran.result.stdout
-    );
-    Ok(())
-}
-
-/// Incident (#583): a global harness save went straight to disk from the kernel, so a cell in
-/// one session stored notes every later session reads, with no ask. It now asks the broker.
-#[tokio::test]
-async fn a_global_harness_save_asks_the_permission_broker() -> TestResult {
-    let (root, project, home, _session) = workspace("harness")?;
-    let asks = Arc::new(std::sync::Mutex::new(0_u32));
-    let counted = Arc::clone(&asks);
-    let asker: yi_runtime::Asker = Arc::new(move |_ask| {
-        if let Ok(mut count) = counted.lock() {
-            *count += 1;
-        }
-        yi_runtime::AskOutcome::Reject
-    });
-    let broker = Arc::new(yi_runtime::permission::PermissionBroker::new(
-        yi_runtime::PermissionMode::Auto,
-        project.clone(),
-        Vec::new(),
-        Some(asker),
-        tokio::sync::broadcast::channel(8).0,
-    ));
-    let session = root_session(&project, &home, &root.join("rlm"), None, Some(broker), None);
-    let kernel = session
-        .kernel_service()
-        .ok_or("the wiring installs a kernel")?;
-    let title = format!("yi-583-probe-{}", std::process::id());
-    let code = format!(
-        "try:\n    rlm.harness.create_memory('{title}', 'x', global_=True)\n    print('saved')\nexcept Exception as e:\n    print('refused:', e)"
-    );
-    let ran = cell(&kernel, code).await;
-    kernel.dispose().await;
-    let stdout = ran?.result.stdout;
-    let asked = asks.lock().map(|count| *count).unwrap_or_default();
-    assert!(
-        asked == 1 && stdout.contains("refused"),
-        "a global harness save must ask and honor the answer (asked {asked}): {stdout}"
     );
     Ok(())
 }

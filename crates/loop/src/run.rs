@@ -35,6 +35,9 @@ pub trait StreamFn: Send + Sync {
     fn cache_ttl(&self, _model: &Model) -> yi_types::model::Ttl {
         yi_types::model::Ttl::Min5
     }
+    fn cache_tail(&self, _model: &Model) -> bool {
+        true
+    }
 }
 
 /// An errored reply carrying `text`, for a turn that fails before or outside a request.
@@ -587,17 +590,14 @@ async fn stream_assistant_response<S: StreamFn>(
         schema: config.schema.clone().filter(|_| tool_defs.is_empty()),
         shared_through: config.shared_through,
         reuse,
-        tools: if tool_defs.is_empty() {
-            None
-        } else {
-            Some(tool_defs)
-        },
+        tools: (!tool_defs.is_empty()).then_some(tool_defs),
         tool_choice,
         cache_ttl: if reuse == yi_types::model::Reuse::Loop {
             stream.cache_ttl(model)
         } else {
             yi_types::model::Ttl::Min5
         },
+        cache_tail: stream.cache_tail(model),
     };
     drop(preparing);
 

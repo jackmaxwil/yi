@@ -8,7 +8,10 @@ PYTHONPATH=python/yi_runtime/src python3 -m unittest discover -q -s python/yi_ru
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 import inspect
+import errno
 import json
 import pathlib
 import pydoc
@@ -581,6 +584,31 @@ class FindModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([model.cost for model in models], [{"input": 0.8, "output": 1.6}, None])
         self.assertEqual([model.selector for model in models], ["openrouter/a/b", "faux/faux-1"])
 
+    async def test_a_search_that_matched_more_prints_the_hosts_cut_row(self) -> None:
+        """Dies when the shim drops the host's ``cut`` row, which is the only place the model is
+        told how many matches ``limit`` held back and the call that lists them all."""
+        row = ("[… 1 of 31 matching models (limit 1); the rest: await rlm.find_models(\"\", limit=31)]")
+        priced = {"provider": "openrouter", "id": "a/b", "name": "B", "selector": "openrouter/a/b"}
+
+        async def cut_host_request(kind, payload):
+            return {"models": [priced], "cut": row}
+
+        async def whole_host_request(kind, payload):
+            return {"models": [priced]}
+
+        with mock.patch.object(rlm, "host_request", cut_host_request):
+            whole = io.StringIO()
+            with contextlib.redirect_stdout(whole):
+                models = await rlm.find_models("", limit=1)
+        self.assertEqual(len(models), 1)
+        self.assertEqual(whole.getvalue().strip(), row)
+
+        with mock.patch.object(rlm, "host_request", whole_host_request):
+            uncut = io.StringIO()
+            with contextlib.redirect_stdout(uncut):
+                await rlm.find_models()
+        self.assertEqual(uncut.getvalue(), "")
+
 
 class HopLimitTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_letter_past_the_hop_limit_raises_hop_limit_with_the_hosts_words(self) -> None:
@@ -849,6 +877,16 @@ class SurfaceTests(unittest.TestCase):
         text = pydoc.render_doc(rlm, renderer=pydoc.plaintext)
         self.assertEqual([name for name in sorted(defined) if f"{name}(" not in text], [])
 
+    def test_mcp_public_names_remain_importable(self) -> None:
+        from rlm import mcp
+
+        self.assertIs(rlm.McpToolError, mcp.McpToolError)
+        self.assertTrue(callable(rlm.McpIntegration))
+        self.assertTrue(callable(rlm.NotEnabled))
+        self.assertTrue(callable(mcp.reload))
+        self.assertTrue(callable(mcp.close))
+
+
 
 class ReplyTests(unittest.IsolatedAsyncioTestCase):
     """The paid rerun's r1-r3: five guesses at rlm.wait's shape died unpacking or indexing it."""
@@ -924,3 +962,88 @@ class MergeWorktreeTests(unittest.IsolatedAsyncioTestCase):
                 ("rlm.merge_worktree", {"target": "child"}),
             ],
         )
+
+
+class OneChildWaitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_stuck_child_raises_the_same_error_from_either_result_then_returns(self) -> None:
+        """Dies with two wait loops: rlm.result(timeout=) kept waiting past a stuck child."""
+        for call in (lambda: _handle().result(timeout=5), lambda: rlm.result("n", timeout=5)):
+            replies = [_wait_reply("stuck"), _wait_reply("finished", cursor=2)]
+
+            async def fake_wait(timeout: float, cursor: int | None = None) -> dict:
+                return replies.pop(0)
+
+            async def fake_host(kind: str, payload: dict) -> dict:
+                if replies:
+                    raise RuntimeError("child sub-1 is still running")
+                return {"text": "ok"}
+
+            async def fake_status(name):
+                return {"name": name, "state": "stuck", "note": "five idle minutes"}
+
+            with mock.patch.object(rlm, "wait", fake_wait), mock.patch.object(
+                rlm, "host_request", fake_host
+            ), mock.patch.object(rlm, "status", fake_status):
+                with self.assertRaisesRegex(RuntimeError, "is stuck"):
+                    await call()
+                self.assertEqual(await call(), {"text": "ok"})
+
+    def test_the_hosts_context_lever_sets_how_much_of_a_value_is_sent(self) -> None:
+        shell = mock.Mock(user_ns={"blob": "x" * 9_998})
+        with mock.patch.object(rlm, "get_ipython", lambda: shell), mock.patch.dict(
+            os.environ, {"RLM_CONTEXT_VALUE_CAP": "16384"}
+        ):
+            resolved = rlm._resolve_context({"context_keys": ["blob"]})
+        self.assertEqual(len(resolved["context"]["blob"]), 10_000)
+
+    def test_a_listing_reads_in_the_roster_words_status_uses(self) -> None:
+        roster = {"queued", "running", "finished", "failed", "needs_you", "stuck", "repossession_pending"}
+        for host_word in ("running", "completed", "error"):
+            entry = {"rlm_child_id": "sub-1", "session_name": "n", "session_dir": "/tmp", "status": host_word}
+            self.assertIn(rlm._subagent_from_payload(entry).status, roster)
+
+
+class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_paused_notices_remedy_resumes_and_unsubscribe_stops(self) -> None:
+        """Dies with no rlm.resume: the paused adapter's notice named a call a cell could not make."""
+        sent = []
+
+        async def fake_host_request(kind, payload):
+            sent.append((kind, payload))
+            return {"jobs": [{"id": "j1", "status": "paused"}]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual((await rlm.subscriptions())[0]["id"], "j1")
+            await rlm.resume("j1")
+            await rlm.unsubscribe("j1")
+        self.assertEqual(
+            sent[1:],
+            [
+                ("rlm_heartbeat.update", {"id": "j1", "status": "resume"}),
+                ("rlm_heartbeat.delete", {"id": "j1"}),
+            ],
+        )
+
+
+class ContainedPutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_read_only_board_refusal_names_a_remedy_that_works(self) -> None:
+        """Dies with the bare EPERM text: a contained child's put named nothing it could do."""
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        # Incident: a 0o555 board refused nothing on the forge runner, whose tests run as root.
+        sandboxed = PermissionError(errno.EPERM, "Operation not permitted")
+        with mock.patch.dict(os.environ, {"RLM_FAMILY_DIR": str(root / "board")}), \
+                mock.patch.object(rlm, "_put", side_effect=sandboxed):
+            with self.assertRaises(PermissionError) as refused:
+                rlm.put("shard_auth", {"findings": [1, 2]})
+        self.assertIn("local://", str(refused.exception))
+        path = root / "shard_auth.json"
+        path.write_text(json.dumps({"findings": [1, 2]}))
+
+        async def fake_host_request(kind, payload):
+            self.assertEqual(payload["url"], f"local://{path}")
+            return {"text": path.read_text()}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            page = await rlm.fetch(f"local://{path}", as_text=True)
+        self.assertEqual(json.loads(page), {"findings": [1, 2]})

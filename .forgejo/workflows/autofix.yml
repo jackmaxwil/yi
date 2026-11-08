@@ -1,5 +1,5 @@
 # The autofixer (scripts/pr_autofix.py): after every push to main and every 15 minutes, oldest PR first,
-# it merges main into a behind PR by git alone when possible, or resolves real conflicts and blocked
+# it finds a behind PR's real conflicts with main by git alone (pushing a clean merge only for a stale runner lane), resolves them and blocked
 # findings with a fresh `yi ask` once the PR has been quiet two hours (or carries `autofix`). It commits
 # agent fixes through the hooks and pushes as yi-bot. Labels: autofix, autofix:hold, autofix:working, autofix:failed.
 name: autofix
@@ -73,6 +73,7 @@ jobs:
         if: steps.queue.outputs.newer == '0'
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
+          MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # The rounds the findings fixer answers: the bot's and the owner's, as the review job counts them.
           YI_ROUND_AUTHORS: yi-bot,jack

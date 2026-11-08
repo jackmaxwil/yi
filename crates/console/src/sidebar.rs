@@ -1,5 +1,6 @@
 //! The rail and the full sidebar: pinned sessions, then one foldable group per workspace.
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -9,6 +10,7 @@ use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 
 use crate::app::App;
 use crate::avatar::Placement;
+use crate::client::Outbound;
 use crate::keys::{self, Action};
 use crate::model::{
     Group, Mode, Painted, SessionId, SessionRow, SessionStatus, SidebarMode, Slot, Zone, now_ms,
@@ -103,15 +105,18 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> (String, boo
     }
     let then = row.recency();
     if then > 0 {
-        let secs = now.saturating_sub(then) / 1000;
-        parts.push(match secs {
-            0..60 => format!("{secs}s"),
-            60..3600 => format!("{}m", secs / 60),
-            3600..86_400 => format!("{}h", secs / 3600),
-            _ => format!("{}d", secs / 86_400),
-        });
+        parts.push(age(now.saturating_sub(then) / 1000));
     }
     (parts.join(" · "), news)
+}
+
+pub(crate) fn age(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m", secs / 60),
+        3600..86_400 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
+    }
 }
 
 fn tile_span(app: &App, text: String, hue: usize) -> Span<'static> {
@@ -261,7 +266,99 @@ pub(crate) fn plus_split(line: &Line<'_>) -> (usize, usize) {
     (total.saturating_sub(plus), plus)
 }
 
+/// What the sidebar remembers beside the sessions: how far the wheel scrolled it (while the cursor
+/// stays where it was), the inline search, and the order the owner gave the projects.
+#[derive(Default)]
+pub struct SideUi {
+    pub(crate) scroll: Option<(usize, Slot)>,
+    pub(crate) query: Option<String>,
+    pub(crate) order: Vec<String>,
+}
+
+/// The groups in the owner's project order, and under an inline search only the sessions it matches
+/// (unfolded, and with no group left empty).
+pub(crate) fn refine(state: &crate::model::ConsoleState, mut groups: Vec<Group>) -> Vec<Group> {
+    let place = |root: &str| state.side.order.iter().position(|known| known == root);
+    groups.sort_by_key(|group| {
+        group
+            .root
+            .as_deref()
+            .map(|root| place(root).unwrap_or(usize::MAX))
+    });
+    let Some(query) = state
+        .side
+        .query
+        .as_deref()
+        .filter(|query| !query.is_empty())
+    else {
+        return groups;
+    };
+    let query = query.to_lowercase();
+    for group in &mut groups {
+        group.rows.retain(|index| {
+            state
+                .order
+                .get(*index)
+                .and_then(|id| state.sessions.get(id))
+                .is_some_and(|row| row.label().to_lowercase().contains(&query))
+        });
+        group.folded = false;
+    }
+    groups.retain(|group| !group.rows.is_empty());
+    groups
+}
+
+pub(crate) fn project_roots(state: &crate::model::ConsoleState) -> Vec<String> {
+    let mut roots = state.roots();
+    roots.sort_by_key(|root| {
+        state
+            .side
+            .order
+            .iter()
+            .position(|known| known == root)
+            .unwrap_or(usize::MAX)
+    });
+    roots
+}
+
+/// Move project `root` to where `to` is in the painted order of projects.
+pub(crate) fn move_group(state: &mut crate::model::ConsoleState, root: &str, to: &str) {
+    let mut roots = project_roots(state);
+    let (Some(from), Some(at)) = (
+        roots.iter().position(|known| known == root),
+        roots.iter().position(|known| known == to),
+    ) else {
+        return;
+    };
+    let moved = roots.remove(from);
+    roots.insert(at, moved);
+    state.side.order = roots;
+}
+
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
+    let (rows, side) = (all_rows(app, theme), &app.state.side);
+    window_rows(
+        rows,
+        height,
+        (&app.state.cursor(), side.scroll.as_ref()),
+        theme,
+    )
+}
+
+/// Rows the wheel moves the sidebar by, and the top row after a wheel notch of `delta` rows.
+pub(crate) fn scrolled(app: &App, height: u16, delta: isize) -> Option<(usize, Slot)> {
+    let rows = all_rows(app, &app.theme);
+    let visible = usize::from(height);
+    let cursor = app.state.cursor();
+    let max = rows.len().checked_sub(visible).filter(|max| *max > 0)?;
+    let top = window_start(&rows, visible, &cursor, app.state.side.scroll.as_ref());
+    Some((
+        top.saturating_add_signed(delta.saturating_neg()).min(max),
+        cursor,
+    ))
+}
+
+fn all_rows(app: &App, theme: &Theme) -> Vec<SidebarRow> {
     if app.state.sidebar == SidebarMode::Hidden {
         return Vec::new();
     }
@@ -279,9 +376,19 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         let chord = |action| keys::chord_for(action, app.cmd_hints);
         let text = theme.muted_style();
         let new = flush_right(" + New session", chord(Action::NewSession), width);
-        rows.push(control_row(new, text, Hit::New(None)));
-        let search = flush_right(" ⌕ Search", chord(Action::Navigator), width);
-        rows.push(control_row(search, text, Hit::Search));
+        let chip = Style::default()
+            .fg(theme.muted)
+            .add_modifier(Modifier::REVERSED);
+        rows.push(control_row(
+            new,
+            chip.add_modifier(Modifier::BOLD),
+            Hit::New(None),
+        ));
+        let (label, style) = match &app.state.side.query {
+            Some(query) => (format!(" ⌕ {query}▏"), Style::default().fg(theme.text)),
+            None => (" ⌕ Search".to_owned(), text),
+        };
+        rows.push(control_row(pad_cells(&label, width), style, Hit::Search));
     }
     let groups = app.state.groups();
     let mut pinned_head = false;
@@ -341,7 +448,13 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
             Line::styled(format!("  +{beyond}"), theme.dim_style()),
         ));
     }
-    window_rows(rows, height, &cursor, theme)
+    if app.state.side.query.is_some() && !rows.iter().any(|row| row.index.is_some()) {
+        rows.push(SidebarRow::plain(
+            None,
+            Line::styled(" no session matches", theme.dim_style()),
+        ));
+    }
+    rows
 }
 
 fn pinned_header(pinned: usize, theme: &Theme) -> SidebarRow {
@@ -577,16 +690,19 @@ fn child_rows(
     rows
 }
 
-/// The rows that fit, keeping the cursor on screen, faded two deep at a cut edge.
-fn window_rows(
-    rows: Vec<SidebarRow>,
-    height: u16,
+/// The first row of the window: where the wheel left it while the cursor has not moved since,
+/// else the one that keeps the cursor on screen.
+fn window_start(
+    rows: &[SidebarRow],
+    visible: usize,
     cursor: &Slot,
-    theme: &Theme,
-) -> Vec<SidebarRow> {
-    let visible = usize::from(height);
-    if visible == 0 || rows.len() <= visible {
-        return rows;
+    scroll: Option<&(usize, Slot)>,
+) -> usize {
+    let last = rows.len().saturating_sub(visible);
+    if let Some((top, held)) = scroll
+        && held == cursor
+    {
+        return (*top).min(last);
     }
     let at = rows
         .iter()
@@ -595,7 +711,21 @@ fn window_rows(
             Slot::Group(root) => matches!(&row.control, Some(Hit::Fold(drawn)) if drawn == root),
         })
         .unwrap_or(0);
-    let start = crate::panes::first_row(at, visible);
+    crate::panes::first_row(at, visible)
+}
+
+/// The rows that fit, faded two deep at a cut edge.
+fn window_rows(
+    rows: Vec<SidebarRow>,
+    height: u16,
+    (cursor, scroll): (&Slot, Option<&(usize, Slot)>),
+    theme: &Theme,
+) -> Vec<SidebarRow> {
+    let visible = usize::from(height);
+    if visible == 0 || rows.len() <= visible {
+        return rows;
+    }
+    let start = window_start(&rows, visible, cursor, scroll);
     let end = start.saturating_add(visible).min(rows.len());
     let below = end < rows.len();
     let mut rows = rows;
@@ -658,5 +788,91 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
                 cell.set_style(style);
             }
         }
+    }
+}
+
+impl App {
+    /// The project order as the sidebar lists it, written to config so the next console starts in it.
+    pub(crate) fn save_order(&mut self, outbound: &Outbound) {
+        let roots = project_roots(&self.state);
+        let params = serde_json::json!({"id": "console.projectOrder", "value": roots});
+        self.send_request(
+            outbound,
+            crate::app::RequestKind::Sidebar,
+            "_yi/set_default",
+            params,
+        );
+    }
+
+    /// The wheel over the sidebar slides its rows; the cursor stays where it was.
+    pub(crate) fn scroll_sidebar(&mut self, delta: isize) {
+        let height = self.hits.as_ref().map_or(0, |hits| hits.sidebar_height);
+        if let Some(next) = scrolled(self, height, delta) {
+            self.state.side.scroll = Some(next);
+            self.dirty = true;
+        }
+    }
+
+    /// The Search row turns into an input: typing filters the sessions, esc ends it.
+    pub(crate) fn begin_search(&mut self) {
+        self.state.side.query = Some(String::new());
+        self.state.side.scroll = None;
+        self.dirty = true;
+    }
+
+    /// Keys while the inline search is up. True when it took the key.
+    pub(super) fn search_key(
+        &mut self,
+        outbound: &crate::client::Outbound,
+        key: ratatui::crossterm::event::KeyEvent,
+    ) -> bool {
+        use ratatui::crossterm::event::KeyCode;
+        let Some(query) = self.state.side.query.as_mut() else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Esc => self.state.side.query = None,
+            KeyCode::Char(c) if !c.is_control() => query.push(c),
+            KeyCode::Backspace => {
+                query.pop();
+            }
+            KeyCode::Up | KeyCode::Down => self.state.move_cursor(key.code == KeyCode::Down),
+            KeyCode::Enter => {
+                self.state.side.query = None;
+                self.state.settle_visible();
+                self.open_selected(outbound);
+            }
+            _ => return true,
+        }
+        self.state.side.scroll = None;
+        self.state.settle_visible();
+        self.dirty = true;
+        true
+    }
+
+    pub(super) fn keys_held(&self) -> bool {
+        self.state.snap.is_some() || self.state.side.query.is_some() || self.files_focused()
+    }
+
+    /// Panels have the keys while a drag is up (any key cancels it), the search is up or the tree
+    /// is focused. A chord the keys table binds stays the table's reader while the search is up.
+    pub(super) fn held_key(&mut self, outbound: &Outbound, key: KeyEvent) {
+        if self.state.side.query.is_some()
+            && let Some(action @ (Action::Shift(_) | Action::Snap(_))) = keys::direct(&key)
+        {
+            self.apply_action(outbound, action);
+            self.state.side.scroll = None;
+            self.state.settle_visible();
+            self.dirty = true;
+            return;
+        }
+        if self.search_key(outbound, key) {
+            return;
+        }
+        if self.state.snap.take().is_some() {
+            self.dirty = true;
+            return;
+        }
+        self.files_key(key);
     }
 }
