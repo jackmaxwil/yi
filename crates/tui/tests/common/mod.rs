@@ -467,7 +467,16 @@ pub fn replay_stream(
                     message: message.clone(),
                 });
             }
-            AgentMessage::Assistant { content, .. } => {
+            AgentMessage::Assistant {
+                content,
+                usage,
+                response_id,
+                ..
+            } => {
+                // The loop opens a turn per model reply; the answer it appends rides the last one.
+                if !(usage.unknown && response_id.is_none()) {
+                    app.reduce_agent(AgentEvent::TurnStart);
+                }
                 app.reduce_agent(AgentEvent::MessageStart {
                     message: message.clone(),
                 });
