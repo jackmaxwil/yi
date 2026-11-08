@@ -1,7 +1,7 @@
 ---
 issue: Closes #1859
-growth: +1063 discovery, provenance and import share the existing Store and doc helpers; name listing and index construction were deduplicated, and the added tests cover the externally visible import and doctor behavior
-raise: crate cli +31, crate runtime +1021, crate types +11, tests +632, comments +18
+growth: +1062 discovery, provenance and import share the existing Store and doc helpers; name listing and index construction were deduplicated, and the added tests cover the externally visible import and doctor behavior
+raise: crate cli +31, crate runtime +1020, crate types +11, tests +632, comments +19
 decision: the Claude Code memories of the working directory and of `~/.claude/memory` import into the store that owns their scope at session start, behind `memory.importClaude` (default on) and tagged `source: claude` | the owner's memories were stranded in a shape Yi already reads, with only discovery, provenance and staleness missing, and a session start is the one moment a session reads memory | set `memory.importClaude` false, which stops the import and leaves the imported notes in place
 ledger+: host-written memory (one file per fact, hook index) | the session start imports the Claude Code memories of the repository and of `~/.claude/memory` behind `memory.importClaude`, tagged `source: claude`, never writing into `~/.claude` and never over a note changed since it was imported (`cli_surfaces::yi_memory_import_claude_takes_the_working_directorys_notes`)
 ---

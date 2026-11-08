@@ -72,7 +72,12 @@ pub struct Sources {
 
 impl Sources {
     pub fn discover(home: &Path, cwd: &Path) -> Self {
-        let project = project_dir(home, cwd);
+        // Incident: project_dir spawns git, which added 26 ms to `yi ask` in a home without Claude.
+        let project = if home.join(".claude/projects").is_dir() {
+            project_dir(home, cwd)
+        } else {
+            encoded(home, cwd)
+        };
         let user = user_dir(home);
         let names = Store::new(project.clone())
             .names()
@@ -197,22 +202,16 @@ pub(crate) struct Outcome {
 
 fn run_with(home: &Path, cwd: &Path, sources: &Sources, adopt_forgotten: bool) -> Outcome {
     let mut out = Outcome::default();
-    for (store, dir, repository) in [
-        (
-            Store::new(repo_dir(home, cwd)),
-            sources.project().to_path_buf(),
-            true,
-        ),
-        (
-            Store::new(global_dir(home)),
-            sources.user().to_path_buf(),
-            false,
-        ),
-    ] {
+    for (dir, repository) in [(sources.project(), true), (sources.user(), false)] {
         if !dir.is_dir() || Store::new(dir.to_path_buf()).names().is_empty() {
             continue;
         }
-        match one(sources, home, &store, &dir, adopt_forgotten) {
+        let store = Store::new(if repository {
+            repo_dir(home, cwd)
+        } else {
+            global_dir(home)
+        });
+        match one(sources, home, &store, dir, adopt_forgotten) {
             Ok((report, snapshot)) => {
                 out.reports.push(report);
                 if repository {
@@ -222,7 +221,7 @@ fn run_with(home: &Path, cwd: &Path, sources: &Sources, adopt_forgotten: bool) -
                 }
             }
             Err(error) => out.reports.push(Report {
-                source: short(home, &dir),
+                source: short(home, dir),
                 error: Some(error.to_string()),
                 ..Report::default()
             }),
