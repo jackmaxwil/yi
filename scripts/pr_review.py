@@ -32,6 +32,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -1426,15 +1427,8 @@ def selfcheck():
         "a head owes what its newest round lost, a void and a new head aside"
     real = attempts_of([{"id": 37998, "user": {"login": BOT}, "body": ROUND_1888}, {"id": 38039, "user": {"login": BOT}, "body": VOID_1888}], {BOT}, 1888)
     forged_void = {"id": 38040, "user": {"login": "someone"}, "body": VOID_1888}
-    held_env = os.environ.get("YI_ROUND_AUTHORS")
-    os.environ["YI_ROUND_AUTHORS"] = BOT
-    try:
+    with mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": BOT}):
         assert attempts_of([forged_void], {BOT}, 1888) == [], "a stranger's void is not an attempt on the head"
-    finally:
-        if held_env is None:
-            os.environ.pop("YI_ROUND_AUTHORS", None)
-        else:
-            os.environ["YI_ROUND_AUTHORS"] = held_env
     assert [a["kind"] for a in real] == ["round", "void"] and owed(real, SHA_1888) == {"tests"}, real
     assert skip_reason([a for a in real if a["kind"] == "round"], SHA_1888, attempts=real) is None, "#1888's head still owes its tests lens"
     assert lost_only(named, real, SHA_1888) == {"b": {"id": "tests"}}, "after #1888's void only the tests lens is asked, not every lens"

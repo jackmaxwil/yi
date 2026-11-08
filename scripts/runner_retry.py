@@ -288,6 +288,7 @@ def check_retry_flow(login="jack"):
         mock.patch.object(forge_pr, "required", lambda: ["gate (test)", "gate (lint)"]),
         mock.patch.object(forge_pr, "repo", lambda: "o/r"),
         mock.patch.object(forge_pr, "fgj_api", api),
+        mock.patch.object(bot_meter, "authors", lambda: {bot_meter.BOT, login}),
         mock.patch.object(sys.modules[__name__], "failed_tasks", lambda repo, head, jobs: tasks),
         mock.patch.object(sys.modules[__name__], "read_log", lambda task: logs[task["id"]]),
         mock.patch.object(sys.modules[__name__], "workflow_run_id", lambda repo, number, sha: number + 17800),

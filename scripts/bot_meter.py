@@ -13,6 +13,7 @@ import pathlib
 import sys
 import threading
 import time
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -20,7 +21,6 @@ import forge_pr  # noqa: E402
 import forge_tracking  # noqa: E402
 
 BOT = "yi-bot"
-_AUTHORS = None
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
 MARKERS = ("<!-- yi-round-meta ", "<!-- yi-round-void-meta ", "<!-- yi-autofix-meta ")
 FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models")
@@ -111,17 +111,14 @@ def authors():
     named = os.environ.get("YI_ROUND_AUTHORS")
     if named:
         return set(named.split(","))
-    global _AUTHORS
-    if _AUTHORS is None:
-        me = forge_pr.fgj_api("GET", "user") or {}
-        _AUTHORS = {BOT, me.get("login") if isinstance(me, dict) else None} - {None}
-    return _AUTHORS
+    me = forge_pr.fgj_api("GET", "user") or {}
+    return {BOT, me.get("login") if isinstance(me, dict) else None} - {None}
 
 
-def rows(comments, trusted=None):
+def rows(comments):
     """Every bot meta line in `comments`, as fields, with the comment's PR and time. A gate rerun row
     counts from a trusted login too, so the retry ledger is the owner's own; anyone else's is text."""
-    out, allowed = [], trusted
+    out, allowed = [], None
     for comment in comments:
         login = (comment.get("user") or {}).get("login")
         bot = login == BOT
@@ -232,18 +229,11 @@ def selfcheck():
                   dict(bot, body="prose that mentions <!-- yi-autofix-meta cost=7 --> later\n\n\n")])
     stranger = {"user": {"login": "someone"}, "body": "<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=9 kind=gate from=abc verdict=rerun cost=99 -->"}
     owner = {"user": {"login": "jack"}, "body": "<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=9 kind=gate from=abc verdict=rerun -->"}
-    saved = os.environ.get("YI_ROUND_AUTHORS")
-    os.environ["YI_ROUND_AUTHORS"] = "jack"
-    try:
+    with mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "jack"}):
         if rows([stranger]) != []:
             errs.append("a stranger's rerun row is the ledger: any login that can comment retires the head's retries")
         if [r["verdict"] for r in rows([owner])] != ["rerun"]:
             errs.append("the owner's own rerun row is the retry ledger and was dropped")
-    finally:
-        if saved is None:
-            os.environ.pop("YI_ROUND_AUTHORS", None)
-        else:
-            os.environ["YI_ROUND_AUTHORS"] = saved
     try:
         mangled = cost({"cost": "cheap"})
     except (TypeError, ValueError):
