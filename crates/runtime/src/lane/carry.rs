@@ -109,6 +109,11 @@ fn in_tree_units(profile: &Path, source: &Path) -> Result<HashSet<String>, Strin
                     "[cargo units not carried: past {DEP_INFO_FILES_MAX} dep-info files (fork.depinfo_files {DEP_INFO_FILES_MAX}); the child rebuilds them]"
                 ));
             }
+            // Invariant: a dep-info can invalidate only the fingerprint encoded in its filename.
+            let stem = path.file_stem().map(|stem| stem.to_string_lossy());
+            let Some(unit) = stem.as_deref().and_then(hash_of) else {
+                continue;
+            };
             let mut bytes = Vec::new();
             let read = std::fs::File::open(&path).and_then(|file| {
                 file.take(DEP_INFO_MAX_BYTES.saturating_add(1))
@@ -120,10 +125,7 @@ fn in_tree_units(profile: &Path, source: &Path) -> Result<HashSet<String>, Strin
                     .iter()
                     .any(|dep| names_the_tree(dep, source))
             {
-                let stem = path
-                    .file_stem()
-                    .map(|stem| stem.to_string_lossy().into_owned());
-                bad.extend(stem.as_deref().and_then(hash_of).map(str::to_owned));
+                bad.extend([unit.to_owned()]);
             }
         }
     }

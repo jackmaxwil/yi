@@ -1261,6 +1261,9 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - The palette is fixed: tier from `COLORTERM`/`TERM`, light or dark from `COLORFGBG` (default
   dark). The orb is [`yi-orb`](../crates/orb/src/lib.rs) over kitty graphics: the `Yi` mark at rest and one
   exact loop per agent state, left only at its exit points by a least-travel morph.
+- The OSC 2 title keeps `Yi — <prompt>`; `◌ ◍ ◉ ◍` pulses every 250 ms while the foreground
+  run has an `OrbState`, `!` marks `Listening`, and no marker means ready. Background jobs and
+  child sessions may outlive the parent run without keeping its title pulsing.
 - `yi tui --headless --keys <script> --frames <dir> [--record] [--snap]` drives the real loop on
   an in-memory screen (steps `key`, `type`, `type-ms`, `wait`, `wait-idle`, `wait-frame`, `quit`);
   it implies `--here` unless `--lanes`, and the drive flags are refused without `--headless`.
@@ -1302,6 +1305,9 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
+- The focused session's OSC 2 title prefixes its label with the same 250 ms pulse while `Working`,
+  `!` while `Blocked`, and no marker otherwise; `DoneUnseen` is ready, not attention. Background
+  jobs and child sessions do not keep the parent title pulsing after its run ends.
 - ⌘⇧R opens Review beside a session: its scope is the lane's branch against its merge base with
   main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
   session with no git base shows its own edits). Each file names the todo that was running when
@@ -1413,8 +1419,8 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 | direct deps | 23 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 176 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
 | dist binary | 8,521,200 bytes on macOS arm64, a measured ratchet that passes growth up to a fixed 16,384-byte jitter allowance past it, under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) that moves only with a `decision:` line | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json`; on Linux `baselines/binary_size_budget_linux.json` (13,220,280 at the first forge build) under its own 14 MiB cap |
-| `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
-| `yi ask --model faux/faux-1 hi` | 178.0 ms | the same, under a scratch HOME (kernel prewarm off) in an empty cwd under `target/` with `GIT_CEILING_DIRECTORIES` above it, so no lane is claimed | same; `--selfcheck` proves each entry can fail on a stand-in binary |
+| `yi --version` | 6.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
+| `yi ask --model faux/faux-1 hi` | 205.0 ms | the same, under a scratch HOME (kernel prewarm off) in an empty cwd under `/tmp` with `GIT_CEILING_DIRECTORIES` above it, so no lane is claimed | same; `--selfcheck` proves each entry can fail on a stand-in binary
 
 The binary and startup gates run only after a dist build; a failed build fails both. Under
 `--fast` both are skipped by a printed line. When `CI` is set startup is skipped (D68), and the

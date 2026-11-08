@@ -172,10 +172,16 @@ run "$PY" scripts/forge_tracking.py --selfcheck
 run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # Change files are the one place a branch records a change; the format and the view-edit
 # refusals are rules over text, so only this flag proves each refusal fires.
-run "$PY" scripts/guardrails/check_changes.py --selfcheck
+if [ -d scripts/mirror ]; then
+  run "$PY" scripts/guardrails/check_changes.py --selfcheck
+else
+  run echo "skip changes selfcheck (no scripts/mirror: public mirror)"
+fi
 # The recorder numbers versions and decisions on main, where a wrong order is a renumbering
 # nobody can undo; only this flag runs it over real change files in their real landing order.
-if [ "$FAST" -eq 1 ]; then
+if [ ! -d scripts/mirror ]; then
+  run echo "skip record selfcheck (no scripts/mirror: public mirror)"
+elif [ "$FAST" -eq 1 ]; then
   run echo "skip record selfcheck (--fast: replays two record branches and ten gate runs)"
 else
   run "$PY" scripts/record_changes.py --selfcheck
@@ -191,7 +197,11 @@ run "$PY" scripts/forge_pr.py --selfcheck
 # decisions are the gate: the quote check, the refute tally, the marker's author, the
 # delta range and the fixer's wall; only this flag walks them without a forge or a model.
 run "$PY" scripts/pr_review.py --selfcheck
-run "$PY" scripts/intake/bridge.py --selfcheck
+if [ -d scripts/mirror ]; then
+  run "$PY" scripts/intake/bridge.py --selfcheck
+else
+  run echo "skip intake bridge selfcheck (no scripts/mirror: public mirror)"
+fi
 # The autofixer pushes to people's branches, so its table, its wall and its marker check are
 # proved here on a scratch merge with a stand-in model, never a forge.
 run "$PY" scripts/pr_autofix.py --selfcheck
@@ -206,7 +216,11 @@ run "$PY" scripts/guardrails/check_host_git.py --selfcheck
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
 # The GitHub release's scan (scripts/mirror/publish.sh), refuted with each check off.
-run "$PY" -I scripts/mirror/scan.py --selfcheck
+if [ -d scripts/mirror ]; then
+  run "$PY" -I scripts/mirror/scan.py --selfcheck
+else
+  run echo "skip scripts/mirror/scan selfcheck (no scripts/mirror: public mirror)"
+fi
 # Prose is not exempt: check_comments.py ratchets the comment volume and prints the count, and
 # the design docs set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi

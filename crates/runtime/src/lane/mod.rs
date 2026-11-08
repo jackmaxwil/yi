@@ -711,7 +711,7 @@ impl Pool {
             checkout.extend(["-B", branch.as_str(), &sha]);
         }
         if fresh {
-            self.rebuild(&add)?;
+            self.rebuild(slot, &add)?;
         } else {
             self.stop_warmer(slot)?;
             git(&path, &checkout)?;

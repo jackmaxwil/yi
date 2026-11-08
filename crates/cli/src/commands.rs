@@ -112,6 +112,19 @@ pub(crate) fn find(name: &str) -> Option<&'static Verb> {
 pub(crate) fn find_flag(name: &str) -> Option<&'static Flag> {
     FLAGS.iter().find(|flag| flag.name == name)
 }
+pub(crate) fn version_fast_path() {
+    let mut arguments = std::env::args_os();
+    if arguments.len() == 2
+        && arguments.nth(1).as_deref() == Some(std::ffi::OsStr::new("--version"))
+    {
+        print_version();
+        std::process::exit(0);
+    }
+}
+
+pub(crate) fn print_version() {
+    println!("yi {}", env!("ARCHITECTURE_VERSION"));
+}
 
 pub(crate) fn run(verb: &Verb, args: &Args) -> i32 {
     if let Only(words) = verb.words

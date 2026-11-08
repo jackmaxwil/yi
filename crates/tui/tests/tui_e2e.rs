@@ -357,8 +357,11 @@ fn external_editor_replaces_the_draft() -> TestResult {
         permissions.set_mode(0o755);
     }
     std::fs::set_permissions(&editor, permissions)?;
-    // SAFETY-free: the test process is the only reader of EDITOR here.
-    unsafe { std::env::set_var("EDITOR", &editor) };
+    // SAFETY-free: this test process is the only reader of VISUAL and EDITOR.
+    unsafe {
+        std::env::set_var("VISUAL", &editor);
+        std::env::set_var("EDITOR", &editor);
+    }
 
     let mut app = app();
     let backend = ratatui::backend::TestBackend::new(80, 24);
@@ -2441,6 +2444,65 @@ fn a_step_that_draws_no_text_still_advances_the_orb_inside_its_own_update() -> T
     Ok(())
 }
 
+#[test]
+fn a_solo_window_title_tracks_orb_state_and_pulse_without_repeating() -> TestResult {
+    use yi_types::message::{AgentMessage, UserContent};
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    let mut app = app();
+    app.set_clock(yi_tui::motion::Clock::Fixed(Instant::now()));
+    app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("hello".to_owned()), 0),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    assert!(written.contains("\x1b]2;Yi — hello\x07"), "{written:?}");
+
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    assert!(written.contains("\x1b]2;◌ Yi — hello\x07"), "{written:?}");
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    assert!(!written.contains("\x1b]2;"), "{written:?}");
+
+    app.advance_clock(Duration::from_millis(250));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    assert!(written.contains("\x1b]2;◍ Yi — hello\x07"), "{written:?}");
+
+    let (reply, _answered) = std::sync::mpsc::channel();
+    app.open_approval(yi_tui::AskRequest {
+        title: "permission".to_owned(),
+        description: String::new(),
+        grants: Vec::new(),
+        reply,
+        tool_call_id: Some("c1".to_owned()),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    assert!(written.contains("\x1b]2;! Yi — hello\x07"), "{written:?}");
+    app.advance_clock(Duration::from_millis(250));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    assert!(!written.contains("\x1b]2;"), "{written:?}");
+
+    app.reduce_agent(yi_types::event::AgentEvent::PermissionResolved {
+        tool_call_id: "c1".to_owned(),
+        allowed: false,
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    assert!(written.contains("\x1b]2;◉ Yi — hello\x07"), "{written:?}");
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let written = terminal.backend_mut().take_written();
+    assert!(written.contains("\x1b]2;Yi — hello\x07"), "{written:?}");
+    Ok(())
+}
+
 /// The screenshot's fourth defect: a host notice arrived as a user-role
 /// message, so it retitled the window, opened a turn with a divider, and drew
 /// the user's `›` rail on text the user never typed.
@@ -2741,11 +2803,10 @@ fn the_recorded_session_titles_nothing_on_a_host_notice() -> TestResult {
     let last = prompts.last().cloned().unwrap_or_default();
     for mode in MODES {
         let (mut app, rows) = replayed(mode)?;
-        assert_eq!(
-            app.take_title(),
-            Some(format!("Yi — {last}")),
-            "{mode:?}: the notice arrived after the last prompt and must not have retitled \
-             the window"
+        let title = app.take_title().unwrap_or_default();
+        assert!(
+            title.ends_with(&format!("Yi — {last}")),
+            "{mode:?}: the notice changed the prompt-derived title: {title:?}"
         );
         let flag = rows
             .iter()

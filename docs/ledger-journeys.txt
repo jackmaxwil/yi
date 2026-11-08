@@ -647,3 +647,8 @@ heartbeats: clock subscriptions | `channel_e2e::a_file_wait_holds_until_the_file
 `agent-browser` plugin | `kept_rules::what_a_browser_command_prints_comes_back_inside_the_external_fence`
 `agent-browser` plugin | `sandbox::the_browser_box_holds_credentials_writes_sockets_and_all_but_the_web_session_s_internet`
 `agent-browser` plugin | `skills_e2e::the_agent_browser_pointer_is_listed_only_when_its_plugin_is_installed`
+terminal tab run state | `motion::tests::tab_title_pulse_changes_at_250ms_boundaries` (T0)
+terminal tab run state | `tui_e2e::a_solo_window_title_tracks_orb_state_and_pulse_without_repeating` (T0)
+terminal tab run state | `title::tests::title_format_uses_focused_status_without_changing_session_label` (T0)
+terminal tab run state | `title::tests::working_title_pulse_changes_at_shared_period_boundaries` (T0)
+terminal tab run state | `title::tests::focused_status_transitions_dirty_only_when_title_changes` (T0)

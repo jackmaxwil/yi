@@ -428,13 +428,33 @@ impl Pool {
 
     /// Incident: a deleted lanes directory left its slots registered, and `worktree add` refused
     /// a branch no live tree holds.
-    pub(super) fn rebuild(&self, add: &[&str]) -> Result<(), LaneError> {
-        let listing = git(&self.repo, &["worktree", "list", "--porcelain"])?;
-        let lanes = resolved(&self.dir);
-        for tree in parse(&listing) {
-            if tree.path.starts_with(&lanes) && !tree.path.exists() {
-                let text = tree.path.to_string_lossy();
-                git(&self.repo, &["worktree", "remove", "-f", "-f", &text])?;
+    pub(super) fn rebuild(&self, adding: SlotIndex, add: &[&str]) -> Result<(), LaneError> {
+        {
+            // Invariant: a held slot lock protects an in-progress add from stale cleanup.
+            let _pool = self.lock()?;
+            let listing = git(&self.repo, &["worktree", "list", "--porcelain"])?;
+            let lanes = resolved(&self.dir);
+            for tree in parse(&listing) {
+                if tree.path.starts_with(&lanes) && !tree.path.exists() {
+                    let slot = tree
+                        .path
+                        .strip_prefix(&lanes)
+                        .ok()
+                        .filter(|relative| relative.components().count() == 1)
+                        .and_then(|relative| relative.file_name()?.to_str()?.parse().ok());
+                    let _slot_guard = match slot {
+                        Some(slot) if slot != adding => {
+                            let (guard, holder) = self.probe(slot)?;
+                            if holder.is_some() {
+                                continue;
+                            }
+                            Some(guard)
+                        }
+                        _ => None,
+                    };
+                    let text = tree.path.to_string_lossy();
+                    git(&self.repo, &["worktree", "remove", "-f", "-f", &text])?;
+                }
             }
         }
         git(&self.repo, add).map(|_| ())

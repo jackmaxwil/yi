@@ -358,10 +358,21 @@ def selfcheck(off="", fixtures=None):
     if off == "credentials":
         origin_jobs = {("probe.yml", "probe")}
     for workflow, job in sorted(origin_jobs):
-        text = (ROOT / ".forgejo/workflows" / workflow).read_text() if off != "credentials" else (
-            "jobs:\n  probe:\n    steps:\n      - uses: actions/checkout@v4\n"
-            "        with:\n          persist-credentials: false\n"
-        )
+        if off == "credentials":
+            text = (
+                "jobs:\n  probe:\n    steps:\n      - uses: actions/checkout@v4\n"
+                "        with:\n          persist-credentials: false\n"
+            )
+        else:
+            workflow_path = ROOT / ".forgejo/workflows" / workflow
+            if (
+                workflow == "mirror.yml"
+                and not workflow_path.is_file()
+                and not (ROOT / "scripts/mirror").is_dir()
+            ):
+                print("skip scan selfcheck (mirror workflow omitted from public mirror)")
+                continue
+            text = workflow_path.read_text()
         parts = text.split(f"\n  {job}:\n", 1)
         if len(parts) != 2:
             errors.append(f"workflow audit could not find {workflow}:{job}")
@@ -392,10 +403,14 @@ def selfcheck(off="", fixtures=None):
     for real in ("crates/runtime/src/memory/doc.rs", "skills/yi/session-mining/extract.py"):
         if any(fnmatch.fnmatch(real, pattern) for pattern in gitleaks_ignores()):
             errors.append(f"gitleaks skips real source: {real}")
-    deny = set(rule_lines(ROOT / "scripts/mirror/deny.txt"))
-    for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
-        if regex not in deny:
-            errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
+    deny_path = ROOT / "scripts/mirror/deny.txt"
+    if deny_path.is_file():
+        deny = set(rule_lines(deny_path))
+        for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
+            if regex not in deny:
+                errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
+    else:
+        print("skip scan selfcheck (no scripts/mirror/deny.txt: public mirror policy omitted)")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
     argv = semgrep_args(["scripts"])
@@ -582,11 +597,16 @@ def normal_tasks(history=False):
 
 def fixture_tasks():
     config = gitleaks_config(False, "gitleaks-fixtures.toml")
-    return {
+    tasks = {
         "zizmor": lambda: zizmor(sorted((FIXTURES / "zizmor").glob("*.yml"))),
-        "gitleaks": lambda: gitleaks("dir", config, repo=FIXTURES / "gitleaks"),
         "semgrep": lambda: semgrep([FIXTURES / "semgrep"], True),
     }
+    gitleaks_fixtures = FIXTURES / "gitleaks"
+    if gitleaks_fixtures.is_dir():
+        tasks["gitleaks"] = lambda: gitleaks("dir", config, repo=gitleaks_fixtures)
+    else:
+        print("skip scan selfcheck (gitleaks fixture family absent from public mirror)")
+    return tasks
 
 
 def main(argv):

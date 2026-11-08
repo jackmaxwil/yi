@@ -28,11 +28,13 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
     . scripts/suite_home.sh test
-    if command -v cargo-nextest >/dev/null; then
+    if cargo nextest --version >/dev/null 2>&1; then
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
       [ -z "${CI:-}" ] || profile=default
-      cargo nextest run --workspace --profile "$profile" -- --skip linked_tables
+      cargo nextest run --workspace --profile "$profile" -E 'not test(/(a_thousand_spill_dirs_leave_a_contained_command_fast|parallel_claims_check_out_side_by_side)/)' -- --skip linked_tables
+      # Incident: the 200 ms spill and 2.5 s parallel-claim budgets fail under a populated pool.
+      cargo nextest run -p yi-runtime --test integration --profile "$profile" -j 1 -E 'test(/(sandbox_seam::a_thousand_spill_dirs_leave_a_contained_command_fast|lanes::parallel_claims_check_out_side_by_side)/)'
     else
       cargo test --workspace -- --test-threads=1 --skip linked_tables
     fi

@@ -165,6 +165,8 @@ pub struct App {
     /// Incident: a resize reflows the text a kitty placement scrolls with, but
     /// [`crate::terminal::Terminal::resize_viewport`] reports only viewport-rect moves.
     orb_stale: bool,
+    base_title: String,
+    title_marker: Option<working::TitleMarker>,
     pub(crate) pending_title: Option<String>,
     pub(crate) started_at: Instant,
     pub(crate) clock: crate::motion::Clock,
@@ -299,6 +301,8 @@ impl App {
             card_at: None,
             orb_placement: None,
             orb_stale: false,
+            base_title: "Yi".to_owned(),
+            title_marker: Some(working::TitleMarker::Ready),
             pending_title: Some("Yi".to_owned()),
             started_at: Instant::now(),
             clock: crate::motion::Clock::Real,
@@ -585,10 +589,6 @@ impl App {
             .0
     }
 
-    pub fn take_title(&mut self) -> Option<String> {
-        self.pending_title.take()
-    }
-
     pub fn cwd(&self) -> &str {
         &self.options.cwd
     }
@@ -650,7 +650,7 @@ impl App {
                             focus = focus.chars().take(39).collect::<String>() + "…";
                         }
                         if !focus.is_empty() {
-                            self.pending_title = Some(format!("Yi — {focus}"));
+                            self.update_prompt_title(&focus);
                         }
                         self.commit_cell(&Cell::User { text });
                     }

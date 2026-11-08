@@ -64,6 +64,15 @@ pub fn pulse_frame(elapsed_ms: u128) -> char {
         .copied()
         .unwrap_or('◆')
 }
+/// Invariant: OSC 2 stays text-only; its four-frame pulse stays distinct from the kitty orb.
+pub fn tab_title_pulse(elapsed: Duration) -> &'static str {
+    match elapsed.as_millis() / PULSE_PERIOD_MS % 4 {
+        0 => "◌",
+        1 => "◍",
+        2 => "◉",
+        _ => "◍",
+    }
+}
 
 /// The band's weight at `column` as an alpha in `0..=FULL`, 0 outside it — the
 /// one place a cosine becomes an integer.
@@ -125,4 +134,25 @@ pub fn shimmer(text: &str, elapsed_ms: u128, theme: &Theme) -> Vec<Span<'static>
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_title_pulse;
+    use std::time::Duration;
+
+    #[test]
+    fn tab_title_pulse_changes_at_250ms_boundaries() {
+        for (millis, frame) in [
+            (0, "◌"),
+            (249, "◌"),
+            (250, "◍"),
+            (499, "◍"),
+            (500, "◉"),
+            (750, "◍"),
+            (1_000, "◌"),
+        ] {
+            assert_eq!(tab_title_pulse(Duration::from_millis(millis)), frame);
+        }
+    }
 }

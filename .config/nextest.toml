@@ -15,6 +15,12 @@ subprocess = { max-threads = 3 }
 # 103-140 s at three, same CPU. CI keeps the default profile and its three.
 subprocess-wide = { max-threads = 8 }
 
+# Package I/O and 20k race loops need less suite contention; Docker may pull for 600 s.
+package = { max-threads = 1 }
+docker = { max-threads = 1 }
+permission-race = { max-threads = 1 }
+
+
 [[profile.default.overrides]]
 filter = '''
 binary(ready_check) + binary(request_budget)
@@ -36,6 +42,29 @@ test(a_last_word_that_streams_for_twenty_seconds_lands_inside_the_deadline)
 | test(a_large_sheet_points_at_a_pandas_route_that_works)
 '''
 priority = 100
+
+[[profile.default.overrides]]
+filter = '(package(yi-cli) & binary(integration) & test(/install_script::/))'
+test-group = 'package'
+priority = 100
+
+[[profile.default.overrides]]
+filter = '''
+(package(yi-runtime) & binary(integration)
+ & test(/node::(a_container_child_runs_bash_in_its_container_and_merges_like_a_worktree|a_timed_out_container_call_leaves_nothing_running_in_its_container)/))
+'''
+test-group = 'docker'
+slow-timeout = { period = "120s", terminate-after = 5 }
+priority = 100
+
+[[profile.default.overrides]]
+filter = '''
+(package(yi-runtime) & binary(integration) & test(/permission_scope::(a_link_swapped_after_the_check_overwrites_no_key|a_link_swapped_after_the_check_reads_no_key|a_parent_swapped_after_the_check_overwrites_no_key|a_parent_swapped_after_the_check_reads_no_key)/))
+'''
+test-group = 'permission-race'
+slow-timeout = { period = "120s", terminate-after = 2 }
+priority = 100
+
 
 [profile.local]
 inherits = "default"

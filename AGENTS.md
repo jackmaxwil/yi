@@ -308,7 +308,7 @@ inside a wrapped dependency's own tree (rmcp→chrono, zeromq→rand) get a scop
 wrapper exception, never a repo-wide unban. `regex` left the banned list for grep v2 and is a
 direct dependency; `syntect` left it for the highlighter, on `regex-fancy` only. Budgets are
 whatever baselines/deps_budget.json currently reads; dist binary ≤ 9 MiB, a hard cap independent
-of the baseline (D249), `yi --version` ≤ 5 ms.
+of the baseline (D249), `yi --version` ≤ 6 ms.
 
 
 

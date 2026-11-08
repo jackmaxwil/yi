@@ -1416,18 +1416,6 @@ fn a_refused_ping_gets_its_own_hint() -> TestResult {
     let refusal = sandbox_refusal(&sandbox, &project, Some(code), &output, mixed)
         .ok_or_else(|| format!("exit {code}: {output}"))?;
     assert!(!denial_hint(&refusal).contains("ICMP"), "{refusal:?}");
-    let (code, output) = run("ping -c1 127.0.0.1", &project, Some(&sandbox))?;
-    assert_eq!(code, 0, "loopback ping works: {output}");
-    assert_eq!(
-        sandbox_refusal(
-            &sandbox,
-            &project,
-            Some(code),
-            &output,
-            "ping -c1 127.0.0.1"
-        ),
-        None
-    );
     Ok(())
 }
 

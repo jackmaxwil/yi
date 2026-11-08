@@ -829,6 +829,7 @@ fn mcp_fast_path() {
 }
 
 fn main() {
+    commands::version_fast_path();
     contain::early();
     doctor::early();
     update::early();
@@ -894,7 +895,7 @@ fn dispatch(args: Args) -> i32 {
 }
 
 fn run_version(_: &Args) -> i32 {
-    println!("yi {}", env!("ARCHITECTURE_VERSION"));
+    commands::print_version();
     0
 }
 

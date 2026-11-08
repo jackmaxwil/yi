@@ -361,10 +361,7 @@ fn a_call_streamed_as_text_finishes_as_a_tool_call() -> Result<(), Box<dyn Error
         }) => {
             assert!(id.starts_with("leak-") && id.ends_with("-0"), "{id}");
             assert_eq!(name, "read");
-            assert_eq!(
-                arguments["path"],
-                "~/.yi/skills/yi/plan/SKILL.md"
-            );
+            assert_eq!(arguments["path"], "~/.yi/skills/yi/plan/SKILL.md");
         }
         other => return Err(format!("expected the recovered call: {other:?}").into()),
     }

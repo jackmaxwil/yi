@@ -589,15 +589,31 @@ def check_watch_stops():
     """The sweep watcher kills its child's group at the wall and writes why; a child that
     finishes first hands back its own exit code."""
     watch = ROOT / "drivers" / "watch.py"
+    def watch_probe_env(tmp):
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir()
+        for name, script in (
+            ("osascript", "#!/bin/sh\nprintf '100000000000'\n"),
+            ("docker", "#!/bin/sh\nexit 0\n"),
+        ):
+            executable = bin_dir / name
+            executable.write_text(script)
+            executable.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        return env
+
     with tempfile.TemporaryDirectory() as tmp:
+        env = watch_probe_env(tmp)
         runs = Path(tmp) / "runs"
         done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "20", "--wall", "0",
-                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60,
+                              env=env)
         assert done.returncode == 2, done
         assert "passed 0 s" in (Path(tmp) / "runs.STOPPED").read_text(), done.stdout
         done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "20", "--wall", "60",
                                "--poll", "0.2", "--", "sh", "-c", "exit 3"], capture_output=True, text=True,
-                              timeout=60)
+                              timeout=60, env=env)
         assert done.returncode == 3, done
 
     def trial_events(path, cost=None, unknown=False):
@@ -615,19 +631,33 @@ def check_watch_stops():
     # A trial the watcher stops is marked `censored`: its verifier may still score whatever the
     # stop left, and the gate must not read that as the arm's own result.
     with tempfile.TemporaryDirectory() as tmp:
+        env = watch_probe_env(tmp)
         runs = Path(tmp) / "runs"
         trial_events(runs / "job" / "task__one" / "agent" / "yi.jsonl", cost=2.0)
-        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "1.5", "--wall", "60",
-                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+        done = subprocess.run(
+            [sys.executable, str(watch), "--runs", str(runs), "--hard", "1.5", "--wall", "60",
+             "--poll", "0.2", "--", "sleep", "30"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
         assert done.returncode == 2 and "TRIAL STOP task__one" in done.stdout, done
         assert "$1 or 180 turns" in (runs / "job" / "task__one" / "censored").read_text(), "a stopped trial is censored"
     # An unpriced trial is charged the per-trial cap it cannot exceed, never $0 and never a
     # price table (E14), and the stream goes on while the charge fits under the hard cap.
     with tempfile.TemporaryDirectory() as tmp:
+        env = watch_probe_env(tmp)
         runs = Path(tmp) / "runs"
         trial_events(runs / "job" / "task__two" / "agent" / "yi.jsonl", unknown=True)
-        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "0.5", "--wall", "60",
-                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+        done = subprocess.run(
+            [sys.executable, str(watch), "--runs", str(runs), "--hard", "0.5", "--wall", "60",
+             "--poll", "0.2", "--", "sleep", "30"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
         assert done.returncode == 2 and "spend $1.000 passed the hard cap" in done.stdout, done
 
 

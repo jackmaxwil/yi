@@ -24,9 +24,9 @@ ASK = "yi ask --model faux/faux-1 hi"
 COMMANDS = (VERSION, ASK)
 
 def scratch():
-    target = DIST_BIN.parent.parent
-    target.mkdir(parents=True, exist_ok=True)
-    root = pathlib.Path(tempfile.mkdtemp(prefix="startup-", dir=target))
+    # Invariant: Git's filesystem discovery ignores its ceiling, so scratch must live outside
+    # the checkout and keep the timed cwd a true non-repository path.
+    root = pathlib.Path(tempfile.mkdtemp(prefix="startup-", dir="/tmp"))
     scratch_config(root)
     (root / "cwd").mkdir()
     return root
@@ -48,9 +48,13 @@ def errors(bin_path, budgets, runs=50, off="", env=None):
     errs, report = [], []
     root = scratch()
     try:
-        # Incident: target/ sits inside the checkout, so each timed `yi ask` claimed a lane, a
-        # `git worktree add` of the whole repo; the ceiling makes the cwd read as no repository.
-        env = {**os.environ, **(env or {}), "HOME": str(root / "home"), "GIT_CEILING_DIRECTORIES": str(root)}
+        env = {
+            **os.environ,
+            **(env or {}),
+            "HOME": str(root / "home"),
+            "PWD": str(root / "cwd"),
+            "GIT_CEILING_DIRECTORIES": str(root),
+        }
         if off == "home":
             env["HOME"] = os.environ.get("HOME", "")
         if off == "ceiling":
@@ -80,16 +84,47 @@ def errors(bin_path, budgets, runs=50, off="", env=None):
 
 
 STAND_IN = """#!/bin/sh
-case "$HOME:$PWD" in */startup-*/home:*/startup-*/cwd) ;; *) echo "not in the scratch HOME and cwd" >&2; exit 3 ;; esac
-[ "$GIT_CEILING_DIRECTORIES/cwd" = "$PWD" ] || { echo "the cwd can see a repository above it" >&2; exit 4; }
-[ "$1" = "$SLOW" ] && sleep 0.02
+case "$HOME" in */startup-*/home) scratch=${HOME%/home} ;; *) echo "not in the scratch HOME" >&2; exit 3 ;; esac
+[ "$PWD" = "$scratch/cwd" ] || { echo "not in the scratch cwd" >&2; exit 3; }
+[ "$GIT_CEILING_DIRECTORIES" = "$scratch" ] || { echo "the git ceiling is not the scratch root" >&2; exit 4; }
+case "$*" in
+    --version|"ask --model faux/faux-1 hi") ;;
+    *) echo "unexpected command: $*" >&2; exit 5 ;;
+esac
 echo ok
+"""
+
+
+FAKE_HYPERFINE = """#!/bin/sh
+export_file=
+command=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --export-json) export_file=$2; shift 2 ;;
+        --warmup|--runs) shift 2 ;;
+        -N) shift ;;
+        *) command=$1; shift ;;
+    esac
+done
+case "$command" in
+    *" --version") actual=--version ;;
+    *" ask --model faux/faux-1 hi") actual=ask ;;
+    *) echo "unexpected hyperfine command: $command" >&2; exit 6 ;;
+esac
+sh -c "$command"
+status=$?
+[ "$status" -eq 0 ] || exit "$status"
+case "$SLOW:$actual" in
+    --version:--version|ask:ask) minimum=0.02 ;;
+    *) minimum=0.001 ;;
+esac
+printf '{"results":[{"min":%s}]}\\n' "$minimum" > "$export_file"
 """
 
 
 def selfcheck(off=""):
     """Each required command is timed, a missing or renamed entry is refused, and hyperfine's
-    diagnostic is preserved whole; the stand-in also proves the scratch HOME, cwd and git ceiling."""
+    diagnostic is preserved whole; the stand-in checks the command, scratch HOME, cwd and git ceiling."""
     budgets = dict.fromkeys(COMMANDS, 10.0)
     errs = []
     v1 = {"results": [{"min": 1.0}]}
@@ -101,10 +136,14 @@ def selfcheck(off=""):
         errs.append("hyperfine v1 or v2 minimum was not read")
     with tempfile.TemporaryDirectory() as tmp:
         stand_in = pathlib.Path(tmp) / "yi"
+        hyperfine = pathlib.Path(tmp) / "hyperfine"
         stand_in.write_text(STAND_IN)
         stand_in.chmod(0o755)
+        hyperfine.write_text(FAKE_HYPERFINE)
+        hyperfine.chmod(0o755)
+        env = {"PATH": f"{tmp}{os.pathsep}{os.environ['PATH']}"}
         for slow, args in (("--version", VERSION), ("ask", ASK)):
-            found, _ = errors(stand_in, budgets, runs=3, off=off, env={"SLOW": slow})
+            found, _ = errors(stand_in, budgets, runs=3, off=off, env={**env, "SLOW": slow})
             if len(found) != 1 or not found[0].startswith(f"{args}: ") or " ms > 10.0 ms" not in found[0]:
                 errs.append(f"slow {slow}: gate said {found}, not one over-budget line for {args!r}")
         missing = f"startup budget missing required command {ASK!r}"
@@ -113,14 +152,14 @@ def selfcheck(off=""):
             ({VERSION: 10.0}, [missing]),
             ({VERSION: 10.0, renamed: 10.0}, [missing, f"startup budget has unknown command {renamed!r}"]),
         ):
-            found, _ = errors(stand_in, candidate, runs=1, off=off)
+            found, _ = errors(stand_in, candidate, runs=1, off=off, env={**env, "SLOW": ""})
             if found != want:
                 errs.append(f"required commands {sorted(candidate)}: gate said {found}, not {want}")
         from unittest import mock
         diagnostic = "0" * 500
         completed = subprocess.CompletedProcess([], 7, stderr=diagnostic)
         with mock.patch.object(subprocess, "run", return_value=completed):
-            found, _ = errors(stand_in, budgets, runs=1, off=off)
+            found, _ = errors(stand_in, budgets, runs=1, off=off, env=env)
         if len(found) != 2 or not all(diagnostic in line for line in found):
             errs.append(f"500-byte hyperfine diagnostic was not preserved whole: {found}")
     return errs
