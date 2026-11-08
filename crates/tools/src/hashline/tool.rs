@@ -465,7 +465,13 @@ impl HashlineReadTool {
                 let output = self.read_file(&display, path, &Map::new(), context);
                 spent = spent.saturating_add(size);
                 whole = whole.saturating_add(1);
-                sections.push(yi_types::message::join_text(&output.result.content, ""));
+                let mut section = yi_types::message::join_text(&output.result.content, "");
+                if (output.result.content.iter())
+                    .any(|part| matches!(part, yi_types::message::Content::Image { .. }))
+                {
+                    section.push_str("  [not shown: a glob sends no image; read the file alone]");
+                }
+                sections.push(section);
                 continue;
             }
             if !budget_named {

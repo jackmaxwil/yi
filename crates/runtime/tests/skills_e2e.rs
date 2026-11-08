@@ -196,14 +196,14 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         recall_cell.result.stderr
     );
 
-    // The call a refused read names runs as named, on an image under a name with a quote and a
+    // The cell a refused read names runs as named, on an image under a name with a quote and a
     // backslash that a bare "{path}" literal breaks on (the 2026-09-11 v4 sweep's image reads).
     let dir = Scratch::new("yi-skills-attach")?;
-    let image = dir.join("sch\"em\\atic.png");
+    let image = dir.join("sch\"em\\atic.bmp");
     std::fs::copy(
         concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/documents/checker.png"
+            "/tests/fixtures/documents/checker.bmp"
         ),
         &image,
     )?;
@@ -240,7 +240,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         1,
         "the display_data attachment must reach the host reducer"
     );
-    assert_eq!(attach_cell.result.attachments[0].mime_type, "image/png");
+    assert_eq!(attach_cell.result.attachments[0].mime_type, "image/jpeg");
 
     service.dispose().await;
     Ok(())

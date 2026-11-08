@@ -116,15 +116,19 @@ fn is_rtf(bytes: &[u8]) -> bool {
     after_bom(bytes).starts_with(b"{\\rtf")
 }
 
-pub(crate) fn image_kind(bytes: &[u8]) -> Option<&'static str> {
+/// An image's name and media type by its magic number. BMP's two-letter mark counts only with its
+/// zeroed reserved field, so a text file opening "BM" stays text.
+pub(crate) fn image_kind(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     if bytes.starts_with(b"\x89PNG") {
-        Some("PNG")
+        Some(("PNG", "image/png"))
     } else if bytes.starts_with(b"\xff\xd8\xff") {
-        Some("JPEG")
+        Some(("JPEG", "image/jpeg"))
     } else if bytes.starts_with(b"GIF8") {
-        Some("GIF")
-    } else if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        Some("WebP")
+        Some(("GIF", "image/gif"))
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some(("WebP", "image/webp"))
+    } else if bytes.starts_with(b"BM") && bytes.get(6..10) == Some(&[0; 4]) {
+        Some(("BMP", "image/bmp"))
     } else {
         None
     }

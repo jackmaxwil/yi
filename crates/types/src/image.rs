@@ -88,9 +88,21 @@ pub fn image_defect(mime_type: &str, data: &str) -> Option<ImageDefect> {
     if !whole {
         return Some(ImageDefect::NoHeader);
     }
+    match image_side(mime_type, &head) {
+        Some((width, height)) if width.max(height) > MAX_IMAGE_SIDE => {
+            Some(ImageDefect::TooWide { width, height })
+        }
+        _ => None,
+    }
+}
+
+/// The width and height a PNG or GIF header names, from the image's first 24 bytes; [`None`]
+/// for a type whose size is not in a fixed header place.
+#[must_use]
+pub fn image_side(mime_type: &str, head: &[u8]) -> Option<(u32, u32)> {
     let u32_at = |at: usize| head.get(at..at.saturating_add(4))?.try_into().ok();
     let u16_at = |at: usize| head.get(at..at.saturating_add(2))?.try_into().ok();
-    let side = match mime_type {
+    match mime_type {
         "image/png" => u32_at(16)
             .zip(u32_at(20))
             .map(|(w, h)| (u32::from_be_bytes(w), u32::from_be_bytes(h))),
@@ -100,12 +112,6 @@ pub fn image_defect(mime_type: &str, data: &str) -> Option<ImageDefect> {
                 u32::from(u16::from_le_bytes(h)),
             )
         }),
-        _ => None,
-    };
-    match side {
-        Some((width, height)) if width.max(height) > MAX_IMAGE_SIDE => {
-            Some(ImageDefect::TooWide { width, height })
-        }
         _ => None,
     }
 }

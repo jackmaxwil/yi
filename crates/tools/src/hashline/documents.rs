@@ -34,7 +34,7 @@ impl Listed {
         }
     }
 }
-use crate::tool::{Cap, ToolContext, ToolOutput, error_output};
+use crate::tool::{Cap, ToolContext, ToolOutput, error_output, text_output};
 
 impl HashlineReadTool {
     pub(super) fn read_file(
@@ -102,11 +102,7 @@ impl HashlineReadTool {
             }
         }
         if let Some(kind) = crate::document::image_kind(&bytes) {
-            return error_output(format!(
-                "failed to read {}: a {kind} image, not text; in ipython run `print(await attach_image({}))` to put it in front of the model",
-                path.display(),
-                crate::document::python_str(path)
-            ));
+            return image(display_path, path, kind, &bytes);
         }
         if bytes.starts_with(b"\xff\xfe") || bytes.starts_with(b"\xfe\xff") {
             let (decoded, encoding) = crate::document::decode_text(&bytes);
@@ -352,4 +348,55 @@ pub(super) fn outline_rows(text: &str) -> Vec<String> {
             .map(|(index, _, line)| format!("  {}: {}", index.saturating_add(1), line.trim())),
     );
     rows
+}
+
+/// An image the provider takes goes to the model as itself; one it refuses says why, and the cell
+/// that sends it when there is one. `attachmentMedia` lets a reclaimed copy be attached again.
+fn image(display_path: &str, path: &Path, (kind, mime): (&str, &str), bytes: &[u8]) -> ToolOutput {
+    let data = yi_types::encoding::base64(bytes);
+    if let Some(defect) = yi_types::image::image_defect(mime, &data) {
+        use yi_types::image::ImageDefect::{
+            NoHeader, NotBase64, NotItsType, TooLarge, TooWide, Type,
+        };
+        let remedy = defect.remedy();
+        let next = match defect {
+            Type | TooLarge { .. } | TooWide { .. } => format!(
+                "; in ipython run `path = {}; {}`",
+                crate::document::python_str(path),
+                remedy.split('`').nth(1).unwrap_or(remedy)
+            ),
+            NoHeader | NotBase64 | NotItsType => ", so no decoder opens it".to_owned(),
+        };
+        let path = path.display();
+        return error_output(format!(
+            "failed to read {path}: the {kind} image {defect}{next}"
+        ));
+    }
+    let side = yi_types::image::image_side(mime, bytes.get(..24).unwrap_or(bytes))
+        .map_or_else(String::new, |(width, height)| {
+            format!(", {width}x{height} px")
+        });
+    let modified_ns = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|since| u64::try_from(since.as_nanos()).ok());
+    let mut output = text_output(format!(
+        "{display_path}: a {kind} image{side}, {} bytes",
+        bytes.len()
+    ));
+    output.result.details = json!({ "attachmentMedia": [{
+        "mime_type": mime,
+        "path": path,
+        "bytes": bytes.len(),
+        "modified_ns": modified_ns,
+    }] });
+    output
+        .result
+        .content
+        .push(yi_types::message::Content::Image {
+            data,
+            mime_type: mime.to_owned(),
+        });
+    output
 }
