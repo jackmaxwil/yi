@@ -1,4 +1,5 @@
 ---
+version: 0.1003.0
 issue: Closes #1521
 raise: crate runtime +113, tests +180, comments +1
 growth: +113 the shared breaker_notice with the classifier breaker moved to its own file, the headless refusals and ask_user reworded with a test per path, and named_rule's entry worded as the user's; weighed deleting the Approver notice (kept: the journal-only trip was the defect), the duplicate notice builder (deleted, folded into breaker_notice) and named_rule (kept: the operator's remedy #1671 built and #1694 refined)
