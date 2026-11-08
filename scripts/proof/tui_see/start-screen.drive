@@ -1,0 +1,12 @@
+#! console --size 120x34
+# An empty chat and an empty notebook show a centred start screen: the keys that start work and the
+# sessions to go back to, each a click target.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+wait-frame 5000 ask below, or start with
+snap chat
+key alt-shift-j
+wait-frame 5000 no kernel cells yet
+snap notebook
+quit

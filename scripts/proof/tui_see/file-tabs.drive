@@ -1,0 +1,16 @@
+#! console --size 140x34
+# Files open as sticky tabs in one editor panel: the strip names each file with a ✕, a click shows one.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+key alt-e
+wait-frame 5000 EXPLORER:
+mouse down 120 2
+wait-frame 5000 ✎ settings.local.json
+snap one-tab
+mouse down 120 4
+wait-frame 5000 ✎ nextest.toml
+snap two-tabs
+key alt-shift-left
+snap previous-tab
+quit

@@ -292,7 +292,7 @@ pub fn tally(home: &Path, cwd: &Path) -> Tally {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::block as block_with;
+    use crate::memory::block;
     use crate::memory::doc::MemoryName;
     use crate::memory::store::LOAD_LINES;
     use crate::scratch::Scratch;
@@ -487,7 +487,7 @@ mod tests {
             store.dir().join("alpha.md").is_file(),
             "the note was deleted"
         );
-        let (text, summary) = block_with(&home, &cwd, &Sources::discover(&home, &cwd));
+        let (text, summary) = block(&home, &cwd);
         assert!(
             text.contains("- [alpha](alpha.md) — the first hook ⚠ stale"),
             "{text}"
@@ -509,7 +509,7 @@ mod tests {
         write_note(&dir, "gamma", "the third hook", "gamma body").expect("note");
         let reports = run(&home, &cwd);
         assert_eq!((reports[0].found, reports[0].imported), (3, 3));
-        let (text, summary) = block_with(&home, &cwd, &Sources::discover(&home, &cwd));
+        let (text, summary) = block(&home, &cwd);
         assert!(
             text.contains("- [alpha](alpha.md) — the first hook"),
             "{text}"

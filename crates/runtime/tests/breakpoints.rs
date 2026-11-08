@@ -22,7 +22,6 @@ use yi_types::model::{LlmContext, Model, ModelCost, Reuse, ToolChoice, ToolDef};
 const CASES: u32 = 128;
 
 fn model(api: &str, provider: &str, base_url: &str, id: &str) -> Model {
-    let zero = || serde_json::Number::from(0u64);
     Model {
         id: id.to_owned(),
         name: id.to_owned(),
@@ -31,18 +30,13 @@ fn model(api: &str, provider: &str, base_url: &str, id: &str) -> Model {
         base_url: base_url.to_owned(),
         reasoning: false,
         input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window: 200_000,
         max_tokens: 4_096,
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     }
 }
 
@@ -180,6 +174,7 @@ fn context(case: &Case) -> LlmContext {
         tools: case.tools.then(|| vec![tool()]),
         tool_choice: (case.reuse == Reuse::LastTurn).then_some(ToolChoice::None),
         cache_ttl: case.ttl,
+        cache_tail: true,
     }
 }
 
@@ -196,7 +191,7 @@ fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError>
         Engine::Breakpoint { hour: true, .. } => (case.stable.max(case.ttl), case.ttl),
         _ => (Ttl::Min5, Ttl::Min5),
     };
-    let policy = CachePolicy::new(case.engine, case.stable, case.ttl);
+    let policy = CachePolicy::new(case.engine, case.stable, case.ttl, ctx.cache_tail);
     let breakpoints = Breakpoints::build(&policy, &ctx.messages, case.reuse, case.shared);
     let marks: Vec<_> = breakpoints.marks().collect();
     for mark in &marks {
@@ -379,6 +374,7 @@ fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<
 fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<dyn Error>> {
     let ctx = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "be terse".to_owned(),
         messages: vec![
             user("first"),
@@ -445,6 +441,7 @@ fn a_shared_partition_is_marked_on_both_wires() -> Result<(), Box<dyn Error>> {
     let partition = "<untrusted>\n1:red sun\n2:blue sky\n</untrusted>";
     let mut ctx = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: ["reader", "rules"].join(yi_types::model::SYSTEM_BLOCK_SEPARATOR),
         messages: vec![user(partition), user("Which line names the sky?")],
         transient: Vec::new(),

@@ -4,6 +4,7 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::Arc;
 
+pub(crate) use crate::faux_model::faux_model;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_context::{Settings, Tokens};
 use yi_loop::ExecutionMode;
@@ -11,32 +12,7 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, HostSource, StopReason, UserContent};
-use yi_types::model::{Effort, Model, ModelCost};
-
-pub(crate) fn faux_model(context_window: u64) -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
+use yi_types::model::Effort;
 
 fn reply_with_usage(text: &str, input: i64, total: i64) -> AgentMessage {
     let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
@@ -874,6 +850,53 @@ async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Err
             .is_none()
     );
     assert_eq!(asked.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+/// Dies with a second compaction whose summarizer reply lost the Values section the first one recorded.
+#[tokio::test]
+async fn a_second_compaction_keeps_the_values_the_first_recorded() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-values")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-values");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-values".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text(
+                "## Goal\n- user://1\n\n## Values\n- build id 7f3a9c21 in /tmp/yi-target/run-4",
+            )],
+            StopReason::Stop,
+        ),
+        reply_with_usage(&format!("second reply {}", "y".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\n- user://1\n\n## Dropped\n- (none)")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("third answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    for ask in [
+        "first requirement: keep the guardrails green",
+        "second ask with enough characters to keep recent",
+        "third ask with enough characters to keep recent",
+    ] {
+        session.prompt(ask)?;
+        session.wait_idle().await;
+    }
+    let compactions = compaction_entries(&store);
+    let Some(Entry::Compaction { summary, .. }) = compactions.last() else {
+        return Err("expected a compaction entry".into());
+    };
+    assert_eq!(compactions.len(), 2, "{summary}");
+    assert!(
+        summary.contains("- build id 7f3a9c21 in /tmp/yi-target/run-4"),
+        "{summary}"
+    );
     Ok(())
 }
 
@@ -2299,6 +2322,7 @@ async fn an_in_loop_compaction_redelivers_late_slots_on_the_next_request()
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        pointer: None,
         can_delegate: true,
     }));
     let broker = yi_runtime::permission::PermissionBroker::new(
@@ -2541,18 +2565,18 @@ fn compaction_floors_a_host_notice_and_keeps_the_waking_letter() -> Result<(), B
 
 /// Stage 6: once dropping old results costs less than resending them, the request carries each
 /// as one `[reclaimed: …]` line, and the next request carries the same bytes, so the cut is
-/// paid once; here no cache is priced, so the cut lands as soon as two results are old enough.
+/// paid once; here no cache is priced, so the cut lands as soon as 20,000 tokens are old enough.
 #[tokio::test(flavor = "multi_thread")]
 async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
 -> Result<(), Box<dyn Error>> {
-    let mut replies = read_calls(8);
+    let mut replies = read_calls(26);
     replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
     let (port, served) = openrouter_stand_in(replies)?;
     let session = priced_session_with(port, Settings::default())?;
     session.set_tools(vec![Arc::new(LongResult("read"))]);
     let store = crate::support::memory_store("reclaim-bytes");
     session.attach_store(Arc::clone(&store))?;
-    session.prompt("read the probe eight times")?;
+    session.prompt("read the probe many times")?;
     session.wait_idle().await;
     let bodies = served.join().map_err(|_| "the stand-in panicked")?;
     let cut = |body: &String| -> Result<Vec<String>, serde_json::Error> {
@@ -2707,7 +2731,7 @@ fn cut_lines(body: &serde_json::Value) -> Vec<String> {
 /// the loop rendered them, so its prefix is the loop's previous request and reads the cache.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_in_loop_compaction_repeats_the_loops_reclaimed_prefix() -> Result<(), Box<dyn Error>> {
-    let mut replies = read_calls(8);
+    let mut replies = read_calls(26);
     replies.push(sse_reply(
         &serde_json::json!({"content": "## Goal\nProbe"}),
         "stop",
@@ -2720,7 +2744,7 @@ async fn an_in_loop_compaction_repeats_the_loops_reclaimed_prefix() -> Result<()
         result: LongResult("read"),
         compactor,
         calls: std::sync::atomic::AtomicUsize::new(0),
-        at: 7,
+        at: 25,
     })]);
     let store = crate::support::memory_store("reclaim-compaction");
     session.attach_store(Arc::clone(&store))?;
@@ -2766,7 +2790,7 @@ async fn an_in_loop_compaction_repeats_the_loops_reclaimed_prefix() -> Result<()
 /// request records no new cut.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_manual_compaction_sends_the_cuts_on_record() -> Result<(), Box<dyn Error>> {
-    let mut replies = read_calls(8);
+    let mut replies = read_calls(26);
     replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
     replies.push(sse_reply(
         &serde_json::json!({"content": "## Goal\nProbe"}),

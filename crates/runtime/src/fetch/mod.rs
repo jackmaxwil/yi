@@ -214,41 +214,49 @@ impl KernelServiceMap {
     }
 }
 
-impl KernelVariables for KernelServiceMap {
+impl KernelServiceMap {
     /// Invariant: parks the calling thread on the shared runtime, so it is reachable only
     /// through [`Resolver::fetch`]'s spawn_blocking contract, never from an async task.
+    fn blocking<T>(
+        &self,
+        agent: &str,
+        ask: impl FnOnce(
+            &crate::kernel::KernelService,
+            tokio::runtime::Handle,
+        ) -> Result<T, VariableReadError>,
+    ) -> Result<T, VariableReadError> {
+        let Some(service) = self.service(agent) else {
+            return Err(VariableReadError::NotRunning);
+        };
+        let handle =
+            tokio::runtime::Handle::try_current().map_err(|error| VariableReadError::Cell {
+                detail: format!("kernel:// needs a tokio runtime: {error}"),
+            })?;
+        ask(&service, handle)
+    }
+}
+
+impl KernelVariables for KernelServiceMap {
     fn read(
         &self,
         agent: &str,
         variable: &VariableName,
         page: Option<Page>,
     ) -> Result<Option<(String, Option<usize>)>, VariableReadError> {
-        let Some(service) = self.service(agent) else {
-            return Err(VariableReadError::NotRunning);
-        };
-        let handle =
-            tokio::runtime::Handle::try_current().map_err(|error| VariableReadError::Cell {
-                detail: format!("kernel:// needs a tokio runtime: {error}"),
-            })?;
-        handle.block_on(service.read_variable(variable, page))
+        self.blocking(agent, |service, handle| {
+            handle.block_on(service.read_variable(variable, page))
+        })
     }
 
-    /// Invariant: parks the calling thread on the shared runtime, so it is reachable only
-    /// through [`Resolver::fetch`]'s spawn_blocking contract, never from an async task.
     fn dump(
         &self,
         agent: &str,
         variable: &VariableName,
         path: &std::path::Path,
     ) -> Result<Option<u64>, VariableReadError> {
-        let Some(service) = self.service(agent) else {
-            return Err(VariableReadError::NotRunning);
-        };
-        let handle =
-            tokio::runtime::Handle::try_current().map_err(|error| VariableReadError::Cell {
-                detail: format!("kernel:// needs a tokio runtime: {error}"),
-            })?;
-        handle.block_on(service.dump_variable(variable, path))
+        self.blocking(agent, |service, handle| {
+            handle.block_on(service.dump_variable(variable, path))
+        })
     }
 
     fn writes_board(&self, agent: &str) -> bool {
@@ -800,7 +808,7 @@ pub(crate) fn user_entries(
         .collect())
 }
 
-pub(crate) fn content_hash(text: &str) -> String {
+pub fn content_hash(text: &str) -> String {
     let digest = Sha256::digest(text.as_bytes());
     digest.iter().fold(String::new(), |mut out, byte| {
         use std::fmt::Write;

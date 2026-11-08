@@ -23,6 +23,8 @@ pub enum Target {
     },
     Pane(PaneId),
     Session(usize),
+    /// The project directories a new session can start in, as the sidebar lists them.
+    NewSession(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,14 +33,20 @@ pub enum Verb {
     CopyPlain,
     CopyJson,
     Quote,
-    Rewind { files: bool },
-    Fork { at: bool },
+    Rewind {
+        files: bool,
+    },
+    Fork {
+        at: bool,
+    },
     Inspect,
     OpenWith(usize),
     Act(Action),
     Open,
     OpenBeside,
     Pin,
+    /// Start a session in the nth project directory of a `NewSession` menu.
+    NewIn(usize),
 }
 
 #[derive(Clone)]
@@ -95,6 +103,11 @@ pub fn items(target: &Target, facts: &Facts) -> Vec<Item> {
             act("Split right", Action::SplitRight),
             act("Split down", Action::SplitDown),
         ],
+        Target::NewSession(roots) => roots
+            .iter()
+            .enumerate()
+            .map(|(at, root)| item(&crate::render::short_path(root), Verb::NewIn(at), ""))
+            .collect(),
         Target::Session(_) => vec![
             item("Open", Verb::Open, "enter"),
             item("Open beside", Verb::OpenBeside, ""),

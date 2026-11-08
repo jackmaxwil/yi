@@ -36,12 +36,15 @@ def job_secs(workflow):
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import forge_tracking  # noqa: E402
-import merge_baseline  # noqa: E402
+import checkout_guard  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
+from _common import base_commit  # noqa: E402
+import check_intent  # noqa: E402
+from check_changes import pending  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
-BINARY = {"binary_size_budget": "dist binary", "binary_size_budget_linux": "Linux dist binary"}
 SUBJECT_LIMIT = 72
+LINUX_TARGET = "x86_64-unknown-linux-gnu"
 POLL = 20
 WEB = "https://git.example.invalid"
 HOST = WEB.removeprefix("https://")
@@ -52,6 +55,11 @@ def git(*args, check=False):
     if check and out.returncode != 0:
         raise SystemExit(f"git {' '.join(args)}: {out.stderr.strip()}")
     return out.stdout.strip()
+
+
+def ahead(rev, base, check=False):
+    """The commits `rev` has that `base` does not: two heads sharing one were built one on the other."""
+    return set(git("rev-list", rev, f"^{base}", check=check).split())
 
 
 def repo_of(url):
@@ -210,14 +218,12 @@ def cmd_ratchet(args):
     changed = dirty(baseline_paths())
     if not changed:
         print("ratchet: every baseline already matches")
-        return binary_ratchet(args.topic) if not args.no_binary else 0
+        return 0
     parts = []
     for path in changed:
         was, now = before.get(path, {}), read_json(path)
         stem = pathlib.Path(path).stem
-        if stem in BINARY:
-            parts.append(binary_part(stem, was.get("max_bytes", "?"), now.get("max_bytes", "?")))
-        elif stem == "request_budget":
+        if stem == "request_budget":
             for key in ("system", "tools", "total"):
                 if was.get(key) != now.get(key):
                     parts.append(f"request budget {key} {was.get(key, '?')} -> {now.get(key, '?')}")
@@ -226,7 +232,7 @@ def cmd_ratchet(args):
     subject = ratchet_subject(parts, args.topic)
     git("commit", "-q", "-m", subject, "--", *changed, check=True)
     print(f"ratchet: {subject}")
-    return binary_ratchet(args.topic) if not args.no_binary else 0
+    return 0
 
 
 def cmd_commit(args):
@@ -239,7 +245,7 @@ def cmd_commit(args):
         return 1
     if dirty(baseline_paths()):
         print("commit: baselines moved — ratcheting them into their own commit first")
-        cmd_ratchet(argparse.Namespace(topic=args.topic or "", no_binary=True))
+        cmd_ratchet(argparse.Namespace(topic=args.topic or ""))
     if args.paths:
         git("add", "--", *args.paths, check=True)
     if not git("diff", "--cached", "--name-only"):
@@ -254,57 +260,56 @@ def cmd_commit(args):
     if out.returncode != 0:
         return out.returncode
     print(f"committed {git('rev-parse', '--short', 'HEAD')} {args.subject.strip()}")
-    return binary_ratchet(args.topic)
-
-
-def overrun(text):
-    """(baseline stem, budget, size) of a lone budget overrun; the hard cap, a missing binary or a
-    crash is None and stops the lane."""
-    failures = [line.strip() for line in text.splitlines() if line.startswith("  ")]
-    grown = re.fullmatch(r"dist binary (\d+) > (\d+) \+ \d+ bytes \((\w+)\.json\)", failures[0]) if len(failures) == 1 else None
-    return (grown.group(3), int(grown.group(2)), int(grown.group(1))) if grown and grown.group(3) in BINARY else None
-
-
-def binary_part(stem, was, now):
-    """A size ceiling's half of a `Ratchet:` subject."""
-    return f"{BINARY[stem]} {was} -> {now}"
-
-
-def write_ceiling(path, size):
-    path.write_text(merge_baseline.layout({"max_bytes": size}))
-
-
-def binary_ratchet(topic):
-    """Built here, after the code commit: check_binary_size.py only stats target/dist/yi,
-    so without a build it measures the previous landing (said ok while the lane grew)."""
-    build = subprocess.run(
-        (str(ROOT / "scripts/build_dist.sh"),),
-        cwd=ROOT, capture_output=True, text=True, check=False,
-    )
-    if build.returncode != 0:
-        print("binary: dist build failed")
-        print(build.stderr.strip().splitlines()[-1] if build.stderr.strip() else "")
-        return 1
-    out = subprocess.run(
-        (sys.executable, str(ROOT / "scripts/guardrails/check_binary_size.py")),
-        capture_output=True, text=True, check=False,
-    )
-    text = out.stdout + out.stderr
-    verdict = next((line for line in text.splitlines() if "binary_size" in line), "")
-    print(f"binary: {verdict.strip() or 'no measurement'}")
-    if out.returncode == 0:
-        return 0
-    grown = overrun(text)
-    if not grown:
-        print(text.strip())
-        return 1
-    stem, was, size = grown
-    path = BASELINES / f"{stem}.json"
-    write_ceiling(path, size)
-    subject = ratchet_subject([binary_part(stem, was, size)], topic)
-    git("commit", "-q", "-m", subject, "--", str(path.relative_to(ROOT)), check=True)
-    print(f"ratchet: {subject}")
     return 0
+
+
+def changed_crates(text):
+    paths = (line.split("/") for line in text.splitlines())
+    return sorted({f"yi-{parts[1]}" for parts in paths if len(parts) > 2 and parts[0] == "crates" and parts[1]})
+
+
+def linux_clippy_command(crates, no_tui=False):
+    command = ["cargo", "clippy"]
+    if no_tui:
+        command += ["-p", "yi-cli", "--no-default-features"]
+    else:
+        for crate in crates:
+            command += ["-p", crate]
+        command += ["--all-targets"] if crates else ["--workspace", "--all-targets"]
+    return command + ["--target", LINUX_TARGET, "--", "-D", "warnings"]
+
+
+def linux_clippy():
+    try:
+        targets = subprocess.run(("rustup", "target", "list", "--installed"), capture_output=True, text=True, check=False)
+        if targets.returncode:
+            print((targets.stdout + targets.stderr).strip())
+            return targets.returncode
+        if LINUX_TARGET not in targets.stdout.splitlines():
+            added = subprocess.run(("rustup", "target", "add", LINUX_TARGET), capture_output=True, text=True, check=False)
+            if added.returncode:
+                lines = (added.stdout + added.stderr).strip().splitlines()
+                reason = lines[-1] if lines else f"exit {added.returncode}"
+                print(f"skip linux-clippy (rustup target add {LINUX_TARGET} failed: {reason})")
+                return 0
+        _, base = base_commit()
+        if base is None:
+            print("linux-clippy: no origin/main or main to diff against")
+            return 1
+        diff = git("diff", "--name-only", base, check=True)
+        if not diff:
+            print("skip linux-clippy (no changes relative to main)")
+            return 0
+        crates = changed_crates(diff)
+        print(f"linux-clippy: {', '.join(crates) if crates else 'workspace'}")
+        for command in (linux_clippy_command(crates), linux_clippy_command(crates, no_tui=True)):
+            result = subprocess.run(command, cwd=ROOT, check=False)
+            if result.returncode:
+                return result.returncode
+        return 0
+    except OSError as error:
+        print(f"skip linux-clippy ({error})")
+        return 0
 
 
 def cmd_push(args):
@@ -312,8 +317,7 @@ def cmd_push(args):
     if git("status", "--porcelain"):
         print("push: the tree is dirty — just commit first")
         return 1
-    # The lane refuses a grown binary; measuring here is the last chance before it.
-    if binary_ratchet(getattr(args, "topic", "") or ""):
+    if linux_clippy():
         return 1
     print(f"push: {name}; the forge gate runs the lanes — `just pr status N` reads the verdict")
     out = subprocess.run(("git", "-C", str(ROOT), "push", "-u", "origin", name), check=False)
@@ -395,6 +399,16 @@ def cmd_open(args):
             print(err)
         print("open: refused — the title job would fail; fix the above first")
         return 1
+    base = base_commit()[1]
+    lost = check_intent.unrecorded(check_intent.branch_diff(base), [f for _, f in pending(base)]) if base else []
+    if lost:
+        print("\n".join(lost) + "\nopen: refused — say what this branch deletes on purpose, so no later branch puts it back")
+        return 1
+    import owners
+
+    if taken := owners.taken():
+        print("\n".join(taken) + "\nopen: refused — another open pull request owns these files")
+        return 1
     # A host-run recipe never builds: pushing here would run a child's build.rs outside the sandbox.
     if not pushed():
         print("open: this branch is not pushed — just push first")
@@ -457,7 +471,7 @@ def cmd_ready(args):
     for err in errs:
         print(f"  {err}")
     if errs and pr_review.MODE == "blocking":
-        print(f"ready: refused — #{number} stays a draft until two review rounds are clean on its head")
+        print(f"ready: refused — #{number} stays a draft until a review round is clean on its head")
         return 1
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
     if not answer or answer.get("message"):
@@ -528,8 +542,8 @@ def report(pr, jobs, need, verdict):
         "closed": "closed without merging",
     }
     if verdict.startswith("failed:") and verdict != "failed:title":
-        hints[verdict] = (f"{verdict[7:]} failed — logs: `just ci-log {pr['number']}` in the infra repository; "
-                          f"push a fix, or `just pr rerun {pr['number']}` if it was the runner")
+        hints[verdict] = (f"{verdict[7:]} failed — `just pr retry {pr['number']}` classifies its logs and retries "
+                          "only runner failures; push a fix for a code failure")
     print(f"  {hints.get(verdict, verdict)}")
 
 
@@ -571,6 +585,12 @@ def cmd_rerun(args):
     subprocess.run(("fgj", "pr", "reopen", *scope(), str(number)), capture_output=True, check=False)
     print(f"#{number} closed and reopened; the gate reruns")
     return 0
+
+
+def cmd_retry(args):
+    import runner_retry
+
+    return runner_retry.cmd_retry(args)
 
 
 def queue_mode():
@@ -630,7 +650,7 @@ def cmd_merge(args):
             if errs := unreviewed(number, pr):
                 for err in errs:
                     print(f"  {err}")
-                print(f"merge: refused — #{number} needs two review rounds clean on its head")
+                print(f"merge: refused — #{number} needs a review round clean on its head")
                 return 1
             # The head the gates were read on: the forge refuses a head that moved since.
             answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge",
@@ -645,6 +665,9 @@ def cmd_merge(args):
                     print(f"merge: the forge wants #{number} up to date first; updating it")
                     return cmd_update(argparse.Namespace(number=number))
         elif verdict.startswith("failed:") or verdict in ("closed", "draft"):
+            if args.wait and verdict.startswith("failed:") and verdict != "failed:title" and cmd_retry(argparse.Namespace(number=str(number))) == 0:
+                time.sleep(POLL)
+                continue
             report(pr, jobs, need, verdict)
             if verdict == "failed:title":
                 for err in check_problems(pr["title"], pr.get("body") or ""):
@@ -661,6 +684,11 @@ def cmd_merge(args):
 
 def refresh_from_main():
     """Merge origin/main in, let the baseline driver take the conflicts it owns, re-measure."""
+    # Incident: a merge into a checkout holding a person's uncommitted edits mixed them into a conflict.
+    why = checkout_guard.refusal(ROOT, "forge_pr")
+    if why:
+        print(f"land: {why}")
+        return 1
     git("fetch", "--no-tags", "origin", "main", check=True)
     subprocess.run(("git", "-C", str(ROOT), "config", "merge.baseline.driver",
                     f"{sys.executable} scripts/merge_baseline.py %O %A %B"), check=False)
@@ -681,7 +709,7 @@ def refresh_from_main():
 def cmd_land(args):
     if refresh_from_main():
         return 1
-    cmd_ratchet(argparse.Namespace(topic=args.title, no_binary=False))
+    cmd_ratchet(argparse.Namespace(topic=args.title))
     code = cmd_open(args)
     if code:
         return code
@@ -763,9 +791,15 @@ def selfcheck():
     assert decide(dict(open_pr, title="Keep the WIP: marker out"), jobs, need, False) == "green"
     short = ratchet_subject(["test LOC 1 -> 2"], "the rail")
     assert short == "Ratchet: test LOC 1 -> 2 for the rail", short
-    long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
+    long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "request budget total 100 -> 120"], "the console pane and its avatars")
     assert len(long) <= SUBJECT_LIMIT and long.startswith("Ratchet: test LOC"), long
     assert ratchet_subject([], "x") == "Ratchet: baselines"
+    assert changed_crates("crates/tools/src/document.rs\ncrates/cli/build.rs\ncrates/tools/tests/read.rs\ndocs/FORGE.md\ncrates/README.md\n") == ["yi-cli", "yi-tools"]
+    assert linux_clippy_command(["yi-cli", "yi-tools"]) == [
+        "cargo", "clippy", "-p", "yi-cli", "-p", "yi-tools", "--all-targets", "--target", LINUX_TARGET, "--", "-D", "warnings",
+    ]
+    assert linux_clippy_command([])[:4] == ["cargo", "clippy", "--workspace", "--all-targets"]
+    assert linux_clippy_command([], no_tui=True)[:5] == ["cargo", "clippy", "-p", "yi-cli", "--no-default-features"]
     counted = "<!-- prefilled -->\n\n## Summary\n\nprefill\n\n## Files edited\n\nprefill files\n"
     kept = dedupe_counted("## Summary\n\nmine\n", counted)
     assert "mine" not in kept and "prefill files" in kept and kept.count("## Summary") == 0, kept
@@ -795,24 +829,7 @@ def selfcheck():
     assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:bash" in errs[0], errs
     assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
     assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
-    # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
-    import contextlib, io, types, check_binary_size
-
-    over = check_binary_size.problems(9_500_000, check_binary_size.HARD_CAP_BYTES)[0]
-    assert over == "dist binary 9500000 > hard cap 9437184 bytes", over
-    capped = f"FAIL binary_size\n  {over}\n"
-    real_run = subprocess.run
-    subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, int("check_binary" in cmd[-1]), capped, "")
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            stopped = binary_ratchet("")
-    finally:
-        subprocess.run = real_run
-    assert stopped == 1, "a hard-cap breach stops the push lane"
-    # One byte past the jitter allowance is a lone overrun, so the push ratchets the measured size.
-    jitter = check_binary_size.JITTER
-    assert overrun(f"FAIL binary_size\n  {check_binary_size.problems(800_001 + jitter, 800_000, name='binary_size_budget_linux.json')[0]}\n") == (
-        "binary_size_budget_linux", 800_000, 800_001 + jitter)
+    import contextlib, io, types
     import pr_review
 
     real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
@@ -847,14 +864,14 @@ def selfcheck():
     posted = []
     globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
                      jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: False, decide=lambda *a: "green",
-                     unreviewed=lambda n, pr: ["0 review round(s); a PR needs two"],
+                     unreviewed=lambda n, pr: ["0 review round(s); a PR needs one"],
                      fgj_api=forge_variable("off", posted))
     try:
         with contextlib.redirect_stdout(io.StringIO()) as merging:
             held = cmd_merge(argparse.Namespace(number=7, timeout=1, wait=False))
     finally:
         globals().update(fakes)
-    assert held == 1 and not posted and "needs two review rounds" in merging.getvalue(), "a green PR without rounds is not merged"
+    assert held == 1 and not posted and "needs a review round" in merging.getvalue(), "a green PR without rounds is not merged"
     globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": False,
                                      "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
                      jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, decide=lambda *a: "behind",
@@ -1043,8 +1060,104 @@ def selfcheck():
         pass
     assert flags.get("closes") == ["1"] and flags.get("refs") == ["2"], ("pr check takes the flags pr open takes", flags)
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green.
+    linux_clippy_selfcheck()
     commit_selfcheck()
+    import runner_retry
+    assert runner_retry.selfcheck() == 0, "runner retry selfcheck"
+    land_guard_selfcheck()
     print("ok   forge_pr selfcheck")
+
+
+def land_guard_selfcheck():
+    """`just land` in a checkout holding someone's uncommitted edit stops before it fetches or merges."""
+    import contextlib, io
+    global ROOT, git
+    called = []
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = ROOT, git
+        ROOT, git = pathlib.Path(tmp), lambda *args, **kw: called.append(args) or ""
+        try:
+            subprocess.run(("git", "-C", tmp, "init", "-q"), check=True)
+            (ROOT / "README.md").write_text("the owner's uncommitted edit\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = refresh_from_main()
+        finally:
+            ROOT, git = saved
+    assert code == 1 and "README.md" in out.getvalue() and not called, (
+        "land went on to fetch and merge into a checkout with uncommitted work", code, called, out.getvalue())
+
+
+def linux_clippy_selfcheck():
+    import contextlib, io
+
+    saved = {name: globals()[name] for name in ("base_commit", "branch", "git")}
+    real_run = subprocess.run
+
+    def drive(diff, installed=LINUX_TARGET, add=0, cargo=0, absent="", base=("main", "base"), push=False):
+        calls = []
+        globals()["base_commit"] = lambda: base
+
+        def fake_git(*args, check=False):
+            if args[0] == "merge-base":
+                return "base"
+            if args[0] == "status":
+                return ""
+            assert args[0] == "diff", args
+            return diff
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if command[:3] == ("rustup", "target", "list"):
+                if absent == "rustup":
+                    raise FileNotFoundError("rustup")
+                return subprocess.CompletedProcess(command, 0, installed + "\n" if installed else "", "")
+            if command[:3] == ("rustup", "target", "add"):
+                return subprocess.CompletedProcess(command, add, "", "error: toolchain download failed\n" if add else "")
+            assert command[0] == "cargo", command
+            if absent == "cargo":
+                raise FileNotFoundError("cargo")
+            return subprocess.CompletedProcess(command, cargo, "", "")
+
+        globals()["git"] = fake_git
+        globals()["branch"] = lambda: "topic"
+        subprocess.run = fake_run
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                code = cmd_push(argparse.Namespace(topic="")) if push else linux_clippy()
+            return code, calls, said.getvalue()
+        finally:
+            subprocess.run = real_run
+
+    try:
+        code, calls, _ = drive("crates/tools/src/document.rs\n", cargo=1, push=True)
+        assert code == 1 and tuple(calls[-1][:4]) == ("cargo", "clippy", "-p", "yi-tools"), "a Linux clippy failure must stop the push"
+        assert "--all-targets" in calls[-1] and "--tests" not in calls[-1], calls[-1]
+        code, calls, _ = drive("crates/cli/src/main.rs\n")
+        cargo = [call for call in calls if call[0] == "cargo"]
+        assert code == 0 and len(cargo) == 2, cargo
+        assert "--no-default-features" in cargo[1] and "--all-targets" in cargo[0], cargo
+        code, calls, _ = drive("Cargo.lock\n")
+        cargo = [call for call in calls if call[0] == "cargo"]
+        assert code == 0 and cargo and "--workspace" in cargo[0], cargo
+        code, calls, _ = drive("")
+        assert code == 0 and not [call for call in calls if call[0] == "cargo"], calls
+        code, calls, _ = drive("crates/cli/src/main.rs\n", installed="")
+        assert code == 0 and any(call[:3] == ("rustup", "target", "add") for call in calls), calls
+        assert any(call[0] == "cargo" for call in calls), "the installed target was not used"
+        code, calls, said = drive("crates/cli/src/main.rs\n", installed="", add=1)
+        assert code == 0 and not [call for call in calls if call[0] == "cargo"], calls
+        assert "skip linux-clippy (rustup target add x86_64-unknown-linux-gnu failed: error: toolchain download failed)" in said, said
+        code, _, said = drive("crates/cli/src/main.rs\n", absent="rustup")
+        assert code == 0 and "skip linux-clippy" in said and "rustup" in said, said
+        code, _, said = drive("crates/cli/src/main.rs\n", absent="cargo")
+        assert code == 0 and "skip linux-clippy" in said and "cargo" in said, said
+        code, calls, said = drive("crates/cli/src/main.rs\n", base=(None, None))
+        assert code == 1 and "no origin/main or main" in said, (code, said)
+        assert not [call for call in calls if call[0] == "cargo"], calls
+    finally:
+        subprocess.run = real_run
+        globals().update(saved)
 
 
 def commit_selfcheck():
@@ -1052,11 +1165,11 @@ def commit_selfcheck():
     import contextlib, io, os
 
     names = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
-    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths", "binary_ratchet")}
+    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths")}
     with tempfile.TemporaryDirectory() as scratch:
         os.environ.update(names)
         subprocess.run(("git", "-C", scratch, "init", "-q"), check=True)
-        globals().update(ROOT=pathlib.Path(scratch), baseline_paths=lambda: [], binary_ratchet=lambda topic: 0)
+        globals().update(ROOT=pathlib.Path(scratch), baseline_paths=lambda: [])
         parse = build_parser().parse_args
         try:
             (pathlib.Path(scratch) / "a.txt").write_text("a\n")
@@ -1088,7 +1201,6 @@ def build_parser():
     verbs = parser.add_subparsers(dest="verb", required=True)
     ratchet = verbs.add_parser("ratchet")
     ratchet.add_argument("topic", nargs="?", default="")
-    ratchet.add_argument("--no-binary", action="store_true", help="skip the dist build")
     ratchet.set_defaults(run=cmd_ratchet)
     commit = verbs.add_parser("commit")
     commit.add_argument("subject")
@@ -1097,6 +1209,7 @@ def build_parser():
     commit.add_argument("--topic", default="")
     commit.set_defaults(run=cmd_commit)
     verbs.add_parser("push").set_defaults(run=cmd_push)
+    verbs.add_parser("linux-clippy").set_defaults(run=lambda args: linux_clippy())
     pr = verbs.add_parser("pr").add_subparsers(dest="pr_verb", required=True)
 
     def opener(name, run):
@@ -1125,12 +1238,12 @@ def build_parser():
     import pr_review
 
     for name, run in (("status", cmd_status), ("ready", cmd_ready), ("update", cmd_update), ("rerun", cmd_rerun),
-                      ("review", pr_review.cmd_review)):
+                      ("retry", cmd_retry), ("review", pr_review.cmd_review)):
         sub = pr.add_parser(name)
         sub.add_argument("number", nargs="?")
         sub.set_defaults(run=run)
     pr.choices["review"].add_argument("--dry-run", action="store_true", help="print the round, post nothing")
-    pr.choices["review"].add_argument("--again", action="store_true", help="read a head the rule says is read enough, except one a round blocked unless that round lost a lens")
+    pr.choices["review"].add_argument("--again", action="store_true", help="go past the retry cap of a head whose rounds lost a lens, reading only that lens; a head a round read whole is never read again")
     pr.add_parser("sweep").set_defaults(run=pr_review.cmd_sweep)
     import pr_autofix
 

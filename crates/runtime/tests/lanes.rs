@@ -3089,7 +3089,7 @@ async fn gathered_hand_backs_all_merge() -> TestResult {
     let store = support::memory_store("lanes-gathered");
     let hold = "echo unsaved > draft.txt; : > \"own-$$\"";
     let root = rig.root.to_path_buf();
-    let family = support::family_with_slots(root, rig.repo.clone(), store, Some(hold), 6);
+    let family = support::family_with_slots(root, rig.repo.clone(), store, Some(hold), 6, 0, 1);
     let names = ["first", "second", "third"];
     for name in names {
         spawn_writer(&family, name).await?;
@@ -3172,6 +3172,40 @@ fn the_repository_root_is_found_once_per_directory() -> TestResult {
     }
     std::fs::rename(&moved, rig.repo.join(".git"))?;
     drop(lane);
+    Ok(())
+}
+
+/// Incident: a cached session lookup miss hid a worktree created later in the same process
+/// until restart.
+#[test]
+fn a_repository_that_appears_after_a_miss_is_found() -> TestResult {
+    let rig = Rig::new("canonical-missing")?;
+    let plain = rig.root.join("plain");
+    std::fs::create_dir(&plain)?;
+    let sessions = rig.root.join("sessions");
+    let store =
+        yi_session::create_flat_session(sessions.join("project"), plain.to_string_lossy(), None)?;
+    let file = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("no session file")?;
+    assert!(
+        yi_runtime::history::repo_sessions(&sessions, &rig.repo)
+            .files
+            .is_empty(),
+        "the plain directory is not yet part of the repository"
+    );
+    let worktree = plain.to_string_lossy().into_owned();
+    git(
+        &rig.repo,
+        &["worktree", "add", "-b", "after-miss", &worktree],
+    )?;
+    let found = yi_runtime::history::repo_sessions(&sessions, &rig.repo);
+    assert_eq!(
+        found.files,
+        vec![file],
+        "worktree created after the first miss was not found"
+    );
     Ok(())
 }
 
@@ -3788,7 +3822,7 @@ async fn an_ending_host_repossesses_its_children_side_by_side() -> TestResult {
     let store = support::memory_store("lanes-two");
     let hold = "echo unsaved > draft.txt; sleep 30";
     let (dir, repo) = (rig.root.to_path_buf(), rig.repo.clone());
-    let family = support::family_with_slots(dir, repo, store, Some(hold), 3);
+    let family = support::family_with_slots(dir, repo, store, Some(hold), 3, 0, 1);
     spawn_writer(&family, "first").await?;
     spawn_writer(&family, "second").await?;
     let trees = ["first", "second"].map(|name| family.host.cwd_of(name));

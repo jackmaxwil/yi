@@ -90,3 +90,41 @@ fn a_sandbox_egress_entry_that_is_no_host_name_is_refused_by_name()
     }
     Ok(())
 }
+
+/// Each provider config with exactly one bad part refuses at load and names the key it broke.
+#[test]
+fn a_provider_typo_refuses_at_load_naming_the_key() -> TestResult {
+    let model = r#"{"id":"m1"}"#;
+    parse(&format!(
+        r#"{{"providers":{{"gw.local":{{"baseUrl":"http://127.0.0.1:1/v1","models":[{model}]}}}}}}"#
+    ))?;
+    for (base, models, named) in [
+        (
+            "htp://127.0.0.1:1/v1",
+            format!("[{model}]"),
+            "providers.gw.local.baseUrl",
+        ),
+        ("", format!("[{model}]"), "providers.gw.local.baseUrl"),
+        (
+            "http://127.0.0.1:1/v1",
+            "[]".to_owned(),
+            "providers.gw.local.models",
+        ),
+        (
+            "http://127.0.0.1:1/v1",
+            format!("[{model},{model}]"),
+            "providers.gw.local.models",
+        ),
+        (
+            "http://127.0.0.1:1/v1",
+            r#"[{"id":""}]"#.to_owned(),
+            "providers.gw.local.models",
+        ),
+    ] {
+        let raw =
+            format!(r#"{{"providers":{{"gw.local":{{"baseUrl":"{base}","models":{models}}}}}}}"#);
+        let refused = parse(&raw).err().ok_or_else(|| format!("loaded: {raw}"))?;
+        assert!(refused.to_string().contains(named), "{raw}: {refused}");
+    }
+    Ok(())
+}

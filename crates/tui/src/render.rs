@@ -255,11 +255,7 @@ fn status_input(app: &App) -> StatusInput {
         }),
         cost: app.spent.label(),
         cache: app.session_tokens.cache_label(expected),
-        session_name: if app.status_name_hidden {
-            String::new()
-        } else {
-            app.options.session_name.clone()
-        },
+        session_name: app.options.session_name.clone(),
         subagents: app
             .tasks
             .values()
@@ -683,6 +679,7 @@ pub fn paint_pane(
     app.pane_rows = crate::app::PaneRows {
         top: area.top(),
         left: area.left(),
+        blank: shown.is_empty().then(|| u16::try_from(above).unwrap_or(0)),
         rows,
     };
     let rows = u16::try_from(shown.len()).unwrap_or(0);

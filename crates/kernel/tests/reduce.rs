@@ -294,3 +294,85 @@ fn stderr_and_a_displayed_value_one_past_the_cap_keep_both_ends() -> std::io::Re
     }
     Ok(())
 }
+
+/// Dies with a value whose markdown or JSON bundle was thrown away for its text/plain repr: the
+/// notebook has nothing but the flat form to draw.
+#[test]
+fn a_displayed_value_keeps_the_richest_bundle_its_data_names() {
+    let cases = [
+        (
+            json!({"text/plain": "{'a': 1}", "application/json": {"a": 1}, "text/markdown": "# Tide"}),
+            "# Tide",
+            Some("text/markdown"),
+        ),
+        (
+            json!({"text/plain": "{'a': 1}", "application/json": {"a": 1}}),
+            "{\"a\":1}",
+            Some("application/json"),
+        ),
+        (
+            json!({"text/plain": "hello", "application/json": "hello"}),
+            "\"hello\"",
+            Some("application/json"),
+        ),
+        (json!({"text/plain": "42"}), "42", Some("text/plain")),
+    ];
+    for (data, text, mime) in cases {
+        let mut cell = cell(65_536);
+        reduce(
+            &mut cell,
+            &message("execute_result", "req", json!({"data": data})),
+            None,
+        );
+        assert_eq!(cell.result.as_deref(), Some(text), "{data}");
+        assert_eq!(cell.result_mime.as_deref(), mime, "{data}");
+        assert_eq!(
+            finish(cell, 1, false).result_mime.as_deref(),
+            mime,
+            "{data} lost its mime on the way out"
+        );
+    }
+    let mut empty = cell(65_536);
+    reduce(
+        &mut empty,
+        &message("execute_result", "req", json!({"data": {}})),
+        None,
+    );
+    assert_eq!(empty.result, None);
+    assert_eq!(empty.result_mime, None);
+}
+
+/// Dies with a bundle member past the cell's char cap stored whole: a JSON document of a
+/// million characters would ride every session line, and one beside a text/plain repr had a
+/// drawable form to fall back on.
+#[test]
+fn a_bundle_past_the_cells_cap_falls_back_to_its_plain_text() {
+    let big = json!({"rows": "x".repeat(600)});
+    let mut paired = cell(256);
+    reduce(
+        &mut paired,
+        &message(
+            "execute_result",
+            "req",
+            json!({"data": {"text/plain": "plain", "application/json": big}}),
+        ),
+        None,
+    );
+    assert_eq!(paired.result.as_deref(), Some("plain"));
+    assert_eq!(paired.result_mime.as_deref(), Some("text/plain"));
+
+    let mut solo = cell(256);
+    reduce(
+        &mut solo,
+        &message(
+            "execute_result",
+            "req",
+            json!({"data": {"application/json": big}}),
+        ),
+        None,
+    );
+    let kept = finish(solo, 1, false);
+    let shown = kept.result.unwrap_or_default();
+    assert!(shown.contains("DEFAULT_MAX_OUTPUT_CHARS 256"), "{shown}");
+    assert_eq!(kept.result_mime.as_deref(), Some("application/json"));
+}

@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
-const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.flock";
-const SWEEP_AFTER_SECS: u64 = 86_400;
+pub(crate) const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.flock";
 
 fn bootstrap_lock_path(venv: &Path) -> PathBuf {
     let name = venv
@@ -88,75 +87,8 @@ pub(crate) fn acquire_bootstrap_lock(venv: &Path) -> Result<BootstrapLock, Strin
         .map_err(|error| format!("{}: {error}", bootstrap_lock_path(venv).display()))
 }
 
-fn try_bootstrap_lock(venv: &Path) -> Option<BootstrapLock> {
+pub(crate) fn try_bootstrap_lock(venv: &Path) -> Option<BootstrapLock> {
     lock_file(venv, false).ok().flatten()
-}
-
-fn running_commands() -> Option<String> {
-    let output = crate::bootstrap::command(Path::new("ps"))
-        .args(["-Aww", "-o", "command="])
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "a ready boot is the last use the sweep ages the venv by"
-)]
-pub(crate) fn restart_sweep_clock(venv: &Path) {
-    let now = std::time::SystemTime::now();
-    let _best_effort = std::fs::File::open(venv).and_then(|dir| dir.set_modified(now));
-}
-
-fn settled(venv: &Path) -> bool {
-    std::fs::metadata(venv)
-        .and_then(|meta| meta.modified())
-        .is_ok_and(|at| {
-            at.elapsed()
-                .is_ok_and(|age| age.as_secs() > SWEEP_AFTER_SECS)
-        })
-}
-
-pub fn remove_stale_venvs(current: &Path) -> Vec<PathBuf> {
-    let Some(entries) = current
-        .parent()
-        .and_then(|parent| std::fs::read_dir(parent).ok())
-    else {
-        return Vec::new();
-    };
-    let stale: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned());
-            path.as_path() != current
-                && settled(path)
-                && name.is_some_and(|name| {
-                    // Incident: the pre-0.111.0 unhashed `kernel-venv` matched no prefix and stayed.
-                    (name == "kernel-venv" || name.starts_with("kernel-venv-"))
-                        && !name.ends_with(BOOTSTRAP_LOCK_NAME)
-                })
-        })
-        .collect();
-    if stale.is_empty() {
-        return stale;
-    }
-    let Some(running) = running_commands() else {
-        return Vec::new();
-    };
-    stale
-        .into_iter()
-        .filter(|venv| !running.contains(&format!("{}/", venv.display())))
-        .filter(|venv| {
-            try_bootstrap_lock(venv).is_some_and(|_held| std::fs::remove_dir_all(venv).is_ok())
-        })
-        .collect()
 }
 
 #[cfg(test)]

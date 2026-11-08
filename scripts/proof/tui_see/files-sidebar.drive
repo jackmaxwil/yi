@@ -1,0 +1,21 @@
+#! console --size 140x34
+# The Files tree is a VS Code style explorer on the right edge: folders first, indent guides, ↻ ⊟ ✕ in
+# its header; a click on a file row opens it in a panel beside the chat.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+key alt-e
+wait-frame 5000 EXPLORER:
+snap tree
+mouse move 120 4
+snap hover
+mouse down 120 6
+snap folder
+mouse down 120 2
+wait-frame 5000 ✎ settings.local.json
+snap opened
+mouse scrolldown 120 10
+snap scrolled
+mouse down 133 0
+snap collapsed
+quit

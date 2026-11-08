@@ -384,8 +384,8 @@ pub fn wake_message(job: &Job, fired: &Fired, now_ms: u64) -> Option<AgentMessag
             what(inner)
         ),
         (Fired::Stopped(why), Some(sub)) => format!(
-            "<channel job=\"{}\" address=\"{}\">{why}. The subscription is paused; once the adapter is fixed, resume it with rlm_heartbeat.update {{\"id\": \"{}\", \"status\": \"resume\"}}.</channel>",
-            job.id, sub.address, job.id
+            "<channel job=\"{}\" address=\"{}\">{why}. The subscription is paused; once the adapter is fixed, resume it in a cell with await rlm.resume(\"{}\"), or stop it with await rlm.unsubscribe(\"{}\").</channel>",
+            job.id, sub.address, job.id, job.id
         ),
         (Fired::Created(_) | Fired::Unblocked(_), _) => format!(
             "<heartbeat job=\"{}\" run=\"{}\">{} ticked at {} and {}.</heartbeat>",

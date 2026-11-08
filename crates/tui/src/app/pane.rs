@@ -10,6 +10,8 @@ pub(crate) struct PaneRows {
     pub(crate) top: u16,
     pub(crate) left: u16,
     pub(crate) rows: Vec<Option<(usize, Chip)>>,
+    /// Rows above the composer when no transcript row was drawn, the room a start screen has.
+    pub(crate) blank: Option<u16>,
 }
 
 impl App {

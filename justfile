@@ -28,17 +28,18 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
     . scripts/suite_home.sh test
+    {{py}} scripts/test_tmp_test.py
     if command -v cargo-nextest >/dev/null; then
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
       [ -z "${CI:-}" ] || profile=default
       cargo nextest run --workspace --profile "$profile" -- --skip linked_tables
     else
-      cargo test --workspace -- --test-threads=1 --skip linked_tables
+      scripts/test_tmp.sh cargo test --workspace -- --test-threads=1 --skip linked_tables
     fi
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
-    cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
+    scripts/test_tmp.sh cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
 py := `scripts/py.sh`
 
 # A local inner loop, never a gate: the generated quick profiles omit tests measured at 5 s or more.
@@ -67,19 +68,19 @@ sweep:
 # The lanes `check` runs, named so CI can run them as separate jobs.
 lint: fmt-check clippy clippy-no-tui
 
-# The one line for a dev loop: rebuild, stop the daemon the last build left running,
-# open the workspace. ctrl+c twice inside yi does the stop for you; ⌥q keeps it running.
+# The dev loop: rebuild, then swap the running worker for that build while the daemon and an
+# open console stay up; the sessions resume from the ledger. A daemon older than the verb says
+# so in its own refusal, which stays on screen.
 dev:
     cargo build -p yi-cli
-    pkill -f 'yi serve' || true
+    ./target/debug/yi worker replace --binary ./target/debug/yi --if-running || true
     ./target/debug/yi
 
 build-dist:
     scripts/build_dist.sh
 
 # No build-dist dependency: the aggregator is the one place that knows whether
-# binary_size and startup will run at all, so it owns the LTO build they read
-# (D91). CI skips startup, and builds the binary only on Linux to measure it there.
+# startup will run at all, so it owns the LTO build startup reads (D91).
 guardrails *flags:
     bash scripts/guardrails/check_guardrails.sh "$@"
 
@@ -174,7 +175,7 @@ journeys:
     set -euo pipefail
     # Incident: cargo stops at the first failing test binary, so red terminal journeys hid the
     # ignored tests of every binary after them for as long as postmerge stayed red.
-    cargo test --workspace --no-fail-fast -- --ignored
+    scripts/test_tmp.sh cargo test --workspace --no-fail-fast -- --ignored
     # The true-terminal journey has no cargo home: no test can hand the binary
     # a pty that answers its cursor-position query, so the harness runs here.
     cargo build -p yi-cli
@@ -247,7 +248,7 @@ dist-suite:
     if command -v cargo-nextest >/dev/null; then
       cargo nextest run --workspace --cargo-profile dist
     else
-      cargo test --workspace --profile dist -- --test-threads=1
+      scripts/test_tmp.sh cargo test --workspace --profile dist -- --test-threads=1
     fi
 
 # Tier 4 sibling: the task-eval runner over its fixtures, faux only. Offline and
@@ -287,6 +288,8 @@ adr number:
 commit subject *args:
     python3 scripts/forge_pr.py commit "$@"
 
+linux-clippy:
+    python3 scripts/forge_pr.py linux-clippy
 push:
     python3 scripts/forge_pr.py push
 

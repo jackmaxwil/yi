@@ -25,6 +25,7 @@ fn target_model() -> Result<Model, Box<dyn Error>> {
 pub(crate) fn history_context() -> LlmContext {
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
+        cache_tail: true,
         system_prompt: "be terse".to_owned(),
         messages: vec![
             AgentMessage::user_input(UserContent::Text("hi".to_owned()), 0),
@@ -343,6 +344,76 @@ fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestR
         usage.cost.total.as_f64(),
         Some(0.000123),
         "the account charge outranks the catalog estimate"
+    );
+    Ok(())
+}
+
+/// Dies without the order: a pinned upstream rides `provider.order` on a routed base only,
+/// never over an order the config set, and never as a slug a reply could smuggle.
+#[test]
+fn a_pinned_upstream_rides_the_provider_order() -> TestResult {
+    let model = target_model()?;
+    let pinned = |pin: &str, routing: Option<serde_json::Value>| OpenAiOptions {
+        pin: Some(pin.to_owned()),
+        routing,
+        ..OpenAiOptions::default()
+    };
+    let provider = |options: &OpenAiOptions| {
+        build_params(&model, &history_context(), options)
+            .get("provider")
+            .cloned()
+    };
+    assert_eq!(
+        provider(&pinned("Amazon Bedrock", None)),
+        Some(json!({"order": ["amazon-bedrock"]}))
+    );
+    assert_eq!(
+        provider(&pinned("Amazon Bedrock", Some(json!({"sort": "price"})))),
+        Some(json!({"sort": "price", "order": ["amazon-bedrock"]}))
+    );
+    let owned = json!({"order": ["anthropic"]});
+    assert_eq!(
+        provider(&pinned("Amazon Bedrock", Some(owned.clone()))),
+        Some(owned),
+        "a configured order is the owner's"
+    );
+    assert_eq!(provider(&pinned(r#"x", ["a"]"#, None)), None);
+    let mut elsewhere = model.clone();
+    elsewhere.base_url = "https://api.openai.com/v1".to_owned();
+    assert!(
+        build_params(
+            &elsewhere,
+            &history_context(),
+            &pinned("Amazon Bedrock", None)
+        )
+        .get("provider")
+        .is_none(),
+        "a base that routes nothing cannot carry the pin"
+    );
+    Ok(())
+}
+
+/// Dies with the tail marked: a suspended tail leaves the marks before it alone.
+#[test]
+fn a_suspended_tail_mark_keeps_the_marks_before_it_only() -> TestResult {
+    let model = target_model()?;
+    let mut suspended_context = history_context();
+    suspended_context.cache_tail = false;
+    let marked = build_params(&model, &history_context(), &OpenAiOptions::default());
+    let suspended = build_params(&model, &suspended_context, &OpenAiOptions::default());
+    let tail_marked = |params: &serde_json::Value| {
+        params["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .is_some_and(|message| message.to_string().contains("cache_control"))
+    };
+    assert!(tail_marked(&marked), "{marked}");
+    assert!(!tail_marked(&suspended), "{suspended}");
+    assert!(
+        suspended["messages"][0]
+            .to_string()
+            .contains("cache_control"),
+        "the system end still marks: {suspended}"
     );
     Ok(())
 }

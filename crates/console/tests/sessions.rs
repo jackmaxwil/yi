@@ -625,10 +625,6 @@ fn the_sidebars_chrome_is_dimmer_than_a_session_name() -> Result<(), String> {
             .all(|span| row.line.style.patch(span.style).add_modifier.contains(dim)))
     };
     assert!(
-        chrome(&|hit| matches!(hit, Hit::New(_)))?,
-        "the New row dims"
-    );
-    assert!(
         chrome(&|hit| matches!(hit, Hit::Search))?,
         "the Search row dims"
     );

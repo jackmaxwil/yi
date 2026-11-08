@@ -1,7 +1,3 @@
-//! Tier-2 journeys: the built binary driven end to end over the faux model,
-//! offline and keyless. `just journeys` runs them by name; the ordinary suite
-//! skips them, because each one costs a process tree per assertion.
-
 use std::error::Error;
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,8 +10,6 @@ use crate::yi_bin::yi_command;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// A throwaway project and the home the binary writes sessions and checkpoints
-/// into, so a journey never reads or restores the developer's own store.
 struct Journey {
     root: PathBuf,
 }
@@ -36,8 +30,6 @@ impl Journey {
         Ok(Self { root })
     }
 
-    /// Invariant: only a green journey reclaims its tree — a red one is read
-    /// from the files it left behind, which is why this is not a [`Drop`].
     fn reclaim(self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
@@ -181,7 +173,6 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
     Ok(())
 }
 
-/// A `--faux` script whose one turn calls `tool` with `args`, then says `closing`.
 fn write_script(
     journey: &Journey,
     tool: &str,
@@ -279,11 +270,6 @@ const HAND_WRITTEN_PLAN: &str = r#"---
 The adapter cannot land before staging is green.
 "#;
 
-/// The plan document driven through the real binary: a format-1 document names its own
-/// import (plan section 5.6: a hand-edited view never overwrites the journal), the import
-/// opens it, the resolver addresses a todo by slug, the lint reads it, and a `Plan:`
-/// trailer resolves back to the goal. The tool itself is model-invoked, so this journey
-/// covers every surface around it rather than the tool's own call path.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_hand_written_plan_lints_resolves_and_answers_why() -> TestResult {
@@ -422,8 +408,6 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// D119: the ask ran on a slot outside the checkout and handed it back; the trunk never
-/// moved, and `--here` is the only way to run without a slot.
 #[test]
 fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {
     let journey = Journey::new("lane")?;
@@ -472,7 +456,6 @@ fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {
     Ok(())
 }
 
-/// A lockfile whose sync fails starts the session anyway and says so in one stderr warning.
 #[test]
 fn a_failed_lane_sync_warns_on_stderr_and_the_ask_still_runs() -> TestResult {
     let journey = Journey::new("lane-sync")?;
@@ -495,7 +478,6 @@ fn a_failed_lane_sync_warns_on_stderr_and_the_ask_still_runs() -> TestResult {
     Ok(())
 }
 
-/// An orphaned lane with nothing to keep is what `doctor --fix` reaps; the pool reads idle after.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn doctor_fix_reaps_an_orphaned_lane() -> TestResult {
@@ -523,7 +505,6 @@ fn doctor_fix_reaps_an_orphaned_lane() -> TestResult {
     Ok(())
 }
 
-/// A slot left with uncommitted work is reported, never reaped by `doctor --fix`.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn doctor_fix_keeps_an_orphan_with_uncommitted_work() -> TestResult {
@@ -546,7 +527,6 @@ fn doctor_fix_keeps_an_orphan_with_uncommitted_work() -> TestResult {
     Ok(())
 }
 
-/// A quit over uncommitted lane work names, on stderr, the slot that kept it and its reap.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_quit_over_lane_work_says_which_slot_kept_it() -> TestResult {
@@ -573,7 +553,6 @@ fn a_quit_over_lane_work_says_which_slot_kept_it() -> TestResult {
     Ok(())
 }
 
-/// A repository with one commit on `main`, so an ask claims a lane from it.
 fn trunk(journey: &Journey) -> Result<PathBuf, Box<dyn Error>> {
     let project = journey.project();
     git_in(&project, &["init", "-q", "-b", "main"])?;
@@ -602,7 +581,6 @@ fn write_skill(journey: &Journey, name: &str, frontmatter: &str) -> TestResult {
     Ok(())
 }
 
-/// The session file in order: `user`, `assistant`, and each skill pointer as `reminder: <text>`.
 fn trace(journey: &Journey) -> Result<Vec<String>, Box<dyn Error>> {
     let sessions = journey.root.join("home/sessions");
     let file = session_files(&sessions)?
@@ -656,7 +634,6 @@ fn a_typed_dollar_name_points_at_the_skill_before_the_first_reply() -> TestResul
     Ok(())
 }
 
-/// A repository-bound skill (`within:`) must not fire its trigger where the path is absent.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_trigger_word_in_a_repository_without_the_skills_path_points_nowhere() -> TestResult {
@@ -691,7 +668,6 @@ fn a_trigger_word_in_a_repository_without_the_skills_path_points_nowhere() -> Te
     Ok(())
 }
 
-/// #587: a probe session was pointed at skills by its own "verified" and `cargo nextest`.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn the_agents_own_words_fire_no_skill() -> TestResult {
@@ -753,9 +729,21 @@ fn the_agents_own_words_fire_no_skill() -> TestResult {
     Ok(())
 }
 
-/// `yi setup` fed its answers on stdin, as a person at the prompts would type them.
 fn setup(journey: &Journey, answers: &str) -> Result<Output, Box<dyn Error>> {
-    feed(journey.command(&["setup"]), answers)
+    setup_with(journey, answers, &[])
+}
+
+fn setup_with(
+    journey: &Journey,
+    answers: &str,
+    keys: &[(&str, &str)],
+) -> Result<Output, Box<dyn Error>> {
+    let mut command = journey.command(&["setup"]);
+    for (_, variable) in yi_types::PROVIDER_KEY_VARS {
+        command.env_remove(variable);
+    }
+    command.envs(keys.iter().copied());
+    feed(command, answers)
 }
 
 fn feed(mut command: Command, answers: &str) -> Result<Output, Box<dyn Error>> {
@@ -786,14 +774,14 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
     let file = journey.root.join("home/.yi/config.json");
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
     let before = std::fs::read_to_string(&file)?;
-    let skipped = setup(&journey, "\n\n\n")?;
+    let skipped = setup(&journey, "\n\n")?;
     assert!(skipped.status.success(), "{skipped:?}");
     assert_eq!(
         std::fs::read_to_string(journey.root.join("home/.yi/config.json"))?,
         before,
         "every step skipped writes nothing"
     );
-    let saved = setup(&journey, "openrouter\n\nask\nn\n")?;
+    let saved = setup(&journey, "3\nsk-journey\n2\n")?;
     assert!(saved.status.success(), "{saved:?}");
     let config = config_of(&journey)?;
     assert_eq!(config["model"], "openrouter/anthropic/claude-sonnet-5");
@@ -808,10 +796,7 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
         "a config that may hold keys stays private"
     );
     assert!(!journey.root.join("home/.yi/.config.json.setup").exists());
-    assert!(
-        config.get("models").is_none(),
-        "no classifier was set up: {config}"
-    );
+    assert!(config.get("models").is_none(), "no role was set: {config}");
     let asked: Value = serde_json::from_str(&String::from_utf8_lossy(
         &journey.yi(&["gate", "--json", "echo hi"])?.stdout,
     ))?;
@@ -827,53 +812,85 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
     Ok(())
 }
 
-/// The classifier is saved as Jev only when an OpenRouter key exists; with none it saves nothing.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
-fn setup_saves_jev_as_the_classifier_only_with_an_openrouter_key() -> TestResult {
-    let journey = Journey::new("setup-classifier")?;
-    let mut keyless = journey.command(&["setup"]);
-    keyless
-        .env_remove("OPENROUTER_API_KEY")
-        .stderr(Stdio::piped());
-    let refused = feed(keyless, "\n\ny\n")?;
-    assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("the classifier is not saved"),
-        "{refused:?}"
-    );
-    assert!(config_of(&journey)?.get("models").is_none());
-    let file = journey.root.join("home/.yi/config.json");
-    std::fs::write(
-        &file,
-        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:8000"}}"#,
-    )?;
-    let mut keyed = journey.command(&["setup"]);
-    keyed.env("OPENROUTER_API_KEY", "sk-or-journey");
-    let saved = feed(keyed, "\n\ny\n")?;
+fn setup_defaults_to_the_credentialed_model() -> TestResult {
+    let journey = Journey::new("setup-one-key")?;
+    let saved = setup_with(&journey, "\n\n", &[("ANTHROPIC_API_KEY", "sk-journey")])?;
     assert!(saved.status.success(), "{saved:?}");
-    let config = config_of(&journey)?;
-    assert_eq!(config["models"]["classifier"], "typesafe/jev-1.13");
+    let said = String::from_utf8_lossy(&saved.stderr);
     assert!(
-        config.get("classifier").is_none(),
-        "the Laya sidecar's URL is cleared: {config}"
+        said.contains("Claude Sonnet 5 on Anthropic (key found) [Enter]"),
+        "{said}"
     );
-    std::fs::write(
-        &file,
-        r#"{"models":{"classifier":"typesafe/jev-1.13"},"classifier":{"url":"http://127.0.0.1:9000"}}"#,
-    )?;
-    let mut own = journey.command(&["setup"]);
-    own.env("OPENROUTER_API_KEY", "sk-or-journey");
-    assert!(feed(own, "\n\ny\n")?.status.success());
-    assert_eq!(
-        config_of(&journey)?["classifier"]["url"],
-        "http://127.0.0.1:9000",
-        "a URL the user set is kept"
+    assert_eq!(config_of(&journey)?["model"], "anthropic/claude-sonnet-5");
+    journey.reclaim();
+    Ok(())
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_takes_the_key_of_the_provider_picked() -> TestResult {
+    let journey = Journey::new("setup-key")?;
+    let saved = setup(&journey, "anthropic\nsk-journey\n\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    assert_eq!(config_of(&journey)?["model"], "anthropic/claude-sonnet-5");
+    let token = journey
+        .root
+        .join("home/.yi/providers/tokens/anthropic.json");
+    assert!(std::fs::read_to_string(token)?.contains("sk-journey"));
+    let said = String::from_utf8_lossy(&saved.stderr);
+    assert!(
+        !said.contains("sk-journey"),
+        "the key is never echoed: {said}"
     );
     journey.reclaim();
     Ok(())
 }
 
-/// A config that names its model in the roles table gets the new model there, where it is read.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_does_not_save_a_model_without_its_key() -> TestResult {
+    let journey = Journey::new("setup-blank-key")?;
+    let saved = setup(&journey, "3\n\n2\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    assert!(config_of(&journey)?.get("model").is_none());
+    journey.reclaim();
+    Ok(())
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_offers_a_model_for_a_stored_login() -> TestResult {
+    let journey = Journey::new("setup-login-found")?;
+    let tokens = journey.root.join("home/.yi/providers/tokens");
+    std::fs::create_dir_all(&tokens)?;
+    std::fs::write(
+        tokens.join("openai-codex.json"),
+        r#"{"version":1,"kind":"oauth","access":"stored-access","expires_ms":0}"#,
+    )?;
+    let saved = setup(&journey, "\n\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    let said = String::from_utf8_lossy(&saved.stderr);
+    assert!(said.contains("(login found)"), "{said}");
+    assert_eq!(config_of(&journey)?["model"], "openai-codex/gpt-5.5");
+    journey.reclaim();
+    Ok(())
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_with_nothing_chosen_still_records_that_it_ran() -> TestResult {
+    let journey = Journey::new("setup-nothing")?;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::remove_file(&file)?;
+    let done = setup(&journey, "\n\n")?;
+    assert!(done.status.success(), "{done:?}");
+    assert_eq!(config_of(&journey)?, serde_json::json!({}));
+    journey.reclaim();
+    Ok(())
+}
+
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn setup_writes_the_model_where_the_config_reads_it() -> TestResult {
@@ -882,7 +899,7 @@ fn setup_writes_the_model_where_the_config_reads_it() -> TestResult {
         journey.root.join("home/.yi/config.json"),
         r#"{"kernel":{"prewarm":false},"models":{"primary":"faux/faux-1"}}"#,
     )?;
-    let saved = setup(&journey, "openrouter\n\n\nn\n")?;
+    let saved = setup(&journey, "4\nsk-journey\n\n")?;
     assert!(saved.status.success(), "{saved:?}");
     let config = config_of(&journey)?;
     assert_eq!(
@@ -894,24 +911,22 @@ fn setup_writes_the_model_where_the_config_reads_it() -> TestResult {
     Ok(())
 }
 
-/// A config Yi cannot load is refused before the first question, not after an install.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn setup_refuses_a_bad_config_before_asking_anything() -> TestResult {
     let journey = Journey::new("setup-bad")?;
     let file = journey.root.join("home/.yi/config.json");
     std::fs::write(&file, r#"{"modle":"x"}"#)?;
-    let refused = setup(&journey, "openrouter\n\nask\nn\n")?;
+    let refused = setup(&journey, "3\n2\n")?;
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success(), "{refused:?}");
     assert!(said.contains("fix it, then run `yi setup` again"), "{said}");
-    assert!(!said.contains("Provider"), "nothing was asked: {said}");
+    assert!(!said.contains("Which AI"), "nothing was asked: {said}");
     assert_eq!(std::fs::read_to_string(&file)?, r#"{"modle":"x"}"#);
     journey.reclaim();
     Ok(())
 }
 
-/// A config that is a link to a file not yet made stays a link, and the file gets the config.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn setup_writes_through_a_dangling_config_link() -> TestResult {
@@ -919,7 +934,7 @@ fn setup_writes_through_a_dangling_config_link() -> TestResult {
     let file = journey.root.join("home/.yi/config.json");
     std::fs::remove_file(&file)?;
     std::os::unix::fs::symlink("../dotfiles/yi.json", &file)?;
-    let saved = setup(&journey, "\nask\nn\n")?;
+    let saved = setup(&journey, "\n2\n")?;
     assert!(saved.status.success(), "{saved:?}");
     assert!(std::fs::symlink_metadata(&file)?.file_type().is_symlink());
     let config: Value = serde_json::from_str(&std::fs::read_to_string(

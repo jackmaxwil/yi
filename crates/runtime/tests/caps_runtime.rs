@@ -200,6 +200,7 @@ fn todo_error_lists_stop_at_the_cap_and_name_the_view_call() -> TestResult {
     let nobody = || {
         Ok::<_, Box<dyn Error>>(Op::Start {
             label: TodoLabel::new("zzzzzzzzzz")?,
+            check: None,
         })
     };
     for (count, cut) in [(12, false), (13, true)] {
@@ -211,6 +212,7 @@ fn todo_error_lists_stop_at_the_cap_and_name_the_view_call() -> TestResult {
 
         let prefix = Op::Start {
             label: TodoLabel::new("rename the module")?,
+            check: None,
         };
         let text = refusal(&store, prefix)?;
         assert!(text.contains("is a prefix of more than one todo"), "{text}");
@@ -450,7 +452,7 @@ fn revived(restored: usize, failed: usize) -> KernelRestoreResult {
                 reason: "PicklingError".to_owned(),
             })
             .collect(),
-        path: String::new(),
+        path: "/tmp/kernel-state.dill".to_owned(),
     }
 }
 
@@ -468,13 +470,37 @@ fn the_restore_notice_lists_a_bounded_number_of_names() -> TestResult {
     );
     assert!(over.contains("var039"), "{over}");
     assert!(!over.contains("var040"), "{over}");
+    Ok(())
+}
 
-    let failed = yi_runtime::restore_notice_text(&revived(1, 100));
+#[test]
+fn the_restore_notice_points_at_the_failure_reasons_below_its_cap() {
+    let notice = yi_runtime::restore_notice_text(&revived(1, 1));
+    assert!(row_in(&notice).is_none(), "{notice}");
     assert!(
-        failed.contains("gone099."),
-        "names to recreate stay whole: {failed}"
+        notice.contains(&format!(
+            "gone000. Why each failed: {}.",
+            yi_kernel::snapshot::RESTORE_FAILURES_VAR
+        )),
+        "an uncut failure list still names where its reasons live: {notice}"
     );
-    assert!(row_in(&failed).is_none(), "{failed}");
+}
+
+#[test]
+fn the_restore_notice_cuts_a_long_list_of_names_it_could_not_restore() -> TestResult {
+    let failed = yi_runtime::restore_notice_text(&revived(1, 100));
+    let row = row_of(&failed)?;
+    assert_eq!(
+        (row.kept, row.total, row.what, row.cap, row.limit),
+        (40, 100, "names not revived", "RESTORE_FAILED_SHOWN", 40)
+    );
+    assert_eq!(
+        row.next,
+        yi_kernel::snapshot::RESTORE_FAILURES_VAR,
+        "the row names the restored kernel list that holds every failure"
+    );
+    assert!(failed.contains("gone039"), "{failed}");
+    assert!(!failed.contains("gone040"), "{failed}");
     Ok(())
 }
 
@@ -514,22 +540,9 @@ fn block_at(count: usize, hook: usize) -> Result<(String, String), Box<dyn Error
     );
     let dir = yi_runtime::memory::repo_dir(&home, &cwd);
     add_notes(&dir, 0..count, hook)?;
-    let at = yi_runtime::memory::block(
-        &home,
-        &cwd,
-        &yi_runtime::memory::claude::Sources::discover(&home, &cwd),
-    )
-    .0;
+    let at = yi_runtime::memory::block(&home, &cwd).0;
     add_notes(&dir, count..count + 1, hook)?;
-    Ok((
-        at,
-        yi_runtime::memory::block(
-            &home,
-            &cwd,
-            &yi_runtime::memory::claude::Sources::discover(&home, &cwd),
-        )
-        .0,
-    ))
+    Ok((at, yi_runtime::memory::block(&home, &cwd).0))
 }
 
 #[test]

@@ -44,7 +44,9 @@ pub fn split_hashline_lines(text: &str) -> Vec<&str> {
         if stop > start && bytes[stop - 1] == b'\r' {
             stop -= 1;
         }
-        lines.push(&text[start..stop]);
+        if let Some(line) = text.get(start..stop) {
+            lines.push(line);
+        }
         start = index + 1;
     }
     if start < text.len() {
@@ -52,7 +54,9 @@ pub fn split_hashline_lines(text: &str) -> Vec<&str> {
         if stop > start && bytes[stop - 1] == b'\r' {
             stop -= 1;
         }
-        lines.push(&text[start..stop]);
+        if let Some(line) = text.get(start..stop) {
+            lines.push(line);
+        }
     }
     lines
 }
@@ -91,7 +95,7 @@ struct RangeScan {
 const ELLIPSIS: char = '\u{2026}';
 
 fn separator_char_len(line: &str, index: usize) -> Option<usize> {
-    let rest = &line[index..];
+    let rest = line.get(index..)?;
     if rest.starts_with(ELLIPSIS) {
         return Some(ELLIPSIS.len_utf8());
     }
@@ -356,7 +360,7 @@ fn scan_register(line: &str, index: usize, end: usize) -> Option<(String, usize)
     if cursor == start || cursor - start > REGISTER_NAME_MAX {
         return None;
     }
-    Some((line[start..cursor].to_owned(), cursor))
+    Some((line.get(start..cursor)?.to_owned(), cursor))
 }
 
 fn finish_target_scan(
@@ -488,7 +492,7 @@ fn scan_cut_target(line: &str, index: usize, end: usize) -> Option<(TargetScan, 
     )
 }
 
-fn unquote_path(path_text: &str) -> &str {
+pub(crate) fn unquote_path(path_text: &str) -> &str {
     if path_text.len() < 2 {
         return path_text;
     }
@@ -496,7 +500,7 @@ fn unquote_path(path_text: &str) -> &str {
     let first = bytes[0];
     let last = bytes[path_text.len() - 1];
     if (first == b'"' || first == b'\'') && first == last {
-        return &path_text[1..path_text.len() - 1];
+        return path_text.get(1..path_text.len() - 1).unwrap_or(path_text);
     }
     path_text
 }
@@ -519,7 +523,7 @@ fn scan_move_dest(line: &str, index: usize, end: usize) -> Option<String> {
             if byte == first {
                 let after = skip_whitespace(bytes, next + 1, end);
                 if after == end {
-                    return Some(unquote_path(&line[cursor..next + 1]).to_owned());
+                    return Some(unquote_path(line.get(cursor..next + 1)?).to_owned());
                 }
                 return None;
             }
@@ -527,7 +531,7 @@ fn scan_move_dest(line: &str, index: usize, end: usize) -> Option<String> {
         }
         return None;
     }
-    Some(unquote_path(line[cursor..end].trim()).to_owned())
+    Some(unquote_path(line.get(cursor..end)?.trim()).to_owned())
 }
 
 fn scan_hunk_anchor(line: &str, start: usize, end: usize) -> Option<(TargetScan, usize)> {
@@ -587,7 +591,9 @@ pub fn is_hunk_header_text(text: &str) -> bool {
     let bytes = text.as_bytes();
     let end = trim_end_index(bytes);
     let lead = skip_whitespace(bytes, 0, end);
-    let rest = &text[lead..];
+    let Some(rest) = text.get(lead..) else {
+        return false;
+    };
     let is_hunk_lead = rest.starts_with(HL_PUT_KEYWORD)
         || rest.starts_with(HL_CUT_KEYWORD)
         || rest.starts_with(HL_REM_KEYWORD)
@@ -646,7 +652,7 @@ pub fn try_parse_header(line: &str) -> Option<ParsedHeader> {
     if prefix_len + suffix_len >= end {
         return None;
     }
-    if !line[..end].ends_with(HL_FILE_SUFFIX) {
+    if !line.get(..end)?.ends_with(HL_FILE_SUFFIX) {
         return None;
     }
     let body_end = end - suffix_len;
@@ -667,7 +673,7 @@ pub fn try_parse_header(line: &str) -> Option<ParsedHeader> {
                 .all(u8::is_ascii_hexdigit)
         {
             path_end = trailing_hash_start;
-            file_hash = Some(line[trailing_hash_start + 1..body_end].to_uppercase());
+            file_hash = Some(line.get(trailing_hash_start + 1..body_end)?.to_uppercase());
         }
     }
 
@@ -681,7 +687,7 @@ pub fn try_parse_header(line: &str) -> Option<ParsedHeader> {
         return None;
     }
     Some(ParsedHeader {
-        path: line[prefix_len..path_end].to_owned(),
+        path: line.get(prefix_len..path_end)?.to_owned(),
         file_hash,
     })
 }
@@ -742,7 +748,7 @@ fn classify_line_kind(line: &str) -> TokenKind {
     }
     let bytes = line.as_bytes();
     let lead = skip_whitespace(bytes, 0, bytes.len());
-    let rest = &line[lead..];
+    let rest = line.get(lead..).unwrap_or_default();
     let is_hunk_lead = rest.starts_with(HL_PUT_KEYWORD)
         || rest.starts_with(HL_CUT_KEYWORD)
         || rest.starts_with(HL_REM_KEYWORD)
@@ -755,7 +761,7 @@ fn classify_line_kind(line: &str) -> TokenKind {
     }
     if bytes[0] == b'+' {
         return TokenKind::PayloadLiteral {
-            text: line[1..].to_owned(),
+            text: line.get(1..).unwrap_or_default().to_owned(),
         };
     }
     TokenKind::Raw {

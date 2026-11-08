@@ -1,0 +1,83 @@
+[
+ {
+  "severity": "medium",
+  "claim": "The table hand-copies the pinned versions and one-line summaries that `PLUGINS` in crates/cli/src/plugin.rs holds and that `yi plugin list` already prints (`{} {}  {state}` plus `plugin.summary`) on the user's own platform. Every plugin bump now needs a README edit by hand, and nothing checks it, so the versions shown to a new user rot silently while the binary serves different pins.",
+  "path": "README.md",
+  "line": 55,
+  "quote": "| plugin | version | what it gives the model |",
+  "fix": "Drop the version column and the per-plugin descriptions; keep the `yi plugin list` line in the command block, which prints name, version and summary for exactly this build.",
+  "lens": "bloat"
+ },
+ {
+  "severity": "medium",
+  "claim": "A 47-line hand-maintained crate graph, colours included, beside the authority it restates: YI_DESIGN.md \u00a72, which boundaries.toml enforces and which is linked from the paragraph under it as \"Crate rules\". Adding or renaming a crate now has a third place to change, and no gate reads this copy, so the README's map drifts from the build while looking authoritative.",
+  "path": "README.md",
+  "line": 128,
+  "quote": "flowchart TB",
+  "fix": "Delete the mermaid block and keep the four-line read-down paragraph plus the \u00a72 link; the internals it draws (yi-loop, yi-permission, kernel slots) are what that paragraph and \u00a72 already carry.",
+  "lens": "bloat"
+ },
+ {
+  "severity": "high",
+  "claim": "The Memory section teaches a kernel call that does not exist: past-session search is `compact.search`, and `history.search` is only the host-side request name (`compact.__init__` calls `host_request(\"history.search\", ...)`), with no `history` module in the kernel namespace (python/skills holds compact, goal, memory, attach-image). A user following this line in a cell gets `NameError`, and docs/memory.md itself writes `history.search(...)` \"(kernel `compact.search`)\".",
+  "path": "README.md",
+  "line": 398,
+  "quote": "- **Past sessions.** `history.search(\"words\")` in a kernel cell searches what you and Yi said in",
+  "fix": "Name the callable: `compact.search(\"words\")`, matching skills/yi/search/SKILL.md and docs/memory.md.",
+  "lens": "correctness"
+ },
+ {
+  "severity": "medium",
+  "claim": "The ACP initialize transcript prints a version no build returns: the response's `info.version` is the running binary's `agent_version`, and the tree at this head is 0.963.0 (docs/ARCHITECTURE.md), so the literal 0.942.0 was already stale when written and re-rots with every landing. A developer checking their own `yi acp` against the doc sees a mismatch that means nothing, and no gate reads README examples to catch it.",
+  "path": "README.md",
+  "line": 592,
+  "quote": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":2,\"info\":{\"name\":\"yi\",\"version\":\"0.942.0\"},\"capabilities\":{\"session\":{\"delete\":{}}},\"authMethods\":[]}}",
+  "fix": "Replace the version literal with a placeholder such as `\"<your yi version>\"`, or show the fields and say the version is the binary's own `yi --version`.",
+  "lens": "correctness"
+ },
+ {
+  "severity": "high",
+  "claim": "The rewrite deletes README content the why never asks about: the whole by-hand install block (release tarball, `SHA256SUMS`, `allowed_signers` plus `ssh-keygen -Y verify`, `install.sh`), the sentence saying the script checks the sha256 and the owner's key, the platforms it covers (\"Apple-silicon Macs and x86_64 Linux\"), and the keyless offline smoke test `yi ask --model faux/faux-1 \"hello\"` (gone here and from the SDK section). Why needed asks only to explain the kernel, lanes, advisor, memory, MCP, ACP, sessions, Claude Code and embedding. Consequence: the only documented way to install by hand and verify the release signature disappears from the user-facing page, a reader whose platform the piped installer does not cover is no longer told so, and a first-time user with no provider key loses the one documented way to see Yi answer before logging in.",
+  "path": "README.md",
+  "line": 21,
+  "quote": "yi                                   # the console; --solo: one chat",
+  "fix": "Restore the by-hand install and signature-verification block (or move it to docs/ and link it) and keep a keyless `--model faux/faux-1` line in Quick start or the SDK section.",
+  "lens": "intent"
+ },
+ {
+  "severity": "medium",
+  "claim": "The plugins section was rewritten into a four-row table of pinned versions and per-plugin behaviour, plus a new `yi plugin remove chrome` and the `add --all` skip rule, and Configure gained a full-defaults JSON block. None of that is on the why's list (kernel and venv, lanes and forks, advisor, memory, MCP, ACP, Pi v4, Claude Code, embed/script/automate). The table also hard-codes versions the binary already owns in crates/tools/src/plugin.rs (`ripwire` 0.6.5, `chrome` 155.0.8059.39, `agent-browser` 0.41.0, `agent-desktop` 1.0.2), so the repository now carries a second copy of the pin that no gate reads: after the next plugin bump the README advertises a version the binary does not install, while `yi plugin list` and `yi plugin sync` disagree with it.",
+  "path": "README.md",
+  "line": 57,
+  "quote": "| `ripwire` | 0.6.5 | a code map: the callers an edit breaks, a symbol's callers, the code a task touches; ships 16 skills |",
+  "fix": "Drop the version column and let `yi plugin list` be the version's authority, or leave this section as it was; the why does not need it.",
+  "lens": "intent"
+ },
+ {
+  "severity": "medium",
+  "claim": "A terminal requirement is added to the top of the README that the code does not enforce: the TUI gates only the orb mark and the resting spinner glyph on kitty support and falls back to a plain spinner line elsewhere, so Yi runs in any terminal. Read as a prerequisite, it tells a new user on iTerm2 or Windows Terminal that their terminal is unsupported. The why does not ask for a terminal note at all.",
+  "path": "README.md",
+  "line": 6,
+  "quote": "Use [Ghostty](https://ghostty.org), [Kitty](https://sw.kovidgoyal.net/kitty/) or another terminal",
+  "fix": "Say what the kitty-graphics terminal buys (the orb and inline images), or remove the note.",
+  "lens": "intent"
+ },
+ {
+  "severity": "medium",
+  "claim": "The new Architecture flowchart re-draws the data-flow diagram docs/ARCHITECTURE.md:47-78 already keeps: the same surfaces (yi ask/rpc, yi tui, yi console -> yi serve -> yi acp), the same runtime boxes (session store, mailbox, plan engine, lane, schedule/advisor), the same yi-loop -> yi-ai and yi-tools -> yi-permission edges, and the same kernel -> Python box with the dotted return into the runtime. The repository now carries two Mermaid diagrams of one graph in two files that will be edited apart; the map the repo calls authoritative is no longer the only picture.",
+  "path": "README.md",
+  "line": 160,
+  "quote": "    runtime --> loop & ai & tools & kernel",
+  "fix": "Let the README point at the ARCHITECTURE.md diagram (or move that one diagram into the README and have ARCHITECTURE.md link it) instead of keeping a second copy of it.",
+  "lens": "reuse"
+ },
+ {
+  "severity": "medium",
+  "claim": "The Pi v4 section repeats, near word for word, the opening of the section above it (README.md:534, \"`yi rpc` speaks Pi's JSON-RPC protocol on stdio\"), and its second half restates the `.pi/skills` reading already stated at README.md:64 in Plugins and skills. The same two facts now sit in two sections of one file, in a section about session files where neither belongs, so a change to the rpc transport or the skills roots leaves a stale sentence behind.",
+  "path": "README.md",
+  "line": 643,
+  "quote": "`yi rpc` speaks Pi's JSON-RPC protocol on stdio, and `.pi/skills` is read like any skills folder.",
+  "fix": "Drop the sentence; the rpc transport is already introduced under Embed it with `yi rpc`, and the skills roots under Plugins and skills.",
+  "lens": "reuse"
+ }
+]

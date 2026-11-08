@@ -3,6 +3,9 @@ use std::fs;
 use std::path::Path;
 
 use yi_types::wire::{JsonlV4Header, Mutation};
+fn fixtures() -> Result<std::path::PathBuf, Box<dyn Error>> {
+    Ok(crate::workspace_root()?.join("crates/types/tests/fixtures"))
+}
 
 fn roundtrip_file(path: &Path) -> Result<(), Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
@@ -31,7 +34,7 @@ fn roundtrip_file(path: &Path) -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn pi_v4_fixtures_roundtrip_byte_identical() -> Result<(), Box<dyn Error>> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let dir = fixtures()?;
     let mut seen = 0;
     for fixture in fs::read_dir(&dir)? {
         let path = fixture?.path();
@@ -91,7 +94,7 @@ fn goal_discovery_ledger_round_trips_with_unknown_fields() -> Result<(), Box<dyn
 #[test]
 fn a_prompt_era_job_store_reads_with_default_policies_and_writes_back_unchanged()
 -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scheduled-jobs-v1.json");
+    let path = fixtures()?.join("scheduled-jobs-v1.json");
     let stored = fs::read_to_string(path)?;
     let state: yi_types::schedule::ScheduleState = serde_json::from_str(&stored)?;
     let job = state.jobs.first().ok_or("the recorded job")?;
@@ -104,7 +107,7 @@ fn a_prompt_era_job_store_reads_with_default_policies_and_writes_back_unchanged(
 #[test]
 fn daemon_ledger_fixture_round_trips_with_unknown_fields() -> Result<(), Box<dyn std::error::Error>>
 {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/daemon-ledger-v1.json");
+    let path = fixtures()?.join("daemon-ledger-v1.json");
     let stored = fs::read_to_string(path)?;
     let ledger: yi_types::acp::DaemonLedger = serde_json::from_str(&stored)?;
     let entry = ledger.sessions.get("s-1").ok_or("the s-1 row")?;
@@ -117,8 +120,7 @@ fn daemon_ledger_fixture_round_trips_with_unknown_fields() -> Result<(), Box<dyn
 /// Written by `yi serve` after one `_yi/pin`: only the pinned row carries `pinnedMs`, byte for byte.
 #[test]
 fn daemon_ledger_with_a_pin_round_trips() -> Result<(), Box<dyn std::error::Error>> {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/daemon-ledger-pinned.json");
+    let path = fixtures()?.join("daemon-ledger-pinned.json");
     let stored = fs::read_to_string(path)?;
     let ledger: yi_types::acp::DaemonLedger = serde_json::from_str(&stored)?;
     let pins: Vec<Option<u64>> = ledger
@@ -136,7 +138,7 @@ fn daemon_ledger_with_a_pin_round_trips() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn a_legacy_plan_fact_is_kept_raw_and_re_emits_verbatim() -> Result<(), Box<dyn std::error::Error>>
 {
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let fixtures = fixtures()?;
     for name in [
         "v4-plan-check",
         "v4-plan-readmit",
@@ -165,7 +167,7 @@ fn a_legacy_plan_fact_is_kept_raw_and_re_emits_verbatim() -> Result<(), Box<dyn 
 #[test]
 fn an_unreported_usage_lands_typed_and_a_reported_zero_stays_free()
 -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-usage-unknown.jsonl");
+    let path = fixtures()?.join("v4-usage-unknown.jsonl");
     let content = fs::read_to_string(&path)?;
     let mut flags = Vec::new();
     for line in content.lines().skip(1) {
@@ -206,7 +208,7 @@ fn money_prints_one_way_and_marks_a_floor() {
 
 #[test]
 fn a_tree_snapshot_round_trips_byte_identical() -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tree-snapshot-v1.json");
+    let path = fixtures()?.join("tree-snapshot-v1.json");
     let stored = fs::read_to_string(path)?;
     let data: yi_types::checkpoint::TreeSnapshot = serde_json::from_str(&stored)?;
     assert_eq!(data.call.as_deref(), Some("call_1"));
@@ -217,7 +219,7 @@ fn a_tree_snapshot_round_trips_byte_identical() -> Result<(), Box<dyn std::error
 #[test]
 fn an_undo_checkpoint_recorded_before_after_still_round_trips_byte_identical()
 -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/checkpoint-undo-v1.json");
+    let path = fixtures()?.join("checkpoint-undo-v1.json");
     let stored = fs::read_to_string(path)?;
     let data: yi_types::checkpoint::CheckpointData = serde_json::from_str(&stored)?;
     assert_eq!(data.at, yi_types::checkpoint::CheckpointAt::Undo);
@@ -233,7 +235,7 @@ fn every_wire_enum_decodes_an_unknown_tag_and_re_emits_it_verbatim()
 -> Result<(), Box<dyn std::error::Error>> {
     use yi_types::entry::Entry;
     use yi_types::wire::Fact;
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-pi-unknown.jsonl");
+    let path = fixtures()?.join("v4-pi-unknown.jsonl");
     let content = fs::read_to_string(path)?;
     let mut unknown = Vec::new();
     for line in content.lines().skip(1) {
@@ -294,7 +296,7 @@ fn an_unknown_entry_type_name_is_a_closed_word() -> Result<(), Box<dyn std::erro
 fn classifier_answers_and_records_round_trip_with_unknown_fields()
 -> Result<(), Box<dyn std::error::Error>> {
     use yi_types::classifier::{ClassifyRecord, DecisionResponse};
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let fixtures = fixtures()?;
     let stored: serde_json::Value = serde_json::from_str(&fs::read_to_string(
         fixtures.join("decision-response-v1.json"),
     )?)?;
@@ -327,7 +329,7 @@ fn classifier_answers_and_records_round_trip_with_unknown_fields()
 fn jev_answers_decode_and_round_trip_with_their_extra_fields()
 -> Result<(), Box<dyn std::error::Error>> {
     use yi_types::classifier::{DecisionRequest, DecisionResponse};
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/jev");
+    let fixtures = fixtures()?.join("jev");
     let mut noul = Vec::new();
     for name in [
         "noul-safe-ls",
@@ -367,8 +369,7 @@ fn jev_answers_decode_and_round_trip_with_their_extra_fields()
 fn permission_records_round_trip_with_an_unknown_answerer_and_field()
 -> Result<(), Box<dyn std::error::Error>> {
     use yi_types::permission::{Answerer, PermissionRecord};
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/permission-record-v1.json");
+    let path = fixtures()?.join("permission-record-v1.json");
     let stored: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
     let records: Vec<PermissionRecord> = serde_json::from_value(stored.clone())?;
     let by: Vec<&Answerer> = records.iter().map(|record| &record.by).collect();
@@ -405,8 +406,7 @@ fn an_event_gap_line_round_trips_byte_for_byte() -> Result<(), Box<dyn std::erro
 fn an_unknown_status_on_four_wire_enums_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     use yi_types::{kernel::ExecuteStatus, mcp::McpSessionState, schedule::JobStatus};
     use yi_types::{schedule::ScheduleState, subagent::ChildStatus};
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/scheduled-jobs-v1-unknown-status.json");
+    let path = fixtures()?.join("scheduled-jobs-v1-unknown-status.json");
     let stored = fs::read_to_string(path)?;
     let state: ScheduleState = serde_json::from_str(&stored)?;
     let job = state.jobs.first().ok_or("the recorded job")?;
@@ -454,8 +454,7 @@ fn a_task_and_a_host_message_keep_their_attribution() -> Result<(), Box<dyn std:
 #[test]
 fn a_compaction_details_value_keeps_the_window_chain_it_was_written_with()
 -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/compaction-details-window-v1.json");
+    let path = fixtures()?.join("compaction-details-window-v1.json");
     let stored = fs::read_to_string(path)?;
     let details: yi_types::compaction::CompactionDetails = serde_json::from_str(&stored)?;
     let window = details.window.as_ref().ok_or("the recorded window chain")?;

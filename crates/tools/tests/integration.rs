@@ -15,14 +15,17 @@ mod checkpoint;
 mod contain;
 mod documents;
 mod endings;
+mod hashline_blocks;
 mod hashline_parser;
 mod hashline_patcher;
+mod hashline_read;
 mod kernel_cell;
 mod orient;
 mod paths;
 mod program_values;
 mod sandbox;
 mod tools;
+mod write_atomic;
 
 /// Invariant: `--exact` matches the whole name path, which starts at the caller's file module.
 fn exact_path(module_path: &str, name: &str) -> String {

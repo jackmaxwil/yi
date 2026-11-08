@@ -1,14 +1,13 @@
 use std::error::Error;
 use std::fs;
-use std::path::Path;
 
 use yi_types::wire::{SessionMetadata, SessionStats};
 
 // Both fixtures are stdout captured from the 0.309.0 `yi` binary over sessions seeded
 // from v4-golden.jsonl and v4-child-header.jsonl: `sessions --json list` and rpc frames.
 fn fixture(name: &str) -> Result<String, Box<dyn Error>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+    let path = crate::workspace_root()?
+        .join("crates/types/tests/fixtures")
         .join(name);
     Ok(fs::read_to_string(path)?.trim_end().to_owned())
 }
