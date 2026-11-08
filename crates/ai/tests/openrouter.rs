@@ -348,6 +348,51 @@ fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestR
     Ok(())
 }
 
+/// Dies without the order: a pinned upstream rides `provider.order` on a routed base only,
+/// never over an order the config set, and never as a slug a reply could smuggle.
+#[test]
+fn a_pinned_upstream_rides_the_provider_order() -> TestResult {
+    let model = target_model()?;
+    let pinned = |pin: &str, routing: Option<serde_json::Value>| OpenAiOptions {
+        pin: Some(pin.to_owned()),
+        routing,
+        ..OpenAiOptions::default()
+    };
+    let provider = |options: &OpenAiOptions| {
+        build_params(&model, &history_context(), options)
+            .get("provider")
+            .cloned()
+    };
+    assert_eq!(
+        provider(&pinned("Amazon Bedrock", None)),
+        Some(json!({"order": ["amazon-bedrock"]}))
+    );
+    assert_eq!(
+        provider(&pinned("Amazon Bedrock", Some(json!({"sort": "price"})))),
+        Some(json!({"sort": "price", "order": ["amazon-bedrock"]}))
+    );
+    let owned = json!({"order": ["anthropic"]});
+    assert_eq!(
+        provider(&pinned("Amazon Bedrock", Some(owned.clone()))),
+        Some(owned),
+        "a configured order is the owner's"
+    );
+    assert_eq!(provider(&pinned(r#"x", ["a"]"#, None)), None);
+    let mut elsewhere = model.clone();
+    elsewhere.base_url = "https://api.openai.com/v1".to_owned();
+    assert!(
+        build_params(
+            &elsewhere,
+            &history_context(),
+            &pinned("Amazon Bedrock", None)
+        )
+        .get("provider")
+        .is_none(),
+        "a base that routes nothing cannot carry the pin"
+    );
+    Ok(())
+}
+
 /// Dies with the tail marked: a suspended tail leaves the marks before it alone.
 #[test]
 fn a_suspended_tail_mark_keeps_the_marks_before_it_only() -> TestResult {

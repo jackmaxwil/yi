@@ -420,14 +420,15 @@ representative description and compact info."
 - **Major** is every tool a root session's model can call and every row of the plugin table
   (`yi_tools::plugin::PLUGINS`). Beyond those, a `yi` subcommand or flag the model may run, a config
   key, or a marker or file format it reads or writes is taught the same way, in a skill; no gate
-  reads those kinds yet, so the reviewer enforces them.
+  reads those kinds yet, so the reviewer enforces them. A feature nobody taught is half-shipped, and
+  a pull request that adds one without its skill is not done.
 - **Covered** means a shipped `SKILL.md` (under `skills/` or `python/skills/`) whose frontmatter
   says `covers: tool:<name>` or `covers: plugin:<name>` (a comma list), or an on-demand tool guide
   served at `yi://tools/<name>`.
 - `request_budget::every_model_tool_and_plugin_is_covered_by_a_skill_or_pending` enforces it. Its
   `PENDING` list holds the gaps that predate the rule and may only shrink: a covered entry fails
   until it is removed, and a `covers:` naming a tool or plugin that no longer exists fails too.
-- A tool or plugin lands with its skill, and deleting one deletes its skill. `yi update` replaces
+- A feature lands with its skill, and deleting one deletes its skill. `yi update` replaces
   the bundled skill directory whole, so a deletion reaches every install.
 - The content bar: a skill teaches what the tool description cannot — when to reach for this tool
   over another, how its calls combine, and how to recover from its failures. It never restates
@@ -437,7 +438,8 @@ representative description and compact info."
   already visible to the model, so its skill points at it.
 - The catalog line is the first 60 characters of `description` (`DESCRIPTION_CLIP`), so lead with
   what the feature is and when to reach for it. Under budget pressure the trailing skills fall to a
-  bare-name list.
+  bare-name list; a skill that falls there, or a description that needs the body to make sense, is a
+  defect.
 - The pull request body says where Yi is taught: the skill path and the catalog line as rendered.
 - Skills load lazily: one catalog line each, the body on `read("yi://skills/<name>")`. A plugin's
   own skills sit behind one pointer skill and are never listed.
@@ -533,6 +535,12 @@ trailing blanks and the counts drift (the duplicated-list bug).
   D-rows in merge order, and check_changes.py refuses a branch that edits them. Every PR claimed
   the next number by hand and every landing renumbered, until 9 of 9 conflicted PRs collided on it.
 - Revising a settled decision requires a new decision (a `decision:` line in the change file) before code.
+- What a change removes or holds on purpose is recorded where every later branch is checked against it:
+  `cut: <path> | <the deleted line, verbatim> | <why>` and `keep: <path> | <line> | <why>` in the change
+  file. check_intent.py refuses any branch, by any author, that puts a cut line back or deletes a kept one,
+  unless its change file says `revives:`/`drops: <change file> <path>` beside a `decision:`; `just pr open`
+  asks for a `cut:` line, or `cut: none <path>`, for each file that loses five or more lines on net.
+  Incident: a fixer and two sessions undid three of the owner's deliberate cuts in one week.
 - Feature cuts are discussed before being written into the docs.
 - One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.2
   in the same commit.

@@ -10,9 +10,9 @@ use super::{Op, Target, TodoError, TodoStore, mirror, text};
 
 pub const NAME: &str = "todo";
 
-pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work: set with a checklist (`## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked). While a plan is open the plan is the list, and these ops move only your own items. One op per state change: start, done with evidence, block, unblock, drop, append, rm, view. A todo call rides with real work. A reminder is a todo blocked on an address (`clock://at <ISO time>`, `clock://in 30m`, `file://<path>`), which wakes you when it fires; one that repeats is `await rlm.subscribe(\"clock://<cron>\", create={\"label\": ...})` in ipython, never a system scheduler. Full guide: read(\"yi://tools/todo\").";
+pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work: set with a checklist (`## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked). While a plan is open the plan is the list, and these ops move only your own items. One op per state change: start, done with evidence, block, unblock, drop, append, rm, view. A todo call rides with real work. Full guide: read(\"yi://tools/todo\").";
 
-pub const GUIDE: &str = "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). While a plan is open the plan is the list: its todos move by the plan tool, and these ops move only your own items. Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child or an address with a note on what unblocks it, unblock, drop with a reason, append (optionally under a parent), rm, view. A reminder is a todo blocked on an address: `clock://at <ISO time>`, `clock://in 30m` or `file://<path>` wakes you when it fires, restarts included. One that repeats is `await rlm.subscribe(\"clock://<cron>\", create={\"label\": ...})` in ipython, never a system scheduler, which this session cannot see or stop. Labels are verbatim and unique. A todo call rides with real work in the same message. Every result ends with next: lines you can copy.";
+pub const GUIDE: &str = "Task list; the user sees changes. Before multi-step work, `init` phases or `set` a checklist (`## Phase`, `- [ ] label`; states `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked; two spaces nest). An open plan owns its todos; these ops move only your items. Ops: `start` (pending→running, one at a time), `done` with evidence after its check passes, `block` on user|external|child or an address with an unblock note, `unblock`, `drop` with a reason, `append` (optionally under a parent), `rm`, `view`. Reminders block on `clock://at <ISO time>`, `clock://in 30m` or `file://<path>` and survive restarts. Repeat with `await rlm.subscribe(\"clock://<cron>\", create={\"label\": ...})` in ipython, never a system scheduler this session cannot see or stop. Labels are verbatim and unique. Batch todo calls with real work. Results end with next: lines to copy. `start check=` sets a row's check once; `done` runs it, closing only on exit 0 with the command as evidence, else leaving the row running with output. No call replaces or blanks it; only `drop` with a reason bypasses a red.";
 
 const OPS: [&str; 10] = [
     "set", "init", "append", "start", "done", "drop", "block", "unblock", "rm", "view",
@@ -30,6 +30,7 @@ pub fn schema() -> Value {
             "under": {"type": "string", "description": "append: the parent label the items nest under"},
             "id": {"type": "string", "description": "start/done/drop/block/unblock/rm: the item's id, e.g. t3; or use label"},
             "label": {"type": "string", "description": "start/done/drop/block/unblock/rm: the item, verbatim"},
+            "check": {"type": "string", "description": "start: a command `done` runs; the row is closed only when it exits 0, and a check is never replaced once set"},
             "evidence": {"type": "string", "description": "done: the command in backticks and the output line that proves it"},
             "reason": {"type": "string", "description": "drop: why the item no longer applies"},
             "on": {"type": "string", "description": "block: who it waits on: user, external, child, or an address: `clock://at <ISO time>`, `exec://<command>?every=30s`, `file://<path>`, `channel://<name>`; the first message matching `filter` unblocks it"},
@@ -99,6 +100,17 @@ fn string(args: &Map<String, Value>, field: &'static str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+fn check(args: &Map<String, Value>) -> Result<Option<String>, ArgError> {
+    match args.get("check") {
+        None | Some(Value::Null | Value::String(_)) => Ok(string(args, "check")),
+        Some(value) => Err(ArgError::Malformed {
+            op: "start",
+            field: "check",
+            cause: format!("{value} is not a command; give a non-empty string or leave check out"),
+        }),
+    }
 }
 
 fn need_string(
@@ -416,6 +428,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         "start" => Op::Start {
             label: label(args, "start")?,
+            check: check(args)?,
         },
         "done" => Op::Done {
             target: target(args, "done")?,
@@ -502,11 +515,20 @@ pub enum TodoToolError {
 
 pub struct TodoTool {
     store: Arc<TodoStore>,
+    checker: crate::goal::Checker,
 }
 
 impl TodoTool {
     pub fn new(store: Arc<TodoStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            checker: crate::goal::Checker::default(),
+        }
+    }
+
+    pub fn with_checker(mut self, checker: crate::goal::Checker) -> Self {
+        self.checker = checker;
+        self
     }
 
     fn parse(&self, args: &Map<String, Value>) -> Result<Op, ArgError> {
@@ -534,11 +556,89 @@ impl TodoTool {
         })
     }
 
-    fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
+    /// The rows `target` names that carry a check, with the command each one runs.
+    fn commands_for(&self, target: &Target) -> Vec<(TodoLabel, String)> {
+        self.store.resync();
+        let list = self.store.list();
+        let rows = super::check::targeted(&list, target).unwrap_or_default();
+        (rows.into_iter())
+            .filter(|item| !item.state.is_terminal())
+            .filter_map(|item| {
+                super::check::command_of(item).map(|command| (item.label.clone(), command))
+            })
+            .collect()
+    }
+
+    /// The check a call carries: a `start`'s is probed before the row is written, a `done`'s is
+    /// run and its row closed only on exit 0, so a red keeps the row running with its output.
+    fn checked(&self, op: &mut Op, context: &ToolContext) -> Result<Option<String>, TodoToolError> {
+        match op {
+            Op::Start {
+                check: Some(command),
+                ..
+            } => match self.checker.probe(command, &context.cwd) {
+                Some(reason) => Err(TodoError::Check { reason }.into()),
+                None => Ok(None),
+            },
+            Op::Done { target, evidence } => {
+                let rows = self.commands_for(target);
+                if rows.is_empty() {
+                    return Ok(None);
+                }
+                let passed = evidence.clone().or_else(|| Some("check passed".to_owned()));
+                self.store.admits(Op::Done {
+                    target: target.clone(),
+                    evidence: passed,
+                })?;
+                let mut red: Option<String> = None;
+                for (label, command) in &rows {
+                    let ran =
+                        super::check::run(command, &context.cwd, &context.cancelled, &self.checker)
+                            .map_err(|reason| TodoError::Check { reason })?;
+                    let green = ran.green;
+                    self.store.apply(
+                        Op::MarkCheck {
+                            label: label.clone(),
+                            last: ran.last,
+                        },
+                        None,
+                    )?;
+                    if !green {
+                        let view = ran.view;
+                        red = Some(format!(
+                            "(done held: check `{command}` has not passed, so the row stays running)\n{view}"
+                        ));
+                    }
+                }
+                match red {
+                    None => {
+                        *evidence = Some(
+                            (rows.into_iter())
+                                .map(|(_, command)| format!("check `{command}` passed"))
+                                .collect::<Vec<_>>()
+                                .join("; "),
+                        );
+                        Ok(None)
+                    }
+                    Some(text) => Ok(Some(format!(
+                        "{text}\n{}",
+                        text::render(&self.store.list())
+                    ))),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn run(
+        &self,
+        args: &Map<String, Value>,
+        context: &ToolContext,
+    ) -> Result<String, TodoToolError> {
         let (mut args, mut said) = (args.clone(), Vec::new());
         crate::plan::ask::few_options(&mut args, &mut said);
         let args = &args;
-        let op = self.store.aim(self.parse(args)?)?;
+        let mut op = self.store.aim(self.parse(args)?)?;
         let mut inferred = if string(args, "op").as_deref() == Some(op.name()) {
             String::new()
         } else {
@@ -553,6 +653,9 @@ impl TodoTool {
                 "{inferred}(the plan tool's {} on the plan's list)\n{text}",
                 op.name()
             ));
+        }
+        if let Some(text) = self.checked(&mut op, context)? {
+            return Ok(format!("{inferred}{text}"));
         }
         let expected = args.get("touched").and_then(Value::as_u64);
         let whole = matches!(op, Op::Set { .. } | Op::Init { .. });
@@ -634,12 +737,19 @@ impl Tool for TodoTool {
             Ok(Op::Block { on, .. }) => crate::schedule::clock::armed_command(&on)
                 .into_iter()
                 .collect(),
+            Ok(Op::Start {
+                check: Some(command),
+                ..
+            }) => vec![command],
+            Ok(Op::Done { target, .. }) => (self.commands_for(&target).into_iter())
+                .map(|(_, command)| command)
+                .collect(),
             _ => Vec::new(),
         }
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        match self.run(&input) {
+        match self.run(&input, context) {
             Ok(text) => {
                 let mut output = text_output(text);
                 let list = || serde_json::to_value(self.store.list()).unwrap_or(Value::Null);

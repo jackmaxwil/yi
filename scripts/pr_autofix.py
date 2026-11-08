@@ -34,6 +34,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PYTHON = os.path.realpath(sys.executable)
 sys.path.insert(0, str(ROOT / "scripts"))
 import bot_meter  # noqa: E402
+import fixer_guard  # noqa: E402
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import _common  # noqa: E402
 import forge_pr  # noqa: E402
@@ -1155,6 +1156,9 @@ def fix(pr, ask=None, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None,
             shutil.copyfile(bundle, kept)
             sh(root, "git", "fetch", "-q", str(kept), "HEAD")
             new = sh(root, "git", "rev-parse", "FETCH_HEAD").stdout.strip()
+        found = fixer_guard.scan(root, f"origin/{pr['base']['ref']}", sha, new)
+        if found:
+            raise fixer_guard.Reversal(found)
         push_head(root, ref, new)
         return {**fields, "to": new[:12]}
 
@@ -1275,6 +1279,8 @@ def render(n, fields, verdict, reason="", status="", meter=None):
                   "set and no retry is spent; once the base is green the fixer merges it here.", "", reason.strip()]
     elif verdict == "handoff":
         lines += ["**Autofix handed this to a person**, not failed; " + fields["retry"] + "; `just pr autofix N` tries now.", "", "```", reason.strip(), "```"]
+    elif verdict == "reversed":
+        lines += [fixer_guard.REFUSED, "", reason]
     elif verdict == "capped":
         lines += ["**Autofix is waiting**, not stopped: a spend limit delays a fix.", "", reason.strip()]
     elif verdict == "deferred":
@@ -1508,6 +1514,9 @@ def attempt(repo, pr, ids, asked=False):
     except Handoff as err:
         fields = {"kind": kind, "from": sha[:12], "stop": kind, **({"round": rnd["n"]} if rnd and kind == "findings" else {})}
         reason, verdict = str(err), "handoff"
+    except fixer_guard.Reversal as err:
+        set_label(repo, number, ids, "autofix:hold", True)
+        fields, verdict, reason = {"kind": kind, "from": sha[:12]}, "reversed", fixer_guard.report(err.hits, [f for r in rounds for f in r["findings"]])
     except LookupError as err:
         # The author pushed meanwhile; the next pass reads the new head.
         print(f"#{number}: the push was refused, the branch moved: {err}")
@@ -1644,7 +1653,7 @@ def cmd_autofix(args):
             print(f"#{pr['number']}: the pass could not finish this PR: {err}")
         # Incident: a PR already labelled failed answered "failed" here too, so three of them
         # filled every pass's quota with skips and no other PR was tried for a day.
-        fixed += said in ("pushed", "failed", "missed", "moved", "declined", "error")
+        fixed += said in ("pushed", "failed", "missed", "moved", "declined", "error", "reversed")
         print(f"#{pr['number']}: {said}")
         # A missed tier climbs in this pass, not 15 minutes and a queue later: #1187 took four passes.
         if said != "missed":
@@ -2809,6 +2818,16 @@ def selfcheck():
         streak = findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n}\n"})
         if f"{STOP_AT} fixes in a row" not in str(streak) or not isinstance(streak, Handoff):
             errs.append(f"a fix after {STOP_AT} in a row was not stopped for a person")
+        # Incident: a fixer cut what the PR's own commit added and the queue landed it; the push is refused.
+        git("checkout", "-q", "-f", "origin/topic"); git("clean", "-qfd")
+        (tmp / "notes.md").write_text("".join(f"the author's own line of content, number {n}\n" for n in range(5)))
+        git("add", "notes.md"); git("commit", "-qm", "notes"); git("push", "-q", "origin", "HEAD:refs/heads/topic")
+        git("fetch", "-q", "origin")
+        held_at = sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()
+        cut = findings_run({"notes.md": "kept\n"})
+        sh(tmp, "git", "fetch", "-q", "origin")
+        if "reverses the author's own change" not in str(cut) or sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip() != held_at:
+            errs.append(f"a fix that cut the PR's own lines read {cut if isinstance(cut, str) else 'pushed'}")
     finally:
         shutil.rmtree(tmp)
         shutil.rmtree(tmp.parent / (tmp.name + "-remote.git"), ignore_errors=True)

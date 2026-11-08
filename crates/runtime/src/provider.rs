@@ -350,6 +350,12 @@ impl ProviderStream {
     fn advice(&self) -> Option<crate::cache_miss::CacheAdvice> {
         self.cache_advice.lock().ok().and_then(|held| held.clone())
     }
+
+    fn pinned_upstream(&self, model: &Model) -> Option<String> {
+        let route = format!("{}/{}", model.provider, model.id);
+        let advice = self.advice()?;
+        advice.pin(yi_session::now_ms(), &route).map(str::to_owned)
+    }
 }
 
 pub(crate) struct ArmedStream<'a> {
@@ -424,6 +430,7 @@ impl ProviderStream {
             session_id: self.session_id.clone(),
             proxy: self.proxy.clone(),
             routing: self.routing.clone(),
+            pin: self.pinned_upstream(model),
             stop: Some(signal.cut_flag()),
             extra_headers: openai_extra(model, &credential),
             oauth,
