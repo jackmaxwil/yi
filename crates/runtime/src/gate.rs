@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::permission::CallOutcome;
 use serde_json::{Value, json};
 use yi_permission::{
     CatastrophicContext, Class, Decision, Parsed, PermissionMode, SessionRules, ToolCall,
@@ -70,7 +71,6 @@ impl Report {
     }
 }
 
-/// What a model can do with no one to approve a call; `--yolo` and allow rules are a person's.
 pub(crate) const MODEL_REMEDIES: &str = "Split the command, keep the writes inside the working tree, or ask the user to approve this call.";
 
 /// The model got here by asking the user, so it is not told to ask again.
@@ -162,6 +162,30 @@ pub(crate) fn headless_split(why: &str) -> String {
     format!(
         "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. {MODEL_REMEDIES}"
     )
+}
+
+/// A headless refusal gains an exact `permissions.allow` entry when its display names one call.
+/// A pathless non-bash display would allow every call, so it names interactive approval instead.
+pub(crate) fn named_rule(
+    mut outcome: CallOutcome,
+    headless: bool,
+    (tool, display): (&str, &str),
+) -> CallOutcome {
+    if headless {
+        let said = std::mem::take(&mut outcome.reason);
+        outcome.reason = match display == tool && tool != "bash" {
+            true => format!(
+                "{said} No single allow rule names only this call, so only the user in an interactive run can approve it."
+            ),
+            false => {
+                let entry = Value::String(format!("{tool} {}", globset::escape(display)));
+                format!(
+                    "{said} The user can allow exactly this call with the permissions.allow entry {entry} in ~/.yi/config.json."
+                )
+            }
+        };
+    }
+    outcome
 }
 
 pub fn mode_label(mode: PermissionMode) -> &'static str {
@@ -274,8 +298,25 @@ pub fn render(report: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Report, compile_ask, headless_refusal, headless_split, unaskable};
+    use super::{Report, compile_ask, headless_refusal, headless_split, named_rule, unaskable};
+    use crate::permission::{CallOutcome, Containment};
     use yi_permission::Decision;
+
+    /// Dies with pathless advice allowing every later call of that tool, not only the denied one.
+    #[test]
+    fn only_a_call_with_an_exact_subject_gets_a_named_allow_entry() {
+        let outcome = || CallOutcome {
+            allowed: false,
+            reason: "denied".to_owned(),
+            containment: Containment::Uncontained,
+        };
+        let pathless = named_rule(outcome(), true, ("mail", "mail"));
+        assert!(!pathless.reason.contains("permissions.allow entry"));
+        let bash = named_rule(outcome(), true, ("bash", "bash"));
+        assert!(bash.reason.contains("permissions.allow entry"));
+        let pathed = named_rule(outcome(), true, ("read", "read note.rs"));
+        assert!(pathed.reason.contains("permissions.allow entry"));
+    }
 
     /// A model told to "run with --yolo, or add an allow rule" reaches for a person's remedy. Each
     /// refusal names the three it has: split the command, keep writes in the tree, ask the user.

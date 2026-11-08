@@ -689,7 +689,7 @@ impl PermissionBroker {
                 (None, Some(refusal)) if self.asker.is_none() => self.denied(
                     crate::gate::headless_refusal(self.sandbox.as_ref(), refusal),
                 ),
-                _ => outcome,
+                _ => crate::gate::named_rule(outcome, self.asker.is_none(), (tool_name, &display)),
             };
         }
         if let (Some(grant), Some(refusal), Containment::Contained { .. }) =
@@ -1028,16 +1028,6 @@ impl PermissionBroker {
             Answerer::User,
         );
         crate::auto_review::resolution_text(&stored.display, verdict)
-    }
-
-    /// A long patch is cut: the prompt is a decision aid, not the file.
-    pub(crate) fn cut_preview(patch: &str) -> String {
-        const PREVIEW_LINES: usize = 40;
-        let mut lines: Vec<&str> = patch.lines().take(PREVIEW_LINES).collect();
-        if patch.lines().count() > PREVIEW_LINES {
-            lines.push("… patch truncated");
-        }
-        lines.join("\n")
     }
 
     fn run_ask(

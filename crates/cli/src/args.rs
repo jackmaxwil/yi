@@ -23,10 +23,15 @@ pub(crate) struct Args {
     pub(crate) mode: yi_runtime::PermissionMode,
     pub(crate) mode_pinned: bool,
     pub(crate) allow_write: Vec<String>,
+    pub(crate) scope: Vec<String>,
     pub(crate) session_dir: Option<String>,
     pub(crate) cwd: Option<String>,
     pub(crate) here: bool,
     pub(crate) fix: bool,
+    /// `worker replace --binary`: the built binary the root serves from now on.
+    pub(crate) binary: Option<String>,
+    /// `worker replace --if-running`: no daemon is a success, not an error.
+    pub(crate) if_running: bool,
     pub(crate) socket: Option<String>,
     pub(crate) headless: bool,
     pub(crate) solo: bool,
@@ -43,8 +48,9 @@ pub(crate) struct Args {
     pub(crate) deadline: Option<u64>,
     pub(crate) resume: Resume,
     pub(crate) schema: Option<String>,
-    /// `yi ask --check CMD`: probe the command and exit, running neither it nor a turn.
-    pub(crate) check: Option<String>,
+    /// `yi ask --check CMD`, repeatable: probed at startup, then re-prompted until each exits 0;
+    /// with no prompt the probe is the whole run.
+    pub(crate) check: Vec<String>,
     pub(crate) stats: stats::Query,
     /// `--role` after `yi models recommend`.
     pub(crate) role: Option<String>,
@@ -57,6 +63,16 @@ pub(crate) enum Resume {
     Fresh,
     Leaf,
     Named(String),
+}
+
+impl Resume {
+    fn from_flags(session: Option<String>, continue_leaf: bool) -> Self {
+        match (session, continue_leaf) {
+            (Some(id), _) => Self::Named(id),
+            (None, true) => Self::Leaf,
+            (None, false) => Self::Fresh,
+        }
+    }
 }
 
 pub(crate) fn parse_args() -> Result<Args, lexopt::Error> {
@@ -77,11 +93,10 @@ pub(super) fn parse_from(
     let mut no_deltas = false;
     let mut no_tools = false;
     let mut mode = None;
-    let mut allow_write = Vec::new();
-    let mut session_dir = None;
-    let mut cwd = None;
-    let mut here = false;
-    let mut fix = false;
+    let (mut allow_write, mut scope) = (Vec::new(), Vec::new());
+    let (mut session_dir, mut cwd, mut here, mut fix) = (None, None, false, false);
+    let mut binary = None;
+    let mut if_running = false;
     let mut socket = None;
     let mut headless = false;
     let mut lanes = false;
@@ -98,7 +113,7 @@ pub(super) fn parse_from(
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
-    let mut check = None;
+    let mut check = Vec::new();
     let mut stats_flags = stats::Flags::default();
     let mut role = None;
     let mut prompt_parts: Vec<String> = Vec::new();
@@ -123,10 +138,13 @@ pub(super) fn parse_from(
             Long("auto") => mode = Some(yi_runtime::PermissionMode::Auto),
             Long("confirm") => mode = Some(yi_runtime::PermissionMode::Ask),
             Long("allow-write") => allow_write.push(parser.value()?.string()?),
+            Long("scope") => scope.push(parser.value()?.string()?),
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("here") => here = true,
             Long("fix") => fix = true,
+            Long("binary") => binary = Some(parser.value()?.string()?),
+            Long("if-running") => if_running = true,
             Long("socket") => socket = Some(parser.value()?.string()?),
             Long("headless") => headless = true,
             Long("lanes") => lanes = true,
@@ -143,7 +161,7 @@ pub(super) fn parse_from(
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
-            Long("check") => check = Some(parser.value()?.string()?),
+            Long("check") => check.push(parser.value()?.string()?),
             Long("since") if command == "stats" => {
                 stats_flags.since = Some(parser.value()?.string()?)
             }
@@ -181,10 +199,13 @@ pub(super) fn parse_from(
         mode: mode.unwrap_or_else(configured_mode),
         mode_pinned: mode.is_some(),
         allow_write,
+        scope,
         session_dir,
         cwd,
         here,
         fix,
+        binary,
+        if_running,
         socket,
         headless,
         solo,
@@ -197,11 +218,7 @@ pub(super) fn parse_from(
         size,
         eval,
         deadline,
-        resume: match (session, continue_leaf) {
-            (Some(id), _) => Resume::Named(id),
-            (None, true) => Resume::Leaf,
-            (None, false) => Resume::Fresh,
-        },
+        resume: Resume::from_flags(session, continue_leaf),
         schema,
         check,
         stats: stats_flags.typed()?,
@@ -213,7 +230,7 @@ pub(super) fn parse_from(
 }
 
 fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
-    if args.check.is_some() && args.command != "ask" {
+    if !args.check.is_empty() && args.command != "ask" {
         return Err(lexopt::Error::Custom(
             "--check is `yi ask --check <command>`".into(),
         ));
@@ -240,6 +257,9 @@ fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
         return Err(lexopt::Error::Custom(
             "--no-deltas needs `yi ask --json`".into(),
         ));
+    }
+    if !args.scope.is_empty() && args.command != "ask" {
+        return Err(lexopt::Error::Custom("--scope needs `yi ask`".into()));
     }
     // The console, headless too, is a client of a daemon that never sees the cassette, and
     // `yi serve` does not hand it to its workers (#943).

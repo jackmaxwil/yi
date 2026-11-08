@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
@@ -66,7 +66,6 @@ impl SubagentHost {
     pub(super) fn reserve(
         &self,
         session_name: &str,
-        session_dir: &Path,
         ask: &crate::lease::Ask,
         standing: &Standing,
     ) -> Result<(Reservation<'_>, yi_types::lease::Lease), String> {
@@ -112,10 +111,7 @@ impl SubagentHost {
         let lease = match refusal {
             None => self.draw(&children, session_name, ask),
             Some(refusal) => Err(refusal),
-        };
-        let lease = lease.inspect_err(|_| {
-            let _ = std::fs::remove_dir_all(session_dir);
-        })?;
+        }?;
         let tokens = lease.tokens.unwrap_or(0);
         let reader = matches!(standing, Standing::Reader);
         children
@@ -212,29 +208,41 @@ impl SubagentHost {
     /// A lagged watch missed events: counters and activity are read again from the session, and
     /// true means a run is live whose start event may be lost, so no reader would conclude it.
     pub(crate) fn refold(&self, child_id: &str) -> bool {
+        let session = self.children.lock().ok().and_then(|children| {
+            children
+                .get(child_id)
+                .map(|record| std::sync::Arc::clone(&record.session))
+        });
+        let messages = session
+            .map(|session| session.messages())
+            .unwrap_or_default();
+        let running = self.refold_messages(child_id, &messages);
+        self.publish(child_id);
+        running
+    }
+
+    pub(super) fn refold_messages(&self, child_id: &str, messages: &[AgentMessage]) -> bool {
         let mut running = false;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(child_id)
         {
             // ponytail: `messages` trails a live turn, so counters only ever move up here.
-            let messages = record.session.messages();
             let mut fresh = (0_u64, 0_u64, 0.0_f64);
-            for message in record.billable(&messages) {
+            for message in record.billable(messages) {
                 if let AgentMessage::Assistant { usage, content, .. } = message {
                     let calls = content
                         .iter()
                         .filter(|block| matches!(block, Content::ToolCall { .. }))
                         .count();
                     fresh.0 = fresh.0.saturating_add(u64::try_from(calls).unwrap_or(0));
-                    fresh.1 = fresh
-                        .1
-                        .saturating_add(u64::try_from(usage.total_tokens).unwrap_or(0));
+                    fresh.1 = fresh.1.saturating_add(usage.fresh());
                     fresh.2 += usage.cost.total.as_f64().unwrap_or(0.0);
                 }
             }
             record.tool_use_count = record.tool_use_count.max(fresh.0);
-            record.token_count = record.token_count.max(fresh.1);
+            record.spent.tokens = record.spent.tokens.max(fresh.1);
             record.cost = record.cost.max(fresh.2);
+            record.enforce();
             let live = record.session.status() == crate::session::Status::Running;
             running = live || (record.exit.is_none() && !record.concluding);
             record.activity = if live {
@@ -243,7 +251,6 @@ impl SubagentHost {
                 ChildActivity::Waiting
             };
         }
-        self.publish(child_id);
         running
     }
 }
@@ -288,6 +295,53 @@ pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> 
         "Unsupported rlm.run kwargs: {}",
         unsupported.join(", ")
     ))
+}
+
+/// Invariant: a spawn refused after its directory was made leaves none behind, so the family
+/// names only children that ran (a placeable, a lane, a container and the build all refuse).
+pub(super) struct SpawnDir {
+    path: PathBuf,
+    listed: bool,
+}
+
+impl SpawnDir {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn keep(&mut self) {
+        self.listed = true;
+    }
+}
+
+impl Drop for SpawnDir {
+    fn drop(&mut self) {
+        if !self.listed {
+            let _removal_is_the_point = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+pub(super) fn create_child_dir(parent_dir: &Path) -> Result<(SpawnDir, String), String> {
+    std::fs::create_dir_all(parent_dir).map_err(|error| error.to_string())?;
+    for _ in 0..100 {
+        let suffix = super::random_suffix()?;
+        let dir = parent_dir.join(format!("sub-{suffix}"));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {
+                return Ok((
+                    SpawnDir {
+                        path: dir,
+                        listed: false,
+                    },
+                    format!("sub-{suffix}"),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("{}: {error}", dir.display())),
+        }
+    }
+    Err("Unable to create unique RLM child session directory".to_owned())
 }
 
 /// How much parent history seeds a child's transcript. `LastN(n)` counts turn boundaries

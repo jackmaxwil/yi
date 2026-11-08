@@ -76,6 +76,12 @@ impl FetchLog {
             .collect()
     }
 
+    pub(crate) fn each_url(&self, mut visit: impl FnMut(&str)) {
+        for (_, record) in &self.lock().records {
+            visit(&record.url);
+        }
+    }
+
     /// M3: what a delegation named against what the resolver served. Both sides are
     /// scheme-plus-path, so a citation with a fragment still names the supplied address.
     pub fn relevance(&self, supplied: &[Url]) -> Relevance {

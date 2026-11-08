@@ -1,6 +1,6 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde_json::{Map, Value, json};
 use yi_runtime::session_store::{
@@ -24,6 +24,72 @@ pub struct RpcOptions {
     pub session_dir: PathBuf,
     pub cwd: PathBuf,
 }
+
+/// Invariant: a variant missing from [`RPC_COMMANDS`] is never built, which `-D dead_code` refuses,
+/// and the dispatch match is exhaustive, so the served list and the answered set are one table.
+#[derive(Clone, Copy)]
+enum Command {
+    Compact,
+    CompactStatus,
+    Prompt,
+    Heartbeat,
+    Goal,
+    Plan,
+    AdvisorStats,
+    Steer,
+    FollowUp,
+    Abort,
+    NewSession,
+    GetState,
+    SetModel,
+    GetAvailableModels,
+    SetThinkingLevel,
+    GetAvailableThinkingLevels,
+    SetSteeringMode,
+    SetFollowUpMode,
+    GetMessages,
+    GetEntries,
+    GetSessionStats,
+    SetSessionName,
+    GetLastAssistantText,
+    GetCommands,
+    SwitchSession,
+    Fork,
+    GetLog,
+}
+
+const RPC_COMMANDS: [(&str, Command); 27] = [
+    ("compact", Command::Compact),
+    ("compact_status", Command::CompactStatus),
+    ("prompt", Command::Prompt),
+    ("heartbeat", Command::Heartbeat),
+    ("goal", Command::Goal),
+    ("plan", Command::Plan),
+    ("advisor_stats", Command::AdvisorStats),
+    ("steer", Command::Steer),
+    ("follow_up", Command::FollowUp),
+    ("abort", Command::Abort),
+    ("new_session", Command::NewSession),
+    ("get_state", Command::GetState),
+    ("set_model", Command::SetModel),
+    ("get_available_models", Command::GetAvailableModels),
+    ("set_thinking_level", Command::SetThinkingLevel),
+    (
+        "get_available_thinking_levels",
+        Command::GetAvailableThinkingLevels,
+    ),
+    ("set_steering_mode", Command::SetSteeringMode),
+    ("set_follow_up_mode", Command::SetFollowUpMode),
+    ("get_messages", Command::GetMessages),
+    ("get_entries", Command::GetEntries),
+    ("get_session_stats", Command::GetSessionStats),
+    ("set_session_name", Command::SetSessionName),
+    ("get_last_assistant_text", Command::GetLastAssistantText),
+    ("get_commands", Command::GetCommands),
+    ("switch_session", Command::SwitchSession),
+    ("fork", Command::Fork),
+    ("get_log", Command::GetLog),
+];
 
 fn write_line(value: &Value) {
     let mut stdout = std::io::stdout().lock();
@@ -82,29 +148,32 @@ fn message_text(message: &AgentMessage) -> String {
 
 struct RpcState {
     session: AgentSession,
-    repo: JsonlRepo,
-    store: SharedSession,
-    session_id: String,
-    steering_mode: String,
-    follow_up_mode: String,
+    repo: Mutex<JsonlRepo>,
+    store: Mutex<SharedSession>,
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl RpcState {
+    fn shared(&self) -> SharedSession {
+        Arc::clone(&locked(&self.store))
+    }
+
     fn store_value<T>(
         &self,
         read: impl FnOnce(&yi_runtime::session_store::SessionStore) -> T,
     ) -> T {
-        read(&lock_session(&self.store))
+        read(&lock_session(&self.shared()))
     }
 
-    fn adopt(&mut self, store: SharedSession) -> Result<(), String> {
-        let id = lock_session(&store).metadata().id.clone();
+    fn adopt(&self, store: SharedSession) -> Result<(), String> {
         self.session.reset();
         self.session
             .attach_store(Arc::clone(&store))
             .map_err(|error| error.to_string())?;
-        self.store = store;
-        self.session_id = id;
+        *locked(&self.store) = store;
         Ok(())
     }
 
@@ -118,7 +187,7 @@ impl RpcState {
                 .permission_broker()
                 .map(|broker| yi_runtime::plan::authority::Confirmer {
                     broker,
-                    store: Arc::clone(&self.store),
+                    store: self.shared(),
                 });
         let (service, payload) = (Arc::clone(service), payload.clone());
         tokio::task::spawn_blocking(move || {
@@ -129,19 +198,22 @@ impl RpcState {
     }
 
     async fn handle(
-        &mut self,
+        &self,
         command_type: &str,
         id: Option<&str>,
         payload: &Map<String, Value>,
     ) -> Value {
         let text_arg = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or("");
-        match command_type {
-            "compact" => {
+        let Some((_, command)) = RPC_COMMANDS.iter().find(|(name, _)| *name == command_type) else {
+            return unsupported(id, command_type);
+        };
+        match command {
+            Command::Compact => {
                 let outcome = self.session.compact_now().await;
                 let running = self.session.status() == Status::Running;
                 data_frame(id, "compact", compact_frame(&outcome, running))
             }
-            "compact_status" => match self.session.compactor() {
+            Command::CompactStatus => match self.session.compactor() {
                 Some(compactor) => {
                     let status = compactor.status(&self.session.messages(), &self.session.model());
                     data_frame(
@@ -157,7 +229,7 @@ impl RpcState {
                 }
                 None => error_frame(id, "compact_status", "auto-compaction is not enabled"),
             },
-            "prompt" => {
+            Command::Prompt => {
                 let message = yi_runtime::session::user_input(text_arg("message"));
                 if self.session.prompt_message(message.clone()).is_err() {
                     if text_arg("streamingBehavior") == "steer" {
@@ -168,7 +240,7 @@ impl RpcState {
                 }
                 ok_frame(id, "prompt")
             }
-            "heartbeat" => {
+            Command::Heartbeat => {
                 let input = text_arg("command");
                 match self.session.heartbeat_service() {
                     Some(service) => match service.run(input) {
@@ -178,7 +250,7 @@ impl RpcState {
                     None => error_frame(id, "heartbeat", "no scheduler is attached"),
                 }
             }
-            "goal" => match self.session.goal_service() {
+            Command::Goal => match self.session.goal_service() {
                 Some(service) => {
                     let payload = payload.clone();
                     let outcome = tokio::task::spawn_blocking(move || service.act(&payload))
@@ -191,7 +263,7 @@ impl RpcState {
                 }
                 None => error_frame(id, "goal", "no goal service is attached"),
             },
-            "plan" => match self.session.plan_service() {
+            Command::Plan => match self.session.plan_service() {
                 Some(service) => {
                     let outcome = match text_arg("action") {
                         "get" => {
@@ -211,25 +283,25 @@ impl RpcState {
                 }
                 None => error_frame(id, "plan", "no plan service is attached"),
             },
-            "advisor_stats" => match self.session.advisor() {
+            Command::AdvisorStats => match self.session.advisor() {
                 Some(advisor) => data_frame(id, "advisor_stats", json!({"text": advisor.stats()})),
                 None => error_frame(id, "advisor_stats", "the advisor is not attached"),
             },
-            "steer" => {
+            Command::Steer => {
                 self.session
                     .steer_message(yi_runtime::session::user_input(text_arg("message")));
                 ok_frame(id, "steer")
             }
-            "follow_up" => {
+            Command::FollowUp => {
                 self.session
                     .follow_up_message(yi_runtime::session::user_input(text_arg("message")));
                 ok_frame(id, "follow_up")
             }
-            "abort" => {
+            Command::Abort => {
                 self.session.abort();
                 ok_frame(id, "abort")
             }
-            "new_session" => {
+            Command::NewSession => {
                 let options = CreateOptions {
                     parent_session_id: payload
                         .get("parentSession")
@@ -237,7 +309,10 @@ impl RpcState {
                         .map(str::to_owned),
                     ..CreateOptions::default()
                 };
-                match self.repo.create(options).map_err(|error| error.to_string()) {
+                let created = locked(&self.repo)
+                    .create(options)
+                    .map_err(|error| error.to_string());
+                match created {
                     Ok(store) => match self.adopt(store) {
                         Ok(()) => data_frame(id, "new_session", json!({"cancelled": false})),
                         Err(error) => error_frame(id, "new_session", &error),
@@ -245,12 +320,13 @@ impl RpcState {
                     Err(error) => error_frame(id, "new_session", &error),
                 }
             }
-            "get_state" => {
+            Command::GetState => {
                 let model = self.session.model();
-                let (name, file) = self.store_value(|store| {
+                let (name, file, session_id) = self.store_value(|store| {
                     (
                         store.name(),
                         store.file_path().map(|path| path.display().to_string()),
+                        store.metadata().id.clone(),
                     )
                 });
                 data_frame(
@@ -260,11 +336,12 @@ impl RpcState {
                         "model": model,
                         "thinkingLevel": self.session.effort().to_string(),
                         "isStreaming": self.session.status() == Status::Running,
-                        "isCompacting": false,
-                        "steeringMode": self.steering_mode,
-                        "followUpMode": self.follow_up_mode,
+                        "isCompacting": self
+                            .session
+                            .compactor()
+                            .is_some_and(|compactor| compactor.compacting()),
+                        "sessionId": session_id,
                         "sessionFile": file,
-                        "sessionId": self.session_id,
                         "sessionName": name,
                         "autoCompactionEnabled": self.session.compactor().is_some(),
                         "messageCount": self.session.messages().len(),
@@ -272,7 +349,7 @@ impl RpcState {
                     }),
                 )
             }
-            "set_model" => {
+            Command::SetModel => {
                 let provider = text_arg("provider");
                 let model_id = text_arg("modelId");
                 match resolve_model(provider, model_id) {
@@ -287,12 +364,12 @@ impl RpcState {
                     ),
                 }
             }
-            "get_available_models" => data_frame(
+            Command::GetAvailableModels => data_frame(
                 id,
                 "get_available_models",
                 json!({"models": available_models()}),
             ),
-            "set_thinking_level" => match text_arg("level").parse() {
+            Command::SetThinkingLevel => match text_arg("level").parse() {
                 Ok(effort) => {
                     let effective = self.session.set_effort(effort);
                     data_frame(
@@ -303,25 +380,27 @@ impl RpcState {
                 }
                 Err(error) => error_frame(id, "set_thinking_level", &format!("{error}")),
             },
-            "get_available_thinking_levels" => data_frame(
+            Command::GetAvailableThinkingLevels => data_frame(
                 id,
                 "get_available_thinking_levels",
                 json!({"levels": levels_of(&self.session.model())}),
             ),
-            "set_steering_mode" => {
-                self.steering_mode = text_arg("mode").to_owned();
-                ok_frame(id, "set_steering_mode")
-            }
-            "set_follow_up_mode" => {
-                self.follow_up_mode = text_arg("mode").to_owned();
-                ok_frame(id, "set_follow_up_mode")
-            }
-            "get_messages" => data_frame(
+            Command::SetSteeringMode => error_frame(
+                id,
+                "set_steering_mode",
+                "this build delivers every steer as it arrives; there is no mode to set",
+            ),
+            Command::SetFollowUpMode => error_frame(
+                id,
+                "set_follow_up_mode",
+                "this build queues every follow-up as it arrives; there is no mode to set",
+            ),
+            Command::GetMessages => data_frame(
                 id,
                 "get_messages",
                 json!({"messages": self.session.messages()}),
             ),
-            "get_entries" => {
+            Command::GetEntries => {
                 let after_seq = payload
                     .get("since")
                     .and_then(Value::as_str)
@@ -347,19 +426,19 @@ impl RpcState {
                     }
                 }
             }
-            "get_session_stats" => data_frame(
+            Command::GetSessionStats => data_frame(
                 id,
                 "get_session_stats",
                 json!(self.store_value(|store| store.stats())),
             ),
-            "set_session_name" => {
+            Command::SetSessionName => {
                 let name = Some(text_arg("name").to_owned()).filter(|name| !name.is_empty());
-                match lock_session(&self.store).set_name(name) {
+                match lock_session(&self.shared()).set_name(name) {
                     Ok(()) => ok_frame(id, "set_session_name"),
                     Err(error) => error_frame(id, "set_session_name", &error.to_string()),
                 }
             }
-            "get_last_assistant_text" => {
+            Command::GetLastAssistantText => {
                 let text = self
                     .session
                     .messages()
@@ -369,8 +448,12 @@ impl RpcState {
                     .map(message_text);
                 data_frame(id, "get_last_assistant_text", json!({"text": text}))
             }
-            "get_commands" => data_frame(id, "get_commands", json!({"commands": []})),
-            "switch_session" => {
+            Command::GetCommands => data_frame(
+                id,
+                "get_commands",
+                json!({"commands": RPC_COMMANDS.map(|(name, _)| name)}),
+            ),
+            Command::SwitchSession => {
                 let path = PathBuf::from(text_arg("sessionPath"));
                 match yi_runtime::session_store::load_session(&path) {
                     Ok(store) => match self.adopt(Arc::new(std::sync::Mutex::new(store))) {
@@ -380,7 +463,7 @@ impl RpcState {
                     Err(error) => error_frame(id, "switch_session", &error.to_string()),
                 }
             }
-            "fork" => {
+            Command::Fork => {
                 let entry_id = text_arg("entryId").to_owned();
                 let text = self.store_value(|store| {
                     store
@@ -391,8 +474,9 @@ impl RpcState {
                         })
                         .unwrap_or_default()
                 });
-                let forked = self.repo.fork(
-                    &self.session_id.clone(),
+                let session_id = self.store_value(|store| store.metadata().id.clone());
+                let forked = locked(&self.repo).fork(
+                    &session_id,
                     &ForkScope::Branch {
                         entry_id: Some(entry_id),
                         position: Some(ForkPosition::Before),
@@ -407,26 +491,29 @@ impl RpcState {
                     Err(error) => error_frame(id, "fork", &error),
                 }
             }
-            "get_log" => {
+            Command::GetLog => {
                 let log = self.store_value(|store| store.log(&LogOptions::default()));
                 match log {
                     Ok(log) => data_frame(id, "get_log", json!({"log": log})),
                     Err(error) => error_frame(id, "get_log", &error.to_string()),
                 }
             }
-            other => error_frame(
-                id,
-                other,
-                &format!("unsupported command in this build: {other}"),
-            ),
         }
     }
+}
+
+fn unsupported(id: Option<&str>, command: &str) -> Value {
+    error_frame(
+        id,
+        command,
+        &format!("unsupported command in this build: {command}"),
+    )
 }
 
 pub fn run_rpc(
     session: AgentSession,
     options: &RpcOptions,
-    runtime: tokio::runtime::Runtime,
+    runtime: &tokio::runtime::Runtime,
 ) -> i32 {
     let mut repo = JsonlRepo::new(
         options.session_dir.clone(),
@@ -439,19 +526,15 @@ pub fn run_rpc(
             return 1;
         }
     };
-    let session_id = lock_session(&store).metadata().id.clone();
     if let Err(error) = session.attach_store(Arc::clone(&store)) {
         eprintln!("error: failed to attach session store: {error}");
         return 1;
     }
-    let mut state = RpcState {
+    let state = Arc::new(RpcState {
         session,
-        repo,
-        store,
-        session_id,
-        steering_mode: "all".to_owned(),
-        follow_up_mode: "all".to_owned(),
-    };
+        repo: Mutex::new(repo),
+        store: Mutex::new(store),
+    });
 
     runtime.block_on(async move {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -465,6 +548,8 @@ pub fn run_rpc(
             }
         });
         let mut events = state.session.subscribe();
+        let mut answers = tokio::task::JoinSet::new();
+        let mut ahead: Option<tokio::sync::oneshot::Receiver<()>> = None;
         loop {
             tokio::select! {
                 line = command_rx.recv() => {
@@ -482,21 +567,45 @@ pub fn run_rpc(
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_owned();
-                            let frame = state.handle(&command_type, id.as_deref(), &payload).await;
-                            write_line(&frame);
+                            // Invariant: a state query answers while a compact runs; mutations stay ordered.
+                            let bypass = command_type == "get_state"
+                                && state.session.compactor().is_some_and(|c| c.compacting());
+                            let queued = if bypass { None } else { ahead.take() };
+                            let (finished, next) = tokio::sync::oneshot::channel();
+                            if !bypass {
+                                ahead = Some(next);
+                            }
+                            let answering = Arc::clone(&state);
+                            answers.spawn(async move {
+                                if let Some(queued) = queued {
+                                    let _ = queued.await;
+                                }
+                                let frame = answering
+                                    .handle(&command_type, id.as_deref(), &payload)
+                                    .await;
+                                write_line(&frame);
+                                if !bypass {
+                                    let _ = finished.send(());
+                                }
+                            });
                         }
                         _ => write_line(&error_frame(None, "", "invalid command: not a JSON object")),
                     }
                 }
                 event = yi_runtime::next_event(&mut events) => {
-                    let value = match event {
-                        Some(Ok(event)) => serde_json::to_value(&event),
-                        Some(Err(gap)) => serde_json::to_value(gap),
-                        None => break,
-                    };
-                    if let Ok(value) = value {
-                        write_line(&value);
+                    if !relay(event) {
+                        break;
                     }
+                }
+                _ = answers.join_next(), if !answers.is_empty() => {}
+            }
+        }
+        let mut open = true;
+        while !answers.is_empty() {
+            tokio::select! {
+                _ = answers.join_next() => {}
+                event = yi_runtime::next_event(&mut events), if open => {
+                    open = relay(event);
                 }
             }
         }
@@ -515,6 +624,18 @@ pub fn run_rpc(
         }
         0
     })
+}
+
+fn relay(event: Option<Result<yi_types::event::AgentEvent, yi_types::event::EventGap>>) -> bool {
+    let value = match event {
+        Some(Ok(event)) => serde_json::to_value(&event),
+        Some(Err(gap)) => serde_json::to_value(gap),
+        None => return false,
+    };
+    if let Ok(value) = value {
+        write_line(&value);
+    }
+    true
 }
 
 /// An elision applied too, but it is not a summary: it says so, apart from a compaction's

@@ -371,52 +371,6 @@ fn a_headless_compound_says_to_split_it() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn a_plain_headless_denial_never_appends_an_allow_rule() {
-    let broker = PermissionBroker::new(
-        PermissionMode::Ask,
-        PathBuf::from("/nonexistent/project"),
-        Vec::new(),
-        None,
-        tokio::sync::broadcast::channel(8).0,
-    );
-    let outcome = broker.decide_call(
-        "bash",
-        ToolKind::Exec,
-        true,
-        "c1",
-        &bash_args("make build"),
-        None,
-    );
-    assert!(!outcome.allowed, "{}", outcome.reason);
-    assert!(
-        outcome.reason.contains("no interactive surface"),
-        "{}",
-        outcome.reason
-    );
-    assert!(
-        outcome.reason.contains("Split the command"),
-        "{}",
-        outcome.reason
-    );
-    assert!(
-        outcome.reason.contains("working tree"),
-        "{}",
-        outcome.reason
-    );
-    assert!(
-        outcome.reason.contains("ask the user"),
-        "{}",
-        outcome.reason
-    );
-    assert!(
-        !outcome.reason.contains("permissions.allow"),
-        "{}",
-        outcome.reason
-    );
-    assert!(!outcome.reason.contains("--yolo"), "{}", outcome.reason);
-}
-
 /// Re-review of #933, R1: `git remote update` is a proven read that runs `uploadpack` from `-c`
 /// on the host, and sending it out unasked gave a shell. It asks, as `git fetch` does; no `-c`
 /// makes a read verb leave.

@@ -6,9 +6,6 @@ requires-python = ">=3.10"
 # yi-runtime is always installed in the kernel venv before skills; not on PyPI.
 dependencies = ["pillow>=10.0.0"]
 
-[project.scripts]
-attach_image = "rlm.skill:cli"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

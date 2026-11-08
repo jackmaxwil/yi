@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::faux_model::faux_model;
 use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
@@ -17,35 +18,9 @@ use yi_runtime::{
 };
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
 use yi_types::subagent::{ChildActivity, ChildStatus, ChildUpdate};
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 fn child_reply(text: &str) -> AgentMessage {
     let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
@@ -127,7 +102,7 @@ fn parent_session_scripted(first: Vec<AgentMessage>, replies: &[&str]) -> AgentS
     AgentSession::new(
         SessionConfig {
             system_prompt: "parent sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -226,7 +201,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         cwd: cwd.clone(),
         home: root.join("home"),
         lane_slots: 2,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut slot) = cwd_sink.lock() {
                 *slot = build.cwd.map(std::path::Path::to_path_buf);
@@ -1607,7 +1582,7 @@ fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<AskingFamily> {
         cwd: root.to_path_buf(),
         home: root.join("home"),
         lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
         factory: Arc::new(|build: yi_runtime::ChildBuild<'_>| {
             let question = json!({"question": "Which file name?", "options": ["notes.md", "hello.txt"], "default": "hello.txt"});
             let question = question.as_object().cloned().unwrap_or_default();
@@ -2204,7 +2179,7 @@ async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
     );
 
     let woken = harness.host.wait(60_000, cursor).await?;
-    assert_eq!(woken["updated"], serde_json::json!(["scout"]));
+    assert_eq!(woken["changed"], serde_json::json!(["scout"]));
     let quiet = harness.host.wait(0, woken["cursor"].as_u64()).await;
     assert!(
         quiet.is_err_and(|said| said.contains("settled")),
@@ -2433,8 +2408,8 @@ async fn a_service_respawns_under_its_name_and_keeps_its_inbox() -> TestResult {
     let history = resolver.fetch(&"history://index".parse()?)?.text;
     assert_eq!(
         history.matches("serve the index").count(),
-        2,
-        "one chain, both runs: {history}"
+        1,
+        "one chain, both runs, the brief's bytes once: {history}"
     );
     assert!(history.contains("[incarnation 2 of service"), "{history}");
     let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
@@ -2471,7 +2446,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
         cwd: root.to_path_buf(),
         home: root.join("home"),
         lane_slots: 1,
-        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let first = counted.fetch_add(1, Ordering::SeqCst) == 0;
             let provider = Arc::new(ProviderStream::new(None));
@@ -3132,7 +3107,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         move || {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
-                "import asyncio\nfor _ in range(100):\n    subs = await rlm.list_subagents()\n    if subs and subs[0].status == 'completed':\n        break\n    await asyncio.sleep(0.05)\nprint(subs[0].session_name, subs[0].status)",
+                "import asyncio\nfor _ in range(100):\n    subs = await rlm.list_subagents()\n    if subs and subs[0].status == 'finished':\n        break\n    await asyncio.sleep(0.05)\nprint(subs[0].session_name, subs[0].status)",
                 "",
                 &cancelled,
                 None,
@@ -3141,8 +3116,8 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
     })
     .await??;
     assert!(
-        list_cell.result.stdout.contains("helper completed"),
-        "rlm.list_subagents must expose the completed child: {} {}",
+        list_cell.result.stdout.contains("helper finished"),
+        "rlm.list_subagents must expose the finished child: {} {}",
         list_cell.result.stdout,
         list_cell.result.stderr
     );
@@ -3755,13 +3730,31 @@ fn wired_root(
     wall: yi_runtime::Wall,
     sandbox: Option<yi_tools::Sandbox>,
 ) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
-    let provider = Arc::new(ProviderStream::new(None));
     // Every turn of the family, the parent's woken one too, answers the result object.
-    provider.queue_faux(vec![child_reply(PROTOCOL_ANSWER); 8]);
+    wired_scripted(
+        root,
+        wall,
+        sandbox,
+        0,
+        1,
+        vec![child_reply(PROTOCOL_ANSWER); 8],
+    )
+}
+
+fn wired_scripted(
+    root: &std::path::Path,
+    wall: yi_runtime::Wall,
+    sandbox: Option<yi_tools::Sandbox>,
+    depth: u8,
+    max_depth: u8,
+    script: Vec<AgentMessage>,
+) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(script);
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -3790,8 +3783,8 @@ fn wired_root(
             lane_slots: 1,
             broker: Some(Arc::new(broker)),
             tools: Arc::new(yi_tools::builtin_tools),
-            depth: 0,
-            max_depth: 1,
+            depth,
+            max_depth,
             rlm_dir: root.join("rlm"),
             family_dir: None,
             summarizer: None,
@@ -4293,7 +4286,7 @@ async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> Te
 }
 
 #[tokio::test]
-async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> TestResult {
+async fn a_high_discovery_with_no_goal_is_delivered_as_a_note() -> TestResult {
     let cwd = Scratch::new("yi-adjudication-no-ledger")?;
     write_canonical_plan(&cwd, &[("t1", "exit 4")])?;
     let harness = harness_with(HarnessOptions {
@@ -4314,14 +4307,15 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
         )
         .map_err(|error| error.to_string())?;
     assert!(wait_for_status_named(&harness, "finder").await);
-    let error = harness
-        .host
-        .result("finder", None)
-        .err()
-        .ok_or("a HIGH row the ledger never took must not pass as a delivered result")?;
+    let result = harness.host.result("finder", None)?;
+    assert!(result.contains_key("value"), "{result:?}");
+    let texts = discovery_texts(&harness);
     assert!(
-        error.contains("could not be recorded") && error.contains("No goal exists"),
-        "the refusal names the ledger failure, so the completion gate is never armed silently: {error}"
+        texts
+            .iter()
+            .any(|text| text.starts_with("HIGH discovery from finder")
+                && text.contains("No goal exists, so no completion gate holds on it")),
+        "with no goal the HIGH row reaches the parent and holds nothing back: {texts:?}"
     );
     Ok(())
 }
@@ -4753,7 +4747,7 @@ async fn two_waiters_observe_their_own_child_completion() -> TestResult {
     let (first, second) = (first?, second?);
     for reply in [&first, &second] {
         assert_eq!(reply["changed"], json!(["solo"]), "{reply:?}");
-        assert_eq!(reply["updated"], reply["changed"]);
+        assert!(reply.get("updated").is_none(), "{reply:?}");
         assert_eq!(reply["states"]["solo"], json!("finished"), "{reply:?}");
         assert!(reply["cursor"].as_u64().is_some_and(|cursor| cursor > 0));
     }
@@ -5112,8 +5106,8 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
     })
     .await??;
     assert!(
-        cell.result.stdout.contains("doomed error"),
-        "the delete takes the handle and says the run did not finish: {} {}",
+        cell.result.stdout.contains("doomed failed"),
+        "the delete takes the handle and says the run did not finish, in the roster's word: {} {}",
         cell.result.stdout,
         cell.result.stderr
     );
@@ -5616,5 +5610,96 @@ async fn a_failure_from_a_child_reads_failed_in_wait() -> TestResult {
     let waited = harness.host.wait(1_000, None).await?;
     assert_eq!(waited["states"]["sorry"], json!("failed"), "{waited:?}");
     assert_eq!(waited["notes"]["sorry"], json!("the fixture is missing"));
+    Ok(())
+}
+
+/// #1571: a spawn refused after its directory was made (here a worktree child of a directory
+/// that is no git repository) left a `sub-*` behind, so the family named a child that never ran.
+#[tokio::test]
+async fn a_refused_spawn_leaves_no_directory() -> TestResult {
+    let cwd = Scratch::new("yi-spawn-dir")?;
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "never runs",
+        tool_command: None,
+        cwd: Some(cwd.to_path_buf()),
+        wake_parent: None,
+    })?;
+    let refused = harness.host.spawn(
+        "take a tree".to_owned(),
+        protocol_kwargs("refused", &[("isolation", json!("worktree"))]),
+    );
+    assert!(
+        refused.is_err(),
+        "a worktree child of no repository is refused"
+    );
+    let left: Vec<String> = std::fs::read_dir(&harness.root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("sub-"))
+        .collect();
+    assert!(
+        left.is_empty(),
+        "the refused spawn left no sub-* behind: {left:?}"
+    );
+    Ok(())
+}
+
+/// #1571: expiry ran only on a depth-0 session's plan timer, so a grandchild below depth 0
+/// had its grace served by nobody. The host's own loop serves it, with no `expire` call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_childs_host_expires_its_grandchilds_lease() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let root = Scratch::new("yi-lease-depth")?;
+    std::fs::create_dir_all(root.join("project"))?;
+    let mut holding = Map::new();
+    holding.insert("command".to_owned(), json!("sleep 30"));
+    let script = vec![faux_assistant_message(
+        vec![yi_ai::faux::faux_tool_call("call-1", "bash", holding)],
+        StopReason::ToolUse,
+    )];
+    let (session, _provider, host) =
+        wired_scripted(&root, yi_runtime::Wall::default(), None, 1, 3, script);
+    let store = support::memory_store("yi-lease-depth");
+    session.attach_store(Arc::clone(&store))?;
+    host.spawn("hold the lane".to_owned(), protocol_kwargs("held", &[]))?;
+    for _ in 0..POLL_ATTEMPTS {
+        let running = host
+            .children_view()
+            .first()
+            .is_some_and(|view| view.update.activity == ChildActivity::Executing);
+        if running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    host.revoke("held", 0, "scope changed")?;
+    let mut repossessed = false;
+    for _ in 0..POLL_ATTEMPTS {
+        let entries = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+            custom_type: Some("lease".to_owned()),
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        })?;
+        repossessed = entries.iter().any(|entry| match entry {
+            yi_types::entry::Entry::Custom {
+                data: Some(data), ..
+            } => matches!(
+                serde_json::from_value::<LeaseRecord>(data.clone()),
+                Ok(LeaseRecord::Repossessed(_))
+            ),
+            _ => false,
+        });
+        if repossessed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    assert!(
+        repossessed,
+        "the host's own expiry loop served the grace, so its journal holds the repossession"
+    );
     Ok(())
 }

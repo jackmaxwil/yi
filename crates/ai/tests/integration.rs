@@ -6,6 +6,7 @@ mod scratch;
 
 mod anthropic_mapper;
 mod build_params_conformance;
+mod catalog_timeout;
 #[path = "../../types/tests/support/model.rs"]
 mod common;
 mod compat;
@@ -13,6 +14,7 @@ mod cursor_frames;
 mod decide;
 mod effort_catalog;
 mod faux_events;
+mod harness;
 mod images;
 mod kimi_catalog;
 mod kimi_wire;
@@ -26,14 +28,18 @@ mod oauth;
 mod openai_mapper;
 mod openai_responses;
 mod openrouter;
+#[path = "support/plain.rs"]
+mod plain;
 mod provider_stream;
 mod proxy;
 mod pump_stop;
 mod quota;
+mod read_timeout;
 mod recommend;
 mod refresh;
 mod resend;
 mod strict_tools;
+mod strip;
 mod structured;
 mod tool_args_stream;
 mod tool_choice;

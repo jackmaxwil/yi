@@ -7,8 +7,14 @@ pub(crate) fn configured_lanes() -> yi_types::lane::LanesConfig {
 }
 
 pub(crate) fn lane_slots() -> u8 {
-    configured_lanes()
-        .slots
+    lane_slots_from(&config())
+}
+
+pub(crate) fn lane_slots_from(config: &yi_types::config::UserConfig) -> u8 {
+    config
+        .lanes
+        .as_ref()
+        .and_then(|lanes| lanes.slots)
         .unwrap_or(yi_runtime::lane::DEFAULT_SLOTS)
 }
 
@@ -125,6 +131,18 @@ pub(crate) fn release_lane(lane: Option<&yi_runtime::lane::land::LaneHandle>) {
         Some(Err(error)) => eprintln!("warning: lane: {error}"),
         Some(Ok(None)) | None => {}
     }
+}
+
+pub(crate) use yi_runtime::lease::SHUTDOWN_GRACE;
+
+/// Every live child is repossessed, then the runtime stops, each bounded by `grace`.
+pub(crate) fn end_host(
+    runtime: tokio::runtime::Runtime,
+    host: &std::sync::Arc<yi_runtime::subagent::SubagentHost>,
+    grace: std::time::Duration,
+) {
+    let _ended = runtime.block_on(async { tokio::time::timeout(grace, host.end()).await });
+    runtime.shutdown_timeout(grace);
 }
 
 pub(crate) fn run_lanes(args: &Args) -> i32 {

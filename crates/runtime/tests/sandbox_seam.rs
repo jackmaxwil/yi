@@ -8,6 +8,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub(crate) use crate::faux_model::faux_model;
 use serde_json::{Map, json};
 use yi_ai::faux::{faux_assistant_message, faux_tool_call};
 use yi_loop::ExecutionMode;
@@ -17,34 +18,8 @@ use yi_runtime::{
 };
 use yi_tools::Sandbox;
 use yi_types::message::{AgentMessage, Content, StopReason};
-use yi_types::model::{Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-pub(crate) fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 pub(crate) fn bash_call(id: &str, command: &str) -> AgentMessage {
     let mut arguments = Map::new();
@@ -149,7 +124,7 @@ async fn run_held(
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -1088,7 +1063,7 @@ async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbo
     )]);
     let reviewer = yi_runtime::auto_review::Reviewer::new(
         provider,
-        faux_model(),
+        faux_model(128_000),
         yi_runtime::classifier::Screeners::default(),
     );
     let retry = walled_retry(None, Some(Arc::new(reviewer))).await?;

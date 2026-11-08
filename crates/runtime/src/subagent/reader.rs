@@ -7,15 +7,21 @@ use yi_types::url::{Scheme, Url};
 
 use crate::session::{AgentSession, SessionConfig};
 
-const FENCED_READER: &str = concat!(
-    include_str!("../prompts/reader.md"),
-    include_str!("../prompts/reader_fenced.md")
-);
-const UNFENCED_READER: &str = concat!(
-    include_str!("../prompts/reader.md"),
-    include_str!("../prompts/reader_unfenced.md")
-);
-pub const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
+pub(crate) static READER: std::sync::LazyLock<String> = crate::packed::packed!("reader");
+pub(crate) static READER_FENCED: std::sync::LazyLock<String> =
+    crate::packed::packed!("reader_fenced");
+pub(crate) static READER_UNFENCED: std::sync::LazyLock<String> =
+    crate::packed::packed!("reader_unfenced");
+pub(crate) static WORKER: std::sync::LazyLock<String> = crate::packed::packed!("worker");
+
+fn reader_prompt(fenced: bool) -> String {
+    let tail = if fenced {
+        READER_FENCED.as_str()
+    } else {
+        READER_UNFENCED.as_str()
+    };
+    format!("{}{tail}", READER.as_str())
+}
 pub(crate) const PARTITION_CAP: usize = 65_536;
 
 pub(crate) fn full_child(refusal: &str) -> String {
@@ -39,7 +45,15 @@ impl Role {
     pub(crate) const fn allowed_tools(self) -> &'static [&'static str] {
         match self {
             Self::Reader => &["read", "grep"],
-            Self::Worker => &["read", "grep", "edit", "write", "bash", "get_context"],
+            Self::Worker => &[
+                "read",
+                "grep",
+                "edit",
+                "write",
+                "bash",
+                "get_context",
+                "ipython",
+            ],
         }
     }
 
@@ -171,16 +185,25 @@ pub fn session(
     provider: Arc<crate::provider::ProviderStream>,
     build: crate::subagent::ChildBuild<'_>,
     reader: &Reader,
-    tools: Vec<Arc<dyn yi_tools::Tool>>,
+    (tools, kernel): (
+        impl FnOnce() -> Vec<Arc<dyn yi_tools::Tool>>,
+        impl FnOnce(&AgentSession) -> Option<Arc<dyn yi_tools::Tool>>,
+    ),
     (cwd, home): (std::path::PathBuf, &Path),
     broker: Option<Arc<crate::permission::PermissionBroker>>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
 ) -> AgentSession {
+    // A pointer the child has no `read` to follow would be a lie about its tools.
+    let admitted = |name: &str| reader.turns > 1 && reader.tools.iter().any(|tool| tool == name);
+    let reads = admitted("read");
+    let pointer = || crate::skills::child_pointer(&build.link);
     let mut child = AgentSession::new(
         SessionConfig {
             system_prompt: match reader.role {
-                Role::Reader if reader.fenced => FENCED_READER.to_owned(),
-                Role::Reader => UNFENCED_READER.to_owned(),
+                Role::Reader if reads => {
+                    format!("{}\n\n{}", reader_prompt(reader.fenced), pointer())
+                }
+                Role::Reader => reader_prompt(reader.fenced),
                 Role::Worker => String::new(),
             },
             model: build.model,
@@ -190,7 +213,8 @@ pub fn session(
         provider,
     );
     if reader.role == Role::Worker {
-        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT));
+        let pointer = reads.then(pointer);
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER.as_str(), pointer));
         child.enable_compaction();
     }
     child.set_turn_cap(reader.turns);
@@ -208,10 +232,13 @@ pub fn session(
         }
         child.set_rules_engine(rules);
     }
-    let mut named: Vec<_> = tools
+    let mut named: Vec<_> = tools()
         .into_iter()
-        .filter(|tool| reader.turns > 1 && reader.tools.iter().any(|name| name == tool.name()))
+        .filter(|tool| admitted(tool.name()))
         .collect();
+    if admitted("ipython") {
+        named.extend(kernel(&child));
+    }
     let resolver = crate::fetch::Resolver::for_child(
         cwd.clone(),
         wall,

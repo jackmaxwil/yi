@@ -12,8 +12,9 @@ Credentials live host-side (`yi mcp login`); this process never sees tokens.
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from .mcp import McpToolError
 
 __all__ = ["McpIntegration", "McpToolError", "NotEnabled"]
 
@@ -32,31 +33,6 @@ class NotEnabled(RuntimeError):
             f"Tell the user to run `yi mcp login {server}` to connect it. "
             f"Do not ask them to set environment variables."
         )
-
-
-class McpToolError(RuntimeError):
-    """Raised when an MCP tool call returns a result flagged as an error."""
-
-
-def _parse_result(result: Any) -> Any:
-    if not isinstance(result, dict):
-        return result
-    content = result.get("content")
-    texts = [
-        item.get("text")
-        for item in content or []
-        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
-    ]
-    if result.get("isError"):
-        raise McpToolError("\n".join(texts) or "MCP tool call failed")
-    if len(texts) == 1:
-        try:
-            return json.loads(texts[0])
-        except ValueError:
-            return texts[0]
-    if texts and content is not None and len(texts) == len(content):
-        return texts
-    return result
 
 
 class McpIntegration:

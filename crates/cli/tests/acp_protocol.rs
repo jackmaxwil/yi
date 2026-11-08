@@ -9,6 +9,10 @@ use crate::yi_bin::yi_command;
 
 use crate::acp_schema::Schema;
 use crate::session_files::session_files;
+#[path = "../../runtime/tests/support/faux_model.rs"]
+mod faux_model;
+
+use self::faux_model::faux_model;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -16,6 +20,15 @@ fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
     let dir = Scratch::new(&format!("yi-acp-{tag}"))?;
     dir.home()?;
     Ok(dir)
+}
+
+fn blocking_tool(dir: &std::path::Path) -> (std::path::PathBuf, String) {
+    let go = dir.join("go");
+    let wait = format!(
+        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
+        go.display()
+    );
+    (go, wait)
 }
 
 struct AcpClient {
@@ -573,31 +586,6 @@ fn prompt_until_idle(
     })
 }
 
-fn faux_model() -> yi_types::model::Model {
-    let zero = || serde_json::Number::from(0_u64);
-    yi_types::model::Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: yi_types::model::ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
-
 fn event_of(frame: &Value) -> Result<yi_types::event::AgentEvent, Box<dyn Error>> {
     Ok(serde_json::from_value(
         frame["params"]["update"]["event"].clone(),
@@ -734,7 +722,7 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
     );
 
     let options = yi_tui::TuiOptions {
-        model: faux_model(),
+        model: faux_model(128_000),
         session_name: "lossless".to_owned(),
         cwd: dir.display().to_string(),
         lane: None,
@@ -893,11 +881,7 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
 #[test]
 fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
     let dir = temp_dir("rewind-running")?;
-    let go = dir.join("go");
-    let wait = format!(
-        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
-        go.display()
-    );
+    let (go, wait) = blocking_tool(&dir);
     let script = faux_script(
         &dir,
         &[
@@ -1775,6 +1759,105 @@ fn typed_on(frames: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// Hidden entries on main ride the next committed message oldest-first, including while a tool runs.
+#[test]
+fn committed_updates_include_ordered_model_and_tool_entries() -> TestResult {
+    let dir = temp_dir("committed-ancestors")?;
+    let (go, wait) = blocking_tool(&dir);
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "bash", "id": "wait", "args": {"command": wait}}),
+            json!({"text": "finished"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "prompt",
+        &session_id,
+        json!([{"type": "text", "text": "wait"}]),
+    )?;
+    read_allowing(&mut client, |frame| {
+        frame["params"]["update"]["sessionUpdate"] == "tool_call_update"
+            && frame["params"]["update"]["status"] == "in_progress"
+    })?;
+    for change in 0..512 {
+        let model = if change % 2 == 0 {
+            "openrouter/anthropic/claude-opus-5"
+        } else {
+            "openrouter/anthropic/claude-sonnet-5"
+        };
+        let response = client.request(
+            &format!("model-{change}"),
+            "session/set_config_option",
+            json!({
+                "sessionId": session_id,
+                "configId": "model",
+                "type": "id",
+                "value": model,
+            }),
+        )?;
+        assert!(
+            response
+                .last()
+                .is_some_and(|frame| frame.get("error").is_none()),
+            "{response:?}"
+        );
+    }
+    std::fs::write(&go, "")?;
+    let frames = read_allowing(&mut client, is_idle)?;
+    let updates = updates_of(&frames, "_yi/committed");
+    let target = updates.last().ok_or("no committed target update")?;
+    let update = &target["params"]["update"];
+    assert_eq!(update["entry"]["message"]["content"][0]["text"], "finished");
+    let ancestors = update["ancestors"]
+        .as_array()
+        .ok_or("no committed ancestors")?;
+    assert_eq!(
+        ancestors.len(),
+        512,
+        "the live suffix kept its entry budget"
+    );
+    let notice = update["ancestors_notice"]
+        .as_str()
+        .ok_or("no committed ancestors cap notice")?;
+    assert!(
+        notice.starts_with("[…] kept 512 of 515 committed ancestors"),
+        "{notice}"
+    );
+    assert!(notice.contains("512 entries"), "{notice}");
+    assert!(notice.contains("8 MiB"), "{notice}");
+    assert!(notice.contains("session/resume"), "{notice}");
+    assert!(notice.contains("replayFrom: 0"), "{notice}");
+    let model_index = ancestors
+        .iter()
+        .position(|entry| entry["type"] == "model_change")
+        .ok_or("no ModelChange ancestor")?;
+    let result_index = ancestors
+        .iter()
+        .position(|entry| entry["message"]["role"] == "toolResult")
+        .ok_or("no ToolResult ancestor")?;
+    assert!(
+        model_index < result_index,
+        "hidden ancestry is out of order: {ancestors:?}"
+    );
+    let ancestor_seqs = ancestors
+        .iter()
+        .map(|entry| entry["seq"].as_u64().ok_or("ancestor has no sequence"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let target_seq = update["entry"]["seq"]
+        .as_u64()
+        .ok_or("target has no sequence")?;
+    assert!(
+        ancestor_seqs.windows(2).all(|pair| pair[0] < pair[1])
+            && ancestor_seqs.last().is_some_and(|seq| *seq < target_seq),
+        "not oldest-first through the target: {update}"
+    );
+    client.finish()
+}
+
 /// The worker names each saved message as it lands, so a console can act on a reply it watched
 /// stream; a fork at that reply holds the turn up to it, and the source keeps its later turn.
 #[test]
@@ -2410,6 +2493,63 @@ fn a_kernel_cancel_frame_is_an_unknown_method() -> TestResult {
         refused["error"]["message"], "unknown method _yi/kernel_cancel",
         "{refused}"
     );
+    client.finish()?;
+    Ok(())
+}
+
+/// The worker's half of a replacement: a live permission ask refuses the swap by name, and the
+/// worker that answered still serves the session it refused to give up.
+#[test]
+fn a_worker_with_a_live_ask_refuses_replacement_and_keeps_serving() -> TestResult {
+    let dir = temp_dir("refuse-replace")?;
+    let note = json!({"path": "note.txt", "content": "tidy\n"});
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "write", "args": note}),
+            json!({"text": "wrote the note"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    let ask = json!({"sessionId": session_id, "configId": "mode", "type": "id", "value": "ask"});
+    client.request("mode", "session/set_config_option", ask)?;
+    prompt(
+        &mut client,
+        "p",
+        &session_id,
+        json!([{"type": "text", "text": "tidy the note"}]),
+    )?;
+    let asked = client.read_until(|frame| frame["method"] == "session/request_permission")?;
+    let ask_id = asked.last().ok_or("no ask")?["id"].clone();
+
+    let refused = client.request(
+        "w",
+        "_yi/prepare_replace",
+        json!({"replacementId": 1, "generation": 1}),
+    )?;
+    let refused = refused.last().ok_or("no answer")?;
+    assert_eq!(
+        refused["result"]["prepared"], false,
+        "a live ask did not refuse the swap: {refused}"
+    );
+    let blockers = refused["result"]["blockers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        blockers.iter().any(|row| row
+            .as_str()
+            .is_some_and(|text| text.contains("permission ask is in flight"))),
+        "the ask is not named among the blockers: {refused}"
+    );
+
+    client.send(&json!({
+        "jsonrpc": "2.0",
+        "id": ask_id,
+        "result": {"outcome": {"outcome": "selected", "optionId": "reject_once"}},
+    }))?;
+    read_allowing(&mut client, is_idle)?;
     client.finish()?;
     Ok(())
 }

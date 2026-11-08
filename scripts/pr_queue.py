@@ -6,7 +6,7 @@
 
 Nothing is stored: the state is the `queue` label, the `queue/candidate` ref and that ref's statuses,
 so a crashed tick loses nothing. A red candidate stays until it is replaced, since it is the memory
-of what comes next. Base, retry and split markers ride the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
+of what comes next. Base and retry markers ride the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
 import argparse, contextlib, io, os, pathlib, re, shutil, subprocess, sys, tempfile, time
 from unittest import mock
 
@@ -20,8 +20,8 @@ LABEL, CANDIDATE = "queue", "queue/candidate"
 # Sessions sign in as `jack` too, so an enqueue only when the owner asked stays a rule of conduct.
 MERGERS = {"jack"}
 K = 4
-# Invariant: the slowest green gate lane is about an hour on a loaded runner, and a run that has not
-# reported by then is lost, because a candidate whose pr.yml runs no lanes has no statuses at all.
+# Invariant: the candidate's three lanes run back to back on one runner, at most 3 x 20 minutes, and a run that
+# has not reported by then is lost, because a candidate whose candidate.yml runs no lanes has no statuses at all.
 STALE_MINUTES = 80
 # Invariant: past the lanes' 80 minutes, and longer than the 100-minute `database is locked` fault of 2026-11-02.
 CLOSE_PATIENCE = 240
@@ -30,7 +30,6 @@ IDENTITY = ("-c", "user.name=yi-queue", "-c", "user.email=queue@yi")
 CI = ("-c", "user.name=yi-ci", "-c", "user.email=ci@yi")
 LANES = pr_review.GATE_LANES
 RETRY = re.compile(r"^Queue retry (\d+)\.$", re.M)
-SPLIT = re.compile(r"^Queue split (\d+)\.$", re.M)
 FORK = re.compile(r"^Queue base ([0-9a-f]{40})\.$", re.M)
 MEMBER = re.compile(r"\(#(\d+)\) from ")
 
@@ -227,11 +226,14 @@ def order(pulls):
 
 
 def base_of(tip, body, in_main):
-    """The main a candidate was built on: its marker, else a pre-batch tip's first parent."""
-    if fork := FORK.search(body):
-        return fork.group(1)
+    """The main a candidate was built on: the queue's own marker, else a pre-batch tip's first parent; None when unreadable.
+
+    Invariant: the queue appends its marker last, and a marker that is not an ancestor of the tip is refused."""
+    marks = FORK.findall(body)
+    if marks and git("merge-base", "--is-ancestor", marks[-1], tip, check=False).returncode == 0:
+        return marks[-1]
     if in_main:
-        return git("rev-parse", f"{tip}^1").stdout.strip()
+        return None if marks else git("rev-parse", f"{tip}^1").stdout.strip()
     return git("merge-base", tip, "origin/main").stdout.strip()
 
 
@@ -244,7 +246,7 @@ def observe(mode):
             comment(pr["number"], f"Left the queue: {reason}. Add the `{LABEL}` label again once that is answered.")
             pulls.remove(pr)
     obs = {"candidate": None, "in_main": False, "base": None, "main": git("rev-parse", "origin/main").stdout.strip(),
-           "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "splits": 0, "members": [], "queued": [], "pulls": pulls}
+           "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "members": [], "queued": [], "pulls": pulls}
     if git("ls-remote", "origin", f"refs/heads/{CANDIDATE}").stdout.strip():
         git("fetch", "-q", "origin", f"+refs/heads/{CANDIDATE}:refs/remotes/origin/{CANDIDATE}")
         tip = git("rev-parse", f"origin/{CANDIDATE}").stdout.strip()
@@ -252,14 +254,15 @@ def observe(mode):
         obs["in_main"] = git("merge-base", "--is-ancestor", tip, "origin/main", check=False).returncode == 0
         body = git("log", "-1", "--format=%B", tip).stdout
         obs["base"] = base_of(tip, body, obs["in_main"])
+        if obs["base"] is None:
+            raise SystemExit(f"queue: {CANDIDATE} at {tip[:10]} is in main under a refused base marker, so its members are "
+                             f"unreadable; take `{LABEL}` off and close their issues by hand, then delete the ref")
         obs["members"] = members_of(tip, obs["base"])
         obs["lanes"] = forge_pr.head_jobs(forge_pr.repo(), tip)
         date = git("log", "-1", "--format=%ct", tip).stdout.strip()
         obs["age_minutes"] = (time.time() - int(date)) / 60
-        retry = RETRY.search(body)
-        split = SPLIT.search(body)
-        obs["retries"] = int(retry.group(1)) if retry else 0
-        obs["splits"] = int(split.group(1)) if split else 0
+        retries = RETRY.findall(body)
+        obs["retries"] = int(retries[-1]) if retries else 0
         by_number = {pr["number"]: pr for pr in pulls}
         for number, head in obs["members"]:
             pr = by_number.get(number)
@@ -351,7 +354,7 @@ def record_candidate(candidate):
     return commit_record(IDENTITY, "yi-queue <queue@yi>", ROOT), True
 
 
-def build(obs, mode, split=0):
+def build(obs, mode):
     # Incident: the recorder's job waited on a runner and pushed while candidate d862f188 went green,
     # so a green gate was thrown away. A shadow candidate never lands, so it has nothing to protect.
     if mode == "on" and not record_main():
@@ -378,10 +381,7 @@ def build(obs, mode, split=0):
     tip = git("rev-parse", "HEAD").stdout.strip()
     base = git("rev-parse", "origin/main").stdout.strip()
     body = git("log", "-1", "--format=%B", "HEAD").stdout.strip()
-    message = f"{body}\n\nQueue base {base}."
-    if split:
-        message += f"\nQueue split {split}."
-    tip = rewrite(tip, message)
+    tip = rewrite(tip, f"{body}\n\nQueue base {base}.")
     git("push", "-q", "--force", "origin", f"{tip}:refs/heads/{CANDIDATE}")
     print(f"queue: candidate {tip[:10]} for {built}")
 
@@ -408,7 +408,7 @@ def split(obs, mode):
     by_number = {pr["number"]: pr for pr in obs["pulls"]}
     queued = [by_number[number] for number, _ in obs["members"][:half]]
     # ponytail: the right half may rebundle with newer PRs; keeping it intact requires a store.
-    build({**obs, "queued": queued}, mode, split=obs["splits"] + 1)
+    build({**obs, "queued": queued}, mode)
 
 
 def statuses_url(sha, lane):
@@ -541,7 +541,7 @@ def cmd_merge_now(number):
 
 
 OBS = {"candidate": "c", "in_main": False, "base": "m", "main": "m", "stale_member": None, "lanes": {},
-       "age_minutes": 5, "retries": 0, "splits": 0, "members": [(1, "h")], "queued": [], "pulls": []}
+       "age_minutes": 5, "retries": 0, "members": [(1, "h")], "queued": [], "pulls": []}
 GREEN = {lane: "success" for lane in LANES}
 RED = {**GREEN, LANES[-1]: "failure"}
 CASES = (
@@ -623,6 +623,13 @@ def git_cases():
             bad.append("a conflict did not name its path")
         if sh("rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
             bad.append("a conflict left the merge in progress")
+        stranger = sh("rev-parse", "HEAD").stdout.strip()
+        with mock.patch.object(sys.modules[__name__], "ROOT", root):
+            for body in (f"Queue base {stranger}.\n", f"Queue base {stranger}.\n\nQueue base {base}.\n"):
+                if (got := base_of(tip, body, False)) != base:
+                    bad.append(f"a candidate whose body reads {body!r} took base {got[:10]}, not its fork {base[:10]}")
+            if (got := base_of(tip, f"Queue base {stranger}.\n", True)) is not None:
+                bad.append(f"a landed candidate with a refused base marker took base {got[:10]}, so it would half-finish")
     return bad
 
 
@@ -663,62 +670,46 @@ def scenario_repo(numbers, shared=False):
                 autofix.add(number)
 
         def remove():
-            state["landed_obs"] = scenario_obs(state)
+            state["landed_obs"] = observe("on")
             real_git("push", "-q", "origin", "--delete", CANDIDATE, cwd=root, check=False)
+        def jobs(repo, tip):
+            red = state.get("red")
+            return RED if red and red in [number for number, _ in members_of(tip, state["base"])] else GREEN
+
         module = sys.modules[__name__]
         with mock.patch.multiple(module, ROOT=root, git=counted, record_main=lambda root=ROOT: True,
+                                 queued_pulls=lambda: [pulls[number] for number in sorted(queued)], enqueued_at=lambda number: number,
+                                 dequeue_reason=lambda pr: None, eligible_problem=lambda pr, jobs: None,
                                  record_candidate=lambda candidate: (candidate, True), use_driver=lambda cwd: None,
                                  comment=lambda number, text: comments.append((number, text)), set_label=label, delete_ref=remove,
                                  statuses_url=lambda sha, lane: ""), \
-                mock.patch.object(forge_pr, "pull", lambda number: pulls[number]), mock.patch.object(forge_pr, "is_behind", lambda pr: False):
+                mock.patch.multiple(forge_pr, pull=lambda number: pulls[number], is_behind=lambda pr: False, repo=lambda: "r",
+                                    head_jobs=jobs, unreviewed=lambda number, pr: []):
             state = {"base": base, "pulls": pulls, "queued": queued, "comments": comments, "autofix": autofix, "pushes": pushes}
             yield state
 
-def scenario_obs(state, red=None):
-    git("fetch", "-q", "origin", "main")
-    pulls = [state["pulls"][number] for number in sorted(state["queued"])]
-    obs = {"candidate": None, "in_main": False, "base": None, "main": git("rev-parse", "origin/main").stdout.strip(),
-           "stale_member": None, "lanes": {}, "age_minutes": 5, "retries": 0, "splits": 0, "members": [], "queued": pulls, "pulls": pulls}
-    if not git("ls-remote", "origin", f"refs/heads/{CANDIDATE}").stdout.strip():
-        return obs
-    git("fetch", "-q", "origin", f"+refs/heads/{CANDIDATE}:refs/remotes/origin/{CANDIDATE}")
-    tip = git("rev-parse", f"origin/{CANDIDATE}").stdout.strip()
-    obs["candidate"] = tip
-    obs["in_main"] = git("merge-base", "--is-ancestor", tip, "origin/main", check=False).returncode == 0
-    body = git("log", "-1", "--format=%B", tip).stdout
-    obs["base"] = base_of(tip, body, obs["in_main"])
-    obs["members"] = members_of(tip, obs["base"])
-    obs["lanes"] = RED if red in {number for number, _ in obs["members"]} else GREEN
-    retry, split = RETRY.search(body), SPLIT.search(body)
-    obs["retries"] = int(retry.group(1)) if retry else 0
-    obs["splits"] = int(split.group(1)) if split else 0
-    return obs
-
-
 def drive_scenario(state, red=None, off=""):
     actions, bad = [], []
+    state["red"] = red
     real_step = step
     for _ in range(20):
-        obs = scenario_obs(state, red)
-        action, _ = real_step(obs, off)
+        seen = []
+        pushes = len(state["pushes"])
+        with mock.patch.object(sys.modules[__name__], "step", lambda obs: (seen.append(obs), real_step(obs, off))[1]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            tick("on")
+        action, _ = real_step(seen[-1], off)
         actions.append(action)
         if action == "idle":
             return actions, bad
-        before = [number for number, _ in obs["members"]]
-        pushes = len(state["pushes"])
-        with mock.patch.multiple(sys.modules[__name__], observe=lambda mode: scenario_obs(state, red),
-                                 step=lambda obs: real_step(obs, off)), contextlib.redirect_stdout(io.StringIO()):
-            tick("on")
+        before = [number for number, _ in seen[-1]["members"]]
         if action == "land" and len(state["pushes"]) != pushes + 1:
             bad.append(f"a green candidate made {len(state['pushes']) - pushes} main pushes, not one")
         if action == "split":
-            after = scenario_obs(state, red)
             want = before[:(len(before) + 1) // 2]
-            got = [number for number, _ in after["members"]]
+            got = [number for number, _ in observe("on")["members"]]
             if got != want:
                 bad.append(f"a split of {before} built {got}, not {want}")
-            if not SPLIT.search(git("log", "-1", "--format=%B", after["candidate"]).stdout):
-                bad.append("a split candidate's tip carried no Queue split marker")
     return actions, bad + [f"scenario did not become idle: {actions}"]
 
 
@@ -746,8 +737,8 @@ def conflict_cases(off=""):
         module = sys.modules[__name__]
         disabled = mock.patch.object(module, "main_conflict", lambda pr: ["shared.txt"]) if off else contextlib.nullcontext()
         with disabled, contextlib.redirect_stdout(io.StringIO()):
-            build(scenario_obs(state), "on")
-        obs = scenario_obs(state)
+            build(observe("on"), "on")
+        obs = observe("on")
         members = [number for number, _ in obs["members"]]
         if members != [1]:
             bad.append(f"a member-only conflict left candidate members {members}, not [1]")
@@ -896,16 +887,23 @@ def record_cases():
             bad.append(f"a recorder's refusal stopped the tick: {kept}, {out.getvalue()!r}")
         script.write_text(RECORDER)
 
-        # The race itself: another pusher wins between the recorder's commit and its push.
+        # Incident: the race hung on a pre-push hook whose own push could fail unfelt, so the check read a moved main
+        # only when that push happened to win; the recorder now moves main itself, every run.
         sh("pull", "-q", "origin", "main", where=other)
         (other / "moved.txt").write_text("moved\n")
         sh("add", ".", where=other), sh("commit", "-qm", "moved", where=other)
         race = root / ".git/hooks/pre-push"
         race.write_text(f"#!/bin/sh\nenv -u GIT_DIR git -C '{other}' push -q origin HEAD:main\n")
         race.chmod(0o755)
-        if record_main(root) is not False:
+        real_git = git
+        def race_git(*args, **kwargs):
+            return real_git("-c", "core.hooksPath=.git/hooks", *args, **kwargs)
+        with mock.patch.object(sys.modules[__name__], "git", race_git):
+            moved = record_main(root)
+        if moved is not False:
             bad.append("main moved under the push and the tick read it as recorded")
         race.unlink()
+        script.write_text(RECORDER)
     return bad
 
 def landing_cases():
@@ -1002,7 +1000,7 @@ def forge_cases():
                     bad.append(f"{name} died on an error object: {err!r}")
         # A round reader's miss is the review job's Unanswered, which a tick turns into the same stop.
         queued = {"number": 1, "labels": [{"name": LABEL}]}
-        answers = lambda method, path, payload=None: locked if path.endswith("/comments") else [queued] if "page=1" in path else []
+        answers = lambda method, path, payload=None: locked if "/comments" in path else [queued] if "page=1" in path else []
         with mock.patch.object(forge_pr, "fgj_api", answers):
             try:
                 tick("on")

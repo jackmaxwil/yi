@@ -23,7 +23,8 @@ pub struct Facts<'a> {
 pub fn shipped() -> &'static Graph {
     static GRAPH: OnceLock<Graph> = OnceLock::new();
     GRAPH.get_or_init(|| {
-        serde_json::from_str(include_str!("prompts/graph.json")).unwrap_or_default()
+        let raw = crate::packed::inflate(include_bytes!(concat!(env!("OUT_DIR"), "/graph.zz")));
+        serde_json::from_str(&raw).unwrap_or_default()
     })
 }
 

@@ -60,7 +60,7 @@ fn result(id: &str, tool: &str, text: &str) -> Result<AgentMessage, Box<dyn Erro
     }))?)
 }
 fn status_row(app: &mut App) -> Result<String, Box<dyn Error>> {
-    let area = Rect::new(0, 0, 80, 12);
+    let area = Rect::new(0, 0, 100, 12);
     let mut buffer = Buffer::empty(area);
     let _ = yi_tui::render::paint_pane(app, None, &mut buffer, area, &mut 0);
     (0..area.height)

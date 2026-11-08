@@ -17,7 +17,9 @@ Every point is in the text, so the work is to read the text as the grader will.
 
 ## The requirement list
 
-Read the task twice and write each requirement as a todo, in the text's own words:
+Read the task twice and write each requirement as a todo, in the text's own words. Pass the
+requirement's check to `start` as `check=` where one command can judge it: `done` then runs that
+command and refuses to close the row while it is red, so the list itself is the verifier.
 
 | Look for | Its check |
 |---|---|

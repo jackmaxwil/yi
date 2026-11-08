@@ -15,6 +15,25 @@ use crate::render::{GEAR, Hits, PaneView};
 const GEAR_COLS: u16 = 4;
 const GEAR_ROWS: u16 = 3;
 
+/// An unfocused panel one step down. The terminal's own faint halves every colour and read as
+/// dark; truecolor cells go to three quarters and the default ink to `dim`, other tiers keep faint.
+pub(crate) fn soften(buffer: &mut ratatui::buffer::Buffer, rect: Rect, theme: &Theme) {
+    let truecolor = theme.tier == ColorTier::TrueColor;
+    let quarter = |c: u8| u8::try_from(u16::from(c) * 3 / 4).unwrap_or(c);
+    for at in rect.intersection(buffer.area).positions() {
+        let Some(cell) = buffer.cell_mut(at) else {
+            continue;
+        };
+        match cell.fg {
+            Color::Rgb(r, g, b) if truecolor => {
+                cell.fg = Color::Rgb(quarter(r), quarter(g), quarter(b))
+            }
+            Color::Reset if truecolor => cell.fg = theme.dim,
+            _ => cell.modifier.insert(Modifier::DIM),
+        }
+    }
+}
+
 pub(crate) fn banner_spans(app: &App, theme: &Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     match &app.state.link {
@@ -103,7 +122,7 @@ pub(crate) fn render_hint_buttons(app: &mut App, frame: &mut Frame<'_>, area: Re
             .iter()
             .find(|(a, _)| *a == action)
             .map_or(theme.accent, |(_, c)| *c);
-        let fill = if hovered { lighten(hue) } else { hue };
+        let fill = if hovered { lighten(hue) } else { dimmer(hue) };
         x = put(x, " ", base);
         caps.push((x, fill, true, theme.user_bg));
         let key = Style::default()
@@ -155,6 +174,23 @@ pub(crate) fn render_hint_buttons(app: &mut App, frame: &mut Frame<'_>, area: Re
     }
     if let Some(hits) = app.hits.as_mut() {
         hits.hint_buttons = buttons;
+    }
+}
+
+/// The glyph before a title: none for an idle session, whose open circle said nothing.
+pub(crate) fn title_mark(status: crate::model::SessionStatus) -> String {
+    match status {
+        crate::model::SessionStatus::Idle => " ".to_owned(),
+        other => format!(" {} ", other.glyph()),
+    }
+}
+
+/// A keycap at rest, three fifths of its colour: the hint row names keys, it should not shout.
+fn dimmer(color: Color) -> Color {
+    let down = |c: u8| u8::try_from(u16::from(c) * 3 / 5).unwrap_or(c);
+    match color {
+        Color::Rgb(r, g, b) => Color::Rgb(down(r), down(g), down(b)),
+        other => other,
     }
 }
 

@@ -17,7 +17,6 @@ use yi_types::model::{Model, ModelCost};
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn vision_faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
         name: "Faux".to_owned(),
@@ -26,18 +25,13 @@ fn vision_faux_model() -> Model {
         base_url: "http://localhost:0".to_owned(),
         reasoning: false,
         input: vec!["text".to_owned(), "image".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
+        cost: ModelCost::free(),
         context_window: 128_000,
         max_tokens: 16_384,
         compat: None,
         thinking_level_map: None,
         headers: None,
+        read_timeout_secs: None,
     }
 }
 
@@ -295,8 +289,9 @@ fn read_skill(
 ) -> Result<String, Box<dyn Error>> {
     let resolver = yi_runtime::fetch::Resolver::new(cwd.to_path_buf(), yi_runtime::Wall::default())
         .with_home(home.to_path_buf());
+    let address = format!("yi://skills/{name}");
     Ok(resolver
-        .fetch(&format!("yi://skills/{name}").parse()?)?
+        .fetch(&address.trim_end_matches('/').parse()?)?
         .text)
 }
 
@@ -745,6 +740,37 @@ fn a_skill_within_a_repository_is_listed_only_there() -> TestResult {
     Ok(())
 }
 
+const TOOL_IMPORT_SKILL: &str = include_str!("../../../skills/yi/tool-import/SKILL.md");
+
+/// The bundled catalog is how a session offers this skill: the line it renders must say what
+/// the importer is called, whole, and the skill must be listed from a project that is not Yi's.
+#[test]
+fn the_bundled_catalog_names_tool_import_without_clipping_it() -> TestResult {
+    let root = Scratch::new("yi-skills-taught")?;
+    let home = root.join("home");
+    let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi");
+    scratch::copy_tree(&bundle, &home.join(".yi/skills/yi"))?;
+
+    let description = yi_runtime::skills::frontmatter(TOOL_IMPORT_SKILL)
+        .get("description")
+        .cloned()
+        .ok_or("the skill states no description")?;
+    let catalog =
+        yi_runtime::skills_catalog(&root, &home, yi_runtime::skills::catalog_budget(128_000))
+            .ok_or("no catalog")?;
+    let line = format!("- tool-import: {description}\n");
+    assert!(
+        catalog.text.contains(&line),
+        "the catalog must describe tool-import, whole:\n{}",
+        catalog.text
+    );
+    assert!(
+        line.contains("yi tool import just"),
+        "the catalog line names the command: {line}"
+    );
+    Ok(())
+}
+
 struct CheckerRun {
     _root: Scratch,
     project: PathBuf,
@@ -870,6 +896,28 @@ async fn the_checker_snippet_carries_the_task_text_as_data() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn the_tool_import_skill_shows_the_schema_and_usage_the_model_acts_on() -> TestResult {
+    for needle in [
+        "yi tool import just [recipe ...]",
+        "--schema",
+        "always `exec`",
+        "yi: skip",
+        "next session",
+        "another justfile",
+    ] {
+        assert!(
+            TOOL_IMPORT_SKILL.contains(needle),
+            "the skill no longer teaches {needle}"
+        );
+    }
+    assert!(
+        !TOOL_IMPORT_SKILL.contains("within:"),
+        "a within: line hides the skill outside Yi's own repository"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn the_checker_snippet_walls_history_and_the_workspace_but_not_checks_dir() -> TestResult {
     let run = run_checker("yi-skills-checker-walls", "Add a flag.").await?;
@@ -926,6 +974,127 @@ async fn the_checker_snippet_walls_history_and_the_workspace_but_not_checks_dir(
         None,
         "checks_dir must stay writable"
     );
+    Ok(())
+}
+
+fn index(cwd: &std::path::Path, home: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    read_skill(cwd, home, "")
+}
+
+#[test]
+fn the_index_names_only_what_the_catalog_lists_and_the_wall_admits() -> TestResult {
+    let root = Scratch::new("yi-skills-index-rule")?;
+    let (home, project) = (root.join("home"), root.join("project"));
+    let skill = |dir: std::path::PathBuf, name: &str| {
+        skill_dir(
+            &dir,
+            name,
+            &format!("---\nname: {name}\ndescription: The {name} skill.\n---\nbody\n"),
+        )
+    };
+    skill(home.join(".yi/skills"), "own")?;
+    skill(home.join(".claude/skills"), "foreign")?;
+    skill(project.join(".yi/skills"), "walled")?;
+    let mut wall = yi_runtime::Wall::default();
+    wall.deny_read.push(project.join(".yi/skills"));
+    let resolver = yi_runtime::fetch::Resolver::new(project.clone(), wall).with_home(home.clone());
+    let served = resolver.fetch(&"yi://skills".parse()?)?.text;
+    assert!(served.contains("- own: The own skill."), "{served}");
+    assert!(
+        !served.contains("foreign"),
+        "an unnamed global root stays unlisted: {served}"
+    );
+    assert!(
+        !served.contains("walled"),
+        "a walled skill is not named: {served}"
+    );
+    assert!(
+        index(&project, &home)?.contains("- walled: "),
+        "unwalled, the project skill lists"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_index_serves_every_bundled_skill_whole_and_only_where_it_applies() -> TestResult {
+    let root = Scratch::new("yi-skills-index")?;
+    let (home, project) = (root.join("home"), root.join("project"));
+    std::fs::create_dir_all(&project)?;
+    let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi");
+    yi_runtime::spec::copy_tree(&shipped, &home.join(".yi/skills/yi"))?;
+    let wide = "Prüfe jede Änderung gegen den Plan, bevor du etwas für erledigt erklärst — immer, ohne Ausnahme.";
+    skill_dir(
+        &project.join(".yi/skills"),
+        "prüfen",
+        &format!("---\nname: prüfen\ndescription: {wide}\n---\nbody\n"),
+    )?;
+    let served = index(&project, &home)?;
+    assert!(served.contains(&format!("- prüfen: {wide}\n")), "{served}");
+    let read = std::fs::read_to_string(shipped.join("read/SKILL.md"))?;
+    let tail = "or when an edit";
+    assert!(
+        read.contains(tail),
+        "the read skill's description changed: {read}"
+    );
+    let line = (served.lines())
+        .find(|line| line.starts_with("- read: "))
+        .ok_or("the index lacks the read skill")?;
+    assert!(
+        line.contains(tail),
+        "the description is whole, not clipped: {line}"
+    );
+    assert!(
+        !served.contains("- gate: "),
+        "gate is within the yi repository only: {served}"
+    );
+    std::fs::create_dir_all(project.join("scripts/guardrails"))?;
+    std::fs::write(project.join("scripts/guardrails/check_guardrails.sh"), "")?;
+    assert!(
+        index(&project, &home)?.contains("- gate: "),
+        "gate applies once its path exists"
+    );
+    assert!(!served.contains("skills described ("), "{served}");
+    Ok(())
+}
+
+#[test]
+fn an_empty_home_serves_an_index_that_says_where_skills_live() -> TestResult {
+    let root = Scratch::new("yi-skills-index-empty")?;
+    let served = index(&root.join("project"), &root.join("home"))?;
+    assert!(served.starts_with("No skills found"), "{served}");
+    Ok(())
+}
+
+#[test]
+fn the_index_cut_names_its_cap_and_keeps_every_name() -> TestResult {
+    let root = Scratch::new("yi-skills-index-cap")?;
+    let home = root.join("home");
+    let skills = home.join(".yi/skills");
+    let write = |name: &str, description: &str| {
+        skill_dir(
+            &skills,
+            name,
+            &format!("---\nname: {name}\ndescription: {description}\n---\nbody\n"),
+        )
+    };
+    for index in 0..30 {
+        write(&format!("skill-{index:02}"), &"d".repeat(1_000))?;
+    }
+    let cap = yi_runtime::skills::CATALOG_CEILING.0;
+    let short = index(&home, &home)?;
+    assert!(short.len() < cap, "the fixture must start under the cap");
+    write("skill-29", &"d".repeat(1_000 + cap - short.len()))?;
+    let at = index(&home, &home)?;
+    assert_eq!(at.len(), cap, "{}", at.len());
+    assert!(
+        !at.contains("skills described ("),
+        "exactly at the cap nothing is cut"
+    );
+    write("skill-29", &"d".repeat(1_001 + cap - short.len()))?;
+    let over = index(&home, &home)?;
+    let row = r#"[… 29 of 30 skills described (yi://skills cap 32768); the rest: read("yi://skills/<name>") for each name below]"#;
+    assert!(over.contains(&format!("{row}\nskill-29\n")), "{over}");
+    assert!(over.len() <= cap, "{}", over.len());
     Ok(())
 }
 

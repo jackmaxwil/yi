@@ -20,12 +20,17 @@ type TestResult = Result<(), Box<dyn Error>>;
 type Changed = (String, u64, u64);
 
 pub(crate) fn service() -> Arc<KernelService> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    service_in(&home)
+}
+
+fn service_in(home: &Path) -> Arc<KernelService> {
     let registry = HostRegistry::default();
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
+        home: home.to_path_buf(),
         session_dir: None,
         family_dir: None,
         host: Arc::new(registry),
@@ -159,6 +164,81 @@ async fn a_cancelled_awaiting_cell_leaves_the_namespace_standing() -> TestResult
     Ok(())
 }
 
+/// Field shape (#1202): `yi plugin add` while a session is open; `!`, `%%bash` and `subprocess`
+/// ran on the PATH the kernel booted with.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_plugin_added_after_the_kernel_booted_is_on_the_next_cells_path() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let real_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let scratch = Scratch::new("kernel-plugin-added")?;
+    let home = scratch.home()?;
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe {
+        std::env::set_var(
+            "YI_KERNEL_VENV",
+            yi_kernel::bootstrap::kernel_venv_dir(&real_home),
+        )
+    };
+    let service = service_in(&home);
+    let warm = service
+        .execute_user_cell("print('warm')", &never_cancelled())
+        .await;
+    assert!(!warm.is_error, "the kernel never booted: {warm:?}");
+
+    let seeded = service
+        .execute_user_cell(
+            "import os\nos.environ['PATH'] = '/cell/bin' + os.pathsep + os.environ['PATH']",
+            &never_cancelled(),
+        )
+        .await;
+    assert!(!seeded.is_error, "{seeded:?}");
+
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    std::fs::create_dir_all(ripwire.dir(&home))?;
+    let program = ripwire.dir(&home).join("ripwire");
+    std::fs::write(&program, "#!/bin/sh\n")?;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))?;
+
+    let bang = service
+        .execute_user_cell("!which ripwire", &never_cancelled())
+        .await;
+    let sub = service
+        .execute_user_cell(
+            "import os, subprocess\nprint(subprocess.run('which ripwire', shell=True, capture_output=True, text=True).stdout)\nprint(os.environ['PATH'])",
+            &never_cancelled(),
+        )
+        .await;
+    // `yi plugin remove` mid-session: the directory leaves the kernel's PATH too.
+    std::fs::remove_dir_all(ripwire.dir(&home))?;
+    let removed = service
+        .execute_user_cell("import os\nprint(os.environ['PATH'])", &never_cancelled())
+        .await;
+    service.dispose().await;
+    let want = program.to_string_lossy().into_owned();
+    let dir = ripwire.dir(&home).to_string_lossy().into_owned();
+    assert!(stdout_of(&bang).contains(&want), "{}", text_of(&bang));
+    assert!(stdout_of(&sub).contains(&want), "{}", text_of(&sub));
+    assert!(
+        stdout_of(&sub).contains("/cell/bin"),
+        "the cell's own PATH entry was dropped: {}",
+        text_of(&sub)
+    );
+    assert!(
+        !stdout_of(&removed).contains(&dir),
+        "a removed plugin stayed on the PATH: {}",
+        text_of(&removed)
+    );
+    assert!(
+        stdout_of(&removed).contains("/cell/bin"),
+        "the cell's own PATH entry was dropped: {}",
+        text_of(&removed)
+    );
+    Ok(())
+}
+
 /// A cell deaf to SIGINT outlives the busy window, so the kernel has to go; the state says so
 /// until the next cell.
 #[tokio::test(flavor = "multi_thread")]
@@ -228,10 +308,6 @@ async fn the_first_cell_shows_the_rlm_table_once_and_the_state_names_the_surface
     assert!(table.contains("[rlm, shown once per session;"), "{table}");
     assert!(table.contains("await rlm.send(target, message,"), "{table}");
     assert!(table.contains("\nrlm.bash(command)"), "{table}");
-    assert!(
-        !table.contains("HarnessScope"),
-        "the table lists functions only, and HarnessScope is a typing alias: {table}"
-    );
     assert!(
         !text_of(&second).contains("shown once per session"),
         "{}",

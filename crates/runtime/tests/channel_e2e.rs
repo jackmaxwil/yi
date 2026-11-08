@@ -10,6 +10,7 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::faux_model::faux_model;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_kernel::client::HostHandlers;
 use yi_loop::AgentTool;
@@ -34,7 +35,6 @@ use yi_runtime::{AskOutcome, Asker, PermissionMode};
 use yi_tools::{Tool, ToolContext};
 use yi_types::channel::{ChannelEntry, ChannelSub, MESSAGE_MAX_BYTES, Retention};
 use yi_types::message::{AgentMessage, StopReason, UserContent};
-use yi_types::model::{Model, ModelCost};
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, GoalText, PlanId, ProbeCommand, Todo, TodoAddr, TodoLabel,
     TodoState, TodoStateName,
@@ -45,31 +45,6 @@ use yi_types::schedule::{
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn faux_model() -> Model {
-    let zero = || serde_json::Number::from(0u64);
-    Model {
-        id: "faux-1".to_owned(),
-        name: "Faux".to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 128_000,
-        max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
-}
 
 /// A session the way `attach_runtime` leaves one for the timer: a ledger and a todo list.
 fn session(replies: &[&str]) -> Result<(AgentSession, Arc<TodoStore>), Box<dyn Error>> {
@@ -83,7 +58,7 @@ fn session(replies: &[&str]) -> Result<(AgentSession, Arc<TodoStore>), Box<dyn E
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(),
+            model: faux_model(128_000),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },

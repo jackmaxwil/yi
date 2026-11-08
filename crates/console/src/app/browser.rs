@@ -47,9 +47,7 @@ impl App {
             return;
         }
         let (kitty, cell) = (self.kitty, crate::chrome::cell_pixels());
-        let shown: Vec<_> = (self.hits.iter())
-            .flat_map(|hits| hits.panes.iter().map(|(id, _)| *id))
-            .collect();
+        let shown = crate::hit::drawn(self);
         let state = &mut self.state;
         for id in shown {
             if let Some(PaneContent::Browser(browser)) =
@@ -117,5 +115,40 @@ impl App {
                 browser.release(cell);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    /// Dies with the browser chord reaching a third party unasked: with no local address to open,
+    /// the pane waits for the owner to type one.
+    #[test]
+    fn a_browser_with_no_local_url_opens_the_bar() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.open_browser();
+        let page = app
+            .state
+            .panes
+            .values_mut()
+            .find_map(|pane| match &mut pane.content {
+                PaneContent::Browser(page) => Some(page),
+                _ => None,
+            })
+            .ok_or("no browser pane")?;
+        let (_, lines) = page.view(Rect::new(0, 0, 40, 6), true, &theme);
+        let bar = lines.first().map(ToString::to_string).unwrap_or_default();
+        assert!(
+            bar.ends_with('\u{258f}'),
+            "the bar is open for typing: {bar:?}"
+        );
+        assert!(
+            !bar.contains("google"),
+            "an address nobody asked for: {bar:?}"
+        );
+        Ok(())
     }
 }

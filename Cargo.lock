@@ -2253,6 +2253,7 @@ dependencies = [
  "landlock",
  "lexopt",
  "miniz_oxide",
+ "rustix",
  "serde_json",
  "tokio",
  "ureq",
@@ -2364,6 +2365,7 @@ name = "yi-runtime"
 version = "0.2.0"
 dependencies = [
  "globset",
+ "miniz_oxide",
  "proptest",
  "regex",
  "rustix",

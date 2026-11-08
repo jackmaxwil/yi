@@ -1,0 +1,56 @@
+diff --git a/python/yi_runtime/src/yi/plan.py b/python/yi_runtime/src/yi/plan.py
+index 9c013b6a5..50e308c9a 100644
+--- a/python/yi_runtime/src/yi/plan.py
++++ b/python/yi_runtime/src/yi/plan.py
+@@ -18,0 +19 @@ KEY = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
++SOURCE_TYPE = "text/x-python"
+@@ -132,0 +134,16 @@ async def _send(op: str, args: dict | None, **kwargs: Any) -> dict[str, Any]:
++async def _record(plan_id: str) -> None:
++    """Invariant: the cell's source is in the journal before the cell's first effect on a plan."""
++    cell = _CELL
++    if cell is None or plan_id in cell["plans"] or not cell["source"].strip():
++        return
++    ref, blob = freeze(cell["source"], SOURCE_TYPE)
++    try:
++        await _send("program", {"cell_id": cell["id"], "source_ref": ref}, plan=plan_id, artifacts=[blob])
++    except PlanError as refusal:
++        # A child's cells are its own session's, never the plan's program: the host takes the
++        # record from the owner alone, so a submitting child records nothing and stops asking.
++        if refusal.code != "not_owner":
++            raise
++    cell["plans"].add(plan_id)
++
++
+@@ -415 +432,3 @@ class Plan:
+-        return cls(reply["plan"])
++        plan = cls(reply["plan"])
++        await _record(plan.id)
++        return plan
+@@ -447,0 +467,2 @@ class Plan:
++        if op not in READ_ONLY:
++            await _record(self.id)
+diff --git a/python/yi_runtime/tests/test_yi_plan.py b/python/yi_runtime/tests/test_yi_plan.py
+index e4d0972a1..8afb5741f 100644
+--- a/python/yi_runtime/tests/test_yi_plan.py
++++ b/python/yi_runtime/tests/test_yi_plan.py
+@@ -1 +1 @@
+-"""F1a: create, the scheduler and its lease (plan sections 8.2 and 8.3)."""
++"""F1a: create, the source record, the scheduler and its lease (plan sections 8.2 and 8.3)."""
+@@ -30,2 +30 @@ class Plans(unittest.IsolatedAsyncioTestCase):
+-    async def test_a_cell_changes_a_plan_without_storing_its_source(self) -> None:
+-        """Dies with the program record: every plan op first froze and journaled its cell."""
++    async def test_a_cell_is_recorded_once_before_its_first_effect(self) -> None:
+@@ -38,0 +38 @@ class Plans(unittest.IsolatedAsyncioTestCase):
++        self.assertEqual(host.ops(), ["init", "program"], "a cell that only creates is recorded too")
+@@ -40,0 +41,7 @@ class Plans(unittest.IsolatedAsyncioTestCase):
++        self.assertEqual(host.ops(), ["init", "program", "append"])
++        digest = host.journal[1][1]["source_ref"]["digest"]
++        self.assertEqual(host.blobs[digest], Cell.raw_cell)
++
++        yi.plan._on_cell(Cell)
++        await (await Plan.attach(plan.id)).refresh()
++        self.assertEqual(host.ops().count("program"), 1, "a cell that only reads records nothing")
+@@ -42,2 +49 @@ class Plans(unittest.IsolatedAsyncioTestCase):
+-        self.assertEqual(host.ops(), ["init", "append", "start"], host.ops())
+-        self.assertNotIn("program", host.ops(), "a plan op froze its cell's source")
++        self.assertEqual(host.ops()[-2:], ["program", "start"], "the record precedes the effect")

@@ -61,10 +61,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         }
     };
     let model = session.model();
-    let work = session
-        .lane()
-        .and_then(|lane| lane.path())
-        .unwrap_or_else(|| effective_cwd(args));
+    let work = crate::work_dir(session.lane().and_then(|lane| lane.path()), args);
     let lane = session
         .lane()
         .and_then(|lane| lane.row())
@@ -245,6 +242,7 @@ pub fn run_serve_command(args: &Args) -> i32 {
             worker_args,
             agent_version: env!("ARCHITECTURE_VERSION").to_owned(),
             home: crate::home().to_path_buf(),
+            session_dir: crate::default_session_dir(args),
         },
         runtime,
     )
@@ -482,6 +480,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         sidebar: console
             .sidebar
             .map_or(yi_console::model::SidebarMode::Rail, Into::into),
+        project_order: console.project_order.unwrap_or_default(),
         pace: reveal_pace(args),
         follow: configured_follow(),
         browser: config()
@@ -563,6 +562,7 @@ pub(crate) fn session_extensions(
             .as_ref()
             .and_then(|skills| skills.global.clone())
             .unwrap_or_default(),
+        pointer: None,
         can_delegate: true,
     })
 }

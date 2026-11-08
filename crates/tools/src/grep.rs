@@ -1,7 +1,7 @@
+mod hits;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use serde_json::{Map, Value, json};
 
 use crate::builtins::walk_files;
 use crate::hashline::normalize::{Endings, split};
@@ -10,6 +10,8 @@ use crate::tool::{
     RootedGlob, Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, resolve_path,
     rooted_glob, text_output,
 };
+use hits::hits_in;
+use serde_json::{Map, Value, json};
 
 const PAGE_CAP: usize = 200;
 /// Invariant: a page stops between hits, so one hit's window may pass this cap and a page always
@@ -199,33 +201,6 @@ struct FileHits {
     hits: Vec<usize>,
     endings: Endings,
     utf8: bool,
-}
-
-fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool) -> Vec<usize> {
-    let mut hits: Vec<usize> = if multiline {
-        let mut hits: Vec<usize> = matcher
-            .find_iter(normalized)
-            .map(|found| normalized[..found.start()].matches('\n').count())
-            .collect();
-        hits.dedup();
-        hits
-    } else {
-        normalized
-            .split('\n')
-            .enumerate()
-            .filter(|(_, line)| matcher.is_match(line))
-            .map(|(index, _)| index)
-            .collect()
-    };
-    if def {
-        let lines: Vec<&str> = normalized.split('\n').collect();
-        hits.retain(|index| {
-            lines
-                .get(*index)
-                .is_some_and(|line| crate::orient::is_decl(line))
-        });
-    }
-    hits
 }
 
 struct Collected {
@@ -495,6 +470,7 @@ impl GrepTool {
         let last = lines.len().saturating_sub(1);
         let mut collected: Vec<Row> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
+        let mut cut: Vec<u64> = Vec::new();
         let mut emitted: Option<usize> = None;
         let mut rendered = 0_usize;
         let prefix = if mint && self.hashline.is_some() {
@@ -549,9 +525,7 @@ impl GrepTool {
                     .saturating_add(shown.len())
                     .saturating_add(2);
                 *room = room.saturating_sub(spent);
-                if !clipped {
-                    seen.push(number);
-                }
+                (if clipped { &mut cut } else { &mut seen }).push(number);
                 collected.push(Row::Line {
                     number,
                     hit: page_hits.binary_search(&row).is_ok(),
@@ -561,7 +535,7 @@ impl GrepTool {
             emitted = Some(hi.saturating_add(1));
             rendered = rendered.max(page_hits.partition_point(|&hit| hit <= hi.max(index)));
         }
-        let rows = match self.hashline.as_ref().filter(|_| mint) {
+        let mut rows = match self.hashline.as_ref().filter(|_| mint) {
             // A tagged file anchors an edit directly; a bare one names itself
             // on every row and anchors nothing.
             Some(state) => {
@@ -593,6 +567,8 @@ impl GrepTool {
                 })
                 .collect(),
         };
+        let hint = crate::hashline::messages::clipped_lines_hint(&cut, LINE_CLIP, &file.display);
+        rows.extend(hint);
         (rows, rendered)
     }
 }
@@ -688,15 +664,10 @@ impl GrepTool {
                 continue;
             }
             let persisted = file.endings.restore(&after, &origins);
-            match crate::builtins::land(
-                home.as_deref(),
-                Path::new(&file.canonical),
-                &persisted,
-                context,
-            ) {
-                Ok((_, verdict)) => {
+            let canonical = Path::new(&file.canonical);
+            match crate::builtins::land(home.as_deref(), canonical, &persisted, context) {
+                Ok((_, verdict, note)) => {
                     written = written.saturating_add(1);
-                    let canonical = Path::new(&file.canonical);
                     let absolute = crate::diff::patch(&file.normalized, &after, canonical);
                     patches.push_str(absolute.as_str());
                     if let Some(line) = verdict {
@@ -705,10 +676,11 @@ impl GrepTool {
                         }
                         syntax = Some(crate::syntax::worst(syntax, line));
                     }
+                    rows.extend(note.map(|note| format!("{}: {note}", file.display)));
                     if let Some(state) = &self.hashline {
                         crate::hashline::tool::record_view_snapshot(
                             state,
-                            Path::new(&file.canonical),
+                            canonical,
                             &after,
                             &crate::diff::shown_after_lines(&file.normalized, &after),
                         );
