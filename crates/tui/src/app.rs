@@ -123,6 +123,10 @@ pub struct App {
     pub(crate) live_thought_cut: usize,
     pub(crate) live_thought_spaced: bool,
     pub(crate) live_thought_seam: stream::Seam,
+    /// When the live thought first showed, for its `thinking · 12s` header and its fold.
+    pub(crate) thought_since: Option<Instant>,
+    /// Invariant: the tallest window the live thought has drawn, which it never drops below.
+    pub(crate) thought_rows: usize,
     /// The content block the live stream starts at: a thought after prose opens a new one.
     pub(crate) segment: usize,
     pub(crate) pacing: stream::Pacing,
@@ -195,8 +199,8 @@ pub struct App {
     turn_spent: crate::status::Money,
     pub(crate) width: usize,
     pub(crate) rows: usize,
-    pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
-    pub(crate) pane_follow: Option<(usize, TranscriptMode, usize, usize)>,
+    pub(crate) pane_hold: Option<((usize, usize), TranscriptMode, usize, usize)>,
+    pub(crate) pane_follow: Option<((usize, usize), TranscriptMode, usize, usize)>,
     pub(crate) follow: yi_types::config::FollowMode,
     pub(crate) pane_rows: PaneRows,
 }
@@ -262,6 +266,8 @@ impl App {
             live_thought: String::new(),
             live_cut: 0,
             live_thought_cut: 0,
+            thought_since: None,
+            thought_rows: 0,
             live_thought_spaced: false,
             live_thought_seam: stream::Seam::default(),
             segment: 0,
@@ -344,7 +350,11 @@ impl App {
     }
 
     pub fn set_rows(&mut self, rows: usize) {
+        if rows != self.rows {
+            self.thought_rows = 0;
+        }
         self.rows = rows;
+        self.theme.rows = rows;
     }
 
     pub fn set_width(&mut self, width: usize) {
@@ -384,27 +394,6 @@ impl App {
         ct_event: CtEvent,
     ) {
         handle_terminal_event(self, cmd_tx, ct_event);
-    }
-
-    fn reset_live(&mut self) {
-        self.clear_live();
-        self.segment = 0;
-        self.history.seal();
-    }
-
-    pub(crate) fn clear_live(&mut self) {
-        self.live_markdown.clear();
-        self.live_thought.clear();
-        self.live_cut = 0;
-        self.live_thought_cut = 0;
-        self.live_thought_spaced = false;
-        self.live_reopen = None;
-        self.live_lang = None;
-        self.live_seam = stream::Seam::default();
-        self.live_drawn = false;
-        self.live_thought_seam = stream::Seam::default();
-        self.live_spaced = true;
-        self.pacing.reset();
     }
 
     pub(crate) fn content_width(&self) -> usize {

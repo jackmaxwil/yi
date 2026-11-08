@@ -126,8 +126,8 @@ fn a_replayed_turn_reads_as_the_live_one_did() -> TestResult {
         "the read names its file: {lines:#?}"
     );
     assert!(
-        at("the manifest names the crate").is_some(),
-        "the thought replays: {lines:#?}"
+        at("thought · 28 chars").is_some(),
+        "the thought replays as its fold: {lines:#?}"
     );
     assert!(
         at("Todo").is_none(),

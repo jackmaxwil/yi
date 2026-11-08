@@ -456,6 +456,7 @@ impl App {
                             } if *redacted != Some(true) && !thinking.trim().is_empty() => self
                                 .commit_cell(&Cell::Thought {
                                     markdown: thinking.clone(),
+                                    took: None,
                                 }),
                             Content::ToolCall { id, arguments, .. } => {
                                 calls.insert(id, Value::Object(arguments.clone()));

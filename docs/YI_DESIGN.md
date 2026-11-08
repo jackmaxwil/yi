@@ -1291,8 +1291,14 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   A `spawnedBy` row waits for that antecedent, unresolved references flush at turn or replay
   settlement, and a late end appends at finish. Entry-zero replay rebuilds the same rows without
   creating live cards; eviction, resize and every transcript mode preserve them.
-- A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
-  rows then `… N more lines` when collapsed. Running tool cards reserve that bounded preview
+- One row budget, read off the screen's height, sizes reasoning and results. A live thought
+  streams its newest rows in a window of rows/4 (4..=12, never shrinking while live) under
+  `thinking · <elapsed> · <chars>`; settled, it commits one
+  `thought · <elapsed> · <chars>` row, never a model summary. Verbose keeps thoughts whole; the
+  console opens a folded thought beside the chat on a press.
+- A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, rows/6
+  result rows (4..=12, doubled for a failed call; the whole result when it is at most one row
+  more) then `… N more lines` when collapsed. Running tool cards reserve that bounded preview
   region and its elision row, so a collapsed result fills in place; child cards use a bounded
   four-row answer window, and verbose rows still use the existing row pacing.
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block

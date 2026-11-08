@@ -333,6 +333,59 @@ fn context(seam: &Seam, tail: &str) -> String {
     format!("{}{escape}", seam.stub.as_deref().unwrap_or_default())
 }
 
+/// Only what can fill the window's newest rows renders each frame, the whole thought being uncut:
+/// twice its cells in chars, never bytes, from a line start when one falls in the first half.
+fn window_source(tail: &str, rows: usize, width: usize) -> std::borrow::Cow<'_, str> {
+    let fenced = crate::transcript::fence_tail(tail, rows);
+    if matches!(fenced, std::borrow::Cow::Owned(_)) {
+        return fenced;
+    }
+    let room = rows.saturating_mul(width).saturating_mul(2);
+    let start = tail.char_indices().rev().nth(room.saturating_sub(1));
+    let Some(start) = start.map(|(at, _)| at).filter(|at| *at > 0) else {
+        return std::borrow::Cow::Borrowed(tail);
+    };
+    // A cut mid-line moves a chunk at a time from its line's start, so a growing paragraph keeps
+    // its wrap between moves instead of re-wrapping from a new first char every frame.
+    let from = tail
+        .get(..start)
+        .and_then(|head| head.rfind('\n'))
+        .map_or(0, |at| at + 1);
+    let into = tail.get(from..start).map_or(0, |head| head.chars().count());
+    let chunk = (room / 4).max(1);
+    let skip = into.div_ceil(chunk).saturating_mul(chunk);
+    let start = (tail
+        .get(from..)
+        .and_then(|line| line.char_indices().nth(skip)))
+    .map_or(start, |(at, _)| from.saturating_add(at));
+    let half = tail
+        .get(start..)
+        .and_then(|kept| kept.char_indices().nth(room / 2));
+    let half = half.map_or(tail.len(), |(at, _)| start.saturating_add(at));
+    let line = (tail.get(start..half).and_then(|head| head.find('\n')))
+        .map_or(start, |at| start.saturating_add(at).saturating_add(1));
+    let (before, kept) = (
+        tail.get(..line).unwrap_or_default(),
+        tail.get(line..).unwrap_or(tail),
+    );
+    // A cut inside a fence would read its closer as an opener; the opener rides above the cut.
+    let fence = |row: &str| {
+        ["```", "~~~"]
+            .into_iter()
+            .find(|mark| row.trim_start().starts_with(mark))
+    };
+    let opener = before
+        .split_inclusive('\n')
+        .rev()
+        .find_map(|row| Some((row, fence(row)?)));
+    match opener {
+        Some((row, mark)) if row.ends_with('\n') && before.matches(mark).count() % 2 == 1 => {
+            format!("{row}{kept}").into()
+        }
+        _ => std::borrow::Cow::Borrowed(kept),
+    }
+}
+
 pub(crate) fn table_span(tail: &str) -> Option<std::ops::Range<usize>> {
     let (mut start, mut offset, mut previous) = (None, 0, 0);
     for line in tail.split_inclusive('\n') {
@@ -357,17 +410,43 @@ pub(crate) fn table_span(tail: &str) -> Option<std::ops::Range<usize>> {
 }
 
 impl App {
-    /// Invariant: thought commits on its own stable cuts and whole before any prose commits
-    /// (`commit_prose` flushes it), so reasoning never lands under its answer.
+    pub(super) fn reset_live(&mut self) {
+        self.clear_live();
+        self.segment = 0;
+        self.history.seal();
+    }
+
+    pub(crate) fn clear_live(&mut self) {
+        self.live_markdown.clear();
+        self.live_thought.clear();
+        self.live_cut = 0;
+        self.live_thought_cut = 0;
+        self.live_thought_spaced = false;
+        self.live_reopen = None;
+        self.live_lang = None;
+        self.live_seam = Seam::default();
+        self.live_drawn = false;
+        self.live_thought_seam = Seam::default();
+        self.thought_since = None;
+        self.thought_rows = 0;
+        self.live_spaced = true;
+        self.pacing.reset();
+    }
+
+    /// Invariant: thought commits whole before any prose commits ([`App::commit_prose`] flushes
+    /// it), so reasoning never lands under its answer; only `verbose` also commits stable cuts.
     pub(super) fn commit_stable_thought(&mut self) {
-        // `normal` renders a whole thought as one line of count; slicing it
-        // would print that line once per paragraph.
-        if self.mode == TranscriptMode::Normal {
+        let shown = self.pacing.thought.shown();
+        if self.thought_since.is_none() && shown > self.live_thought_cut {
+            self.thought_since = Some(self.clock.now());
+        }
+        // Outside `verbose` a settled thought is one line; slicing it would print that line
+        // once per paragraph, so it streams in its window and commits whole.
+        if self.mode != TranscriptMode::Verbose {
             return;
         }
         // A cut inside a fence is prose's business: thought has no reopen to
         // carry, so a fenced block commits whole or not at all.
-        let shown = self.pacing.thought.shown();
         let stream =
             (self.pacing.thought_scan).scan(self.live_thought.get(..shown).unwrap_or_default());
         if stream.reopen.is_none() && stream.cut > self.live_thought_cut {
@@ -386,7 +465,7 @@ impl App {
             crate::render::live_tail_rows(self.rows),
             width,
             |text| {
-                crate::cell::thought_lines(text, width, &theme, TranscriptMode::Thinking, false)
+                crate::thought::lines(text, None, width, &theme, TranscriptMode::Verbose, false)
                     .len()
             },
         );
@@ -409,29 +488,75 @@ impl App {
         if !slice.trim().is_empty() {
             // Invariant: a held run of reads commits above the reasoning that follows it.
             self.flush_explored();
-            let lines = self.thought_block(&slice);
-            self.note_commit(&lines, self.live_thought_cut > 0);
-            // `normal` renders a merged thought as one count row; a slice's rows cannot extend it.
-            let extends = self.live_thought_cut > 0 && self.mode != TranscriptMode::Normal;
+            let took = self.thought_elapsed();
+            let lines = self.thought_block(&slice, took);
+            // A folded thought is one row for the whole; a slice's rows cannot extend it, and a
+            // fold after `verbose` slices is that one row again, so scrollback repaints instead.
+            let folds = self.live_thought_cut > 0 && self.mode != TranscriptMode::Verbose;
+            let extends = self.live_thought_cut > 0 && !folds;
             let rows = extends.then(|| (self.content_width(), lines.clone()));
             self.history.retain_slice(
-                Cell::Thought { markdown: slice },
+                Cell::Thought {
+                    markdown: slice,
+                    took,
+                },
                 rows.as_ref().map(|(width, rows)| (*width, rows.as_slice())),
             );
-            self.pending_commit.extend(lines);
+            if folds {
+                self.pending_repaint = true;
+            } else {
+                self.note_commit(&lines, self.live_thought_cut > 0);
+                self.pending_commit.extend(lines);
+            }
             self.scheduler.request();
         } else {
-            self.history.retain(Cell::Thought { markdown: slice });
+            self.history.retain(Cell::Thought {
+                markdown: slice,
+                took: self.thought_elapsed(),
+            });
         }
         self.live_thought_cut = cut;
         self.live_thought_spaced = spaced;
+        if cut >= self.live_thought.len() {
+            self.thought_since = None;
+            self.thought_rows = 0;
+        }
     }
 
-    pub(crate) fn thought_block(&self, slice: &str) -> Vec<Line<'static>> {
+    fn thought_elapsed(&self) -> Option<u64> {
+        let since = self.thought_since?;
+        Some(elapsed_ms(since, self.clock.now()))
+    }
+
+    /// A live thought outside `verbose`: its `thinking · 12s · 3.1k chars` head over a window of
+    /// its newest rows, which grows to the row budget and never shrinks while the thought lives.
+    pub(crate) fn thought_window(&mut self) -> Vec<Line<'static>> {
+        let (width, theme) = (self.content_width(), self.theme);
+        let shown = self.pacing.thought.shown();
+        let text = self.live_thought.get(..shown).unwrap_or_default();
+        let head = crate::thought::head("thinking", text, self.thought_elapsed(), &theme);
+        let budget = match self.mode {
+            TranscriptMode::Normal => 0,
+            _ => crate::budget::thought_rows(self.rows).max(self.thought_rows),
+        };
+        let tail = text.get(self.live_thought_cut..).unwrap_or_default();
+        let source = window_source(tail, budget, width);
+        let tail = crate::transcript::close_spans(&source);
+        let rows =
+            crate::thought::lines(&tail, None, width, &theme, TranscriptMode::Verbose, false);
+        let rows = crate::render::keep_last(rows, budget);
+        self.thought_rows = self.thought_rows.max(rows.len());
+        std::iter::once(head).chain(rows).collect()
+    }
+
+    pub(crate) fn thought_block(&self, slice: &str, took: Option<u64>) -> Vec<Line<'static>> {
         let (width, theme, mode) = (self.content_width(), &self.theme, self.mode);
+        if mode != TranscriptMode::Verbose {
+            return vec![crate::thought::head("thought", slice, took, theme)];
+        }
         let seam = &self.live_thought_seam;
         let slice = crate::transcript::escaped(slice, seam.mid);
-        let render = |text: &str| crate::cell::thought_lines(text, width, theme, mode, false);
+        let render = |text: &str| crate::thought::lines(text, None, width, theme, mode, false);
         if let Some(rows) = seam
             .stub
             .as_deref()
@@ -440,7 +565,7 @@ impl App {
             return rows;
         }
         let header = self.live_thought_cut == 0 || self.live_thought_spaced;
-        crate::cell::thought_lines(&slice, width, theme, mode, header)
+        crate::thought::lines(&slice, None, width, theme, mode, header)
     }
 
     /// A message's slices are one history cell, so the separator rule measures their sum.

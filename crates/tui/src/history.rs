@@ -19,7 +19,7 @@ pub struct History {
 /// Incident: a scrolled pane re-rendered every cell each frame, 114 ms deep in a session.
 #[derive(Default)]
 struct Rendered {
-    key: Option<(usize, TranscriptMode, ColorTier, bool)>,
+    key: Option<(usize, TranscriptMode, ColorTier, bool, usize)>,
     start: usize,
     rows: VecDeque<Vec<Line<'static>>>,
     growing: Option<Growing>,
@@ -183,7 +183,13 @@ impl History {
         // Incident: a sealed answer left in the growing render never drew its run chips, whose
         // closed fences only the whole-cell render knows; a surface with chips renders it whole.
         let open = !theme.run || self.cells.len() > self.sealed;
-        let key = Some((width, mode, theme.tier, theme.dark));
+        let key = Some((
+            width,
+            mode,
+            theme.tier,
+            theme.dark,
+            crate::budget::card_rows(theme.rows, false),
+        ));
         if rendered.key != key {
             *rendered = Rendered {
                 key,
@@ -249,16 +255,20 @@ impl History {
             head.push_str(markdown);
             return self.forget_last(rows);
         }
-        // Thought merges for the same reason plus one of its own: `normal` renders it as a
-        // line count, and a per-slice count would name the last paragraph, not the thought.
-        if let Cell::Thought { markdown } = &cell
+        // Thought merges for the same reason plus one of its own: folded, it renders as one
+        // counted row, and a per-slice count would name the last paragraph, not the thought.
+        if let Cell::Thought { markdown, took } = &cell
             && open
-            && let Some(Cell::Thought { markdown: head }) = self.cells.back_mut()
+            && let Some(Cell::Thought {
+                markdown: head,
+                took: kept,
+            }) = self.cells.back_mut()
         {
             head.push_str(markdown);
+            *kept = took.or(*kept);
             return self.forget_last(rows);
         }
-        if let Cell::Assistant { markdown } | Cell::Thought { markdown } = &cell
+        if let Cell::Assistant { markdown } | Cell::Thought { markdown, .. } = &cell
             && markdown.trim().is_empty()
         {
             return;
@@ -275,6 +285,19 @@ impl History {
             return self.forget_last(None);
         }
         self.cells.push_back(cell);
+    }
+
+    /// The last cell's row count and whether its last row is blank, as a rebuild renders it.
+    pub(crate) fn last_rows(
+        &self,
+        width: usize,
+        theme: &Theme,
+        mode: TranscriptMode,
+    ) -> (usize, bool) {
+        self.rendered(width, theme, mode, (1, usize::MAX), |_, cells| {
+            let rows = cells.last().map_or(&[][..], Vec::as_slice);
+            (rows.len(), rows.last().is_some_and(is_blank))
+        })
     }
 
     /// Newest-first until the row cap is exceeded, enforced here while rendering from source:
@@ -345,7 +368,7 @@ impl History {
         match self.cells.get(index)? {
             Cell::User { text } => Some((Said::User, text)),
             Cell::Assistant { markdown } => Some((Said::Assistant, markdown)),
-            Cell::Thought { markdown } => Some((Said::Thought, markdown)),
+            Cell::Thought { markdown, .. } => Some((Said::Thought, markdown)),
             _ => None,
         }
     }
@@ -353,7 +376,7 @@ impl History {
     pub fn source(&self, index: usize) -> Option<&str> {
         match self.cells.get(index)? {
             Cell::User { text } => Some(text),
-            Cell::Assistant { markdown } | Cell::Thought { markdown } => Some(markdown),
+            Cell::Assistant { markdown } | Cell::Thought { markdown, .. } => Some(markdown),
             _ => None,
         }
     }

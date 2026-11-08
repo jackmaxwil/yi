@@ -17,8 +17,8 @@ pub enum TranscriptMode {
     Verbose,
 }
 
-/// Reasoning is the default view (§17.3): `normal` collapses a thought to
-/// a one-line count, which is only what a reader who asked for it should get.
+/// The default streams a thought in a budgeted window and folds it to one line once settled
+/// (#2094); `normal` also folds every card body away, and `verbose` keeps every thought whole.
 impl Default for TranscriptMode {
     fn default() -> Self {
         Self::Thinking
@@ -112,7 +112,7 @@ pub const REPLY_HINT: &str = "focus it (alt-↓) and type your answer";
 pub enum Cell {
     User { text: String },
     Assistant { markdown: String },
-    Thought { markdown: String },
+    Thought { markdown: String, took: Option<u64> },
     Tool(ToolCell),
     Explored(Vec<ToolCell>),
     Task(TaskCell),
@@ -126,50 +126,10 @@ pub enum Cell {
 pub const GUTTER: &str = "• ";
 pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
-const THOUGHT_INDENT: &str = "  ";
 
 /// The gutter's width in columns: [`GUTTER`]`.len()` counts its bytes.
 pub fn gutter_cols() -> usize {
     UnicodeWidthStr::width(GUTTER)
-}
-
-/// Reasoning prose, dim and italic, with nothing over it: the style is the label. `header`
-/// is false past the first slice, so a thought streamed in paragraphs opens one blank, not many.
-pub fn thought_lines(
-    markdown: &str,
-    width: usize,
-    theme: &Theme,
-    mode: TranscriptMode,
-    header: bool,
-) -> Vec<Line<'static>> {
-    let style = theme.dim_style().add_modifier(Modifier::ITALIC);
-    if mode == TranscriptMode::Normal {
-        let lines = markdown.lines().count();
-        return vec![Line::from(Span::styled(
-            format!("  thought · {}", count_label(lines, "line")),
-            style,
-        ))];
-    }
-    let mut out = Vec::new();
-    if header {
-        out.push(Line::default());
-    }
-    // Rendered two columns narrow, matching the indent below: a full-width row wrapped again.
-    // Plain, since the restyle drops syntax colour; untrimmed, since a row's lead is its nesting.
-    for line in markdown::render_plain(markdown, width.saturating_sub(THOUGHT_INDENT.len()), theme)
-    {
-        let text: String = line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<String>();
-        out.extend(wrap_line(
-            &Line::from(Span::styled(format!("{THOUGHT_INDENT}{text}"), style)),
-            width,
-            THOUGHT_INDENT,
-        ));
-    }
-    out
 }
 
 /// Assistant prose hangs off a dim `• ` on its first line and a two-column
@@ -259,7 +219,6 @@ pub(crate) fn subject_of<'a>(name: &str, summary: &'a str) -> &'a str {
         .unwrap_or(summary)
 }
 
-const PREVIEW_ROWS: usize = 3;
 const ELIDED_ROWS: usize = 2;
 const REVEAL_ROWS: usize = 24;
 
@@ -392,11 +351,44 @@ impl ToolCell {
         let mut body = Vec::new();
         // `normal` folds every body away and `verbose` opens them all; the default view
         // between them shows the first rows of the result and how many follow.
-        let preview: Vec<Line<'static>> =
+        let (preview, cut) =
             if mode != TranscriptMode::Thinking || self.patch().is_some() || self.name == "todo" {
-                Vec::new()
+                (Vec::new(), false)
             } else {
-                self.body(theme).into_iter().take(PREVIEW_ROWS).collect()
+                let body = self.body(theme);
+                let budget = crate::budget::card_rows(theme.rows, failed);
+                let keep = crate::budget::shown_rows(budget, body.len());
+                let cut = keep < body.len();
+                // Incident: a cut past the runtime's `… N more lines` row drew two counts, the
+                // second off by that row; the cut keeps the head, one recount, then the tail.
+                let elision = |row: &Line| {
+                    let [span] = row.spans.as_slice() else {
+                        return false;
+                    };
+                    span.content.starts_with("… ") && span.content.ends_with(" more lines")
+                };
+                let marker = cut.then(|| body.iter().position(elision)).flatten();
+                match marker.filter(|marker| *marker < keep) {
+                    Some(marker) => {
+                        let tail = keep.saturating_sub(marker).saturating_sub(1);
+                        let real = marker.saturating_add(tail);
+                        let hidden = self.lines_total().saturating_sub(real);
+                        let mut rows: Vec<Line<'static>> =
+                            body.get(..marker).unwrap_or_default().to_vec();
+                        rows.push(Line::from(Span::styled(
+                            format!("… {hidden} more lines"),
+                            theme.dim_style(),
+                        )));
+                        rows.extend(
+                            body.get(body.len().saturating_sub(tail)..)
+                                .unwrap_or_default()
+                                .iter()
+                                .cloned(),
+                        );
+                        (rows, false)
+                    }
+                    None => (body.into_iter().take(keep).collect(), cut),
+                }
             };
         let repeats_digest = |digest: &str| {
             preview.first().is_some_and(|row| {
@@ -446,7 +438,12 @@ impl ToolCell {
                 body.extend(capped(&line, inner, "     ", theme, revealed));
             }
         } else {
-            let hidden = self.lines_total().saturating_sub(preview.len());
+            // A whole body already carries the runtime's own `… N more lines` row, if it cut.
+            let hidden = if cut {
+                self.lines_total().saturating_sub(preview.len())
+            } else {
+                0
+            };
             let shown = !preview.is_empty();
             for line in preview {
                 body.extend(capped(&line, inner, "     ", theme, ELIDED_ROWS));
@@ -992,7 +989,7 @@ impl Cell {
             let (kind, bytes) = match self {
                 Cell::User { text } => ("user", text.len()),
                 Cell::Assistant { markdown } => ("assistant", markdown.len()),
-                Cell::Thought { markdown } => ("thought", markdown.len()),
+                Cell::Thought { markdown, .. } => ("thought", markdown.len()),
                 Cell::Tool(tool) => ("tool", tool.digest.as_ref().map_or(0, String::len)),
                 Cell::Explored(rows) => ("explored", rows.len()),
                 Cell::Task(_) => ("task", 0),
@@ -1030,7 +1027,9 @@ impl Cell {
                 ));
                 out
             }
-            Cell::Thought { markdown } => thought_lines(markdown, width, theme, mode, true),
+            Cell::Thought { markdown, took } => {
+                crate::thought::lines(markdown, *took, width, theme, mode, true)
+            }
             Cell::Tool(tool) => tool.lines(width, theme, mode, spinner_phase),
             Cell::Explored(rows) => crate::citations::lines(rows, width, theme, mode),
             Cell::Task(task) => task.lines(width, theme, mode, spinner_phase),

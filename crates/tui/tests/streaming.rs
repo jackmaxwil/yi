@@ -883,3 +883,360 @@ fn a_thought_in_an_open_fence_shows_its_last_lines() {
         "{rows:?}"
     );
 }
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Dies on the old default, whose live tail held half the screen and committed the thought a
+/// paragraph at a time, so reasoning filled scrollback; the parser sits eight rows down.
+#[test]
+fn a_live_thought_window_never_outgrows_its_rows_below_a_viewport_offset() -> TestResult {
+    use std::io::Write;
+    let mut backend = common::VT100Backend::with_scrollback(80, 32, 400);
+    backend.write_all(b"\n\n\n\n\n\n\n\n")?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let mut app = app(32);
+    app.set_clock(yi_tui::motion::Clock::Fixed(std::time::Instant::now()));
+    let budget = yi_tui::budget::thought_rows(32);
+    let thought: String = (1..=30)
+        .map(|n| format!("Step {n}: weigh the next part of the plan.\n\n"))
+        .collect();
+    app.reduce_agent(AgentEvent::AgentStart);
+    let (mut cut, mut held) = (0, 0);
+    while cut < thought.len() {
+        cut = (cut + 29).min(thought.len());
+        let said = thought.get(..cut).ok_or("an ASCII thought cuts anywhere")?;
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![thinking(said)], StopReason::Stop),
+            },
+        });
+        app.advance_clock(std::time::Duration::from_secs(1));
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        let screen = terminal.backend();
+        let reasoning = screen
+            .transcript()
+            .iter()
+            .filter(|row| row.contains("Step "))
+            .count();
+        assert!(
+            reasoning <= budget,
+            "{reasoning} reasoning rows reached the terminal"
+        );
+        let (window, rows) = live_window(screen, 32)?;
+        assert!(window.len() <= budget, "over {budget} rows: {rows:#?}");
+        assert!(window.len() >= held, "shrank from {held} rows: {rows:#?}");
+        held = window.len();
+    }
+    assert_eq!(held, budget, "a thirty-step thought fills its window");
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: assistant(vec![thinking(&thought)], StopReason::Stop),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let transcript = terminal.backend().transcript();
+    let folds: Vec<&String> = (transcript.iter())
+        .filter(|row| row.starts_with("  thought · "))
+        .collect();
+    assert_eq!(folds.len(), 1, "one fold row: {transcript:#?}");
+    assert!(
+        folds
+            .iter()
+            .all(|row| row.trim_end() == "  thought · 45s · 1.2k chars"),
+        "{folds:?}"
+    );
+    assert!(
+        !transcript
+            .iter()
+            .any(|row| row.contains("Step ") || row.contains("thinking ·")),
+        "the settled thought left its body behind: {transcript:#?}"
+    );
+    Ok(())
+}
+
+/// A recorded session's twelve thoughts, 72 to 2,954 characters, replayed through the reducer:
+/// each commits as one row, sized from the session's own text, and no reasoning body commits.
+#[test]
+fn every_recorded_thought_settles_as_one_counted_row() -> TestResult {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sessions/01a0d6e4.jsonl"
+    );
+    let thoughts: Vec<String> = common::session::session_entries(&std::fs::read_to_string(path)?)?
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::Assistant { content, .. } => Some(content),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|block| match block {
+            Content::Thinking { thinking, .. } if !thinking.trim().is_empty() => Some(thinking),
+            _ => None,
+        })
+        .collect();
+    let mut app = app(40);
+    common::replay_stream(&mut app, std::path::Path::new(path))?;
+    let rows = flat(&app.take_commits());
+    let folds: Vec<&String> = rows
+        .iter()
+        .filter(|row| row.starts_with("  thought · "))
+        .collect();
+    assert_eq!(folds.len(), thoughts.len(), "{folds:#?}");
+    for (fold, thought) in folds.iter().zip(&thoughts) {
+        let chars = thought.chars().count();
+        let size = match chars {
+            0..1000 => format!(" · {chars} chars"),
+            _ => format!(" · {}.{}k chars", chars / 1000, chars % 1000 / 100),
+        };
+        assert!(
+            fold.ends_with(&size),
+            "{fold:?} for a thought of {chars} chars"
+        );
+        let opening: String = thought.chars().take(40).collect();
+        assert!(
+            !rows.iter().any(|row| row.contains(opening.trim())),
+            "the thought's body committed: {opening:?}"
+        );
+    }
+    assert!(
+        folds.iter().any(|row| row.ends_with(" · 2.9k chars")),
+        "{folds:#?}"
+    );
+    Ok(())
+}
+
+/// The live thought window's rows under its `thinking ·` head, and every screen row.
+fn live_window(
+    screen: &common::VT100Backend,
+    height: u16,
+) -> Result<(Vec<String>, Vec<String>), Box<dyn std::error::Error>> {
+    let rows: Vec<String> = (0..height).map(|row| screen.row_text(row)).collect();
+    let head = (rows.iter().position(|row| row.starts_with("  thinking · ")))
+        .ok_or_else(|| format!("no head row: {rows:#?}"))?;
+    let mut window: Vec<String> = (rows.iter().skip(head + 1))
+        .take_while(|row| !row.contains("[esc] interrupt") && !row.starts_with(" ╭"))
+        .cloned()
+        .collect();
+    while window.last().is_some_and(|row| row.trim().is_empty()) {
+        window.pop();
+    }
+    Ok((window, rows))
+}
+
+/// Streams `thought` a few chars a frame on a 32-row screen and returns the window's rows each
+/// frame, so a test reads the window the reader watched grow.
+fn window_frames(thought: &str) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
+    let backend = common::VT100Backend::with_scrollback(80, 32, 400);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let mut app = app(32);
+    app.reduce_agent(AgentEvent::AgentStart);
+    let mut frames = Vec::new();
+    let ends: Vec<usize> = (thought.char_indices().map(|(at, _)| at).skip(1))
+        .step_by(23)
+        .chain([thought.len()])
+        .collect();
+    for end in ends {
+        let said = thought.get(..end).ok_or("a char boundary cuts")?;
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![thinking(said)], StopReason::Stop),
+            },
+        });
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        frames.push(live_window(terminal.backend(), 32)?.0);
+    }
+    Ok(frames)
+}
+
+/// Dies on a window sized in bytes: kana, Cyrillic and arrows are two and three bytes a char, so
+/// a byte budget fed the window a third of its rows and its height jumped frame to frame.
+#[test]
+fn a_non_ascii_thought_window_never_shrinks_while_live() -> TestResult {
+    let step = "計画の次の部分を検討し、出典と答えを照合してから結論を記録する→";
+    let thought: String = (1..=12)
+        .map(|n| format!("{n}. {}\n\n", step.repeat(10)))
+        .collect();
+    let budget = yi_tui::budget::thought_rows(32);
+    let mut held = 0;
+    for window in window_frames(&thought)? {
+        assert!(window.len() >= held, "shrank from {held} rows: {window:#?}");
+        held = window.len();
+    }
+    assert_eq!(held, budget, "a twelve-paragraph thought fills its window");
+    Ok(())
+}
+
+/// Dies on a cut inside a closed code block: the closer was read as an opener, so the prose
+/// after it drew as code with its markup bare (`**done**`) instead of as `done`; a `~~~` fence
+/// is the same block under the other marker.
+#[test]
+fn a_window_cut_inside_a_closed_fence_still_reads_the_prose_after_it() -> TestResult {
+    let code: String = (1..=60)
+        .map(|n| format!("let step_{n} = plan[{n}];\n"))
+        .collect();
+    for mark in ["```", "~~~"] {
+        let thought =
+            format!("Reading the plan.\n\n{mark}rust\n{code}{mark}\n\nAll **done** now.\n");
+        let frames = window_frames(&thought)?;
+        let last = frames.last().ok_or("no frame")?;
+        let after = (last.iter().find(|row| row.contains("done")))
+            .ok_or_else(|| format!("{mark}: no closing prose: {last:#?}"))?;
+        assert_eq!(after.trim(), "All done now.", "{mark}: {last:#?}");
+    }
+    Ok(())
+}
+
+/// Draws every frame on a real screen and returns its committed rows, trimmed, with the row
+/// the reflowed transcript opens on as the first.
+fn committed_from(
+    screen: &common::VT100Backend,
+    first: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let rows: Vec<String> = (screen.transcript().iter())
+        .map(|row| row.trim_end().to_owned())
+        .collect();
+    let at = (rows.iter().position(|row| row == first))
+        .ok_or_else(|| format!("no {first:?} on screen: {rows:#?}"))?;
+    Ok(rows.into_iter().skip(at).collect())
+}
+
+/// Dies when a fold lands twice, or a separator history does not have follows it: `verbose`
+/// committed a slice of a live thought, the reader cycled out mid-thought, the rest folded, and
+/// a card committed after; the screen must hold what a rebuild of the transcript holds, row for row.
+#[test]
+fn cycling_out_of_verbose_mid_thought_leaves_scrollback_as_the_rebuild() -> TestResult {
+    let thought = "First step of it.\n\nSecond step of it.\n\nThird step of it.\n";
+    for target in [TranscriptMode::Normal, TranscriptMode::Thinking] {
+        let backend = common::VT100Backend::with_scrollback(80, 24, 400);
+        let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+        let mut app = app(24);
+        while app.mode() != TranscriptMode::Verbose {
+            app.cycle_mode();
+        }
+        let update = |said: &str| AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![thinking(said)], StopReason::Stop),
+            },
+        };
+        app.reduce_agent(AgentEvent::AgentStart);
+        app.reduce_agent(update(
+            thought.get(..38).ok_or("an ASCII thought cuts anywhere")?,
+        ));
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        while app.mode() != target {
+            app.cycle_mode();
+        }
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        app.reduce_agent(update(thought));
+        app.reduce_agent(AgentEvent::MessageEnd {
+            message: assistant(vec![thinking(thought)], StopReason::Stop),
+        });
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        app.reduce_agent(AgentEvent::ToolExecutionStart {
+            tool_call_id: "b0".to_owned(),
+            tool_name: "bash".to_owned(),
+            args: json!({ "command": "seq 3" }),
+        });
+        app.reduce_agent(AgentEvent::ToolExecutionEnd {
+            tool_call_id: "b0".to_owned(),
+            tool_name: "bash".to_owned(),
+            result: ToolResult {
+                content: vec![text("1\n2\n3")],
+                details: json!({ "exitCode": 0 }),
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            },
+            is_error: false,
+        });
+        app.reduce_agent(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+            reason: None,
+        });
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        let rebuilt = flat(&app.reflowed(400));
+        let first = rebuilt.first().ok_or("an empty rebuild")?;
+        let screen = committed_from(terminal.backend(), first)?;
+        assert_eq!(
+            screen.get(..rebuilt.len()),
+            Some(&rebuilt[..]),
+            "{target:?}: scrollback {screen:#?} rebuild {rebuilt:#?}"
+        );
+    }
+    Ok(())
+}
+
+/// Dies on a rebuild that only a width change triggers: a settled card is sized by the height,
+/// so a 24-row screen grown to 48 kept its four-row card where a rebuild shows eight.
+#[test]
+fn a_taller_screen_rebuilds_settled_cards_at_their_new_budget() -> TestResult {
+    use ratatui::crossterm::event::Event as CtEvent;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let backend = common::VT100Backend::with_scrollback(80, 24, 400);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    let mut app = app(24);
+    let result: Vec<String> = (1..=40).map(|n| format!("row {n}")).collect();
+    app.reduce_agent(AgentEvent::AgentStart);
+    app.reduce_agent(AgentEvent::ToolExecutionStart {
+        tool_call_id: "b0".to_owned(),
+        tool_name: "bash".to_owned(),
+        args: json!({ "command": "seq 40" }),
+    });
+    app.reduce_agent(AgentEvent::ToolExecutionEnd {
+        tool_call_id: "b0".to_owned(),
+        tool_name: "bash".to_owned(),
+        result: ToolResult {
+            content: vec![text(&result.join("\n"))],
+            details: json!({ "exitCode": 0 }),
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: false,
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let count = |screen: &common::VT100Backend, n: usize| {
+        let needle = format!("… {n} more lines");
+        screen.transcript().iter().any(|row| row.contains(&needle))
+    };
+    assert!(
+        count(terminal.backend(), 36),
+        "a 24-row screen keeps four rows"
+    );
+    terminal.backend_mut().resize(80, 48);
+    yi_tui::input::handle_terminal_event(&mut app, &tx, CtEvent::Resize(80, 48));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    std::thread::sleep(yi_tui::reflow::REFLOW_DEBOUNCE + std::time::Duration::from_millis(10));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let rows = terminal.backend().transcript();
+    assert!(
+        count(terminal.backend(), 32),
+        "a 48-row screen keeps eight: {rows:#?}"
+    );
+    assert!(
+        !count(terminal.backend(), 36),
+        "the four-row card is gone: {rows:#?}"
+    );
+    Ok(())
+}
+
+/// Dies on a cut that moves every frame: one long paragraph past the window's room was cut a
+/// few chars further each frame and re-wrapped from a new first word, so every row shifted.
+#[test]
+fn a_long_paragraph_keeps_its_wrap_between_window_moves() -> TestResult {
+    let words: Vec<String> = (1..=600).map(|n| format!("w{n}")).collect();
+    let frames = window_frames(&words.join(" "))?;
+    let held = |earlier: &[String], later: &[String]| {
+        let settled = later
+            .get(..later.len().saturating_sub(2))
+            .unwrap_or_default();
+        settled.is_empty() || earlier.windows(settled.len()).any(|run| run == settled)
+    };
+    let moved = (frames.windows(2))
+        .filter(|pair| !held(&pair[0], &pair[1]))
+        .count();
+    assert!(
+        moved.saturating_mul(4) <= frames.len(),
+        "{moved} of {} frames re-wrapped the window",
+        frames.len()
+    );
+    Ok(())
+}
