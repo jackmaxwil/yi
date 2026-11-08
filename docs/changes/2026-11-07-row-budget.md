@@ -10,6 +10,7 @@ cut: none crates/tui/src/app.rs
 cut: none crates/tui/src/app/stream.rs
 cut: none crates/tui/src/history.rs
 cut: none crates/tui/src/render.rs
+shares: #2097 both change the TUI reducer and its tests; the src merges cleanly and only the tests appended at the end of streaming.rs and toolcells.rs collide, so whichever lands second merges main and keeps both sets
 ---
 Reasoning streams again while it is live, and folds once it settles. Before, the default view either committed a whole thought into scrollback or, in normal mode, hid it, and a tool card always showed three result rows, so long reasoning flooded the screen and short results were cut for nothing.
 
