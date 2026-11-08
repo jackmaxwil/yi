@@ -1,5 +1,7 @@
 ---
 issue: Closes #1551
+cut: crates/runtime/src/reclaim.rs | Some("a result with an image is never cut, since its placeholder could not say so") | an older image result is now cut to an attach_image call on the source file it was read from, so the blanket refusal goes
+cut: crates/types/src/image.rs | "If its source file is still on disk, run `print(await attach_image(path))` in ipython; it resizes to fit." | the attach call is built by attach_image_call now, so the remedy and the reclaim placeholder cannot spell it two ways
 growth: +366 the image rule, its stat of the source the kernel recorded, its placeholder, its unit tests and its real session journey; cutting no image at all was the alternative weighed and the issue refuses it
 raise: crate runtime +342, crate tools +7, crate types +17, tests +352, comments +2
 ledger~: context P1–P19; prefix-aligned P7 | it`, T1) | it`, T1), and an image result is cut only when its picture can be had again: the newest three image results are never cut, an older one is cut to `print(await attach_image(path))` on the path its `attachmentMedia` row records once that file still has the size and `modified_ns` the kernel stat when it attached it, and one whose file is gone or changed stays whole (`ipython_faux::the_cell_a_reclaimed_image_names_attaches_the_image_again`, T2)
