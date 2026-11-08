@@ -23,16 +23,27 @@ pub enum ImageDefect {
 impl ImageDefect {
     /// The call that sends the image again, each one run in the kernel venv by a test.
     #[must_use]
-    pub fn remedy(self) -> &'static str {
+    pub fn remedy(self) -> String {
         match self {
-            Self::TooLarge { .. } | Self::TooWide { .. } => {
-                "If its source file is still on disk, run `print(await attach_image(path))` in ipython; it resizes to fit."
-            }
-            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => {
-                "If its source file is still on disk, re-encode it in ipython: `from PIL import Image; Image.open(path).convert('RGB').save(f'{path}.jpg'); print(await attach_image(f'{path}.jpg'))`."
-            }
+            Self::TooLarge { .. } | Self::TooWide { .. } => format!(
+                "If its source file is still on disk, run `{}` in ipython; it resizes to fit.",
+                attach_image_call(["path"])
+            ),
+            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => format!(
+                "If its source file is still on disk, re-encode it in ipython: `from PIL import Image; Image.open(path).convert('RGB').save(f'{{path}}.jpg'); {}`.",
+                attach_image_call(["f'{path}.jpg'"])
+            ),
         }
     }
+}
+
+/// The ipython statement that attaches paths expressed as Python arguments.
+#[must_use]
+pub fn attach_image_call<'a>(paths: impl IntoIterator<Item = &'a str>) -> String {
+    format!(
+        "print(await attach_image({}))",
+        paths.into_iter().collect::<Vec<_>>().join(", ")
+    )
 }
 
 impl fmt::Display for ImageDefect {

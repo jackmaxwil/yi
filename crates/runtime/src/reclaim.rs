@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_types::entry::{CustomRecord, Entry};
+use yi_types::image::attach_image_call;
 use yi_types::message::{AgentMessage, Content};
 use yi_types::model::{CACHE_DIAGNOSTIC, Model, Ttl};
 use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
@@ -15,6 +16,8 @@ const MIN_DROPPED: u64 = 2_000;
 /// A cut rewrites the cached prefix after it, which costs as many tokens as this many cache reads.
 const REWRITE_READS: u64 = 10;
 const MIN_RESULT_CHARS: usize = 1_200;
+/// The newest image results no cut takes: the model is still working from them.
+const KEEP_IMAGES: usize = 3;
 const PLACEHOLDER_TOKENS: u64 = 40;
 /// Results that carry the user's own words or live plan state, which a cut would hide.
 pub(crate) const NEVER: [&str; 3] = ["ask_user", "plan", "todo"];
@@ -227,6 +230,62 @@ fn chars(content: &[Content]) -> usize {
     texts(content).map(|text| text.chars().count()).sum()
 }
 
+fn has_image(content: &[Content]) -> bool {
+    content
+        .iter()
+        .any(|part| matches!(part, Content::Image { .. }))
+}
+
+/// The files an image result can be attached again from, the `attachmentMedia` rows the ipython
+/// tool writes; `None` unless every file still has the size and mtime the kernel recorded.
+fn image_paths(message: &AgentMessage) -> Option<Vec<String>> {
+    let AgentMessage::ToolResult {
+        content, details, ..
+    } = message
+    else {
+        return None;
+    };
+    let images = content
+        .iter()
+        .filter(|part| matches!(part, Content::Image { .. }))
+        .count();
+    let media = details.as_ref()?.get("attachmentMedia")?.as_array()?;
+    let paths: Vec<String> = media
+        .iter()
+        .filter_map(|row| {
+            let path = row.get("path")?.as_str()?;
+            let recorded_bytes = row.get("bytes")?.as_u64()?;
+            let recorded_modified_ns = row.get("modified_ns")?.as_u64()?;
+            let metadata = std::fs::metadata(path).ok()?;
+            let modified = metadata.modified().ok()?;
+            let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+            let modified_ns = u64::try_from(since_epoch.as_nanos()).ok()?;
+            (metadata.is_file()
+                && metadata.len() == recorded_bytes
+                && modified_ns == recorded_modified_ns)
+                .then(|| path.to_owned())
+        })
+        .collect();
+    (paths.len() == images && !paths.is_empty()).then_some(paths)
+}
+
+pub(crate) fn newest_images<M: std::borrow::Borrow<AgentMessage>>(
+    messages: &[M],
+) -> BTreeSet<usize> {
+    let shown: Vec<usize> = (messages.iter().enumerate())
+        .filter(|(_, message)| match message.borrow() {
+            AgentMessage::ToolResult { content, .. } => has_image(content),
+            _ => false,
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let keep = shown.len().saturating_sub(KEEP_IMAGES);
+    (shown.get(keep..).unwrap_or_default())
+        .iter()
+        .copied()
+        .collect()
+}
+
 pub(crate) fn hash(content: &[Content]) -> String {
     let text = yi_types::message::join_text(content, "");
     crate::ext::content_hash(&text).chars().take(16).collect()
@@ -320,7 +379,11 @@ pub(crate) fn newest_reads<M: std::borrow::Borrow<AgentMessage>>(
 }
 
 /// Why no cut ever takes this result, whatever its age or the model's discard.
-pub(crate) fn never_cut(message: &AgentMessage, newest_read: bool) -> Option<&'static str> {
+pub(crate) fn never_cut(
+    message: &AgentMessage,
+    newest_read: bool,
+    newest_image: bool,
+) -> Option<&'static str> {
     let AgentMessage::ToolResult {
         tool_name, content, ..
     } = message
@@ -331,11 +394,14 @@ pub(crate) fn never_cut(message: &AgentMessage, newest_read: bool) -> Option<&'s
         Some(
             "plan, todo and ask_user results carry live state or the user's words and are never cut",
         )
-    } else if !content
-        .iter()
-        .all(|part| matches!(part, Content::Text { .. }))
-    {
-        Some("a result with an image is never cut, since its placeholder could not say so")
+    } else if has_image(content) && newest_image {
+        Some(
+            "one of the three newest image results is never cut, since the model still works from it",
+        )
+    } else if has_image(content) && image_paths(message).is_none() {
+        Some(
+            "an image result is never cut unless every image's source file keeps the size and modification time it was attached with",
+        )
     } else if newest_read {
         Some(
             "the newest read of a file this session edited is never cut, since an edit needs its line tags",
@@ -345,7 +411,7 @@ pub(crate) fn never_cut(message: &AgentMessage, newest_read: bool) -> Option<&'s
     }
 }
 
-/// A new cut, when one pays; pure over the messages, the cut so far, the prices and the clock.
+/// A new cut, when one pays; pure over the messages, the cut, the prices, the clock and the image files.
 pub(crate) fn decide(
     messages: &[AgentMessage],
     cut: &Cut,
@@ -354,6 +420,7 @@ pub(crate) fn decide(
 ) -> Option<ReclaimRecord> {
     let calls = calls(messages);
     let newest = newest_reads(&calls, messages, &cut.sections);
+    let images = newest_images(messages);
     let (mut turn, mut turns) = (0_u64, Vec::with_capacity(messages.len()));
     for message in messages {
         if matches!(message, AgentMessage::Assistant { .. }) {
@@ -372,12 +439,15 @@ pub(crate) fn decide(
             .get(index)
             .is_some_and(|at| turn.saturating_sub(*at) >= crate::levers::get().reclaim_keep_turns);
         let marked = |map| find(map, message).is_some();
-        let kept = never_cut(message, newest.contains(&index)).is_some()
-            || cut.get(message).is_some()
-            || marked(&cut.pins);
-        // The model's discard waives the age and size floors, never the rest.
-        let floors = (aged && chars(content) >= MIN_RESULT_CHARS) || marked(&cut.discards);
-        floors && !kept
+        let sized = chars(content) >= MIN_RESULT_CHARS || has_image(content);
+        let floors = (aged && sized) || marked(&cut.discards);
+        if !floors {
+            return false;
+        }
+        let kept = cut.get(message).is_some()
+            || marked(&cut.pins)
+            || never_cut(message, newest.contains(&index), images.contains(&index)).is_some();
+        !kept
     };
     // A result already cut costs its placeholder, so a new cut's rewrite is the view's own size.
     let sizes: Vec<u64> = (messages.iter())
@@ -510,15 +580,49 @@ fn render(
                 crate::levers::get().reclaim_keep_turns
             ),
         };
+        let image = image_paths(message);
+        if matches!(message, AgentMessage::ToolResult { content, .. } if has_image(content))
+            && image.is_none()
+        {
+            continue;
+        }
         if let AgentMessage::ToolResult { content, .. } = message {
             let call = call.as_deref().unwrap_or("a tool call");
-            let restore = match &mark.entry {
-                Some(entry) => format!("get it: read(\"history://{agent}/{entry}\")"),
-                None => format!("it is not in {store} store"),
+            let (kept, restore) = match image {
+                Some(paths) => {
+                    let count = paths.len();
+                    let paths: Vec<String> = (paths.iter())
+                        .map(|path| serde_json::Value::from(path.as_str()).to_string())
+                        .collect();
+                    let command = attach_image_call(paths.iter().map(String::as_str));
+                    let image = match count {
+                        1 => "its image dropped".to_owned(),
+                        images => format!("its {images} images dropped"),
+                    };
+                    let restore = match &mark.entry {
+                        Some(entry) => {
+                            format!("get it: {command}; text: read(\"history://{agent}/{entry}\")")
+                        }
+                        None => format!("get it: {command}; its text is not in {store} store"),
+                    };
+                    (
+                        format!(
+                            "whole result dropped, none of {} chars kept, {image}",
+                            chars(content)
+                        ),
+                        restore,
+                    )
+                }
+                None => (
+                    format!("none of {} chars kept", chars(content)),
+                    match &mark.entry {
+                        Some(entry) => format!("get it: read(\"history://{agent}/{entry}\")"),
+                        None => format!("it is not in {store} store"),
+                    },
+                ),
             };
             let text = format!(
-                "[reclaimed: {call} → none of {} chars kept; {rule} (cut at request {}); {restore}]",
-                chars(content),
+                "[reclaimed: {call} → {kept}; {rule} (cut at request {}); {restore}]",
                 mark.turn,
             );
             *content = vec![Content::Text {
@@ -1181,6 +1285,241 @@ mod tests {
         assert!(
             young.contains("; you discarded it (cut at request 31)"),
             "{young}"
+        );
+        Ok(())
+    }
+
+    fn image_result(id: &str, path: &str) -> AgentMessage {
+        let metadata = std::fs::metadata(path).ok();
+        let bytes = metadata.as_ref().map(std::fs::Metadata::len);
+        let modified_ns = metadata.as_ref().and_then(|metadata| {
+            let modified = metadata.modified().ok()?;
+            let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+            u64::try_from(since_epoch.as_nanos()).ok()
+        });
+        AgentMessage::ToolResult {
+            tool_call_id: id.to_owned(),
+            tool_name: "ipython".to_owned(),
+            content: vec![
+                Content::Text {
+                    text: format!("Loaded image into context: {path}"),
+                    text_signature: None,
+                },
+                Content::Image {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                },
+            ],
+            details: serde_json::from_value(json!({
+                "status": "ok", "durationMs": 12, "attachments": 1,
+                "attachmentMedia": [{
+                    "mime_type": "image/png", "path": path,
+                    "bytes": bytes, "modified_ns": modified_ns,
+                }],
+            }))
+            .ok(),
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        }
+    }
+
+    fn image_session(plots: &[String]) -> Vec<AgentMessage> {
+        let turns = plots.len() + 6;
+        let mut messages = vec![AgentMessage::user_input(
+            UserContent::Text("plot the drift".to_owned()),
+            0,
+        )];
+        for turn in 0..turns {
+            let id = format!("call-{turn}");
+            let code = json!({"code": format!("plot_drift({turn})")});
+            messages.push(assistant(
+                &[(id.clone(), "ipython", code)],
+                60_000 * turn as u64,
+            ));
+            messages.push(match plots.get(turn) {
+                Some(path) => image_result(&id, path),
+                None => result(&id, "ipython", 10_000),
+            });
+        }
+        messages
+    }
+
+    fn plots(missing: usize) -> Result<(crate::scratch::Scratch, Vec<String>), std::io::Error> {
+        let dir = crate::scratch::Scratch::new("yi-reclaim-images")?;
+        let paths: Vec<String> = (0..4)
+            .map(|index| dir.join(format!("plot-{index}.png")).display().to_string())
+            .collect();
+        for path in paths.iter().skip(missing) {
+            std::fs::write(path, b"\x89PNG\r\n\x1a\n")?;
+        }
+        Ok((dir, paths))
+    }
+
+    #[test]
+    fn a_same_size_overwrite_of_an_image_source_keeps_its_result_whole() -> Fallible {
+        let (_scratch, paths) = plots(0)?;
+        let messages = image_session(&paths);
+        let late = 60_000 * 9 + 6 * 60_000;
+        let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
+        assert!(
+            (record.items.iter()).any(|item| item.tool_call_id == "call-0"),
+            "an untouched source is cut: {:?}",
+            record.items
+        );
+        std::fs::write(&paths[0], b"not png!")?;
+        let file = std::fs::OpenOptions::new().write(true).open(&paths[0])?;
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000))?;
+        let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
+        assert!(
+            !(record.items.iter()).any(|item| item.tool_call_id == "call-0"),
+            "a same-size overwrite is a new picture: {:?}",
+            record.items
+        );
+        Ok(())
+    }
+
+    /// Incident: every cut refused an image result for want of a placeholder that could say how
+    /// to get the picture back, so a session plotting for an hour resent every plot.
+    #[test]
+    fn the_newest_three_image_results_are_never_cut_and_an_older_one_is() -> Fallible {
+        let (_scratch, paths) = plots(0)?;
+        let late = 60_000 * 9 + 6 * 60_000;
+        let model = opus()?;
+        let three = decide(&image_session(&paths[..3]), &Cut::default(), &model, late);
+        let three = three.ok_or("no cut")?;
+        let shown = ["call-0", "call-1", "call-2"];
+        assert!(
+            !three
+                .items
+                .iter()
+                .any(|item| shown.contains(&item.tool_call_id.as_str())),
+            "the newest three image results are never cut: {:?}",
+            three.items
+        );
+        let mut four =
+            decide(&image_session(&paths), &Cut::default(), &model, late).ok_or("no cut")?;
+        let images: Vec<String> = (four.items.iter())
+            .map(|item| item.tool_call_id.clone())
+            .filter(|id| ["call-0", "call-1", "call-2", "call-3"].contains(&id.as_str()))
+            .collect();
+        let Some(item) = four
+            .items
+            .iter_mut()
+            .find(|item| item.tool_call_id == "call-0")
+        else {
+            return Err("missing reclaimed image".into());
+        };
+        item.entry_id = Some("entry-0".to_owned());
+        assert_eq!(images, ["call-0"], "only the oldest of four is cut");
+        let mut cut = Cut::default();
+        cut.add(&four);
+        let shown = apply(image_session(&paths), &cut);
+        let placeholder = shown
+            .get(2)
+            .map(AgentMessage::plain_text)
+            .unwrap_or_default();
+        assert_eq!(
+            placeholder,
+            format!(
+                "[reclaimed: ipython → whole result dropped, none of {} chars kept, its image dropped; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them (cut at request 10); get it: print(await attach_image({:?})); text: read(\"history://self/entry-0\")]",
+                "Loaded image into context: ".len() + paths[0].chars().count(),
+                paths[0]
+            )
+        );
+        Ok(())
+    }
+    #[test]
+    fn a_compressed_attachment_is_cut_from_its_original_file() -> Fallible {
+        let (_scratch, paths) = plots(0)?;
+        let mut messages = image_session(&paths);
+        let Some(AgentMessage::ToolResult { content, .. }) = messages.get_mut(2) else {
+            return Err("missing image result".into());
+        };
+        for part in content {
+            if let Content::Image { data, mime_type } = part {
+                *data = "/9j/2Q==".to_owned();
+                *mime_type = "image/jpeg".to_owned();
+            }
+        }
+        let record = decide(
+            &messages,
+            &Cut::default(),
+            &opus()?,
+            60_000 * 9 + 6 * 60_000,
+        )
+        .ok_or("no cut")?;
+        assert!(
+            record
+                .items
+                .iter()
+                .any(|item| item.tool_call_id == "call-0"),
+            "a resized JPEG attached from a PNG source must not keep the result whole: {:?}",
+            record.items
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_reclaimed_image_stays_when_its_file_changes_before_apply() -> Fallible {
+        let (_scratch, paths) = plots(0)?;
+        let late = 60_000 * 9 + 6 * 60_000;
+        let messages = image_session(&paths);
+        let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
+        let mut cut = Cut::default();
+        cut.add(&record);
+        std::fs::write(&paths[0], b"new image")?;
+        let shown = apply(messages, &cut);
+        let content = shown
+            .get(2)
+            .map(AgentMessage::plain_text)
+            .unwrap_or_default();
+        assert!(
+            content.starts_with("Loaded image into context:"),
+            "{content}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_reclaimed_image_stays_when_its_file_disappears_before_apply() -> Fallible {
+        let (_scratch, paths) = plots(0)?;
+        let late = 60_000 * 9 + 6 * 60_000;
+        let record =
+            decide(&image_session(&paths), &Cut::default(), &opus()?, late).ok_or("no cut")?;
+        let mut cut = Cut::default();
+        cut.add(&record);
+        std::fs::remove_file(&paths[0])?;
+        let shown = apply(image_session(&paths), &cut);
+        let content = shown
+            .get(2)
+            .map(AgentMessage::plain_text)
+            .unwrap_or_default();
+        assert!(
+            content.starts_with("Loaded image into context:"),
+            "{content}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_image_whose_file_is_gone_is_never_cut() -> Fallible {
+        let (_scratch, paths) = plots(1)?;
+        let record = decide(
+            &image_session(&paths),
+            &Cut::default(),
+            &opus()?,
+            60_000 * 9 + 6 * 60_000,
+        )
+        .ok_or("no cut")?;
+        assert!(
+            !record
+                .items
+                .iter()
+                .any(|item| item.tool_call_id == "call-0"),
+            "{:?}",
+            record.items
         );
         Ok(())
     }

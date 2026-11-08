@@ -67,7 +67,7 @@ def _validate_decodable_image(filepath: Path) -> None:
 
 
 def _validate_image(path: str) -> tuple[Path, str, int, tuple[int, int]]:
-    filepath = Path(path).expanduser()
+    filepath = Path(path).expanduser().absolute()
     if not filepath.is_file():
         raise FileNotFoundError(f"{path} is not an existing regular file")
 
@@ -182,10 +182,18 @@ def _resize_image(filepath: Path, mime_type: str, size: int, dimensions: tuple[i
 def _emit_attachment(filepath: Path, mime_type: str, size: int, dimensions: tuple[int, int]) -> str | None:
     from IPython.display import display
 
+    # Stat before the read, so a file that changes in between fails the host's identity check.
+    source = filepath.stat()
     data_b64, emitted_mime_type, resize_note = _resize_image(filepath, mime_type, size, dimensions)
     display(
         {
-            _ATTACHMENT_DISPLAY_MIME: {"mime_type": emitted_mime_type, "data": data_b64, "path": str(filepath)},
+            _ATTACHMENT_DISPLAY_MIME: {
+                "mime_type": emitted_mime_type,
+                "data": data_b64,
+                "path": str(filepath),
+                "bytes": source.st_size,
+                "modified_ns": source.st_mtime_ns,
+            },
             "text/plain": f"Loaded image into context: {filepath}",
         },
         raw=True,

@@ -661,6 +661,7 @@ host-written memory (one file per fact, hook index) | `memory_inject::the_focuse
 daemon (ACP-router supervisor + worker/root) | `serve_daemon::replacing_a_worker_keeps_the_session_and_the_daemon_serving_it` (T2)
 kernel + ipython + rlm() subagents | `requests_e2e::a_final_text_over_the_body_cap_points_at_the_childs_transcript`
 kernel + ipython + rlm() subagents | `recursion_e2e::a_high_discovery_with_no_goal_is_delivered_as_a_note`
+context P1–P19; prefix-aligned P7 | `ipython_faux::the_cell_a_reclaimed_image_names_attaches_the_image_again` (T2)
 kernel + ipython + rlm() subagents | `tools::tests::a_large_cell_result_names_the_file_write_one_liner` (T0)
 fetch: one addressable read path | `kernel_sandbox::a_parent_kernel_loads_no_pickle_a_contained_child_wrote`
 fetch: one addressable read path | `kernel_sandbox::a_contained_childs_kernel_creates_no_board_file`
