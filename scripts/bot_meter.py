@@ -127,8 +127,10 @@ def rows(comments):
                 if line.startswith(marker) and line.endswith(" -->"):
                     fields = dict(p.split("=", 1) for p in line[len(marker):-4].split() if "=" in p)
                     if not bot:
+                        if fields.get("verdict") != "rerun":
+                            continue
                         allowed = authors() if allowed is None else allowed
-                        if fields.get("verdict") != "rerun" or login not in allowed:
+                        if login not in allowed:
                             continue
                     url = comment.get("pull_request_url") or comment.get("issue_url") or ""
                     out.append({**fields, "kind": marker[5:].split("-meta")[0], "at": comment.get("created_at", ""), "id": comment.get("id", 0),
