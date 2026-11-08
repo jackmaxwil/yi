@@ -6,7 +6,9 @@ use yi_types::entry::Entry;
 use yi_types::message::AgentMessage;
 use yi_types::reclaim::{AnnotationRecord, Reclaimed};
 
-use crate::reclaim::{Cut, Sections, annotations, brief, calls, hash, never_cut, newest_reads};
+use crate::reclaim::{
+    Cut, Sections, annotations, brief, calls, hash, never_cut, newest_images, newest_reads,
+};
 
 const NOTE_CAP: usize = 280;
 const KINDS: [&str; 3] = ["pin", "discard", "finding"];
@@ -103,6 +105,7 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
         kept: never_cut(
             result,
             newest_reads(&pairs, &messages, &Sections::default()).contains(index),
+            newest_images(&messages).contains(index),
         ),
     })
 }
@@ -500,6 +503,36 @@ mod tests {
             !failed && text.starts_with("Discarded bash `cargo test"),
             "{text}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_discard_takes_an_old_image_and_never_one_of_the_newest_three() -> Fallible {
+        let (store, _) = session()?;
+        let (_scratch, paths) = crate::reclaim::tests::plots()?;
+        for (turn, path) in paths.iter().enumerate() {
+            let id = format!("plot-{turn}");
+            let code = json!({"code": format!("plot_drift({turn})")});
+            let asked = yi_ai::faux::faux_tool_call(
+                &id,
+                "ipython",
+                code.as_object().cloned().unwrap_or_default(),
+            );
+            let mut store = yi_session::lock_session(&store);
+            store.append_message(
+                "main",
+                yi_ai::faux::faux_assistant_message(vec![asked], StopReason::ToolUse),
+            )?;
+            store.append_message("main", crate::reclaim::tests::image_result(&id, path))?;
+        }
+        let tool = AnnotateTool::new(Arc::new(move || Some(Arc::clone(&store))), Arc::default());
+        let (text, failed) = call(&tool, json!({"kind": "discard", "call": "plot_drift(1)"}));
+        assert!(
+            failed && text.contains("one of the three newest image results is never cut"),
+            "{text}"
+        );
+        let (text, failed) = call(&tool, json!({"kind": "discard", "call": "plot_drift(0)"}));
+        assert!(!failed && text.starts_with("Discarded ipython"), "{text}");
         Ok(())
     }
 }

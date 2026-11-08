@@ -35,6 +35,15 @@ impl ImageDefect {
     }
 }
 
+/// The ipython statement that attaches paths expressed as Python arguments.
+#[must_use]
+pub fn attach_image_call<'a>(paths: impl IntoIterator<Item = &'a str>) -> String {
+    format!(
+        "print(await attach_image({}))",
+        paths.into_iter().collect::<Vec<_>>().join(", ")
+    )
+}
+
 impl fmt::Display for ImageDefect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -259,7 +259,12 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
         "durationMs": result.duration_ms,
         "attachments": result.attachments.len(),
         "attachmentMedia": checked.iter().map(|(attachment, defect)| if defect.is_none() {
-            json!({ "mime_type": attachment.mime_type, "path": attachment.path })
+            json!({
+                "mime_type": attachment.mime_type,
+                "path": attachment.path,
+                "bytes": attachment.bytes,
+                "modified_ns": attachment.modified_ns,
+            })
         } else {
             json!(attachment)
         }).collect::<Vec<_>>(),

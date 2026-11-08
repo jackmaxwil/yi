@@ -41,12 +41,21 @@ fn service(registry: HostRegistry) -> Arc<KernelService> {
 }
 
 fn bare_service(cell_ceiling: Option<std::time::Duration>) -> Arc<KernelService> {
+    let mut registry = HostRegistry::default();
+    registry.register("model.info", |_payload| {
+        Box::pin(async {
+            Ok(serde_json::Map::from_iter([(
+                "input".to_owned(),
+                serde_json::json!(["text", "image"]),
+            )]))
+        })
+    });
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
         home: home(),
         session_dir: None,
         family_dir: None,
-        host: Arc::new(HostRegistry::default()),
+        host: Arc::new(registry),
         on_restore: None,
         on_boot: None,
         sandbox: None,
@@ -269,5 +278,113 @@ async fn a_kernel_boot_reports_its_steps_then_closes() -> Result<(), Box<dyn Err
         "{steps:?}"
     );
     assert_eq!(steps.last(), Some(&None), "the boot closes: {steps:?}");
+    Ok(())
+}
+
+/// The cell a reclaim placeholder names for an aged image puts the picture back when run as
+/// the model would; the kernel attaches by a path relative to a cwd that is not the host's.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn the_cell_a_reclaimed_image_names_attaches_the_image_again() -> Result<(), Box<dyn Error>> {
+    let dir = crate::scratch::Scratch::new("yi-image-reclaim")?;
+    let name = "plot \"reclaimed\".png";
+    let path = dir.join(name);
+    let provider = Arc::new(ProviderStream::new(None));
+    let mut script = Vec::new();
+    for turn in 0..10 {
+        let code = match turn {
+            0 => format!(
+                "import os\nfrom PIL import Image\nfrom attach_image import run as attach_image\nos.chdir({:?})\nImage.new('RGB', (4, 4)).save({name:?})\nprint(await attach_image({name:?}))",
+                dir.display().to_string()
+            ),
+            1..=3 => format!("print(await attach_image({name:?}))"),
+            _ => "print('plot drift\\n' * 200)".to_owned(),
+        };
+        let arguments = serde_json::json!({"code": code})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let mut reply = faux_assistant_message(
+            vec![faux_tool_call(
+                &format!("reclaim-{turn}"),
+                "ipython",
+                arguments,
+            )],
+            StopReason::ToolUse,
+        );
+        if let yi_types::message::AgentMessage::Assistant {
+            timestamp, usage, ..
+        } = &mut reply
+        {
+            (*timestamp, usage.input) = (1, 1_000);
+        }
+        script.push(reply);
+    }
+    script.push(faux_assistant_message(
+        vec![faux_text("done")],
+        StopReason::Stop,
+    ));
+    provider.queue_faux(script);
+    let price = |value| serde_json::Number::from_f64(value).ok_or("invalid price");
+    let mut model = faux_model(128_000);
+    model.cost.input = price(5.0)?;
+    model.cost.cache_read = price(0.5)?;
+    model.cost.cache_write = price(6.25)?;
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model,
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.attach_store(crate::support::memory_store("reclaim-image"))?;
+    let service = bare_service(None);
+    let mut tools = yi_tools::builtin_tools();
+    tools.push(ipython_tool(Arc::clone(&service), None));
+    session.use_tools(tools, dir.to_path_buf(), None);
+    session.prompt("plot the drift")?;
+    session.wait_idle().await;
+
+    let shown = (session.history_handle())();
+    let placeholder = shown
+        .iter()
+        .map(yi_types::message::AgentMessage::plain_text)
+        .find(|text| text.starts_with("[reclaimed:") && text.contains("attach_image"))
+        .ok_or("no image reclaim placeholder")?;
+    let cell = placeholder
+        .split("get it: ")
+        .nth(1)
+        .and_then(|tail| tail.split("; text:").next())
+        .ok_or("no cell in the placeholder")?
+        .to_owned();
+    let (cell_service, cell) = (Arc::clone(&service), cell);
+    let back = tokio::task::spawn_blocking(move || {
+        let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+        yi_tools::KernelBridge::execute_cell(cell_service.as_ref(), &cell, "", &cancelled, None)
+    })
+    .await
+    .map_err(|error| error.to_string())??
+    .result;
+    service.dispose().await;
+    assert_eq!(
+        back.status,
+        yi_types::kernel::ExecuteStatus::Ok,
+        "{:?}",
+        back.error
+    );
+    let [attachment] = back.attachments.as_slice() else {
+        return Err(format!("{} {:?}", back.stderr, back.error).into());
+    };
+    assert_eq!(
+        yi_types::image::image_defect(&attachment.mime_type, &attachment.data),
+        None
+    );
+    let back = attachment
+        .path
+        .as_deref()
+        .ok_or("the re-attach names no path")?;
+    assert_eq!(std::fs::canonicalize(back)?, std::fs::canonicalize(&path)?);
     Ok(())
 }

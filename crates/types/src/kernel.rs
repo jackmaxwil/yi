@@ -55,6 +55,12 @@ pub struct KernelAttachment {
     pub data: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// The source file's size and `st_mtime_ns` as the kernel stat it before reading it, which
+    /// is how a re-attach of `path` is known to give back the same picture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_ns: Option<u64>,
 }
 
 /// Python error from an `error` iopub message (design §9).

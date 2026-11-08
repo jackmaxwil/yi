@@ -235,9 +235,7 @@ fn push_tool_results(
         }) = transformed.get(index).map(AsRef::as_ref)
         {
             let text: String = yi_types::message::join_text(content, "\n");
-            let has_images = content
-                .iter()
-                .any(|block| matches!(block, Content::Image { .. }));
+            let has_images = yi_types::message::has_image(content);
             let body = if !text.is_empty() {
                 text
             } else if has_images {
