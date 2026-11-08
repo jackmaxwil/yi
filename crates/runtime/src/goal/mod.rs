@@ -14,6 +14,9 @@ use yi_types::schedule::DeliveryMode;
 use yi_types::subagent::Discovery;
 
 use crate::args::Args;
+mod quiet;
+
+pub use quiet::QUIET_RUNS_CAP;
 
 pub(crate) static CONTINUATION: std::sync::LazyLock<String> =
     crate::packed::packed!("continuation");
@@ -21,6 +24,7 @@ pub(crate) static BUDGET_LIMIT: std::sync::LazyLock<String> =
     crate::packed::packed!("budget_limit");
 pub(crate) static OBJECTIVE_UPDATED: std::sync::LazyLock<String> =
     crate::packed::packed!("objective_updated");
+pub(crate) static RELEASED: std::sync::LazyLock<String> = crate::packed::packed!("released");
 
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
@@ -49,9 +53,10 @@ pub(crate) fn check_view(
     } else {
         format!("{text}\n{rows}")
     };
-    capture
-        .cut_row()
-        .map_or_else(|| body.clone(), |row| format!("{body}\n{row}"))
+    match capture.cut_row() {
+        Some(row) => format!("{body}\n{row}"),
+        None => body,
+    }
 }
 
 /// The rerun a cut row names: `command` from `dir`, where the check ran. The reader's own bash
@@ -467,6 +472,14 @@ pub fn objective_updated_text(goal: &Goal) -> String {
     fill(OBJECTIVE_UPDATED.as_str(), goal, Vec::new())
 }
 
+pub fn released_text(goal: &Goal, runs: u32) -> String {
+    let extra = vec![
+        ("runs", runs.to_string()),
+        ("cap", QUIET_RUNS_CAP.to_string()),
+    ];
+    fill(RELEASED.as_str(), goal, extra)
+}
+
 /// The objective-edit and budget notices ride the continuation kind but are never superseded.
 fn goal_notice_message(text: String) -> AgentMessage {
     AgentMessage::Custom {
@@ -504,6 +517,10 @@ pub struct GoalService {
     deferred: Mutex<bool>,
     /// Cleared at AgentStart so idle cannot double-fire.
     pending: Mutex<bool>,
+    continuing: Mutex<bool>,
+    worked: Mutex<bool>,
+    /// Continuation runs in a row that ended on an error or changed nothing.
+    quiet: Mutex<u32>,
     wall_mark: Mutex<Option<Instant>>,
     checker: Checker,
 }
@@ -516,8 +533,11 @@ impl GoalService {
             cwd,
             deliver,
             deferred: Mutex::new(false),
+            continuing: Mutex::new(false),
             checker: Checker::default(),
             pending: Mutex::new(false),
+            worked: Mutex::new(false),
+            quiet: Mutex::new(0),
             wall_mark: Mutex::new(None),
         }
     }
@@ -605,6 +625,7 @@ impl GoalService {
             extra: Map::new(),
         };
         self.write_goal(goal.clone())?;
+        self.reset_quiet();
         if let Ok(mut mark) = self.wall_mark.lock() {
             *mark = Some(Instant::now());
         }
@@ -650,6 +671,7 @@ impl GoalService {
         goal.status = status;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
+        self.reset_quiet();
         Ok(goal_json(&goal))
     }
 
@@ -728,6 +750,7 @@ impl GoalService {
         goal.check_failure = None;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
+        self.reset_quiet();
         (self.deliver)(
             goal_notice_message(objective_updated_text(&goal)),
             DeliveryMode::Steer,
@@ -823,18 +846,6 @@ impl GoalService {
         }
     }
 
-    fn block_after_error(&self) {
-        let Some(mut goal) = self.read_goal() else {
-            return;
-        };
-        if !goal.status.is_active() {
-            return;
-        }
-        goal.status = GoalStatus::Blocked;
-        goal.updated = yi_session::now_ms();
-        let _best_effort = self.write_goal(goal);
-    }
-
     /// Idle with an Active goal and no deferral queues the continuation prompt,
     /// through the same hook heartbeats use.
     fn continue_if_idle(&self) {
@@ -849,15 +860,30 @@ impl GoalService {
         }
         let text = continuation_text(&goal, self.read_plan().ok().as_ref());
         Self::set_flag(&self.pending, true);
+        Self::set_flag(&self.continuing, true);
         (self.deliver)(goal_prompt_message(text), DeliveryMode::FollowUp);
     }
 
     pub fn observe(&self, event: &AgentEvent) {
         match event {
-            AgentEvent::AgentStart => Self::set_flag(&self.pending, false),
+            AgentEvent::AgentStart => {
+                Self::set_flag(&self.pending, false);
+                Self::set_flag(&self.worked, false);
+            }
             AgentEvent::MessageStart {
                 message: AgentMessage::User { .. },
-            } => Self::set_flag(&self.deferred, false),
+            } => {
+                Self::set_flag(&self.deferred, false);
+                Self::set_flag(&self.continuing, false);
+            }
+            AgentEvent::ToolExecutionStart {
+                tool_name, args, ..
+            } => {
+                let command = args.get("command").and_then(serde_json::Value::as_str);
+                if !crate::todo::coupling::quiet_call(tool_name, command) {
+                    Self::set_flag(&self.worked, true);
+                }
+            }
             AgentEvent::MessageEnd {
                 message:
                     AgentMessage::Assistant {
@@ -865,12 +891,10 @@ impl GoalService {
                     },
             } => match stop_reason {
                 StopReason::Aborted => Self::set_flag(&self.deferred, true),
-                // Block the goal so automatic continuation cannot loop
-                // against a failing turn.
-                StopReason::Error => self.block_after_error(),
+                StopReason::Error => {}
                 _ => self.account(usage),
             },
-            AgentEvent::AgentEnd { .. } => self.continue_if_idle(),
+            AgentEvent::AgentEnd { reason, .. } => self.settle(reason.as_ref()),
             _ => {}
         }
     }

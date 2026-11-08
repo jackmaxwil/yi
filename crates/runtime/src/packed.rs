@@ -36,7 +36,7 @@ mod tests {
     /// Each blob must reach its accessor through [`crate::packed::inflate`]; wrong stems fail too.
     #[test]
     fn every_packed_prompt_reads_as_its_own_file() {
-        let rows: [(&str, &LazyLock<String>, &[u8], &str); 14] = [
+        let rows: [(&str, &LazyLock<String>, &[u8], &str); 15] = [
             (
                 "identity",
                 &crate::IDENTITY,
@@ -120,6 +120,12 @@ mod tests {
                 &goal::OBJECTIVE_UPDATED,
                 include_bytes!(concat!(env!("OUT_DIR"), "/objective_updated.zz")),
                 include_str!("goal/prompts/objective_updated.md"),
+            ),
+            (
+                "released",
+                &goal::RELEASED,
+                include_bytes!(concat!(env!("OUT_DIR"), "/released.zz")),
+                include_str!("goal/prompts/released.md"),
             ),
         ];
         for (_, live, _, _) in &rows {

@@ -15,6 +15,7 @@ use names::{known_labels, known_phases, named, rows};
 pub mod check;
 pub mod claims;
 pub mod coupling;
+mod done;
 pub mod mirror;
 pub mod names;
 pub mod text;
@@ -994,48 +995,7 @@ fn step(list: &mut TodoList, op: Op, notes: &mut Vec<String>) -> Result<(), Todo
             check::mark(resolve(list, &label)?, last);
             Ok(())
         }
-        Op::Done { target, evidence } => {
-            let evidence = evidence
-                .map(|text| text.trim().to_owned())
-                .filter(|text| !text.is_empty());
-            if let Target::Label(label) = &target {
-                let item = resolve(list, label)?;
-                let open: Vec<String> = item
-                    .children
-                    .iter()
-                    .filter(|child| !child.state.is_terminal())
-                    .map(|child| format!("{:?}", child.label.as_str()))
-                    .collect();
-                if !open.is_empty() {
-                    return Err(TodoError::ParentOpen {
-                        label: label.to_string(),
-                        open: open.join(", "),
-                    });
-                }
-            }
-            let named = matches!(target, Target::Label(_));
-            each_target(list, &target, |item| {
-                let closed = item.state.is_terminal();
-                if matches!(item.state, TodoState::Other(_)) || (named && closed) {
-                    return Err(illegal("done", item));
-                }
-                if closed {
-                    return Ok(());
-                }
-                if evidence.is_none() {
-                    return Err(TodoError::NoEvidence {
-                        label: item.label.to_string(),
-                    });
-                }
-                item.state = TodoState::Done {
-                    output: None,
-                    resolution: None,
-                };
-                item.note = None;
-                item.evidence.clone_from(&evidence);
-                Ok(())
-            })
-        }
+        Op::Done { target, evidence } => done::done(list, &target, evidence, notes),
         Op::Drop { target, reason } => abandon(list, &target, &Note::new(reason)?, notes),
         Op::Block {
             label,

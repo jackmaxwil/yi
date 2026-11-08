@@ -111,6 +111,7 @@ fn a_run_of_read_only_calls_commits_as_one_row() -> TestResult {
 
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let committed = flat(&app.take_commits());
     assert_eq!(
@@ -135,6 +136,7 @@ fn a_lone_read_shows_live_as_the_cell_it_commits() -> TestResult {
     let live = common::rows_sized(&mut app, 80, 24)?;
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let landed = flat(&app.take_commits());
     let card = landed.get(..2).ok_or(format!("no card: {landed:#?}"))?;
@@ -253,6 +255,7 @@ fn a_lone_read_still_renders_as_itself() -> TestResult {
     ended(&mut app, "t0", "read", "1:one");
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let joined = flat(&app.take_commits()).join("\n");
     assert!(!joined.contains("Explored"), "{joined}");
@@ -808,6 +811,7 @@ fn web_search_card_has_its_query_glyph_hue_and_citation_count() -> TestResult {
     ended(&mut app, "search", "web_search", "answer");
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let rows = flat(&app.take_commits()).join("\n");
     assert!(rows.contains("latest Rust"), "{rows}");

@@ -9,7 +9,7 @@ use yi_ai::faux::{
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::tool::{AgentTool, ToolFuture, ToolOutcome, error_tool_result};
 use yi_loop::{ExecutionMode, LoopConfig, LoopContext, run_loop};
-use yi_types::event::{AgentEvent, AssistantMessageEvent};
+use yi_types::event::{AgentEvent, AssistantMessageEvent, RunEnd};
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ModelCost, ToolChoice, ToolDef};
 
@@ -2633,4 +2633,85 @@ async fn a_retry_backoff_is_not_counted_in_the_requests_elapsed_time() {
         _ => None,
     });
     assert!(elapsed.is_some_and(|elapsed| elapsed < 200), "{elapsed:?}");
+}
+
+/// The `agent_end` reason a surface reads instead of rebuilding it from the last stop.
+async fn ended_with(stream: &Scripted, config: &LoopConfig) -> Option<RunEnd> {
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let (events, mut emit) = collector();
+    run_loop(
+        &mut context,
+        vec![user("go")],
+        config,
+        &InterruptSignal::default(),
+        &mut emit,
+        stream,
+    )
+    .await;
+    let events = events
+        .lock()
+        .map(|events| events.clone())
+        .unwrap_or_default();
+    events.iter().find_map(|event| match event {
+        AgentEvent::AgentEnd { reason, .. } => Some(reason.clone()),
+        _ => None,
+    })?
+}
+
+#[tokio::test]
+async fn every_end_carries_its_own_reason() {
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("x"));
+    let batch = || {
+        faux_assistant_message(
+            vec![faux_tool_call("c", "echo", arguments.clone())],
+            StopReason::ToolUse,
+        )
+    };
+    let calls: Vec<AgentMessage> = (0..8).map(|_| batch()).collect();
+    let mut error = faux_assistant_message(vec![faux_text("half")], StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut error {
+        *error_message = Some("boom".to_owned());
+    }
+    let cases: Vec<(&str, Vec<AgentMessage>, RunEnd)> = vec![
+        (
+            "stop",
+            vec![faux_assistant_message(
+                vec![faux_text("done")],
+                StopReason::Stop,
+            )],
+            RunEnd::Stop,
+        ),
+        ("error", vec![error], RunEnd::Error),
+        (
+            "aborted",
+            vec![faux_assistant_message(Vec::new(), StopReason::Aborted)],
+            RunEnd::Aborted,
+        ),
+        ("guard", calls, RunEnd::Guard),
+        (
+            "length",
+            vec![
+                faux_assistant_message(vec![faux_text("a")], StopReason::Length),
+                faux_assistant_message(vec![faux_text("b")], StopReason::Length),
+                faux_assistant_message(vec![faux_text("c")], StopReason::Length),
+            ],
+            RunEnd::Length,
+        ),
+    ];
+    for (what, script, expected) in cases {
+        let ended = ended_with(&Scripted::new(script), &LoopConfig::new(faux_model())).await;
+        assert_eq!(ended, Some(expected), "{what}");
+    }
+    let mut config = LoopConfig::new(faux_model());
+    config.should_stop_after_turn = Some(Box::new(|_| true));
+    let quiet = Scripted::new(vec![
+        faux_assistant_message(vec![faux_text("first")], StopReason::Stop),
+        faux_assistant_message(vec![faux_text("second")], StopReason::Stop),
+    ]);
+    assert_eq!(ended_with(&quiet, &config).await, Some(RunEnd::Drained));
 }
