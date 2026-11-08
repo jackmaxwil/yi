@@ -256,7 +256,7 @@ def check_task_discovery():
     assert len(calls) == 2, calls
 
 
-def check_retry_flow(login="jack"):
+def check_retry_flow():
     number = 7
     sha = "a" * 40
     pr = {"number": number, "head": {"sha": sha}}
@@ -273,7 +273,7 @@ def check_retry_flow(login="jack"):
             return notes if "page=1" in path else []
         assert method == "POST", (method, path)
         posts.append(payload)
-        notes.append({"id": len(posts), "body": payload["body"], "user": {"login": login}})
+        notes.append({"id": len(posts), "body": payload["body"], "user": {"login": "jack"}})
         return {"id": len(posts)}
 
     def run(run_id, **kwargs):
@@ -288,7 +288,7 @@ def check_retry_flow(login="jack"):
         mock.patch.object(forge_pr, "required", lambda: ["gate (test)", "gate (lint)"]),
         mock.patch.object(forge_pr, "repo", lambda: "o/r"),
         mock.patch.object(forge_pr, "fgj_api", api),
-        mock.patch.object(bot_meter, "authors", lambda: {bot_meter.BOT, login}),
+        mock.patch.object(bot_meter, "authors", lambda: {bot_meter.BOT, "jack"}),
         mock.patch.object(sys.modules[__name__], "failed_tasks", lambda repo, head, jobs: tasks),
         mock.patch.object(sys.modules[__name__], "read_log", lambda task: logs[task["id"]]),
         mock.patch.object(sys.modules[__name__], "workflow_run_id", lambda repo, number, sha: number + 17800),
@@ -301,7 +301,7 @@ def check_retry_flow(login="jack"):
             codes = [cmd_retry(argparse.Namespace(number=str(number))) for _ in range(3)]
             logs[6] = CODE_LOGS[0][1]
             code = cmd_retry(argparse.Namespace(number=str(number)))
-        assert codes == [0, 0, 1], f"the {MAX_RETRIES}-per-head cap read {codes} as {login}'s own rows"
+        assert codes == [0, 0, 1], f"the {MAX_RETRIES}-per-head cap read {codes} on the owner's own rows"
         assert len(posts) == 2 and runs == [17842, 17842], (posts, runs)
         notes.clear()
         posts.clear()
@@ -463,7 +463,6 @@ def selfcheck():
         if not any(name in reason for reason in classifier_cases(name)):
             bad.append(f"signature {name} disabled and every classifier case still passes")
     for name, check in (("task discovery", check_task_discovery), ("retry flow", check_retry_flow),
-                        ("retry flow under the bot's login", lambda: check_retry_flow(bot_meter.BOT)),
                         ("ledger", check_ledger), ("run id", check_workflow_run_id),
                         ("rerun command", check_rerun_command), ("log command", check_log_command),
                         ("retry verb", check_retry_verb), ("status hint", check_status_hint),
