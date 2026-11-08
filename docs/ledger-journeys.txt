@@ -648,6 +648,11 @@ goals + autonomous | `goal_e2e::an_error_turn_does_not_block_the_goal_on_its_own
 todo tool + loop coupling | `todo_coupling::only_a_data_file_the_prompt_named_earns_the_artifact_re_drive` (T0)
 todo tool + loop coupling | `todo_coupling::an_impossibility_is_a_phrase_of_its_own_not_a_stretch_of_another_word` (T0)
 todo tool + loop coupling | `todo_e2e::a_done_with_no_target_keeps_blocked_rows_and_names_them` (T0)
+permission modes/rules/holds, deterministic auto | `gate::tests::a_headless_refusal_names_the_model_remedies_and_never_a_persons_flag`
+permission modes/rules/holds, deterministic auto | `cli_surfaces::a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it`
+skill classifier | `session_faux::three_approval_failures_deliver_one_breaker_notice`
+kernel + ipython + rlm() subagents | `kernel_bootstrap::tests::the_note_points_at_help_on_one_name`
+skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::every_skill_file_the_binary_ships_is_under_a_skill_root`
 custom OpenAI-compatible providers | `custom_providers::a_declared_provider_streams_through_its_own_base_url_and_key` (T2)
 custom OpenAI-compatible providers | `custom_providers::a_declared_provider_with_no_key_is_refused_before_any_request` (T2)
 custom OpenAI-compatible providers | `custom_providers::a_custom_provider_named_like_a_built_in_one_is_refused_at_load` (T2)

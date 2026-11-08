@@ -3300,9 +3300,8 @@ fn turns_script(
     Ok(path.display().to_string())
 }
 
-/// Dies with a headless run that needed an approval nobody could give exiting 0 with the call
-/// unnamed, so a caller could not tell a refusal from an answer. The `permissions.allow` entry
-/// the refusal prints is the remedy, so it is run: the same call, with that entry, goes through.
+/// Dies with a headless denial that hid the call, told the model to run `--yolo`, or printed an
+/// entry that does not run it: the entry is the user's, so the same call with it goes through.
 #[test]
 fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -> TestResult {
     let workspace = Workspace::new("headless-denial")?;
@@ -3327,6 +3326,15 @@ fn a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it() -
     assert_eq!(denied["tool"], "bash", "{out}");
     assert_eq!(denied["args"]["command"], command, "{out}");
     let reason = denied["reason"].as_str().ok_or("no reason")?;
+    for remedy in [
+        "Split the command",
+        "working tree",
+        "ask the user",
+        "The user can allow",
+    ] {
+        assert!(reason.contains(remedy), "no `{remedy}` in {reason}");
+    }
+    assert!(!reason.contains("--yolo"), "{reason}");
 
     let (_, tail) = reason
         .split_once("permissions.allow entry ")

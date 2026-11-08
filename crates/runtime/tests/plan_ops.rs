@@ -3424,6 +3424,7 @@ mod contracts {
                 thresholds,
                 yi_runtime::classifier::Timing::Instant,
                 Arc::new(|_| {}),
+                Arc::new(|_| {}),
             )));
         }
         let confirming = yi_runtime::plan::authority::Confirming {
@@ -3545,6 +3546,7 @@ mod contracts {
                 ask_at: 0.2,
             },
             Timing::AfterDelay(std::time::Duration::from_millis(200)),
+            Arc::new(|_| {}),
             Arc::new(|_| {}),
         )));
         let tool = PlanTool::new(Arc::clone(&rig.engine), Actor::Owner).confirming(

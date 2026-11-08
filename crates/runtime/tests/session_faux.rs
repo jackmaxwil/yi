@@ -1905,6 +1905,48 @@ async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<
     Ok(())
 }
 
+/// The approval breaker's trip reached the journal only, so a model whose asks went unscreened
+/// read nothing; `attach` must hand the approver this session's own delivery.
+#[tokio::test]
+async fn three_approval_failures_deliver_one_breaker_notice() -> Result<(), Box<dyn Error>> {
+    use yi_types::message::UserContent;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (broker, warnings, session) =
+        brokered_session("yi-attach-breaker", Some(asker), false, "", port)?;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    for turn in 0..3 {
+        let mut args = serde_json::Map::new();
+        args.insert("command".to_owned(), format!("make build run{turn}").into());
+        let outcome =
+            broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
+        assert!(!outcome.allowed, "turn {turn}: {}", outcome.reason);
+    }
+    session.prompt("go")?;
+    session.wait_idle().await;
+    let notices: Vec<String> = (session.messages().into_iter())
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                content: UserContent::Text(text),
+                ..
+            } if custom_type == "classifier" => Some(text),
+            _ => None,
+        })
+        .collect();
+    let consequence = "approval asks skip the classifier and go to the reviewer or the user";
+    assert_eq!(
+        (notices.iter())
+            .filter(|text| text.contains("failed 3 times") && text.contains(consequence))
+            .count(),
+        1,
+        "{notices:?}"
+    );
+    Ok(())
+}
+
 /// The question a judgement sends is the one `attach` builds from the live session: the project
 /// it read from the broker and the task and answered calls of the session's own transcript.
 #[tokio::test]
