@@ -1,4 +1,5 @@
 ---
+version: 0.1000.0
 issue: Closes #2088
 cut: scripts/pr_autofix.py | push_head(repo, ref, new) | a clean main merge pushed into a PR that is only behind reran its whole gate and voided its review rounds, 41 times in a day on #2022, while the queue merges onto main itself
 ---
