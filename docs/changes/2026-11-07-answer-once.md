@@ -1,4 +1,5 @@
 ---
+version: 0.1006.0
 issue: Closes #2091, Closes #2092
 raise: crate tui +165, tests +322, comments +13
 growth: +165 the draft tracker (which parent cells each reply wrote, which replies are drafts, and the one turn that opens a second reply), emptying a prose cell in place, and the same rule on resume; weighed for deletion: holding prose back while an answer is judged (cut: a refused or cut-off answer took away text the reader was reading), and marking the appended answer in the session format (rejected: a schema change for a fact the turn structure and the saved shape already carry).
