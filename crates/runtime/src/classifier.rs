@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use yi_types::classifier::{ClassifyRecord, DecisionRequest, DecisionResponse, Question};
 use yi_types::config::{ApprovalMode, ClassifierConfig, UserConfig};
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, Content};
 
 use crate::AgentSession;
 use crate::mailbox::clamp;
@@ -18,8 +18,6 @@ pub const NOTICE_TYPE: &str = "classifier";
 const DEFAULT_TIMEOUT_MS: u64 = 1000;
 const CANDIDATE_CAP: usize = 20;
 const CRITERION_CHARS: usize = 60;
-const TRIP_AFTER: u32 = 3;
-const PAUSE: Duration = Duration::from_secs(60);
 const QUESTION: &str = "skill";
 const NONE: &str = "none";
 const INSTRUCTIONS: &str =
@@ -27,6 +25,9 @@ const INSTRUCTIONS: &str =
 
 pub type Record = Arc<dyn Fn(ClassifyRecord) + Send + Sync>;
 pub use crate::Deliver;
+
+mod breaker;
+use breaker::{Breaker, TRIP_AFTER, breaker_notice, fail, paused, succeed};
 
 #[derive(Clone)]
 pub struct Sidecar {
@@ -68,62 +69,6 @@ fn noul(instructions: &str) -> Question {
 
 fn since(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
-
-struct Breaker {
-    failures: u32,
-    trips_at: u32,
-    paused_until: Option<Instant>,
-    /// The failure that paused it, for the one caller that journals why nothing was screened.
-    cause: Option<String>,
-}
-
-impl Breaker {
-    const fn new(trips_at: u32) -> Self {
-        Self {
-            failures: 0,
-            trips_at,
-            paused_until: None,
-            cause: None,
-        }
-    }
-}
-
-/// `None` while the endpoint is open; `Some(cause)` while it is paused, the cause recorded only
-/// for a caller that journals it. A poisoned lock answers paused, so the endpoint is not asked.
-fn paused(breaker: &Mutex<Breaker>) -> Option<Option<String>> {
-    let Ok(mut breaker) = breaker.lock() else {
-        return Some(None);
-    };
-    match breaker.paused_until {
-        Some(until) if Instant::now() < until => Some(breaker.cause.clone()),
-        Some(_) => {
-            breaker.paused_until = None;
-            breaker.cause = None;
-            None
-        }
-        None => None,
-    }
-}
-
-fn fail(breaker: &Mutex<Breaker>, cause: Option<&str>) -> bool {
-    let Ok(mut breaker) = breaker.lock() else {
-        return false;
-    };
-    breaker.failures = breaker.failures.saturating_add(1);
-    if breaker.failures < breaker.trips_at {
-        return false;
-    }
-    breaker.failures = 0;
-    breaker.paused_until = Instant::now().checked_add(PAUSE);
-    breaker.cause = cause.map(str::to_owned);
-    true
-}
-
-fn succeed(breaker: &Mutex<Breaker>) {
-    if let Ok(mut breaker) = breaker.lock() {
-        breaker.failures = 0;
-    }
 }
 
 pub struct SkillClassifier {
@@ -263,17 +208,11 @@ impl SkillClassifier {
     }
 
     fn notice(&self, error: &str) -> AgentMessage {
-        AgentMessage::Custom {
-            custom_type: NOTICE_TYPE.to_owned(),
-            content: UserContent::Text(format!(
-                "The classifier at {} failed {TRIP_AFTER} times in a row (last: {error}); skill reminders use trigger words only for the next {} s.",
-                self.sidecar.url,
-                PAUSE.as_secs()
-            )),
-            display: true,
-            details: None,
-            timestamp: yi_session::now_ms(),
-        }
+        breaker_notice(
+            &self.sidecar.url,
+            error,
+            "skill reminders use trigger words only",
+        )
     }
 }
 
@@ -341,17 +280,25 @@ pub struct Approver {
     timing: Timing,
     breaker: Mutex<Breaker>,
     record: Record,
+    deliver: Deliver,
     context: Option<Context>,
 }
 
 impl Approver {
-    pub fn new(sidecar: Sidecar, thresholds: Thresholds, timing: Timing, record: Record) -> Self {
+    pub fn new(
+        sidecar: Sidecar,
+        thresholds: Thresholds,
+        timing: Timing,
+        record: Record,
+        deliver: Deliver,
+    ) -> Self {
         Self {
             sidecar,
             thresholds,
             timing,
             breaker: Mutex::new(Breaker::new(TRIP_AFTER)),
             record,
+            deliver,
             context: None,
         }
     }
@@ -390,7 +337,11 @@ impl Approver {
                     response.answers.get(SAFE).and_then(|answer| answer.noul)
                 }
                 Err(error) => {
-                    fail(&self.breaker, None);
+                    if fail(&self.breaker, None) {
+                        let consequence =
+                            "approval asks skip the classifier and go to the reviewer or the user";
+                        (self.deliver)(breaker_notice(&self.sidecar.url, &error, consequence));
+                    }
                     record.error = Some(self.sidecar.named(&error));
                     None
                 }
@@ -935,6 +886,8 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             .unwrap_or(DEFAULT_SCREEN_MAX_CHARS),
         journal(session),
     )));
+    let queue = session.deliver_hook();
+    let deliver: Deliver = Arc::new(move |message| queue(message, false));
     if let (Some(timing), Some(broker)) = (timing, broker) {
         let writable = match broker.sandbox() {
             Some(sandbox) => (sandbox.writable.iter())
@@ -952,6 +905,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             thresholds(&block),
             timing,
             journal(session),
+            Arc::clone(&deliver),
         );
         broker.set_approver(Arc::new(
             approver.with_context(project, session.history_tail(HISTORY_TAIL)),
@@ -965,8 +919,6 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         .filter(|skill| skill.frontmatter.contains_key("trigger"))
         .map(|skill| (skill.name, skill.description))
         .collect();
-    let queue = session.deliver_hook();
-    let deliver: Deliver = Arc::new(move |message| queue(message, false));
     match SkillClassifier::new(sidecar, skills, journal(session), deliver) {
         Ok(classifier) => rules.set_classifier(Arc::new(classifier)),
         Err(why) => warnings.push(why),

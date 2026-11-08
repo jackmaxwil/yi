@@ -281,7 +281,7 @@ async fn the_first_cell_shows_the_rlm_table_once_and_the_state_names_the_surface
     let service = service();
     let before = service.state();
     assert!(
-        before.contains("help(rlm) and help(yi) are exact"),
+        before.contains("help(rlm.<name>) and help(yi) are exact"),
         "{before}"
     );
     let offered = |module: &str| -> Vec<String> {

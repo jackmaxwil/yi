@@ -1097,3 +1097,42 @@ fn the_index_cut_names_its_cap_and_keeps_every_name() -> TestResult {
     assert!(over.len() <= cap, "{}", over.len());
     Ok(())
 }
+
+/// The binary ships `python/skills` under `~/.yi/python/skills`, which no skill root scans.
+#[test]
+fn every_skill_file_the_binary_ships_is_under_a_skill_root() -> TestResult {
+    let scratch = Scratch::new("yi-shipped-skills")?;
+    let home = scratch.home()?;
+    let python = yi_kernel::bootstrap::unpack_embedded_python(&home)?;
+    let reachable: std::collections::BTreeSet<PathBuf> = yi_runtime::skills::discover(&home, &home)
+        .into_iter()
+        .filter_map(|skill| skill.path.canonicalize().ok())
+        .collect();
+    let mut shipped = Vec::new();
+    shipped_skill_files(&python, &mut shipped)?;
+    let unreachable: Vec<&PathBuf> = shipped
+        .iter()
+        .filter(|path| {
+            !path
+                .canonicalize()
+                .is_ok_and(|path| reachable.contains(&path))
+        })
+        .collect();
+    assert!(
+        unreachable.is_empty(),
+        "no skill root scans these, so no model reads them: {unreachable:?}"
+    );
+    Ok(())
+}
+
+fn shipped_skill_files(dir: &std::path::Path, found: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            shipped_skill_files(&path, found)?;
+        } else if path.file_name().is_some_and(|name| name == "SKILL.md") {
+            found.push(path);
+        }
+    }
+    Ok(())
+}

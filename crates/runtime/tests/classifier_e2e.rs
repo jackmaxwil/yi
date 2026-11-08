@@ -541,7 +541,13 @@ fn gate_in(
     if !thinking.is_zero() {
         broker.prompts_close_on_settle();
     }
-    broker.set_approver(Arc::new(Approver::new(sidecar, thresholds, timing, record)));
+    broker.set_approver(Arc::new(Approver::new(
+        sidecar,
+        thresholds,
+        timing,
+        record,
+        Arc::new(|_| {}),
+    )));
     Gate {
         broker,
         records,
@@ -840,6 +846,7 @@ fn an_instant_ask_the_classifier_was_unsure_about_waits_for_the_person() -> Test
         thresholds,
         Timing::Instant,
         Arc::new(|_| {}),
+        Arc::new(|_| {}),
     )));
     let mut args = serde_json::Map::new();
     args.insert("command".to_owned(), serde_json::json!("make build"));
@@ -909,6 +916,7 @@ fn a_prompt_that_cannot_close_is_never_timed_out() -> TestResult {
         sidecar,
         thresholds,
         Timing::AfterDelay(Duration::from_millis(100)),
+        Arc::new(|_| {}),
         Arc::new(|_| {}),
     )));
     let mut args = serde_json::Map::new();
@@ -1119,8 +1127,13 @@ fn jev(
         timeout: Duration::from_secs(2),
         threshold: 0.9,
     };
-    let approver =
-        yi_runtime::classifier::Approver::new(sidecar, thresholds, Timing::Instant, record);
+    let approver = yi_runtime::classifier::Approver::new(
+        sidecar,
+        thresholds,
+        Timing::Instant,
+        record,
+        Arc::new(|_| {}),
+    );
     (approver, records)
 }
 

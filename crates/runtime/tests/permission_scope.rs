@@ -359,10 +359,12 @@ fn a_headless_compound_says_to_split_it() -> TestResult {
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
     assert!(
         !outcome.allowed
+            && outcome.reason.contains("Split the command")
             && outcome
                 .reason
-                .contains("Split it into separate calls, or rerun with --yolo")
-            && !outcome.reason.contains("allow rule"),
+                .contains("keep the writes inside the working tree")
+            && !outcome.reason.contains("allow rule")
+            && !outcome.reason.contains("--yolo"),
         "{}",
         outcome.reason
     );

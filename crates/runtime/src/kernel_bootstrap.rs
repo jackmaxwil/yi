@@ -219,14 +219,14 @@ const OFFERED_BY_YI: &[&str] = &["Plan", "Todo", "Run", "fork_join"];
 
 pub fn surface_line() -> String {
     format!(
-        "rlm: {} · yi: {} · help(rlm) and help(yi) are exact",
+        "rlm: {} · yi: {} · help(rlm.<name>) and help(yi) are exact",
         OFFERED_BY_RLM.join(", "),
         OFFERED_BY_YI.join(", ")
     )
 }
 
 pub fn surface_note(table: &str) -> String {
-    format!("[rlm, shown once per session; help(rlm) and help(yi) are exact]\n{table}")
+    format!("[rlm, shown once per session; help(rlm.<name>) is exact]\n{table}")
 }
 
 pub fn restart_note(lost: Option<&[String]>) -> String {
@@ -306,5 +306,20 @@ mod tests {
             2,
             "{seen:?}"
         );
+    }
+
+    /// `help(rlm)` renders the whole package; the note has to send the model to help on one name.
+    #[test]
+    fn the_note_points_at_help_on_one_name() -> Result<(), Box<dyn std::error::Error>> {
+        let note = surface_note("rlm.bash(command)");
+        let line = surface_line();
+        for text in [&note, &line] {
+            assert!(text.contains("help(rlm.<name>)"), "{text}");
+            assert!(
+                !text.contains("help(rlm)"),
+                "help(rlm) renders the whole package: {text}"
+            );
+        }
+        Ok(())
     }
 }
