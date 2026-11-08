@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::SHUTDOWN_GRACE;
 
 use yi_runtime::Status;
-use yi_types::event::AgentEvent;
+use yi_types::event::{AgentEvent, RunEnd};
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::telemetry::ErrorClass;
 
@@ -409,6 +409,7 @@ async fn follow(
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything, mut due) = (None, false, false);
     let (mut last_error, mut finished, mut schema_failed) = (None, false, false);
+    let (mut run_end, mut answered) = (None, false);
     let (mut calls, mut denied) = (std::collections::HashMap::new(), None);
     loop {
         let next = match patience(holding, ends) {
@@ -481,6 +482,15 @@ async fn follow(
             last_stop = Some((*stop_reason, text));
             said.push(std::mem::take(&mut answer));
         }
+        if let AgentEvent::AgentEnd { messages, .. } = &event {
+            answered = if messages.is_empty() {
+                said_anything
+            } else {
+                messages.iter().any(|message| {
+                    matches!(message, AgentMessage::Assistant { content, .. } if yi_types::message::has_text(content))
+                })
+            };
+        }
         match &event {
             AgentEvent::ToolExecutionStart {
                 tool_call_id, args, ..
@@ -524,8 +534,12 @@ async fn follow(
                 holding = false;
                 said.clear();
             }
-            AgentEvent::AgentEnd { .. } if held() => holding = true,
-            AgentEvent::AgentEnd { .. } => {
+            AgentEvent::AgentEnd { reason, .. } if held() => {
+                run_end.clone_from(reason);
+                holding = true;
+            }
+            AgentEvent::AgentEnd { reason, .. } => {
+                run_end.clone_from(reason);
                 (ended, finished) = (true, true);
                 break;
             }
@@ -552,23 +566,33 @@ async fn follow(
         }
         exit = EXIT_DENIED;
     }
-    let final_answer = matches!(last_stop, Some((StopReason::Stop, true)));
+    let how =
+        run_end.unwrap_or_else(|| last_stop.map_or(RunEnd::Stop, |(stop, _)| RunEnd::of(stop)));
+    let closed = !matches!(
+        how,
+        RunEnd::Error | RunEnd::Aborted | RunEnd::Length | RunEnd::Guard
+    );
+    let final_answer = closed && answered;
     if ended && eval && !final_answer {
         let stop = last_stop.map(|(stop, _)| stop);
         eprintln!("warning: the run ended without a final answer");
         if json {
             println!(
                 "{}",
-                serde_json::json!({"type": "no_answer", "lastStop": stop, "saidAnything": said_anything})
+                serde_json::json!({"type": "no_answer", "lastStop": stop, "reason": how, "saidAnything": said_anything})
             );
         }
     } else if ended && !said_anything && exit == 0 {
         eprintln!("error: the run ended with no assistant text at all");
         exit = 1;
-    } else if exit == 0 && matches!(last_stop, Some((StopReason::Error, _))) {
+    } else if exit == 0 && how == RunEnd::Error {
         // Incident: `--json` read a stall as success, because the exit carried plain mode's rule.
         exit = 1;
     }
+    let last_error = match how {
+        RunEnd::Error => Some(last_error.unwrap_or_else(|| "provider error".to_owned())),
+        _ => None,
+    };
     // Incident: a hold that expired with no `--deadline` set closed as kind `deadline`.
     let deadline = !finished && ends.is_some_and(|at| Instant::now() >= at);
     let mut line = final_event(deadline, final_answer, last_error.as_deref());
@@ -665,6 +689,7 @@ mod tests {
         let (events, receiver) = tokio::sync::broadcast::channel(8);
         events.send(AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         })?;
         events.send(AgentEvent::AgentStart)?;
         let always = || true;
@@ -707,6 +732,7 @@ mod tests {
             events.send(AgentEvent::MessageEnd { message })?;
             events.send(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             })?;
             let modes = super::Modes {
                 json: true,
@@ -744,6 +770,7 @@ mod tests {
             }
             events.send(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             })?;
             let modes = super::Modes {
                 json: false,
@@ -798,6 +825,7 @@ mod tests {
             })?;
             events.send(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             })?;
             let modes = super::Modes {
                 json,
@@ -837,6 +865,7 @@ mod tests {
             })?;
             events.send(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             })?;
             let modes = super::Modes {
                 json,
@@ -893,6 +922,7 @@ mod tests {
             })?;
             events.send(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             })?;
             let modes = super::Modes {
                 json: true,
@@ -926,6 +956,7 @@ mod tests {
         events.send(AgentEvent::MessageEnd { message: answer })?;
         events.send(AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         })?;
         let modes = super::Modes {
             json: true,
@@ -962,6 +993,7 @@ mod tests {
             })?,
             serde_json::to_value(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             })?,
         ] {
             events.send(serde_json::from_value(wire)?)?;
@@ -997,6 +1029,7 @@ mod tests {
         events.send(AgentEvent::MessageEnd { message: answer })?;
         events.send(AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         })?;
         let (held, never) = (std::cell::Cell::new(true), || false);
         let holds_once = || held.replace(false);
@@ -1019,5 +1052,75 @@ mod tests {
         assert!(super::left(far) <= super::SHUTDOWN_GRACE);
         let near = Instant::now().checked_add(Duration::from_secs(4));
         assert!(super::left(near) <= Duration::from_secs(2));
+    }
+
+    /// Dies with the exit read from the last reply alone: an `agent_end` whose reason is an error
+    /// still closes as `error` and exits 1, whatever the reply before it said.
+    #[test]
+    fn the_end_reason_decides_the_exit_over_the_last_reply()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::event::RunEnd;
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        for json in [true, false] {
+            let (events, receiver) = tokio::sync::broadcast::channel(8);
+            events.send(AgentEvent::MessageEnd {
+                message: answer.clone(),
+            })?;
+            events.send(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+                reason: Some(RunEnd::Error),
+            })?;
+            let modes = super::Modes {
+                json,
+                eval: false,
+                no_deltas: false,
+                headless: true,
+            };
+            let (code, line) =
+                runtime.block_on(super::follow(receiver, [&never, &never], modes, None, None));
+            assert_eq!(line["kind"], "error", "json {json}");
+            assert_eq!(code, 1, "either mode exits 1 on it: json {json}");
+        }
+        Ok(())
+    }
+
+    /// Dies with the last reply's stop reason overriding the run's own clean end: text was present,
+    /// yet a deferred reply closed an answered run as `no_answer`.
+    #[test]
+    fn a_clean_end_with_text_answers_despite_the_last_reply_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::event::RunEnd;
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let answer =
+            faux_assistant_message(vec![faux_text("deferred but said")], StopReason::Deferred);
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        events.send(AgentEvent::MessageEnd {
+            message: answer.clone(),
+        })?;
+        events.send(AgentEvent::AgentEnd {
+            messages: vec![answer],
+            reason: Some(RunEnd::Stop),
+        })?;
+        let never = || false;
+        let modes = super::Modes {
+            json: true,
+            eval: true,
+            no_deltas: false,
+            headless: true,
+        };
+        let (_code, line) =
+            runtime.block_on(super::follow(receiver, [&never, &never], modes, None, None));
+        assert_eq!(line["kind"], "stop");
+        Ok(())
     }
 }

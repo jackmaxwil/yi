@@ -457,6 +457,7 @@ pub fn replay_stream(
                     if turn_open {
                         app.reduce_agent(AgentEvent::AgentEnd {
                             messages: Vec::new(),
+                            reason: None,
                         });
                     }
                     app.reduce_agent(AgentEvent::AgentStart);
@@ -522,6 +523,7 @@ pub fn replay_stream(
     if turn_open {
         app.reduce_agent(AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         });
     }
     Ok(())

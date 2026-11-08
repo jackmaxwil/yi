@@ -13,6 +13,7 @@ use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, SharedSes
 use yi_runtime::todo::tool::TodoTool;
 use yi_runtime::todo::{TodoStore, latest_record};
 use yi_tools::{Tool, ToolContext};
+use yi_types::plan::doc::TodoStateName;
 use yi_types::todo::TodoList;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -143,6 +144,39 @@ fn rm_and_a_set_omitting_a_red_row_are_refused_naming_drop() -> TestResult {
     assert!(error, "{text}");
     assert!(text.contains("`drop ship it`"), "{text}");
     assert!(row(&session, "ship it").is_ok(), "the red row survived");
+    Ok(())
+}
+
+/// Dies with a bare `done` running the check of a row it keeps blocked: with every row blocked
+/// the call reaches them all, and the red held it with a note calling the blocked row running.
+#[test]
+fn a_bare_done_skips_the_check_of_a_row_it_keeps_blocked() -> TestResult {
+    let (root, session) = session("bare-blocked")?;
+    let tool = TodoTool::new(store_for(&session));
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    call(&tool, &cwd, json!({"op": "set", "list": "- [ ] ship it"}));
+    call(
+        &tool,
+        &cwd,
+        json!({"op": "start", "label": "ship it", "check": "test -s out.txt"}),
+    );
+    let (error, text) = call(
+        &tool,
+        &cwd,
+        json!({"op": "block", "label": "ship it", "on": "user", "note": "which branch?"}),
+    );
+    assert!(!error, "{text}");
+    let (error, text) = call(
+        &tool,
+        &cwd,
+        json!({"op": "done", "evidence": "`wc` 3 lines"}),
+    );
+    assert!(!error, "{text}");
+    assert!(!text.contains("has not passed"), "{text}");
+    assert!(text.contains("t1 \"ship it\" kept blocked"), "{text}");
+    let state = TodoStateName::of(&row(&session, "ship it")?.state);
+    assert_eq!(state, TodoStateName::Blocked);
     Ok(())
 }
 

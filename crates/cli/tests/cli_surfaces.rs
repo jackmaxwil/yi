@@ -3459,7 +3459,10 @@ fn a_run_with_no_text_exits_one_except_under_eval() -> TestResult {
         String::from_utf8_lossy(&eval.stderr)
     );
     assert!(
-        stdout(&eval).contains(r#""type":"no_answer""#),
+        stdout(&eval)
+            .lines()
+            .any(|line| line.contains(r#""type":"no_answer""#)
+                && line.contains(r#""reason":"error""#)),
         "{}",
         stdout(&eval)
     );

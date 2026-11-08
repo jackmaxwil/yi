@@ -9,6 +9,7 @@ use crate::AgentSession;
 pub struct History {
     scanned_seq: u64,
     seen: String,
+    asked: String,
     written: Vec<(String, String)>,
     touched: Option<u64>,
     claims: Vec<Claim>,
@@ -57,6 +58,8 @@ impl History {
                     }
                     self.seen.push_str(&text);
                     self.seen.push('\n');
+                    self.asked.push_str(&text);
+                    self.asked.push('\n');
                 }
                 AgentMessage::ToolResult { content, .. } => {
                     for block in content {
@@ -102,6 +105,7 @@ impl History {
             self.scanned_seq = 0;
             self.seen.clear();
             self.written.clear();
+            self.asked.clear();
             self.claims.clear();
         }
         let previous = std::mem::take(&mut self.claims);
@@ -128,6 +132,7 @@ impl History {
 
     pub(crate) fn start_prompt(&mut self) {
         self.written.clear();
+        self.asked.clear();
     }
 
     pub(crate) fn seen(&self) -> &str {
@@ -136,6 +141,31 @@ impl History {
 
     pub(crate) fn written(&self) -> &[(String, String)] {
         &self.written
+    }
+
+    /// The prompt named this path or a path with the same whole file name.
+    pub(crate) fn names(&self, path: &str) -> bool {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path);
+        let name_char =
+            |c: char| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '@' | '~' | '%');
+        [path, name].into_iter().any(|needle| {
+            self.asked.match_indices(needle).any(|(at, _)| {
+                let before = self
+                    .asked
+                    .get(..at)
+                    .and_then(|head| head.chars().next_back());
+                let tail = self
+                    .asked
+                    .get(at.saturating_add(needle.len())..)
+                    .unwrap_or("");
+                let after = tail.trim_start_matches('.').chars().next();
+                let separated = tail.chars().next().is_some_and(|c| matches!(c, '/' | '\\'));
+                !before.is_some_and(name_char) && !after.is_some_and(name_char) && !separated
+            })
+        })
     }
 }
 

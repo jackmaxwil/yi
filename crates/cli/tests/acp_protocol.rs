@@ -1687,6 +1687,7 @@ fn a_failed_turn_ends_on_an_extension_stop_reason() -> TestResult {
     let end = yi_acp::update::to_updates(
         &AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         },
         &mut ids,
     );

@@ -3,12 +3,13 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::Receiver;
-use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
+use yi_types::event::{AgentEvent, AssistantMessageEvent, RunEnd, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 use yi_types::subagent::LoopSignal;
 
 use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
+use crate::end::{end, side_work};
 use crate::interrupt::InterruptSignal;
 use crate::reasoning::ReasoningBudget;
 use crate::stream_retry::{STREAM_RETRY_AT, answered, nothing_delivered, stream_retry};
@@ -785,24 +786,6 @@ fn push_messages(
     }
 }
 
-async fn side_work(config: &LoopConfig) {
-    if let Some(gate) = &config.side_work {
-        gate().await;
-    }
-}
-
-async fn end(
-    config: &LoopConfig,
-    emit: &mut (dyn FnMut(AgentEvent) + Send),
-    collected: Vec<AgentMessage>,
-) -> Vec<AgentMessage> {
-    side_work(config).await;
-    emit(AgentEvent::AgentEnd {
-        messages: collected.clone(),
-    });
-    collected
-}
-
 pub async fn run_loop<S: StreamFn>(
     context: &mut LoopContext,
     new_messages: Vec<AgentMessage>,
@@ -899,7 +882,7 @@ pub async fn run_loop<S: StreamFn>(
                     has_more_tool_calls = false;
                     continue;
                 }
-                return end(config, emit, collected).await;
+                return end(config, emit, collected, RunEnd::Aborted).await;
             }
             if reason == StopReason::Error
                 && stream_retries < STREAM_RETRY_AT
@@ -923,7 +906,7 @@ pub async fn run_loop<S: StreamFn>(
                     message,
                     tool_results: Vec::new(),
                 });
-                return end(config, emit, collected).await;
+                return end(config, emit, collected, RunEnd::of(reason)).await;
             }
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;
@@ -1041,13 +1024,19 @@ pub async fn run_loop<S: StreamFn>(
                     pending = vec![word];
                     continue;
                 }
-                return end(config, emit, collected).await;
+                return end(config, emit, collected, RunEnd::Drained).await;
             }
-            if repeats >= REPEAT_STOP_AT
+            let guarded = repeats >= REPEAT_STOP_AT;
+            if guarded
                 || length_stops >= config.guards.length_stop_at
                 || cut_stops >= config.guards.cut_stop_at
             {
-                return end(config, emit, collected).await;
+                let reason = if guarded {
+                    RunEnd::Guard
+                } else {
+                    RunEnd::Length
+                };
+                return end(config, emit, collected, reason).await;
             }
             pending = read_steering(config);
             // after three repeating turns in a row, so a fresh edit before each check is progress,
@@ -1092,7 +1081,7 @@ pub async fn run_loop<S: StreamFn>(
         pending = follow_ups;
     }
 
-    end(config, emit, collected).await
+    end(config, emit, collected, RunEnd::Stop).await
 }
 
 #[cfg(test)]

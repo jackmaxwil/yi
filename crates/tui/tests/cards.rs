@@ -536,6 +536,7 @@ fn a_turn_ends_with_a_dim_footer() -> TestResult {
     });
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let rows = flat(&app.take_commits());
     let footer = rows
@@ -565,6 +566,7 @@ fn a_total_miss_after_the_first_request_shows_zero_cached() -> TestResult {
         }
         app.reduce_agent(AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         });
         let rows = flat(&app.take_commits());
         Ok(rows
@@ -607,6 +609,7 @@ fn a_turn_footer_times_the_model_and_its_only_percentage_is_the_cache_rate() -> 
         }
         app.reduce_agent(AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         });
         Ok(footer_of(&mut app)?)
     };
@@ -764,6 +767,7 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
     ran(&mut app, "c4", "ok", false);
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let rows = flat(&app.take_commits());
     let footer = rows
@@ -838,6 +842,7 @@ fn a_receipt_counts_only_the_todos_its_turn_closed_and_no_list_calls() -> TestRe
     ran(&mut app, "c1", "ok", false);
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let first = footer_of(&mut app)?;
     assert!(first.contains(" · done 0 observed, 1 claimed"), "{first}");
@@ -865,6 +870,7 @@ fn a_receipt_counts_only_the_todos_its_turn_closed_and_no_list_calls() -> TestRe
     ran(&mut app, "c3", "ok", false);
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let second = footer_of(&mut app)?;
     assert!(second.starts_with("  ↳ ran 1 · "), "{second}");
@@ -873,6 +879,7 @@ fn a_receipt_counts_only_the_todos_its_turn_closed_and_no_list_calls() -> TestRe
     listed(&mut app, "c4");
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let third = footer_of(&mut app);
     assert!(

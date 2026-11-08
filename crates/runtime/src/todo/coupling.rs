@@ -231,14 +231,39 @@ pub const IMPOSSIBLE_WORDS: [&str; 7] = [
 
 pub const IMPOSSIBLE_TEXT: &str = "Name each constraint you assumed that the task did not state, and relax each one once before reporting that it cannot be done.";
 
+/// Incident: a bare substring test read "no validation errors" as "no valid", so an answer that
+/// named a passing check earned the impossibility re-drive.
 pub fn claims_impossible(text: &str) -> bool {
     let lower = text.to_lowercase();
-    IMPOSSIBLE_WORDS.iter().any(|word| lower.contains(word))
+    IMPOSSIBLE_WORDS.iter().any(|word| {
+        lower
+            .match_indices(word)
+            .any(|(at, _)| bounded(&lower, at, word))
+    })
+}
+
+/// The phrase stands alone, a plural ending aside: no letter or digit of another word touches it.
+fn bounded(lower: &str, at: usize, word: &str) -> bool {
+    let before = lower.get(..at).and_then(|head| head.chars().next_back());
+    let tail = lower.get(at.saturating_add(word.len())..).unwrap_or("");
+    let after = (tail.strip_prefix("es"))
+        .or_else(|| tail.strip_prefix('s'))
+        .unwrap_or(tail)
+        .chars()
+        .next();
+    !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
 }
 
 const QUIET_TOOLS: [&str; 5] = ["read", "grep", "glob", "todo", "get_context"];
 
 /// A turn is quiet when every call reads: the read tools, or bash the gate proves safe.
+pub(crate) fn quiet_call(tool_name: &str, command: Option<&str>) -> bool {
+    match tool_name {
+        "bash" => command.is_some_and(|command| !mutating_command(command)),
+        name => QUIET_TOOLS.contains(&name),
+    }
+}
+
 pub fn quiet_turn(message: &AgentMessage, results: &[AgentMessage]) -> bool {
     let commands = commands_of(message);
     let mut any = false;
@@ -252,13 +277,11 @@ pub fn quiet_turn(message: &AgentMessage, results: &[AgentMessage]) -> bool {
             continue;
         };
         any = true;
-        let quiet = match tool_name.as_str() {
-            "bash" => commands
-                .iter()
-                .any(|(id, command)| id == tool_call_id && !mutating_command(command)),
-            name => QUIET_TOOLS.contains(&name),
-        };
-        if !quiet {
+        let command = commands
+            .iter()
+            .find(|(id, _)| id == tool_call_id)
+            .map(|(_, command)| command.as_str());
+        if !quiet_call(tool_name, command) {
             return false;
         }
     }
@@ -327,6 +350,7 @@ fn artifact_figures(
     history
         .written()
         .iter()
+        .filter(|(path, _)| history.names(path))
         .filter_map(|(path, body)| {
             let figures: Vec<String> = figures_of(body)
                 .into_iter()

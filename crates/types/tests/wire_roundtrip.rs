@@ -400,6 +400,34 @@ fn an_event_gap_line_round_trips_byte_for_byte() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// A Pi client and an older driver read `agent_end` by its bytes: main's line, recorded from
+/// `yi ask --json --model faux/faux-1`, re-emits unchanged, and one carrying a reason keeps it.
+#[test]
+fn an_agent_end_line_round_trips_with_and_without_its_reason()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::event::{AgentEvent, RunEnd};
+    let before = include_str!("fixtures/agent-end-v1.json").trim_end();
+    let event: AgentEvent = serde_json::from_str(before)?;
+    assert!(matches!(event, AgentEvent::AgentEnd { reason: None, .. }));
+    assert_eq!(serde_json::to_string(&event)?, before);
+    let after = include_str!("fixtures/agent-end-v2.json").trim_end();
+    let event: AgentEvent = serde_json::from_str(after)?;
+    assert!(matches!(
+        event,
+        AgentEvent::AgentEnd {
+            reason: Some(RunEnd::Stop),
+            ..
+        }
+    ));
+    assert_eq!(serde_json::to_string(&event)?, after);
+    let later = after.replace(r#""reason":"stop""#, r#""reason":"budget""#);
+    let event: AgentEvent = serde_json::from_str(&later)?;
+    let budget = Some(RunEnd::Other("budget".to_owned()));
+    assert!(matches!(&event, AgentEvent::AgentEnd { reason, .. } if *reason == budget));
+    assert_eq!(serde_json::to_string(&event)?, later);
+    Ok(())
+}
+
 /// A status a newer Yi writes survives an older reader: it decodes to `Other` and re-emits
 /// verbatim. The job store is the recorded 0.382.0 file with its one status edited.
 #[test]

@@ -16,7 +16,7 @@ use crate::faux_model::faux_model;
 use yi_loop::ExecutionMode;
 use yi_runtime::goal::{
     GOAL_EXISTS_ERROR, GoalService, StoreHandle, attach_goal, budget_limit_text, continuation_text,
-    objective_updated_text, record_discovery,
+    objective_updated_text, record_discovery, released_text,
 };
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::goal::{Goal, GoalStatus};
@@ -90,11 +90,18 @@ fn every_goal_prompt_fills_every_placeholder() {
             continuation_text(&goal, None),
             budget_limit_text(&goal),
             objective_updated_text(&goal),
+            released_text(&goal, 3),
         ] {
             let quoted = format!("<untrusted_objective>\n{objective}\n</untrusted_objective>");
             assert!(text.contains(&quoted), "{text}");
             let rest = text.replacen(objective, "", 1);
             assert!(!rest.contains("{{") && !rest.contains("}}"), "{text}");
+        }
+        for text in [
+            continuation_text(&goal, None),
+            budget_limit_text(&goal),
+            objective_updated_text(&goal),
+        ] {
             assert!(text.contains("Tokens used: 250") && text.contains("Token budget: 1000"));
         }
     }
@@ -360,7 +367,10 @@ fn three_idle_continuations_reach_the_next_request_as_one_newest_copy() -> TestR
     let mut requests = vec![yi_context::convert_to_llm(&record)];
     for _ in 0..3 {
         service.observe(&yi_types::event::AgentEvent::AgentStart);
-        service.observe(&yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+        service.observe(&yi_types::event::AgentEvent::AgentEnd {
+            messages: vec![],
+            reason: None,
+        });
         let continuation = delivered
             .lock()
             .map_err(|error| error.to_string())?
@@ -416,7 +426,10 @@ fn a_session_with_one_continuation_sends_its_copy_unchanged() -> TestResult {
     let (_plans, (service, store, delivered)) = service_with_plans()?;
     service.create("finish the port", None, None, None)?;
     service.observe(&yi_types::event::AgentEvent::AgentStart);
-    service.observe(&yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    service.observe(&yi_types::event::AgentEvent::AgentEnd {
+        messages: vec![],
+        reason: None,
+    });
     let AgentMessage::Custom {
         content: UserContent::Text(text),
         timestamp,
@@ -1049,6 +1062,253 @@ fn a_citation_ordinal_names_the_same_message_at_the_goal_and_the_fetch_seam() ->
     Ok(())
 }
 
+/// Dies with a goal continuing forever against a model that never touches the work: each
+/// continuation answered text and called no tool, and the goal bought the same run again.
+#[tokio::test]
+async fn a_goal_releases_its_continuation_after_three_runs_that_changed_nothing() -> TestResult {
+    use yi_runtime::goal::QUIET_RUNS_CAP;
+    use yi_types::event::{AgentEvent, RunEnd};
+    let (_root, (service, store, delivered)) = service_with_plans()?;
+    service.create("keep going until proven done", None, None, None)?;
+    let answer = faux_assistant_message(vec![faux_text("nothing to do")], StopReason::Stop);
+    service.observe(&AgentEvent::AgentStart);
+    service.observe(&AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+    });
+    let turn = |message: AgentMessage, reason: RunEnd| {
+        service.observe(&AgentEvent::MessageEnd { message });
+        service.observe(&AgentEvent::AgentEnd {
+            messages: Vec::new(),
+            reason: Some(reason),
+        });
+    };
+    turn(answer.clone(), RunEnd::Stop);
+    for run in 1..=QUIET_RUNS_CAP {
+        service.observe(&AgentEvent::AgentStart);
+        turn(answer.clone(), RunEnd::Stop);
+        let status = yi_session::lock_session(&store)
+            .goal()
+            .map(|goal| goal.status);
+        if run < QUIET_RUNS_CAP {
+            assert!(
+                status.is_some_and(|status| status.is_active()),
+                "quiet run {run} of {QUIET_RUNS_CAP} leaves the goal active"
+            );
+        } else {
+            assert_eq!(
+                status,
+                Some(GoalStatus::Blocked),
+                "the third run that changed nothing releases the goal"
+            );
+        }
+    }
+    let sent = delivered
+        .lock()
+        .map(|queue| queue.clone())
+        .unwrap_or_default();
+    let text = |message: &AgentMessage| match message {
+        AgentMessage::Custom {
+            content: UserContent::Text(text),
+            ..
+        } => Some(text.clone()),
+        _ => None,
+    };
+    let continuations = sent
+        .iter()
+        .filter(|message| {
+            text(message)
+                .is_some_and(|text| text.contains("Continue working toward the active thread goal"))
+        })
+        .count();
+    assert_eq!(
+        continuations, 3,
+        "the cap is the continuations delivered, and no fourth follows"
+    );
+    let notice = sent
+        .iter()
+        .filter_map(text)
+        .find(|text| text.contains("goal continuation stopped after"))
+        .ok_or("the release says why it stopped")?;
+    assert!(
+        notice.contains("3 runs that changed nothing (cap 3)") && notice.contains("goal.update"),
+        "{notice}"
+    );
+    Ok(())
+}
+
+fn goal_rig() -> Result<(Scratch, yi_session::SharedSession, Arc<GoalService>), Box<dyn Error>> {
+    use yi_types::event::AgentEvent;
+    let (root, (service, store, _delivered)) = service_with_plans()?;
+    service.create("keep going", None, None, None)?;
+    service.observe(&AgentEvent::AgentStart);
+    service.observe(&AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+    });
+    Ok((root, store, service))
+}
+
+fn goal_run(
+    service: &GoalService,
+    tool: Option<&str>,
+    stop: StopReason,
+    reason: yi_types::event::RunEnd,
+) {
+    use yi_types::event::AgentEvent;
+    service.observe(&AgentEvent::AgentStart);
+    if let Some(tool) = tool {
+        service.observe(&AgentEvent::ToolExecutionStart {
+            tool_call_id: "c1".to_owned(),
+            tool_name: tool.to_owned(),
+            args: json!({"command": "cargo test"}),
+        });
+    }
+    service.observe(&AgentEvent::MessageEnd {
+        message: faux_assistant_message(vec![faux_text("ok")], stop),
+    });
+    service.observe(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+        reason: Some(reason),
+    });
+}
+
+fn goal_active(store: &yi_session::SharedSession) -> bool {
+    yi_session::lock_session(store)
+        .goal()
+        .is_some_and(|goal| goal.status.is_active())
+}
+
+/// Dies with a productive user run between quiet ones not resetting the count: a goal blocked after
+/// three quiet runs in total although work happened between them.
+#[tokio::test]
+async fn a_productive_user_run_resets_the_quiet_count() -> TestResult {
+    use yi_types::event::{AgentEvent, RunEnd};
+    let (_root, store, service) = goal_rig()?;
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    for _ in 0..2 {
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    }
+    service.observe(&AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("work".to_owned()), 0),
+    });
+    goal_run(&service, Some("write"), StopReason::Stop, RunEnd::Stop);
+    assert!(
+        goal_active(&store),
+        "the productive user run itself leaves the goal active"
+    );
+    for run in 1..=2 {
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+        assert!(
+            goal_active(&store),
+            "quiet run {run} after a working user run leaves the goal active"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with read-only exploration buying more continuations: the third quiet run must block
+/// whether it called nothing or spent the run reading.
+#[test]
+fn a_read_only_continuation_counts_as_a_run_that_changed_nothing() -> TestResult {
+    use yi_types::event::RunEnd;
+    let (_root, store, service) = goal_rig()?;
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    for _ in 0..2 {
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    }
+    goal_run(&service, Some("read"), StopReason::Stop, RunEnd::Stop);
+    assert!(!goal_active(&store), "the third quiet continuation blocks");
+    Ok(())
+}
+
+/// Dies with one goal's quiet count blocking the next goal after its first quiet continuation.
+#[test]
+fn a_new_goal_starts_with_no_quiet_runs() -> TestResult {
+    use yi_types::event::RunEnd;
+    let (_root, store, service) = goal_rig()?;
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    for _ in 0..2 {
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    }
+    service.update("complete")?;
+    service.create("a fresh objective", None, None, None)?;
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    assert!(goal_active(&store), "one quiet run is below the cap");
+    Ok(())
+}
+
+/// Dies with interrupted continuations counted as runs that changed nothing: three Ctrl-Cs
+/// blocked the goal with "3 runs that changed nothing".
+#[tokio::test]
+async fn an_interrupted_continuation_is_not_a_quiet_run() -> TestResult {
+    use yi_types::event::{AgentEvent, RunEnd};
+    let (_root, store, service) = goal_rig()?;
+    goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    for _ in 0..3 {
+        goal_run(&service, None, StopReason::Aborted, RunEnd::Aborted);
+        service.observe(&AgentEvent::MessageStart {
+            message: AgentMessage::user_input(UserContent::Text("go on".to_owned()), 0),
+        });
+        goal_run(&service, None, StopReason::Stop, RunEnd::Stop);
+    }
+    assert!(
+        goal_active(&store),
+        "an interrupt is the user's, not a run that changed nothing"
+    );
+    Ok(())
+}
+
+/// Dies with the first failed turn blocking the goal: one provider error ended auto-continuation
+/// for good, and a run that went on to work never got its chance.
+#[tokio::test]
+async fn an_error_turn_does_not_block_the_goal_on_its_own() -> TestResult {
+    use yi_types::event::{AgentEvent, RunEnd};
+    let (_root, (service, store, delivered)) = service_with_plans()?;
+    let status = || {
+        yi_session::lock_session(&store)
+            .goal()
+            .map(|goal| goal.status)
+    };
+    service.create("keep going", None, None, None)?;
+    service.observe(&AgentEvent::AgentStart);
+    service.observe(&AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("start".to_owned()), 0),
+    });
+    service.observe(&AgentEvent::MessageEnd {
+        message: faux_assistant_message(Vec::new(), StopReason::Error),
+    });
+    service.observe(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+        reason: Some(RunEnd::Error),
+    });
+    assert!(
+        status().is_some_and(|status| status.is_active()),
+        "one failed turn is one quiet run, not a blocked goal"
+    );
+    let continued = delivered.lock().map(|queue| queue.len()).unwrap_or(0);
+    assert_eq!(
+        continued, 1,
+        "the continuation after the error still goes out"
+    );
+    service.observe(&AgentEvent::AgentStart);
+    service.observe(&AgentEvent::ToolExecutionStart {
+        tool_call_id: "c1".to_owned(),
+        tool_name: "bash".to_owned(),
+        args: json!({"command": "cargo test"}),
+    });
+    service.observe(&AgentEvent::MessageEnd {
+        message: faux_assistant_message(vec![faux_text("ran the tests")], StopReason::Stop),
+    });
+    service.observe(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+        reason: Some(RunEnd::Stop),
+    });
+    assert!(
+        status().is_some_and(|status| status.is_active()),
+        "a run that called a tool resets the count and the goal stays active"
+    );
+    Ok(())
+}
+
 /// The objective-edit notice shares the `goal_prompt` kind with continuations, so superseding by
 /// kind alone dropped the only text telling the model what the user changed and why.
 #[test]
@@ -1064,7 +1324,10 @@ fn an_objective_edit_notice_survives_the_continuation_that_follows_it() -> TestR
     }
     service.set_objective("ship the port «完成»", Some("user://1"))?;
     service.observe(&yi_types::event::AgentEvent::AgentStart);
-    service.observe(&yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    service.observe(&yi_types::event::AgentEvent::AgentEnd {
+        messages: vec![],
+        reason: None,
+    });
     let queued: Vec<AgentMessage> = delivered.lock().map_err(|error| error.to_string())?.clone();
     assert_eq!(
         queued.len(),
