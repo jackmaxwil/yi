@@ -8,7 +8,7 @@ use ratatui::text::Line;
 use serde_json::{Value, json};
 use yi_runtime::{AgentSession, ChildUpdate, SubagentHost};
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Attribution, StopReason};
+use yi_types::message::{AgentMessage, Attribution};
 
 use crate::approval::{ApprovalView, AskChoice, AskRequest};
 use crate::cell::{Cell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
@@ -23,7 +23,7 @@ use crate::orb;
 use crate::popup::ListPopup;
 use crate::port::SessionPort;
 use crate::term;
-use crate::transcript::{arg_summary, result_preview, text_of, thinking_of, user_text};
+use crate::transcript::{arg_summary, result_preview, text_of, user_text};
 use crate::tree::TreeView;
 pub enum UiEvent {
     Agent(AgentEvent),
@@ -99,6 +99,7 @@ pub struct App {
     pub(crate) pending_focus: Option<String>,
     pub selection: crate::model::Selection,
     pending_repaint: bool,
+    pub(crate) answer: AnswerTrack,
     pub(crate) pending_prompt_mark: bool,
     pub(crate) pane: bool,
     /// §17.3: the `Yi` mark at rest and one looping pose per agent state; one orb, never two.
@@ -211,6 +212,7 @@ mod children;
 pub use children::TaskState;
 mod clock;
 mod pane;
+pub(crate) use crate::transcript::AnswerTrack;
 pub(crate) use pane::PaneRows;
 mod options;
 mod stream;
@@ -251,6 +253,7 @@ impl App {
             pending_focus: None,
             selection: crate::model::Selection::new(options.model.clone()),
             pending_repaint: false,
+            answer: AnswerTrack::default(),
             pending_prompt_mark: false,
             pane: false,
             orb: yi_orb::Orb::default(),
@@ -608,6 +611,8 @@ impl App {
                 if let AgentMessage::Assistant { .. } = &message {
                     self.model_since = Some(self.clock.now());
                     self.segment = 0;
+                    let repeated = self.answer.open_live();
+                    self.take_back(&repeated);
                     return self.streaming = Some(message);
                 }
                 let attribution = message.attribution();
@@ -670,7 +675,9 @@ impl App {
                 }
                 self.note_context(&message);
                 self.reduce_message_end(&message);
+                self.answer.close_message(&message);
             }
+            AgentEvent::TurnStart => self.answer.turn(),
             AgentEvent::ChildUpdate { update } => self.reduce_child_update(&update),
             AgentEvent::LandingState { landing } => {
                 self.landing = Some(landing);
@@ -682,6 +689,9 @@ impl App {
                 args,
             } => {
                 self.note_question(&tool_name, &args);
+                if tool_name == crate::transcript::ANSWER_TOOL {
+                    return;
+                }
                 self.tool_started
                     .insert(tool_call_id.clone(), self.clock.now());
                 self.live_tools.push(ToolCell {
@@ -716,57 +726,6 @@ impl App {
                 self.set_awaiting(&tool_call_id, ToolStatus::Running);
                 self.expire_approval(&tool_call_id);
             }
-            _ => {}
-        }
-    }
-
-    fn reduce_message_end(&mut self, message: &AgentMessage) {
-        match message {
-            AgentMessage::Assistant {
-                content,
-                stop_reason,
-                error_message,
-                usage,
-                ..
-            } => {
-                self.spent.record(usage);
-                self.session_tokens.record(usage);
-                self.turn_spent.record(usage);
-                self.turn_tokens.record(usage);
-                self.requests = self.requests.saturating_add(1);
-                self.close_segments(content);
-                let open = content.get(self.segment..).unwrap_or_default();
-                // Incident: an error end carries no content and erased text the reader saw, so the end
-                // replaces what streamed only when it extends it.
-                let thought = thinking_of(open);
-                if thought.starts_with(self.live_thought.as_str()) {
-                    self.live_thought = thought;
-                }
-                self.flush_thought();
-                let prose = crate::transcript::prose_of(open);
-                if prose.starts_with(self.live_markdown.as_str()) {
-                    self.live_markdown = prose;
-                }
-                self.commit_prose(self.live_markdown.len(), true);
-                self.scheduler.request();
-                self.reset_live();
-                // A retried stream fails with the same words twice; one line says it.
-                let text = error_message
-                    .clone()
-                    .unwrap_or_else(|| "provider error".to_owned());
-                let repeated = matches!(self.history.last(), Some(Cell::Notice { text: last }) if *last == text);
-                if *stop_reason == StopReason::Error && !repeated {
-                    self.commit_cell(&Cell::Notice { text });
-                }
-            }
-            // `display: false` is the model's alone; the todo prelude leaked as a dozen callouts.
-            AgentMessage::Custom {
-                custom_type,
-                content,
-                display: true,
-                details,
-                ..
-            } => self.commit_cell(&asks::custom_cell(custom_type, content, details.as_ref())),
             _ => {}
         }
     }
@@ -809,7 +768,9 @@ impl App {
                 user_text(&content),
                 attribution == yi_types::message::Attribution::User,
             )),
-            AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
+            AgentEvent::MessageEnd { message } => self.reduce_child_end(&message),
+            AgentEvent::ToolExecutionEnd { tool_name, .. }
+                if tool_name == crate::transcript::ANSWER_TOOL => {}
             AgentEvent::ToolExecutionEnd {
                 tool_name,
                 result,
@@ -840,6 +801,7 @@ impl App {
     }
 
     fn start_turn(&mut self) {
+        self.answer = AnswerTrack::default();
         self.running = true;
         self.seen_turn = true;
         self.started_turns = self.started_turns.saturating_add(1);

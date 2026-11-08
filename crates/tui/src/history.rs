@@ -47,6 +47,9 @@ impl Rendered {
         let Some(cell) = cells.get(index) else {
             return Vec::new();
         };
+        if matches!(cell, Cell::Assistant { markdown } if markdown.is_empty()) {
+            return Vec::new();
+        }
         let (Cell::Assistant { markdown }, true) = (cell, open && index + 1 == cells.len()) else {
             return cell.lines(width, theme, mode, 0);
         };
@@ -234,6 +237,27 @@ impl History {
 
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
+    }
+
+    /// Empties the prose cells at `indices` in place, so no other cell's index moves; true when
+    /// one changed, so the screen owes a repaint.
+    pub fn blank_prose(&mut self, indices: &[usize]) -> bool {
+        let mut blanked = false;
+        for &index in indices {
+            if let Some(Cell::Assistant { markdown }) = self.cells.get_mut(index)
+                && !markdown.is_empty()
+            {
+                markdown.clear();
+                blanked = true;
+            }
+        }
+        if blanked {
+            *self
+                .rendered
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = Rendered::default();
+        }
+        blanked
     }
 
     pub fn last(&self) -> Option<&Cell> {

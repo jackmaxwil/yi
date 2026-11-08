@@ -435,6 +435,7 @@ impl App {
                     let typed = attribution.reads_as_typed(*timestamp);
                     if typed {
                         self.open_user_turn();
+                        self.answer = crate::app::AnswerTrack::default();
                     }
                     self.commit_cell(&user_cell(user_text(content), typed));
                 }
@@ -448,7 +449,16 @@ impl App {
                     source: crate::app::mail_source(custom_type, details.as_ref()),
                     text: user_text(content),
                 }),
-                AgentMessage::Assistant { content, .. } => {
+                AgentMessage::Assistant {
+                    content,
+                    usage,
+                    response_id,
+                    ..
+                } => {
+                    // Saved, an appended answer is the reply no provider sent: no id, no usage.
+                    let appended = usage.unknown && response_id.is_none();
+                    let repeated = self.answer.open_message(appended);
+                    self.take_back(&repeated);
                     for block in content {
                         match block {
                             Content::Thinking {
@@ -466,9 +476,14 @@ impl App {
                     }
                     let text = crate::transcript::prose_of(content);
                     if !text.is_empty() {
+                        let before = self.history.len();
                         self.commit_cell(&Cell::Assistant { markdown: text });
+                        self.answer.wrote(before, self.history.len());
                     }
+                    self.answer.close_message(message);
                 }
+                AgentMessage::ToolResult { tool_name, .. }
+                    if tool_name == crate::transcript::ANSWER_TOOL => {}
                 AgentMessage::ToolResult {
                     tool_call_id,
                     tool_name,

@@ -8,13 +8,14 @@ use std::time::{Duration, Instant};
 use ratatui::text::Line;
 use serde_json::Value;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult, apply};
-use yi_types::message::{AgentMessage, Content};
+use yi_types::message::{AgentMessage, Content, StopReason};
 
 use super::{App, TaskState, UiEvent};
 use crate::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use crate::markdown::StableScan;
 use crate::motion::elapsed_ms;
 use crate::reveal::{FRAME, Reveal};
+use crate::transcript::ANSWER_TOOL;
 use crate::transcript::{result_preview, text_of, todo_finished};
 
 /// Both reveal cursors, their speed, the events waiting behind them, and their cut scans.
@@ -644,7 +645,9 @@ impl App {
         self.note_commit(&lines, self.live_drawn);
         // Incident: a lone closing fence renders no rows; dropped here, it left the
         // rest of the message rendering as code on every replay.
+        let before = self.history.len();
         self.retain(Cell::Assistant { markdown: slice });
+        self.answer.wrote(before, self.history.len());
         self.live_drawn |= !lines.is_empty();
         self.pending_commit.extend(lines);
         self.live_cut = cut;
@@ -678,7 +681,7 @@ impl App {
             AssistantMessageEvent::ToolCallStart {
                 content_index,
                 name,
-            } => {
+            } if name.as_deref() != Some(ANSWER_TOOL) => {
                 let now = self.clock.now();
                 self.pen = Some(crate::pen::Pen::new(*content_index, name.clone(), now));
             }
@@ -739,6 +742,76 @@ impl App {
             self.history.seal();
             self.segment += split;
         }
+    }
+
+    pub(super) fn reduce_message_end(&mut self, message: &AgentMessage) {
+        match message {
+            AgentMessage::Assistant {
+                content,
+                stop_reason,
+                error_message,
+                usage,
+                ..
+            } => {
+                self.spent.record(usage);
+                self.session_tokens.record(usage);
+                self.turn_spent.record(usage);
+                self.turn_tokens.record(usage);
+                self.requests = self.requests.saturating_add(1);
+                self.close_segments(content);
+                let open = content.get(self.segment..).unwrap_or_default();
+                // Incident: an error end carries no content and erased text the reader saw, so the end
+                // replaces what streamed only when it extends it.
+                let thought = crate::transcript::thinking_of(open);
+                if thought.starts_with(self.live_thought.as_str()) {
+                    self.live_thought = thought;
+                }
+                self.flush_thought();
+                let prose = crate::transcript::prose_of(open);
+                if prose.starts_with(self.live_markdown.as_str()) {
+                    self.live_markdown = prose;
+                }
+                self.commit_prose(self.live_markdown.len(), true);
+                self.scheduler.request();
+                self.reset_live();
+                // A retried stream fails with the same words twice; one line says it.
+                let text = error_message
+                    .clone()
+                    .unwrap_or_else(|| "provider error".to_owned());
+                let repeated = matches!(self.history.last(), Some(Cell::Notice { text: last }) if *last == text);
+                if *stop_reason == StopReason::Error && !repeated {
+                    self.commit_cell(&Cell::Notice { text });
+                }
+            }
+            // `display: false` is the model's alone; the todo prelude leaked as a dozen callouts.
+            AgentMessage::Custom {
+                custom_type,
+                content,
+                display: true,
+                details,
+                ..
+            } => self.commit_cell(&super::asks::custom_cell(
+                custom_type,
+                content,
+                details.as_ref(),
+            )),
+            _ => {}
+        }
+    }
+
+    /// Incident: the runtime appends an accepted draft as its own message, so the prose it repeats
+    /// printed the reply twice; that prose leaves scrollback when the copy starts.
+    pub(crate) fn take_back(&mut self, cells: &[usize]) {
+        if self.history.blank_prose(cells) {
+            self.pending_repaint = true;
+        }
+    }
+
+    /// A focused child's end commits into the same history, never as the parent's own prose.
+    pub(super) fn reduce_child_end(&mut self, message: &AgentMessage) {
+        let parent = std::mem::take(&mut self.answer.parent);
+        self.reduce_message_end(message);
+        self.answer.parent = parent;
     }
 
     /// Moves both cursors by the time since the last tick; true when a frame is owed.
@@ -833,6 +906,10 @@ impl App {
         result: &ToolResult,
         is_error: bool,
     ) {
+        if tool_name == ANSWER_TOOL {
+            self.tool_started.remove(&tool_call_id);
+            return;
+        }
         self.count_kind(&tool_name);
         self.last_tool = Some(tool_name.clone());
         let elapsed = self
@@ -875,23 +952,6 @@ impl App {
             result.terminate == Some(true),
         );
         self.commit_finished_tasks();
-    }
-
-    fn count_kind(&mut self, name: &str) {
-        let verb = match name {
-            "read" | "get_context" => "read",
-            "grep" | "web_search" => "searched",
-            "edit" | "write" => "edited",
-            "bash" => "ran",
-            "ipython" => "computed",
-            "todo" | "plan" | "answer" | "ask_user" | "annotate" => return,
-            _ => "used",
-        };
-        self.turn_tools = self.turn_tools.saturating_add(1);
-        match self.turn_kinds.iter_mut().find(|(kind, _)| *kind == verb) {
-            Some((_, count)) => *count = count.saturating_add(1),
-            None => self.turn_kinds.push((verb, 1)),
-        }
     }
 
     pub(crate) fn settle_tool(

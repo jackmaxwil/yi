@@ -15,6 +15,8 @@ use yi_types::message::Content;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+const ANSWERED: &str = "tests/fixtures/sessions/01a1b9ef.jsonl";
+
 fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
 }
@@ -1076,4 +1078,91 @@ fn text_of(content: &[Content]) -> String {
             _ => None,
         })
         .collect()
+}
+
+fn rows_matching(app: &App, needle: &str) -> usize {
+    flat(&app.reflowed(100_000))
+        .iter()
+        .filter(|row| row.contains(needle))
+        .count()
+}
+
+/// Two recorded turns each wrote the reply as prose and sent it again through `answer`; the
+/// transcript carries each reply once and no answer card.
+#[test]
+fn a_streamed_answer_turn_shows_its_reply_once_and_no_answer_card() -> TestResult {
+    let mut app = app();
+    let session = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ANSWERED);
+    common::replay_stream(&mut app, &session)?;
+    assert_eq!(rows_matching(&app, "Ranked by size label"), 1);
+    assert_eq!(rows_matching(&app, "To prevent it:"), 1);
+    assert_eq!(rows_matching(&app, "Answer delivered"), 0);
+    Ok(())
+}
+
+/// A resumed session draws what the live turn drew: the reply once, no answer card.
+#[test]
+fn a_replayed_answer_turn_shows_its_reply_once_and_no_answer_card() -> TestResult {
+    let mut app = app();
+    let text =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ANSWERED))?;
+    let entries: Vec<yi_types::entry::Entry> = text
+        .lines()
+        .filter(|line| line.contains("\"kind\":\"entry\""))
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    app.replay_entries(&entries);
+    assert_eq!(rows_matching(&app, "Ranked by size label"), 1);
+    assert_eq!(rows_matching(&app, "To prevent it:"), 1);
+    assert_eq!(rows_matching(&app, "Answer delivered"), 0);
+    Ok(())
+}
+
+/// A saved turn that stopped before its answer was appended keeps the prose the live turn showed.
+#[test]
+fn a_replayed_turn_cut_before_its_answer_keeps_the_prose() -> TestResult {
+    let mut app = app();
+    let text =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ANSWERED))?;
+    let mut entries: Vec<yi_types::entry::Entry> = text
+        .lines()
+        .filter(|line| line.contains("\"kind\":\"entry\""))
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    let appended = entries.iter().rposition(|entry| {
+        matches!(
+            entry,
+            yi_types::entry::Entry::Message {
+                message: yi_types::message::AgentMessage::Assistant { .. },
+                ..
+            }
+        )
+    });
+    entries.truncate(appended.ok_or("the fixture has no reply")?);
+    app.replay_entries(&entries);
+    assert_eq!(rows_matching(&app, "To prevent it:"), 1);
+    Ok(())
+}
+
+/// A refused draft is the model's to fix; its refusal speaks to the model, never on screen.
+#[test]
+fn a_refused_answer_draws_no_row() -> TestResult {
+    let mut app = app();
+    started(&mut app, "a1", "answer", "");
+    let refusal = "These numbers appear in no tool result or user message: 1895, 1894.\nThe answer is held, not shown.";
+    ended_with(
+        &mut app,
+        "a1",
+        "answer",
+        refusal,
+        true,
+        serde_json::Value::Null,
+    );
+    assert_eq!(rows_matching(&app, "answer is held"), 0);
+    assert!(
+        common::live_rows(&mut app)?
+            .iter()
+            .all(|row| !row.contains("Answer"))
+    );
+    Ok(())
 }
