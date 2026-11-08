@@ -197,6 +197,7 @@ impl App {
         self.history.clear();
         self.pending_commit.clear();
         self.reset_live();
+        self.answer = super::AnswerTrack::default();
         self.live_tools.clear();
         self.user_turns = 0;
         self.retired_tasks.extend(self.task_order.drain(..));
