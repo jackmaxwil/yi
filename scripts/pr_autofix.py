@@ -274,8 +274,8 @@ def sh(cwd, *args, env=None, input=None, check=True):
     return out
 
 
-def conflicts(pr, repo=ROOT):
-    """The paths a merge of the base with main's driver leaves conflicted; the merge is never pushed."""
+def conflicts(pr, repo=ROOT, push=False):
+    """The paths a merge of the base with main's driver leaves conflicted; a clean one is pushed only on `push`."""
     sha, base_ref = pr["head"]["sha"], pr["base"]["ref"]
     with workspace(repo, sha) as work:
         clone = work / "clone"
@@ -284,6 +284,9 @@ def conflicts(pr, repo=ROOT):
         conflicted = sh(clone, "git", "diff", "--name-only", "--diff-filter=U").stdout.split()
         if merged.returncode and not conflicted:
             raise RuntimeError(f"git merge refused: {(merged.stdout + merged.stderr).strip()[-600:]}")
+        if push and not conflicted:
+            sh(repo, "git", "fetch", "-q", str(clone), "HEAD")
+            push_head(repo, pr["head"]["ref"], sh(repo, "git", "rev-parse", "FETCH_HEAD").stdout.strip())
         return conflicted
 
 
@@ -1420,8 +1423,15 @@ def attempt(repo, pr, ids, asked=False):
     if behind and queue_builds(pr, labels):
         return "queued"
     # Incident: #2022 took 41 clean main merges in a day, each a gate rerun that voided its review
-    # rounds. The queue merges onto main itself, so only a real conflict is the bot's.
-    conflicted = conflicts(pr) if behind else []
+    # rounds. The queue merges onto main, so the bot's are a real conflict and a stale runner lane.
+    retired = behind and stale_lane(pr["base"]["ref"], pr["head"]["sha"])
+    try:
+        conflicted = conflicts(pr, push=retired) if behind else []
+    except LookupError as err:
+        print(f"#{number}: the clean-merge push was refused, the branch moved: {err}")
+        return "moved"
+    if retired and not conflicted:
+        return "merged"
     if conflicted:
         print(f"#{number}: merge conflicts for the fixer: {', '.join(conflicted)}")
     notes = pr_review.comments(repo, number)
@@ -1441,7 +1451,7 @@ def attempt(repo, pr, ids, asked=False):
     # push mid-landing restarts its checks. Conflict fixes still go to every PR.
     if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT):
         blocked = False
-    stale = pr.get("title", "").startswith(forge_pr.DRAFT) and stale_lane(pr["base"]["ref"], pr["head"]["sha"])
+    stale = retired and pr.get("title", "").startswith(forge_pr.DRAFT)
     # A round the fixer declined whole on this head waits for a person, a new round, a new head or
     # an explicit `just pr autofix N`.
     if blocked and not conflicted and not asked and any(
@@ -1884,7 +1894,7 @@ def waits_selfcheck():
     try:
         forge_pr.git, forge_pr.fgj_api, forge_pr.cmd_rerun = (lambda *a, **k: ""), api, (lambda ns: reruns.append(ns.number))
         pr_review.comments, pr_review.authors, bot_meter.since = (lambda repo, n: notes), (lambda: {"jack"}), (lambda *a: [])
-        pr_review.rounds_of, module.conflicts, module.quiet_for = (lambda *a: []), (lambda pr: []), (lambda *a: QUIET)
+        pr_review.rounds_of, module.conflicts, module.quiet_for = (lambda *a: []), (lambda pr, push=False: []), (lambda *a: QUIET)
         module.set_label = lambda repo, n, ids, name, on: labelled.append((name, on))
         module.red_lanes = lambda repo, sha: ["test"]
         t1, t2 = ("yi-cli::integration", "console_drive::a_hidden_sidebar"), ("yi", "t::two")
@@ -2868,7 +2878,7 @@ def selfcheck():
     saved = {name: getattr(mod, name) for mod, name in ((forge_pr, "git"), (forge_pr, "fgj_api"), (pr_review, "comments"),
                                                         (pr_review, "authors"), (bot_meter, "since"), (pr_review, "rounds_of"))}
     passed, module = {}, sys.modules[__name__]
-    stand = {"conflicts": lambda pr: ["a.rs"], "set_label": lambda *a: None, "quiet_for": lambda *a: 0,
+    stand = {"conflicts": lambda pr, push=False: ["a.rs"], "set_label": lambda *a: None, "quiet_for": lambda *a: 0,
              "fix": lambda pr, **kw: passed.update(kw) or {"kind": "conflict", "from": "a", "to": "b", "base": "main",
                                                             "model": TIERS[1][0], "tier": "medium", "round": "", "files": 1,
                                                             "summary": "s", "touched": [], "declined": []}}
@@ -2887,16 +2897,26 @@ def selfcheck():
         if passed.get("tried") != 1:
             errs.append(f"attempt handed fix() tried={passed.get('tried')}, not the 1 failed try since the last push")
         attempted = []
-        module.conflicts = lambda pr: attempted.append(pr) or []
+        module.conflicts = lambda pr, push=False: attempted.append(push) or []
         sample = {"number": 1, "labels": [{"name": "autofix"}], "head": {"sha": "abc", "repo": {"full_name": "o/r"}},
                   "base": {"ref": "main"}}
         # Incident: a clean merge returned before the head's round was read, so a behind draft's findings waited a day.
         pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
         passed.clear()
         said = attempt("o/r", dict(sample, title=forge_pr.DRAFT + "t"), {})
-        if passed.get("kind") != "findings" or len(attempted) != 1:
-            errs.append(f"a behind draft that merges clean read {said} and its round's findings never reached the fixer")
+        if passed.get("kind") != "findings" or attempted != [False]:
+            errs.append(f"a behind draft that merges clean read {said}, pushed {attempted}, and its round's findings never reached the fixer")
         pr_review.rounds_of = saved["rounds_of"]
+        # Incident: a branch running an old runs-on copy held runners, so its clean merge is still pushed.
+        pushes, kept_lane = [], module.stale_lane
+        module.conflicts, module.stale_lane = (lambda pr, push=False: pushes.append(push) or []), (lambda base, sha: True)
+        try:
+            said = attempt("o/r", sample, {})
+        finally:
+            module.stale_lane = kept_lane
+        if said != "merged" or pushes != [True]:
+            errs.append(f"a behind PR on a retired runner lane read {said} with pushes {pushes}, so its old workflow keeps holding runners")
+        module.conflicts = lambda pr, push=False: attempted.append(push) or []
         fresh = dict(sample, updated_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
         if attempt("o/r", fresh, {}) != "recent" or len(attempted) != 1:
             errs.append("a head updated inside the five-minute guard was merged")
@@ -2939,7 +2959,7 @@ def selfcheck():
         finally:
             forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem = real_queue
         # A blocked round at the head: answered on a draft, left alone on a ready PR.
-        module.conflicts = lambda pr: []
+        module.conflicts = lambda pr, push=False: []
         pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
         for title, want in ((forge_pr.DRAFT + "t", "findings"), ("t", None)):
             passed.clear()
@@ -2969,7 +2989,7 @@ def selfcheck():
             errs.append(f"a provider 429 read {said} with labels {labelled}, not deferred and unlabelled")
         # The label clears itself inside attempt(), where it runs: an aged failure row releases the PR
         # and an 11-hour one does not. Delete that branch and the first case reads stopped.
-        module.conflicts = lambda pr: []
+        module.conflicts = lambda pr, push=False: []
         pr_review.rounds_of = lambda *a: [{"n": 1, "sha": "abc", "verdict": "clean", "findings": []}]
         stale = lambda at: [row(0, at, "failed")]
         for stale_rows, want in ((stale(now - RETRY_AFTER - 60), "clean"), (stale(now - RETRY_AFTER + 3600), "stopped")):
@@ -2981,7 +3001,7 @@ def selfcheck():
                 errs.append(f"a failure {int((now - when(stale_rows[0]['created_at'])) // 3600)}h old read {said} "
                             f"with labels {labelled}, not {want} and the label {'lifted' if want == 'clean' else 'kept'}")
         # The capped branch itself: one wait comment and no failed label, and silence inside its window.
-        module.conflicts, posted = (lambda pr: []), []
+        module.conflicts, posted = (lambda pr, push=False: []), []
         pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
         forge_pr.fgj_api = lambda method, path, body=None, **k: posted.append((body or {}).get("body", "")) or {}
         over = [row(CAP_PR, now - 3600)]
