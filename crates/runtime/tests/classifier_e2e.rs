@@ -361,39 +361,6 @@ async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
     Ok(())
 }
 
-/// The trip reached the journal only, so a model whose question went unanswered read nothing.
-#[tokio::test(flavor = "multi_thread")]
-async fn three_approval_failures_deliver_one_breaker_notice() -> TestResult {
-    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
-    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
-    let named = format!("127.0.0.1:{port}");
-    for turn in 0..3 {
-        let outcome = run(&gate, &format!("make build run{turn}"));
-        assert!(!outcome.allowed, "turn {turn}: {}", outcome.reason);
-        let record = gate.records.recv_timeout(Duration::from_secs(5))?;
-        assert!(
-            record
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains(&named)),
-            "turn {turn}: the journal names the sidecar: {record:?}"
-        );
-    }
-    let notices = gate
-        .notices
-        .lock()
-        .map(|held| held.clone())
-        .unwrap_or_default();
-    assert_eq!(notices.len(), 1, "{notices:?}");
-    assert!(
-        notices[0].contains("failed 3 times")
-            && notices[0]
-                .contains("approval asks skip the classifier and go to the reviewer or the user"),
-        "{notices:?}"
-    );
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_the_user_did_not_type_is_never_classified() -> TestResult {
     let (port, _served) = sidecar(vec![LAND])?;
@@ -508,7 +475,6 @@ struct Gate {
     records: Receiver<ClassifyRecord>,
     asked: Arc<Mutex<u32>>,
     script: Arc<Mutex<Vec<yi_runtime::AskOutcome>>>,
-    notices: Arc<Mutex<Vec<String>>>,
 }
 
 /// A broker in auto mode with no sandbox, so an unknown command is a reviewable ask.
@@ -575,27 +541,18 @@ fn gate_in(
     if !thinking.is_zero() {
         broker.prompts_close_on_settle();
     }
-    let notices = Arc::new(Mutex::new(Vec::new()));
-    let delivered = Arc::clone(&notices);
-    let deliver: yi_runtime::Deliver = Arc::new(move |message| {
-        if let AgentMessage::Custom {
-            content: UserContent::Text(text),
-            ..
-        } = message
-            && let Ok(mut held) = delivered.lock()
-        {
-            held.push(text);
-        }
-    });
     broker.set_approver(Arc::new(Approver::new(
-        sidecar, thresholds, timing, record, deliver,
+        sidecar,
+        thresholds,
+        timing,
+        record,
+        Arc::new(|_| {}),
     )));
     Gate {
         broker,
         records,
         asked,
         script,
-        notices,
     }
 }
 

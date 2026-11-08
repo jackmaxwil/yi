@@ -1,10 +1,10 @@
 ---
 issue: Closes #1521
-raise: crate runtime +113, tests +181, comments +1
+raise: crate runtime +113, tests +180, comments +1
 growth: +113 the shared breaker_notice with the classifier breaker moved to its own file, the headless refusals and ask_user reworded with a test per path, and named_rule's entry worded as the user's; weighed deleting the Approver notice (kept: the journal-only trip was the defect), the duplicate notice builder (deleted, folded into breaker_notice) and named_rule (kept: the operator's remedy #1671 built and #1694 refined)
 ledger+: permission modes/rules/holds, deterministic auto | a refusal for a call nobody can approve names only what a model can do, split the command, keep the writes inside the working tree, or ask the user where an approval could widen it, never `--yolo`, and the exact `permissions.allow` entry it prints for one call is worded as the user's to add (`gate::tests::a_headless_refusal_names_the_model_remedies_and_never_a_persons_flag`, `cli_surfaces::a_headless_denial_names_the_call_exits_4_and_prints_an_entry_that_runs_it`)
 ledger~: skills: catalog ladder, `$name`, Yi's triggered skills | bundled skills under `skills/yi/`; | bundled skills under `skills/yi/`, and no `SKILL.md` under `python/skills`, which the kernel tree ships to a directory no skill root scans (`skills_e2e::every_skill_file_the_binary_ships_is_under_a_skill_root`);
-ledger+: skill classifier | the approval sidecar's breaker trip delivers one notice into the session, as the skill classifier's does, instead of reaching the journal only (`classifier_e2e::three_approval_failures_deliver_one_breaker_notice`)
+ledger+: skill classifier | the approval sidecar's breaker trip delivers one notice into the session, as the skill classifier's does, instead of reaching the journal only (`session_faux::three_approval_failures_deliver_one_breaker_notice`)
 cut: python/skills/compact/SKILL.md | name: compact | the kernel tree unpacks it to ~/.yi/python/skills, which no skill root scans, so no model ever read it
 cut: python/skills/attach-image/SKILL.md | name: attach-image | the kernel tree unpacks it to ~/.yi/python/skills, which no skill root scans, so no model ever read it
 cut: python/skills/goal/SKILL.md | # goal | the kernel tree unpacks it to ~/.yi/python/skills, which no skill root scans, so no model ever read it
