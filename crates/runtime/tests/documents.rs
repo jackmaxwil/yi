@@ -428,6 +428,88 @@ fn a_bmp_is_refused_with_the_cell_that_re_encodes_it() -> TestResult {
     Ok(())
 }
 
+/// The wide-* fixtures are 8000x1 and 8001x1 images saved by the kernel venv's Pillow 13.0.0:
+/// JPEG, and WebP as lossy (VP8), lossless (VP8L) and with alpha (VP8X).
+#[test]
+fn a_jpeg_or_webp_wider_than_the_side_limit_is_refused() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-wide")?;
+    for (stem, kind) in [
+        ("{w}.jpg", "JPEG"),
+        ("{w}-lossy.webp", "WebP"),
+        ("{w}-lossless.webp", "WebP"),
+        ("{w}-alpha.webp", "WebP"),
+    ] {
+        let [at, over] =
+            [8000, 8001].map(|w| format!("wide-{}", stem.replace("{w}", &w.to_string())));
+        let bytes = std::fs::read(Path::new(FIXTURES).join(&at))?;
+        let sent = read_image(&dir, &at, &bytes)?;
+        assert_eq!(
+            text(&sent),
+            format!("{at}: a {kind} image, 8000x1 px, {} bytes", bytes.len())
+        );
+        assert_eq!(images(&sent).len(), 1, "{at}");
+        let refused = read_image(
+            &dir,
+            &over,
+            &std::fs::read(Path::new(FIXTURES).join(&over))?,
+        )?;
+        assert!(refused.is_error && images(&refused).is_empty(), "{over}");
+        assert_eq!(
+            text(&refused),
+            format!(
+                "failed to read {0}: the {kind} image is 8001x1 px, over MAX_IMAGE_SIDE 8000 px a side; in ipython run `path = \"{0}\"; print(await attach_image(path))`",
+                dir.join(&over).display()
+            )
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_image_past_the_text_cap_is_refused_as_too_large_not_as_text() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-huge")?;
+    let path = dir.join("huge.png");
+    std::fs::write(
+        &path,
+        std::fs::read(Path::new(FIXTURES).join("checker.png"))?,
+    )?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)?
+        .set_len(16 * 1024 * 1024 + 1)?;
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    let output = call(&read, &dir, json!({ "path": "huge.png" }))?;
+    assert!(output.is_error);
+    assert_eq!(
+        text(&output),
+        format!(
+            "failed to read {0}: the PNG image is 22369624 base64 chars, over MAX_IMAGE_CHARS 10000000; in ipython run `path = \"{0}\"; print(await attach_image(path))`",
+            path.display()
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn a_backtick_in_the_path_cannot_close_the_cell_it_is_named_in() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-tick")?;
+    let output = read_image(&dir, "a`b.png", &checker_sized(8001, 64)?)?;
+    assert!(output.is_error);
+    let cell = format!(
+        "``path = \"{}\"; print(await attach_image(path))``",
+        dir.join("a`b.png").display()
+    );
+    assert!(
+        text(&output).ends_with(&format!("; in ipython run {cell}")),
+        "{}",
+        text(&output)
+    );
+    Ok(())
+}
+
 #[test]
 fn a_glob_names_the_image_it_does_not_send() -> TestResult {
     let dir = scratch::Scratch::new("yi-read-glob-png")?;
@@ -443,7 +525,7 @@ fn a_glob_names_the_image_it_does_not_send() -> TestResult {
     assert!(images(&glob).is_empty());
     assert!(
         text(&glob).lines().any(|row| row
-            == "checker.png: a PNG image, 64x64 px, 379 bytes  [not shown: a glob sends no image; read the file alone]"),
+            == "checker.png: a PNG image, 379 bytes  [not shown: a glob sends no image; read the file alone]"),
         "{}",
         text(&glob)
     );

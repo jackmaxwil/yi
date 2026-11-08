@@ -454,6 +454,13 @@ impl HashlineReadTool {
                 }
                 Err(_) => Vec::new(),
             };
+            if let Some((kind, _)) = crate::document::image_kind(&bytes) {
+                sections.push(format!(
+                    "{display}: a {kind} image, {} bytes  [not shown: a glob sends no image; read the file alone]",
+                    bytes.len()
+                ));
+                continue;
+            }
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
             let size = match &document {
                 Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
@@ -465,13 +472,7 @@ impl HashlineReadTool {
                 let output = self.read_file(&display, path, &Map::new(), context);
                 spent = spent.saturating_add(size);
                 whole = whole.saturating_add(1);
-                let mut section = yi_types::message::join_text(&output.result.content, "");
-                if (output.result.content.iter())
-                    .any(|part| matches!(part, yi_types::message::Content::Image { .. }))
-                {
-                    section.push_str("  [not shown: a glob sends no image; read the file alone]");
-                }
-                sections.push(section);
+                sections.push(yi_types::message::join_text(&output.result.content, ""));
                 continue;
             }
             if !budget_named {

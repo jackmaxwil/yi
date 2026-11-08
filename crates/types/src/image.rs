@@ -96,23 +96,70 @@ pub fn image_defect(mime_type: &str, data: &str) -> Option<ImageDefect> {
     }
 }
 
-/// The width and height a PNG or GIF header names, from the image's first 24 bytes; [`None`]
-/// for a type whose size is not in a fixed header place.
+/// The width and height an image's header names, read from `bytes` as far as they go: PNG and
+/// GIF in their first 24 bytes, WebP in its first 30, JPEG at its first frame marker.
 #[must_use]
-pub fn image_side(mime_type: &str, head: &[u8]) -> Option<(u32, u32)> {
-    let u32_at = |at: usize| head.get(at..at.saturating_add(4))?.try_into().ok();
-    let u16_at = |at: usize| head.get(at..at.saturating_add(2))?.try_into().ok();
+pub fn image_side(mime_type: &str, bytes: &[u8]) -> Option<(u32, u32)> {
+    let be = |at, len| int(bytes, at, len, true);
+    let le = |at, len| int(bytes, at, len, false);
+    let plus_one = |side: u32| side.saturating_add(1);
     match mime_type {
-        "image/png" => u32_at(16)
-            .zip(u32_at(20))
-            .map(|(w, h)| (u32::from_be_bytes(w), u32::from_be_bytes(h))),
-        "image/gif" => u16_at(6).zip(u16_at(8)).map(|(w, h)| {
-            (
-                u32::from(u16::from_le_bytes(w)),
-                u32::from(u16::from_le_bytes(h)),
-            )
-        }),
+        "image/png" => be(16, 4).zip(be(20, 4)),
+        "image/gif" => le(6, 2).zip(le(8, 2)),
+        "image/webp" => match bytes.get(12..16)? {
+            b"VP8 " if bytes.get(23..26) == Some(&[0x9d, 0x01, 0x2a]) => {
+                Some((le(26, 2)? & 0x3fff, le(28, 2)? & 0x3fff))
+            }
+            b"VP8L" if bytes.get(20) == Some(&0x2f) => {
+                let bits = le(21, 4)?;
+                Some((plus_one(bits & 0x3fff), plus_one(bits >> 14 & 0x3fff)))
+            }
+            b"VP8X" => Some((plus_one(le(24, 3)?), plus_one(le(27, 3)?))),
+            _ => None,
+        },
+        "image/jpeg" => jpeg_side(bytes),
         _ => None,
+    }
+}
+
+/// The `len`-byte unsigned integer at `at`, big- or little-endian; `len` is at most 4.
+fn int(bytes: &[u8], at: usize, len: usize, big: bool) -> Option<u32> {
+    let field = bytes.get(at..at.checked_add(len)?)?;
+    let fold = |value: u32, byte: &u8| value << 8 | u32::from(*byte);
+    Some(match big {
+        true => field.iter().fold(0, fold),
+        false => field.iter().rev().fold(0, fold),
+    })
+}
+
+/// A JPEG's size from its first start-of-frame segment, walking the segments after SOI; [`None`]
+/// once the scan or the end comes first, since the size is only ever ahead of the scan.
+fn jpeg_side(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut at = 2_usize;
+    loop {
+        if bytes.get(at) != Some(&0xff) {
+            return None;
+        }
+        while bytes.get(at) == Some(&0xff) {
+            at = at.checked_add(1)?;
+        }
+        let marker = *bytes.get(at)?;
+        match marker {
+            0x01 | 0xd0..=0xd7 => at = at.checked_add(1)?,
+            0xd9 | 0xda => return None,
+            0xc0..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) => {
+                return int(bytes, at.checked_add(6)?, 2, true).zip(int(
+                    bytes,
+                    at.checked_add(4)?,
+                    2,
+                    true,
+                ));
+            }
+            _ => {
+                let len = usize::try_from(int(bytes, at.checked_add(1)?, 2, true)?).ok()?;
+                at = at.checked_add(1)?.checked_add(len)?;
+            }
+        }
     }
 }
 

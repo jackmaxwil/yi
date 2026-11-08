@@ -35,6 +35,7 @@ impl Listed {
     }
 }
 use crate::tool::{Cap, ToolContext, ToolOutput, error_output, text_output};
+use yi_types::image::{ImageDefect, MAX_IMAGE_CHARS, MAX_IMAGE_SIDE};
 
 impl HashlineReadTool {
     pub(super) fn read_file(
@@ -56,14 +57,14 @@ impl HashlineReadTool {
             },
             None => None,
         };
-        let bytes = match context.read(path) {
-            Ok(bytes) => bytes,
+        let (bytes, stat) = match context.read_stat(path) {
+            Ok((bytes, stat)) => (bytes, Some(stat)),
             Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
                 let Some(document) = self.document_bytes(path, pages, context) else {
                     return error_output(format!("failed to read {}: {error}", path.display()));
                 };
                 match document {
-                    Ok(bytes) => bytes,
+                    Ok(bytes) => (bytes, None),
                     Err(output) => return output,
                 }
             }
@@ -102,7 +103,7 @@ impl HashlineReadTool {
             }
         }
         if let Some(kind) = crate::document::image_kind(&bytes) {
-            return image(display_path, path, kind, &bytes);
+            return image(display_path, path, kind, &bytes, stat.as_ref());
         }
         if bytes.starts_with(b"\xff\xfe") || bytes.starts_with(b"\xfe\xff") {
             let (decoded, encoding) = crate::document::decode_text(&bytes);
@@ -161,7 +162,7 @@ impl HashlineReadTool {
     }
 
     /// The bytes of a file past the text cap that is a document, under the converter's own
-    /// ceiling; `None` when it is no document, so the text cap's row stands.
+    /// ceiling, or an image's size refusal; `None` for anything else, so the text cap's row stands.
     fn document_bytes(
         &self,
         path: &Path,
@@ -169,9 +170,14 @@ impl HashlineReadTool {
         context: &ToolContext,
     ) -> Option<Result<Vec<u8>, ToolOutput>> {
         let file = context.read_gate().open(path, &context.deny_read).ok()?;
+        let len = usize::try_from(file.metadata().ok()?.len()).unwrap_or(usize::MAX);
         let window = u64::try_from(crate::document::MARKER_WINDOW).unwrap_or(u64::MAX);
         let mut head = Vec::new();
         std::io::Read::read_to_end(&mut std::io::Read::take(file, window), &mut head).ok()?;
+        if let Some((kind, _)) = crate::document::image_kind(&head) {
+            let chars = len.div_ceil(3).saturating_mul(4);
+            return Some(Err(refusal(path, kind, ImageDefect::TooLarge { chars })));
+        }
         if !crate::document::could_be_document(&head) {
             return None;
         }
@@ -350,47 +356,51 @@ pub(super) fn outline_rows(text: &str) -> Vec<String> {
     rows
 }
 
-/// An image the provider takes goes to the model as itself; one it refuses says why, and the cell
-/// that sends it when there is one. `attachmentMedia` lets a reclaimed copy be attached again.
-fn image(display_path: &str, path: &Path, (kind, mime): (&str, &str), bytes: &[u8]) -> ToolOutput {
-    let data = yi_types::encoding::base64(bytes);
-    if let Some(defect) = yi_types::image::image_defect(mime, &data) {
-        use yi_types::image::ImageDefect::{
-            NoHeader, NotBase64, NotItsType, TooLarge, TooWide, Type,
-        };
-        let remedy = defect.remedy();
-        let next = match defect {
-            Type | TooLarge { .. } | TooWide { .. } => format!(
-                "; in ipython run `path = {}; {}`",
-                crate::document::python_str(path),
-                remedy.split('`').nth(1).unwrap_or(remedy)
-            ),
-            NoHeader | NotBase64 | NotItsType => ", so no decoder opens it".to_owned(),
-        };
-        let path = path.display();
-        return error_output(format!(
-            "failed to read {path}: the {kind} image {defect}{next}"
-        ));
+/// An image the provider takes goes to the model as itself, under a line saying what it is;
+/// `attachmentMedia` carries the stat the read opened it with, so reclaim can attach it again.
+fn image(
+    display_path: &str,
+    path: &Path,
+    (kind, mime): (&str, &str),
+    bytes: &[u8],
+    stat: Option<&std::fs::Metadata>,
+) -> ToolOutput {
+    let most = (MAX_IMAGE_CHARS / 4).saturating_mul(3);
+    if bytes.len() > most {
+        let chars = bytes.len().div_ceil(3).saturating_mul(4);
+        return refusal(path, kind, ImageDefect::TooLarge { chars });
     }
-    let side = yi_types::image::image_side(mime, bytes.get(..24).unwrap_or(bytes))
-        .map_or_else(String::new, |(width, height)| {
-            format!(", {width}x{height} px")
-        });
-    let modified_ns = std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .and_then(|since| u64::try_from(since.as_nanos()).ok());
+    let data = yi_types::encoding::base64(bytes);
+    let side = yi_types::image::image_side(mime, bytes);
+    let defect = yi_types::image::image_defect(mime, &data).or(match side {
+        Some((width, height)) if width.max(height) > MAX_IMAGE_SIDE => {
+            Some(ImageDefect::TooWide { width, height })
+        }
+        Some(_) => None,
+        None => matches!(mime, "image/jpeg" | "image/webp").then_some(ImageDefect::NoHeader),
+    });
+    if let Some(defect) = defect {
+        return refusal(path, kind, defect);
+    }
+    let side = side.map_or_else(String::new, |(width, height)| {
+        format!(", {width}x{height} px")
+    });
     let mut output = text_output(format!(
         "{display_path}: a {kind} image{side}, {} bytes",
         bytes.len()
     ));
-    output.result.details = json!({ "attachmentMedia": [{
-        "mime_type": mime,
-        "path": path,
-        "bytes": bytes.len(),
-        "modified_ns": modified_ns,
-    }] });
+    let row = stat
+        .filter(|stat| usize::try_from(stat.len()).ok() == Some(bytes.len()))
+        .zip(path.to_str())
+        .map(|(stat, path)| {
+            let modified_ns = (stat.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|since| u64::try_from(since.as_nanos()).ok());
+            json!({ "mime_type": mime, "path": path, "bytes": stat.len(), "modified_ns": modified_ns })
+        });
+    if let Some(row) = row {
+        output.result.details = json!({ "attachmentMedia": [row] });
+    }
     output
         .result
         .content
@@ -399,4 +409,64 @@ fn image(display_path: &str, path: &Path, (kind, mime): (&str, &str), bytes: &[u
             mime_type: mime.to_owned(),
         });
     output
+}
+
+/// Why the provider would refuse the image, and the ipython cell that sends it when one can.
+/// Invariant: the cell's fence is one backtick longer than any run in it, so a path cannot end it.
+fn refusal(path: &Path, kind: &str, defect: ImageDefect) -> ToolOutput {
+    use ImageDefect::{NoHeader, NotBase64, NotItsType, TooLarge, TooWide, Type};
+    let remedy = defect.remedy();
+    let next = match (defect, path.to_str()) {
+        (Type | TooLarge { .. } | TooWide { .. }, Some(_)) => {
+            let statement = remedy.split('`').nth(1).unwrap_or(remedy);
+            let cell = format!("path = {}; {statement}", crate::document::python_str(path));
+            let run = cell.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+            let fence = "`".repeat(run.saturating_add(1));
+            format!("; in ipython run {fence}{cell}{fence}")
+        }
+        (Type | TooLarge { .. } | TooWide { .. }, None) => {
+            "; its path is not UTF-8, so no Python string names it for a cell".to_owned()
+        }
+        (NoHeader | NotBase64 | NotItsType, _) => ", so no decoder opens it".to_owned(),
+    };
+    let path = path.display();
+    error_output(format!(
+        "failed to read {path}: the {kind} image {defect}{next}"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::os::unix::ffi::OsStrExt;
+
+    const CHECKER: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../runtime/tests/fixtures/documents/checker.png"
+    );
+
+    /// Incident: a non-UTF-8 name serialized through `json!` as a `Path` panicked the read; a
+    /// non-UTF-8 cwd or a Linux glob reaches it, and APFS refuses to create one, so no file is.
+    #[test]
+    fn a_path_that_is_not_utf8_sends_the_image_and_names_no_cell() -> Result<(), Box<dyn Error>> {
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xffchecker.png"));
+        let bytes = std::fs::read(CHECKER)?;
+        let stat = std::fs::metadata(CHECKER)?;
+        let sent = super::image("x.png", path, ("PNG", "image/png"), &bytes, Some(&stat));
+        assert!(!sent.is_error);
+        assert_eq!(sent.result.content.len(), 2);
+        assert_eq!(sent.result.details.get("attachmentMedia"), None);
+        let mut wide = bytes;
+        wide.get_mut(16..20)
+            .ok_or("short png")?
+            .copy_from_slice(&8001_u32.to_be_bytes());
+        let refused = super::image("x.png", path, ("PNG", "image/png"), &wide, None);
+        let text = yi_types::message::join_text(&refused.result.content, "");
+        assert!(refused.is_error);
+        assert!(
+            text.ends_with("over MAX_IMAGE_SIDE 8000 px a side; its path is not UTF-8, so no Python string names it for a cell"),
+            "{text}"
+        );
+        Ok(())
+    }
 }
