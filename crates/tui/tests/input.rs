@@ -119,6 +119,7 @@ fn a_busy_prompt_is_awaited_until_a_run_reads_it() -> TestResult {
         if opens_its_own_turn {
             app.reduce_agent(AgentEvent::AgentEnd {
                 messages: Vec::new(),
+                reason: None,
             });
             assert!(!app.turn_idle(), "the steer's own turn is about to start");
             app.reduce_agent(AgentEvent::AgentStart);
@@ -126,6 +127,7 @@ fn a_busy_prompt_is_awaited_until_a_run_reads_it() -> TestResult {
         app.reduce_agent(injected("second"));
         app.reduce_agent(AgentEvent::AgentEnd {
             messages: Vec::new(),
+            reason: None,
         });
         assert!(app.turn_idle(), "own turn {opens_its_own_turn}: both read");
         type_text(&mut app, &tx, "third");
@@ -195,6 +197,7 @@ fn an_injected_message_leaves_one_of_two_identical_queued_rows() -> TestResult {
     assert!(has_row(&rows, "Steering · 1"), "{rows:#?}");
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
+        reason: None,
     });
     let rows = common::live_rows(&mut app)?;
     assert!(!has_row(&rows, "Steering"), "{rows:#?}");
