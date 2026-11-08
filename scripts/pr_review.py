@@ -32,6 +32,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -39,6 +40,7 @@ sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import bot_meter  # noqa: E402
 import check_intent  # noqa: E402
 import forge_pr  # noqa: E402
+import forge_tracking  # noqa: E402
 from check_commit_style import subject_errors  # noqa: E402
 from check_pr_metadata import CITE, DRAFT, section, template_problems  # noqa: E402
 
@@ -865,18 +867,18 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
 
 
 def comments(repo, number):
-    answer = forge_pr.fgj_api("GET", f"repos/{repo}/issues/{number}/comments") or []
-    if not isinstance(answer, list):
-        raise Unanswered(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
-    return answer
+    def transport(method, path, payload):
+        answer = forge_pr.fgj_api(method, path, payload) or []
+        if not isinstance(answer, list):
+            raise Unanswered(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
+        return answer
+
+    return list(forge_tracking.paged(transport, f"repos/{repo}/issues/{number}/comments?x=1"))
 
 
 def authors():
-    named = os.environ.get("YI_ROUND_AUTHORS")
-    if named:
-        return set(named.split(","))
-    me = forge_pr.fgj_api("GET", "user") or {}
-    return {me.get("login"), BOT} - {None}
+    """The logins a round or the retry ledger counts from; one rule, in the module that sums them."""
+    return bot_meter.authors()
 
 
 def merges_since(sha, head, base, repo=ROOT):
@@ -1415,6 +1417,9 @@ def selfcheck():
     assert owed([both, mended], "abc1234ff") == set() and owed([both, void_], "abc1234ff") == {"perf"} and owed([both], "def5678") is None, \
         "a head owes what its newest round lost, a void and a new head aside"
     real = attempts_of([{"id": 37998, "user": {"login": BOT}, "body": ROUND_1888}, {"id": 38039, "user": {"login": BOT}, "body": VOID_1888}], {BOT}, 1888)
+    forged_void = {"id": 38040, "user": {"login": "someone"}, "body": VOID_1888}
+    with mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": BOT}):
+        assert attempts_of([forged_void], {BOT}, 1888) == [], "a stranger's void is not an attempt on the head"
     assert [a["kind"] for a in real] == ["round", "void"] and owed(real, SHA_1888) == {"tests"}, real
     assert skip_reason([a for a in real if a["kind"] == "round"], SHA_1888, attempts=real) is None, "#1888's head still owes its tests lens"
     assert lost_only(named, real, SHA_1888) == {"b": {"id": "tests"}}, "after #1888's void only the tests lens is asked, not every lens"

@@ -1000,7 +1000,7 @@ def forge_cases():
                     bad.append(f"{name} died on an error object: {err!r}")
         # A round reader's miss is the review job's Unanswered, which a tick turns into the same stop.
         queued = {"number": 1, "labels": [{"name": LABEL}]}
-        answers = lambda method, path, payload=None: locked if path.endswith("/comments") else [queued] if "page=1" in path else []
+        answers = lambda method, path, payload=None: locked if "/comments" in path else [queued] if "page=1" in path else []
         with mock.patch.object(forge_pr, "fgj_api", answers):
             try:
                 tick("on")

@@ -24,5 +24,5 @@ skill is the procedure; this is the law.
   base" only to the API. `just pr merge` updates the branch on the forge and retries; a refusal
   is printed verbatim, never retried blind.
 - Job logs are not on the API. `just pr status` says which job failed; the log is
-  `just ci-log <pr>` in the infra repository or the job page.
+  `just ci-log <pr>` in `~/Development/buildhost/the infra repository-apply` or the job page.
 - A branch is never rebased after it is pushed. Recreate it if the history must change.

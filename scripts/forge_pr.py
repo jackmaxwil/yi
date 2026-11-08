@@ -542,8 +542,8 @@ def report(pr, jobs, need, verdict):
         "closed": "closed without merging",
     }
     if verdict.startswith("failed:") and verdict != "failed:title":
-        hints[verdict] = (f"{verdict[7:]} failed — logs: `just ci-log {pr['number']}` in the infra repository; "
-                          f"push a fix, or `just pr rerun {pr['number']}` if it was the runner")
+        hints[verdict] = (f"{verdict[7:]} failed — `just pr retry {pr['number']}` classifies its logs and retries "
+                          "only runner failures; push a fix for a code failure")
     print(f"  {hints.get(verdict, verdict)}")
 
 
@@ -585,6 +585,12 @@ def cmd_rerun(args):
     subprocess.run(("fgj", "pr", "reopen", *scope(), str(number)), capture_output=True, check=False)
     print(f"#{number} closed and reopened; the gate reruns")
     return 0
+
+
+def cmd_retry(args):
+    import runner_retry
+
+    return runner_retry.cmd_retry(args)
 
 
 def queue_mode():
@@ -659,6 +665,9 @@ def cmd_merge(args):
                     print(f"merge: the forge wants #{number} up to date first; updating it")
                     return cmd_update(argparse.Namespace(number=number))
         elif verdict.startswith("failed:") or verdict in ("closed", "draft"):
+            if args.wait and verdict.startswith("failed:") and verdict != "failed:title" and cmd_retry(argparse.Namespace(number=str(number))) == 0:
+                time.sleep(POLL)
+                continue
             report(pr, jobs, need, verdict)
             if verdict == "failed:title":
                 for err in check_problems(pr["title"], pr.get("body") or ""):
@@ -1053,6 +1062,8 @@ def selfcheck():
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green.
     linux_clippy_selfcheck()
     commit_selfcheck()
+    import runner_retry
+    assert runner_retry.selfcheck() == 0, "runner retry selfcheck"
     land_guard_selfcheck()
     print("ok   forge_pr selfcheck")
 
@@ -1227,7 +1238,7 @@ def build_parser():
     import pr_review
 
     for name, run in (("status", cmd_status), ("ready", cmd_ready), ("update", cmd_update), ("rerun", cmd_rerun),
-                      ("review", pr_review.cmd_review)):
+                      ("retry", cmd_retry), ("review", pr_review.cmd_review)):
         sub = pr.add_parser(name)
         sub.add_argument("number", nargs="?")
         sub.set_defaults(run=run)
