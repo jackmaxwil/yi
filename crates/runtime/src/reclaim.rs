@@ -114,7 +114,7 @@ impl Cut {
     /// Invariant: a cut image whose picture can no longer be had goes out whole, so it is no cut
     /// to the price, the view or annotate either.
     fn get(&self, message: &AgentMessage) -> Option<&Mark> {
-        find(&self.marks, message).filter(|_| !lost_image(message))
+        find(&self.marks, message).filter(|_| reattach(message).is_ok())
     }
 
     pub(crate) fn cut_at(&self, message: &AgentMessage) -> Option<u64> {
@@ -232,20 +232,25 @@ fn chars(content: &[Content]) -> usize {
     texts(content).map(|text| text.chars().count()).sum()
 }
 
-/// The files an image result can be attached again from, the `attachmentMedia` rows the ipython
-/// tool writes; `None` unless every file still has the size and mtime the kernel recorded.
-fn image_paths(message: &AgentMessage) -> Option<Vec<String>> {
+/// An image result's files to attach again, its `attachmentMedia` rows: `Ok(None)` with no image,
+/// `Err` unless every file still has the size and mtime the kernel recorded.
+fn reattach(message: &AgentMessage) -> Result<Option<Vec<String>>, ()> {
     let AgentMessage::ToolResult {
         content, details, ..
     } = message
     else {
-        return None;
+        return Ok(None);
     };
     let images = content
         .iter()
         .filter(|part| matches!(part, Content::Image { .. }))
         .count();
-    let media = details.as_ref()?.get("attachmentMedia")?.as_array()?;
+    if images == 0 {
+        return Ok(None);
+    }
+    let media = (details.as_ref())
+        .and_then(|details| details.get("attachmentMedia")?.as_array())
+        .ok_or(())?;
     let paths: Vec<String> = media
         .iter()
         .filter_map(|row| {
@@ -264,12 +269,7 @@ fn image_paths(message: &AgentMessage) -> Option<Vec<String>> {
                 .then(|| path.to_owned())
         })
         .collect();
-    (paths.len() == images && !paths.is_empty()).then_some(paths)
-}
-
-fn lost_image(message: &AgentMessage) -> bool {
-    matches!(message, AgentMessage::ToolResult { content, .. } if has_image(content))
-        && image_paths(message).is_none()
+    (paths.len() == images).then_some(Some(paths)).ok_or(())
 }
 
 pub(crate) fn newest_images<M: std::borrow::Borrow<AgentMessage>>(
@@ -401,7 +401,7 @@ pub(crate) fn never_cut(
         Some(
             "one of the three newest image results is never cut, since the model still works from it",
         )
-    } else if has_image(content) && image_paths(message).is_none() {
+    } else if reattach(message).is_err() {
         Some(
             "an image result is never cut unless every image's source file keeps the size and modification time it was attached with",
         )
@@ -589,12 +589,9 @@ fn render(
                 crate::levers::get().reclaim_keep_turns
             ),
         };
-        let image = image_paths(message);
-        if matches!(message, AgentMessage::ToolResult { content, .. } if has_image(content))
-            && image.is_none()
-        {
+        let Ok(image) = reattach(message) else {
             continue;
-        }
+        };
         if let AgentMessage::ToolResult { content, .. } = message {
             let call = call.as_deref().unwrap_or("a tool call");
             let (kept, restore) = match image {
@@ -1506,6 +1503,8 @@ pub(crate) mod tests {
         let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
         let mut cut = Cut::default();
         cut.add(&record);
+        let image = messages.get(2).ok_or("no image result")?;
+        assert!(cut.cut_at(image).is_some(), "the oldest image is cut");
         std::fs::remove_file(&paths[0])?;
         let shown = apply(messages, &cut);
         let content = shown
