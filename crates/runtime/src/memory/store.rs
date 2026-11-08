@@ -73,6 +73,12 @@ fn parse_index(text: &str) -> Vec<IndexLine> {
         .collect()
 }
 
+fn refused_line(line: &IndexLine) -> bool {
+    match line {
+        IndexLine::Note { text, .. } | IndexLine::Other(text) => super::doc::refused(text),
+    }
+}
+
 fn render_index(lines: &[IndexLine]) -> String {
     let joined = lines
         .iter()
@@ -258,18 +264,17 @@ impl Store {
         }
     }
 
-    fn index(&self) -> Result<Vec<IndexLine>, StoreError> {
+    fn raw_index(&self) -> Result<Vec<IndexLine>, StoreError> {
         Ok(self
             .read_text(INDEX)?
-            .map(|text| {
-                parse_index(&text)
-                    .into_iter()
-                    .filter(|line| {
-                        !matches!(line, IndexLine::Note { text, .. } | IndexLine::Other(text) if super::doc::refused(text))
-                    })
-                    .collect()
-            })
+            .map(|text| parse_index(&text))
             .unwrap_or_default())
+    }
+
+    fn index(&self) -> Result<Vec<IndexLine>, StoreError> {
+        let mut lines = self.raw_index()?;
+        lines.retain(|line| !refused_line(line));
+        Ok(lines)
     }
 
     fn usage_strict(&self) -> Result<Usage, StoreError> {
@@ -399,7 +404,7 @@ impl Store {
 
     fn reconcile_index(&self, notes: &[Note]) -> Result<Vec<IndexLine>, StoreError> {
         let kept = self.index_from(notes)?;
-        if kept != self.index()? {
+        if kept != self.raw_index()? {
             self.replace(INDEX, &render_index(&kept))?;
         }
         Ok(kept)
@@ -434,6 +439,7 @@ impl Store {
                 });
             }
         }
+        kept.retain(|line| !refused_line(line));
         Ok(kept)
     }
 
@@ -760,6 +766,26 @@ mod tests {
         let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
         assert!(!index.contains(&secret), "{index}");
         assert!(index.contains("safe hook"), "{index}");
+    }
+
+    #[test]
+    fn a_hand_written_note_with_a_refused_hook_is_never_indexed() {
+        let dir = temp("hook-refused");
+        let store = Store::new(dir.join("store"));
+        let secret = ["sk-", "abcdefghijklmnop", "1234"].concat();
+        let hook = format!("token {secret}");
+        fs::create_dir_all(store.dir()).unwrap();
+        let note = format!("---\nname: beta\ndescription: {hook}\ntype: project\n---\nbody\n");
+        fs::write(store.dir().join("beta.md"), note).unwrap();
+        fs::write(
+            store.dir().join(INDEX),
+            format!("- [beta](beta.md) — {hook}\n"),
+        )
+        .unwrap();
+        let lines = store.reconcile().unwrap();
+        assert!(!render_index(&lines).contains(&secret));
+        let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
+        assert!(!index.contains(&secret), "{index}");
     }
 
     fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
