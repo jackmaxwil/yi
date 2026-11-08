@@ -1,4 +1,6 @@
 ---
+version: 0.1004.0
+decisions: D574
 issue: Closes #1859
 growth: +1062 discovery, provenance and import share the existing Store and doc helpers; name listing and index construction were deduplicated, and the added tests cover the externally visible import and doctor behavior
 raise: crate cli +31, crate runtime +1020, crate types +11, tests +632, comments +19
