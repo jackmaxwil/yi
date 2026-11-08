@@ -510,11 +510,67 @@ fn a_backtick_in_the_path_cannot_close_the_cell_it_is_named_in() -> TestResult {
     Ok(())
 }
 
+/// The cell a size refusal names is `attach_image`, which takes no BMP, so a BMP past either
+/// size limit is refused for its type instead.
+#[test]
+fn a_bmp_past_a_size_limit_gets_the_re_encode_cell() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-big-bmp")?;
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    for (name, len) in [("big.bmp", 8_000_000), ("huge.bmp", 17 * 1024 * 1024)] {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            std::fs::read(Path::new(FIXTURES).join("checker.bmp"))?,
+        )?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(len)?;
+        let output = call(&read, &dir, json!({ "path": name }))?;
+        assert!(output.is_error);
+        assert_eq!(
+            text(&output),
+            format!(
+                "failed to read {0}: the BMP image is not png, jpeg, gif or webp; in ipython run `path = \"{0}\"; from PIL import Image; Image.open(path).convert('RGB').save(f'{{path}}.jpg'); print(await attach_image(f'{{path}}.jpg'))`",
+                path.display()
+            )
+        );
+    }
+    Ok(())
+}
+
+/// wide-8000.jpg cut after its JFIF segment, so no frame header gives its size.
+#[test]
+fn a_jpeg_whose_size_cannot_be_read_still_names_a_cell() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-no-frame")?;
+    let jpeg = std::fs::read(Path::new(FIXTURES).join("wide-8000.jpg"))?;
+    let head = [jpeg.get(..20).ok_or("short jpeg")?, &[0xff, 0xd9]].concat();
+    let output = read_image(&dir, "cut.jpg", &head)?;
+    assert!(output.is_error);
+    assert_eq!(
+        text(&output),
+        format!(
+            "failed to read {0}: the JPEG image has no whole header for its type; in ipython run `path = \"{0}\"; print(await attach_image(path))`",
+            dir.join("cut.jpg").display()
+        )
+    );
+    Ok(())
+}
+
 #[test]
 fn a_glob_names_the_image_it_does_not_send() -> TestResult {
     let dir = scratch::Scratch::new("yi-read-glob-png")?;
     let png = std::fs::read(Path::new(FIXTURES).join("checker.png"))?;
     std::fs::write(dir.join("notes.txt"), "plain\n")?;
+    let huge = dir.join("huge.png");
+    std::fs::write(&huge, &png)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&huge)?
+        .set_len(17 * 1024 * 1024)?;
     let output = read_image(&dir, "checker.png", &png)?;
     assert_eq!(images(&output).len(), 1);
     let read = yi_tools::builtin_tools()
@@ -525,7 +581,13 @@ fn a_glob_names_the_image_it_does_not_send() -> TestResult {
     assert!(images(&glob).is_empty());
     assert!(
         text(&glob).lines().any(|row| row
-            == "checker.png: a PNG image, 379 bytes  [not shown: a glob sends no image; read the file alone]"),
+            == r#"checker.png: a PNG image, 379 bytes  [not shown: a glob sends no image; read("checker.png") sends it or says why not]"#),
+        "{}",
+        text(&glob)
+    );
+    assert!(
+        text(&glob).lines().any(|row| row
+            == r#"huge.png: a PNG image, 17825792 bytes  [not shown: a glob sends no image; read("huge.png") sends it or says why not]"#),
         "{}",
         text(&glob)
     );

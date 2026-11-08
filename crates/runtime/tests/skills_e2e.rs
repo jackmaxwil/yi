@@ -11,7 +11,6 @@ use yi_runtime::{
     AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
 };
 use yi_tools::{CancelFlag, KernelBridge, ToolContext};
-use yi_types::message::Content;
 use yi_types::model::{Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -199,51 +198,53 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
     // The cell a refused read names runs as named, on an image under a name with a quote and a
     // backslash that a bare "{path}" literal breaks on (the 2026-09-11 v4 sweep's image reads).
     let dir = Scratch::new("yi-skills-attach")?;
-    let image = dir.join("sch\"em\\atic.bmp");
-    std::fs::copy(
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/documents/checker.bmp"
-        ),
-        &image,
-    )?;
     let read = yi_tools::builtin_tools()
         .into_iter()
         .find(|tool| tool.name() == "read")
         .ok_or("no read tool")?;
-    let refused = read.execute(
-        serde_json::from_value(json!({"path": image}))?,
-        &ToolContext::new(dir.to_path_buf()),
-    );
-    let refusal: String = refused
-        .result
-        .content
-        .iter()
-        .map(|content| match content {
-            Content::Text { text, .. } => text.as_str(),
-            _ => "",
-        })
-        .collect();
-    let named = refusal.split('`').nth(1).ok_or_else(|| refusal.clone())?;
-    let attach_cell = cell(&service, named).await?;
-    assert!(
-        attach_cell
-            .result
-            .stdout
-            .contains("Loaded 1 image(s) into context"),
-        "{named} must confirm the load: {} {:?}",
-        attach_cell.result.stdout,
-        attach_cell.result.error
-    );
-    assert_eq!(
-        attach_cell.result.attachments.len(),
-        1,
-        "the display_data attachment must reach the host reducer"
-    );
-    assert_eq!(attach_cell.result.attachments[0].mime_type, "image/jpeg");
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/documents");
+    for (fixture, name) in [
+        ("checker.bmp", "sch\"em\\atic.bmp"),
+        ("wide-8001.png", "wi`de\"8001.png"),
+    ] {
+        let image = dir.join(name);
+        std::fs::copy(std::path::Path::new(fixtures).join(fixture), &image)?;
+        let refused = read.execute(
+            serde_json::from_value(json!({"path": image}))?,
+            &ToolContext::new(dir.to_path_buf()),
+        );
+        let refusal = yi_types::message::join_text(&refused.result.content, "");
+        let named = fenced_cell(&refusal).ok_or_else(|| refusal.clone())?;
+        let attach_cell = cell(&service, named).await?;
+        assert!(
+            attach_cell
+                .result
+                .stdout
+                .contains("Loaded 1 image(s) into context"),
+            "{named} must confirm the load: {} {:?}",
+            attach_cell.result.stdout,
+            attach_cell.result.error
+        );
+        let [attachment] = attach_cell.result.attachments.as_slice() else {
+            return Err(format!("{named}: the attachment must reach the host reducer").into());
+        };
+        assert_eq!(attachment.mime_type, "image/jpeg", "{named}");
+        assert_eq!(
+            yi_types::image::image_defect(&attachment.mime_type, &attachment.data),
+            None
+        );
+    }
 
     service.dispose().await;
     Ok(())
+}
+
+/// The cell a refusal names, between the run of backticks that opens it and the same run closing it.
+fn fenced_cell(refusal: &str) -> Option<&str> {
+    let rest = refusal.split_once("in ipython run ")?.1;
+    let ticks = rest.len().checked_sub(rest.trim_start_matches('`').len())?;
+    let fence = rest.get(..ticks).filter(|fence| !fence.is_empty())?;
+    rest.get(ticks..)?.strip_suffix(fence)
 }
 
 fn skill_dir(root: &std::path::Path, name: &str, frontmatter: &str) -> TestResult {

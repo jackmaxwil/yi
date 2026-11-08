@@ -394,6 +394,13 @@ fn read_dir(display_path: &str, path: &Path, context: &ToolContext) -> ToolOutpu
     output
 }
 
+fn glob_image(display: &str, kind: &str, len: usize) -> String {
+    let call = format!("read({})", Value::from(display));
+    format!(
+        "{display}: a {kind} image, {len} bytes  [not shown: a glob sends no image; {call} sends it or says why not]"
+    )
+}
+
 impl HashlineReadTool {
     /// Every file the glob names: whole and tagged while the byte budget lasts, a skeleton
     /// after it, so one call shows a module's shape without a second.
@@ -449,16 +456,18 @@ impl HashlineReadTool {
             let bytes = match opened.and_then(|file| crate::tool::read_capped(file, path, cap)) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-                    sections.push(format!("{display}  (not read: {error})"));
+                    let image = super::documents::sniff(path, context)
+                        .and_then(|(len, head)| Some((crate::document::image_kind(&head)?, len)));
+                    sections.push(match image {
+                        Some(((kind, _), len)) => glob_image(&display, kind, len),
+                        None => format!("{display}  (not read: {error})"),
+                    });
                     continue;
                 }
                 Err(_) => Vec::new(),
             };
             if let Some((kind, _)) = crate::document::image_kind(&bytes) {
-                sections.push(format!(
-                    "{display}: a {kind} image, {} bytes  [not shown: a glob sends no image; read the file alone]",
-                    bytes.len()
-                ));
+                sections.push(glob_image(&display, kind, bytes.len()));
                 continue;
             }
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);

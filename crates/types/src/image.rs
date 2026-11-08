@@ -20,17 +20,33 @@ pub enum ImageDefect {
     TooWide { width: u32, height: u32 },
 }
 
+/// The ipython statements that send an image at `path` again: `attach_image` resizes one to fit,
+/// and Pillow re-encodes one of a type `attach_image` does not take; each is run by a kernel test.
+pub const RESIZE_CELL: &str = "print(await attach_image(path))";
+pub const REENCODE_CELL: &str = "from PIL import Image; Image.open(path).convert('RGB').save(f'{path}.jpg'); print(await attach_image(f'{path}.jpg'))";
+
 impl ImageDefect {
-    /// The call that sends the image again, each one run in the kernel venv by a test.
+    /// The statement that sends the image again, `path` naming its source file.
     #[must_use]
-    pub fn remedy(self) -> &'static str {
+    pub fn cell(self) -> &'static str {
         match self {
-            Self::TooLarge { .. } | Self::TooWide { .. } => {
-                "If its source file is still on disk, run `print(await attach_image(path))` in ipython; it resizes to fit."
-            }
-            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => {
-                "If its source file is still on disk, re-encode it in ipython: `from PIL import Image; Image.open(path).convert('RGB').save(f'{path}.jpg'); print(await attach_image(f'{path}.jpg'))`."
-            }
+            Self::TooLarge { .. } | Self::TooWide { .. } => RESIZE_CELL,
+            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => REENCODE_CELL,
+        }
+    }
+
+    /// [`ImageDefect::cell`] as the sentence a refusal ends with.
+    #[must_use]
+    pub fn remedy(self) -> String {
+        match self {
+            Self::TooLarge { .. } | Self::TooWide { .. } => format!(
+                "If its source file is still on disk, run `{}` in ipython; it resizes to fit.",
+                self.cell()
+            ),
+            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => format!(
+                "If its source file is still on disk, re-encode it in ipython: `{}`.",
+                self.cell()
+            ),
         }
     }
 }
@@ -132,20 +148,19 @@ fn int(bytes: &[u8], at: usize, len: usize, big: bool) -> Option<u32> {
     })
 }
 
-/// A JPEG's size from its first start-of-frame segment, walking the segments after SOI; [`None`]
-/// once the scan or the end comes first, since the size is only ever ahead of the scan.
+/// A JPEG's size from its first start-of-frame segment, walking the segments after SOI and, as
+/// libjpeg does, past stray bytes to the next marker; [`None`] once the scan or the end comes first.
 fn jpeg_side(bytes: &[u8]) -> Option<(u32, u32)> {
     let mut at = 2_usize;
     loop {
-        if bytes.get(at) != Some(&0xff) {
-            return None;
-        }
+        let skipped = bytes.get(at..)?.iter().position(|&byte| byte == 0xff)?;
+        at = at.checked_add(skipped)?;
         while bytes.get(at) == Some(&0xff) {
             at = at.checked_add(1)?;
         }
         let marker = *bytes.get(at)?;
         match marker {
-            0x01 | 0xd0..=0xd7 => at = at.checked_add(1)?,
+            0x00 | 0x01 | 0xd0..=0xd7 => at = at.checked_add(1)?,
             0xd9 | 0xda => return None,
             0xc0..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) => {
                 return int(bytes, at.checked_add(6)?, 2, true).zip(int(
