@@ -1,5 +1,7 @@
 ---
 issue: Closes #2110
+cut: none crates/permission/src/catastrophic.rs
+cut: none crates/tools/src/hashline/tool.rs
 cut: none crates/tools/src/hashline/normalize.rs
 raise: crate permission +22, crate session +6, tests +186, comments +6
 ---
