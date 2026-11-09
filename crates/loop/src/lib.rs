@@ -2,6 +2,7 @@
 #![deny(clippy::string_slice)]
 
 mod answer;
+mod batch;
 pub mod config;
 mod end;
 pub mod interrupt;
