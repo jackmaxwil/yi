@@ -9,6 +9,7 @@ from pathlib import Path
 import error_class
 from extract import (
     DEDUPE_THRESHOLD,
+    DOCTRINE_SUBJECTS,
     MASK,
     RUST_MIRRORS,
     SIGNAL_NAMES,
@@ -170,6 +171,60 @@ def check_claimed_numbers():
     assert claimed_numbers("a stray ` then 1234 rows") == {"1234"}
 
 
+def harness_fixture(directory):
+    """One session in the wire shapes crates/types writes: a clean edit, then a turn that only
+    re-runs the tests (a resolved re-check), then a message whose edit fails before a command
+    and a second edit run anyway, a non-zero build, a spill read, a cell with nested calls,
+    and a selector side call booked on a record."""
+    directory.mkdir(parents=True)
+    rows = [{"kind": "header", "version": 4, "id": "fixture-harness", "createdAt": 1780000000000, "cwd": "/w"}]
+    def call(cid, name, arguments):
+        return {"type": "toolCall", "id": cid, "name": name, "arguments": arguments}
+    def turn(*calls):
+        rows.append({"kind": "entry", "type": "message", "message": {"role": "assistant", "content": list(calls),
+                     "usage": {"input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.001}}}})
+    def result(cid, name, error=False, details=None):
+        rows.append({"kind": "entry", "type": "message", "message": {"role": "toolResult", "toolCallId": cid,
+                     "toolName": name, "content": [{"type": "text", "text": "x"}], "isError": error,
+                     "details": details or {}}})
+    turn(call("c1", "edit", {"path": "a.rs"}))
+    result("c1", "edit")
+    turn(call("c2", "bash", {"command": "cargo test -p a"}))
+    result("c2", "bash", details={"exitCode": 0})
+    turn(call("c3", "edit", {"path": "a.rs"}), call("c4", "bash", {"command": "touch ran"}), call("c5", "write", {"path": "b.rs"}))
+    result("c3", "edit", error=True, details={"errorKind": "stale_tag"})
+    result("c4", "bash", details={"exitCode": 0})
+    result("c5", "write")
+    turn(call("c6", "bash", {"command": "cargo build"}), call("c7", "read", {"path": "/h/.yi/spills/s/1.txt"}))
+    result("c6", "bash", details={"exitCode": 101})
+    result("c7", "read")
+    turn(call("c8", "ipython", {"code": "x"}))
+    result("c8", "ipython", details={"calls": [{"tool": "read"}, {"tool": "grep"}], "callsDropped": 1})
+    rows.append({"kind": "record", "type": "usage", "cause": "side:select",
+                 "usage": {"input": 100, "output": 3, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.002}}})
+    (directory / "harness.jsonl").write_text("\n".join(__import__("json").dumps(r) for r in rows) + "\n")
+    return directory
+
+
+def check_harness(root, tmp):
+    headings = re.findall(r"^## (.+)$", (root / "crates/runtime/src/prompts/doctrine.md").read_text(), re.M)
+    assert sorted(headings) == sorted(DOCTRINE_SUBJECTS), "doctrine headings and DOCTRINE_SUBJECTS differ"
+    result = sweep(harness_fixture(tmp / "harness-in"), tmp / "harness-out")
+    row = result["mu"][0]
+    got = row["harness"]
+    want = {"requests": 5, "actions": 11, "resolved_recheck": 1, "stale_run": 3, "write_after_failure": 1,
+            "spill_read": 1, "select_calls": 1, "writes": 3, "gate_runs": 1, "exec_failures": 1, "kernel_calls": 1}
+    for name, value in want.items():
+        assert got[name] == value, (name, got)
+    assert row["tokens"]["costUsd"] == 0.007, row["tokens"]
+    text = report(result, tmp / "harness-in", tmp / "harness-out")
+    assert "resolved re-check turns 1 (20.0% of requests; bar 5%: met)" in text, text
+    assert "stale runs 3 calls" in text, text
+    recorded = sweep(root / "crates/tui/tests/fixtures/sessions", tmp / "recorded-out")
+    for mu in recorded["mu"]:
+        assert mu["harness"]["requests"] == mu["turns"], mu["sessionId"]
+
+
 def selfcheck():
     check_rust_mirrors(Path(__file__).resolve().parents[3])
     check_claimed_numbers()
@@ -315,10 +370,11 @@ def selfcheck():
         assert '"isError": true' not in unflagged, "the results must be planted unflagged"
         ran = sweep(ran_in, Path(tmp) / "ran-out")["board"]
         assert sorted(r["errorKind"] or r["errorClass"] for r in ran) == ["command", "verdict"], ran
+        check_harness(Path(__file__).resolve().parents[3], Path(tmp))
     print(
         "ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle,"
         " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden, signals,"
-        " error classes"
+        " error classes, harness census"
     )
     return 0
 

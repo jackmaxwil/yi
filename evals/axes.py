@@ -165,6 +165,7 @@ def score(path, root):
         "repeatedCalls": mu["repeatedCalls"], "interrupts": mu["friction"]["interrupts"],
         "readsBeforeMutation": mu["orientation"]["callsBeforeFirstMutation"],
         "signals": signals, **telemetry(path),
+        "actions": mu["harness"]["actions"], "requests": mu["harness"]["requests"],
         "byUpstream": yi_usage.upstreams(e["message"] for e in entries if e.get("type") == "message" and e.get("message")),
         "measurable": mu["turns"] > 0 and unknown == 0,
     }
@@ -273,6 +274,9 @@ def main(argv=None):
         args.json.write_text("\n".join(lines) + "\n")
     for line in lines:
         print(line)
+    requests = sum(row["requests"] for row in rows)
+    # The ledger's a/r column: before the row, which callers take as the last line.
+    print(f"a/r {sum(row['actions'] for row in rows) / requests if requests else 0.0:.2f}")
     print(ledger_row(rows, args.suite or root.name, args.model, args.fingerprint, args.note))
     unmeasurable = [row["session"] for row in rows if not row["measurable"]]
     if unmeasurable:

@@ -24,7 +24,7 @@ from pathlib import Path
 
 import error_class
 
-EXTRACTOR_VERSION = 6
+EXTRACTOR_VERSION = 7
 SCHEMA_VERSION = 2
 
 # Tool names from the crates/tools registry that cannot change the tree; the
@@ -567,6 +567,132 @@ def signals(entries):
     return out
 
 
+WRITE_TOOLS = frozenset({"edit", "write"})
+EXEC_TOOLS = frozenset({"bash", "ipython"})
+HARNESS_NAMES = (
+    "requests", "actions", "resolved_recheck", "stale_run", "write_after_failure",
+    "spill_read", "select_calls", "writes", "git_commands", "gate_runs", "exec_failures",
+    "todo_calls", "plan_calls", "web_searches", "kernel_calls", "shell_calls",
+)
+# Every `## ` heading of crates/runtime/src/prompts/doctrine.md and the harness count whose
+# being non-zero says a session touched that section's subject; `always` sections apply to all.
+DOCTRINE_SUBJECTS = {
+    "Persistence": "always", "Todos": "todo_calls", "Request classes": "always",
+    "Method": "always", "Look before you write": "writes", "Build ladder": "writes",
+    "Subtract first": "writes", "No comments": "writes", "Evidence": "gate_runs",
+    "Testing": "gate_runs", "Debugging": "exec_failures", "Planning": "plan_calls",
+    "Never simplify away": "writes", "Tools and output": "always",
+    "Git, lanes, and the tree": "git_commands", "Bash or the kernel": "shell_calls",
+    "Done is a measurement": "writes", "Context": "compactions", "External text": "web_searches",
+}
+GIT_RE = re.compile(r"(^|&&|;|\|)\s*git\s")
+
+
+def gating(name, arguments):
+    """A write or a command, the calls whose failure the loop lets stop their message."""
+    return name in WRITE_TOOLS or (name in EXEC_TOOLS and not call_is_read_only(name, arguments))
+
+
+def harness(entries):
+    """Request and action counts for the harness census (HarnessMM stage 0): how many
+    requests ran only a check the previous turn had already decided, and how many calls ran
+    after a failed write or command in their own message."""
+    out = {name: 0 for name in HARNESS_NAMES}
+    turns, results = [], {}
+    for entry in entries:
+        if entry.get("type") == "usage" and entry.get("cause") == "side:select":
+            out["select_calls"] += 1
+        if entry.get("type") != "message":
+            continue
+        message = entry.get("message") or {}
+        if message.get("role") == "assistant":
+            turns.append([b for b in message.get("content") or []
+                          if isinstance(b, dict) and b.get("type") == "toolCall"])
+        elif message.get("role") == "toolResult":
+            results[message.get("toolCallId")] = message
+            details = message.get("details") or {}
+            calls, dropped = details.get("calls"), details.get("callsDropped")
+            out["actions"] += len(calls) if isinstance(calls, list) else 0
+            out["actions"] += dropped if isinstance(dropped, int) else 0
+    out["requests"] = len(turns)
+    out["actions"] += len(results)
+    seen, clean_write = set(), False
+    for calls in turns:
+        failed = False
+        for call in calls:
+            name, args = call.get("name"), call.get("arguments") or {}
+            if not isinstance(args, dict):
+                args = {}
+            result = results.get(call.get("id")) or {}
+            command = str(args.get("command") or "") if name == "bash" else ""
+            out["writes"] += name in WRITE_TOOLS
+            out["kernel_calls"] += name == "ipython"
+            out["shell_calls"] += name in EXEC_TOOLS
+            out["todo_calls"] += name == "todo"
+            out["plan_calls"] += name == "plan"
+            out["web_searches"] += name == "web_search"
+            out["git_commands"] += bool(GIT_RE.search(command))
+            out["gate_runs"] += any(word in command for word in GATE_WORDS)
+            out["exec_failures"] += name in EXEC_TOOLS and shown_failed(result)
+            out["spill_read"] += name == "read" and "/spills/" in str(args.get("path", ""))
+            if failed:
+                out["stale_run"] += 1
+                out["write_after_failure"] += name in WRITE_TOOLS and not shown_failed(result)
+            elif gating(name, args) and shown_failed(result):
+                failed = True
+        commands = [str((c.get("arguments") or {}).get("command") or "") for c in calls if c.get("name") == "bash"]
+        if clean_write and calls and len(commands) == len(calls) and all(
+                cmd and (any(word in cmd for word in GATE_WORDS) or cmd in seen) for cmd in commands):
+            out["resolved_recheck"] += 1
+        seen.update(commands)
+        clean_write = any(c.get("name") in WRITE_TOOLS for c in calls) and not any(
+            shown_failed(results.get(c.get("id")) or {}) for c in calls)
+    return out
+
+
+def family(row):
+    if row["signals"].get("children_spawned"):
+        return "delegate"
+    return "edit" if row["harness"]["writes"] else "read-only"
+
+
+def harness_report(worked):
+    """Counts only, like the rest of the report: no prompt text or path reaches it."""
+    total = {name: sum(r["harness"][name] for r in worked) for name in HARNESS_NAMES}
+    requests = total["requests"]
+    share = total["resolved_recheck"] / requests if requests else 0.0
+    out = ["harness census"]
+    out.append(f"  requests {requests}  actions {total['actions']}  actions/request "
+               f"{total['actions'] / requests if requests else 0.0:.2f}")
+    out.append(f"  resolved re-check turns {total['resolved_recheck']} ({share:.1%} of requests; "
+               f"bar 5%: {'met' if share >= 0.05 else 'not met'})")
+    out.append(f"  stale runs {total['stale_run']} calls after a failed write or command in the same message")
+    out.append(f"  writes after a failure {total['write_after_failure']} (the guard would skip these)")
+    cut = sum(r["signals"].get("reduced_results", 0) for r in worked)
+    with_select = [r for r in worked if r["harness"]["select_calls"]]
+    without = [r for r in worked if not r["harness"]["select_calls"]]
+    for label, rows in (("with the selector", with_select), ("without", without)):
+        reads = sum(r["harness"]["spill_read"] for r in rows)
+        cuts = sum(r["signals"].get("reduced_results", 0) for r in rows)
+        out.append(f"  spill reads {label}: {reads} over {cuts} cut outputs ({len(rows)} sessions)")
+    misses = sum(r["signals"].get("cache_miss_streak", 0) for r in worked)
+    out.append(f"  cache-miss streaks summed {misses}; cut outputs {cut}")
+    out.append("")
+    out.append("doctrine relevance (sessions whose calls touched the section's subject)")
+    families = ("read-only", "edit", "delegate")
+    grouped = {name: [r for r in worked if family(r) == name] for name in families}
+    out.append(f"  {'section':<28}" + "".join(f"{name:>12}" for name in families))
+    for section, subject in DOCTRINE_SUBJECTS.items():
+        cells = []
+        for name in families:
+            rows = grouped[name]
+            hit = len(rows) if subject == "always" else sum(
+                1 for r in rows if (r["compactions"] if subject == "compactions" else r["harness"][subject]))
+            cells.append(f"{hit}/{len(rows)}".rjust(12))
+        out.append(f"  {section:<28}" + "".join(cells))
+    return out
+
+
 def extract_session(path, header, entries, census):
     sid = header.get("id", path.name)
     tokens = dict(input=0, output=0, cacheRead=0, cacheWrite=0, costUsd=0.0)
@@ -589,6 +715,14 @@ def extract_session(path, header, entries, census):
             compactions += 1
         if etype == "custom":
             census["custom"][entry.get("customType", "?")] += 1
+        cause = entry.get("cause") or "" if etype == "usage" else ""
+        if cause.startswith(("side:", "tool:")):
+            # A side model's call is the session's cost too, booked on a record, not a message.
+            usage = entry.get("usage") or {}
+            for key in ("input", "output", "cacheRead", "cacheWrite"):
+                tokens[key] += int(usage.get(key) or 0)
+            tokens["costUsd"] += float((usage.get("cost") or {}).get("total") or 0.0)
+            continue
         if etype == "usage" and entry.get("cause") == "child_usage_attributed":
             usage = entry.get("usage") or {}
             for key in ("input", "output", "cacheRead", "cacheWrite"):
@@ -718,6 +852,7 @@ def extract_session(path, header, entries, census):
         # Reserved: escalation-ladder rows land here when S3 emits them.
         "premise": {},
         "signals": signals(entries),
+        "harness": harness(entries),
         "wins": bool(last_stop == "stop" and failures == 0 and interrupts == 0),
     }
     if len(set(models)) > 1:
@@ -845,7 +980,8 @@ def write_store(out_dir, name, rows):
 
 
 def sweep(sessions_dir, out_dir):
-    files = sorted(sessions_dir.glob("*.jsonl"))
+    dirs = sessions_dir if isinstance(sessions_dir, (list, tuple)) else [sessions_dir]
+    files = sorted(path for directory in dirs for path in Path(directory).glob("*.jsonl"))
     mu_rows, events, orientation_rows, delegation_rows = [], [], [], []
     census = {k: collections.Counter() for k in ("entry", "role", "tool", "error", "errorClass", "custom")}
     skipped, corrupt_lines, parents = [], 0, collections.Counter()
@@ -962,6 +1098,8 @@ def report(result, sessions_dir, out_dir):
         if hit:
             out.append(f"  {name:<34}{hit}/{len(worked)}")
     out.append("")
+    out.extend(harness_report(worked))
+    out.append("")
     out.append(f"extractor v{EXTRACTOR_VERSION}, schema v{SCHEMA_VERSION}")
     return "\n".join(out)
 
@@ -1026,7 +1164,7 @@ def mark(out_dir, fp, state, ref):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--sessions", type=Path, help="session JSONL directory")
+    parser.add_argument("--sessions", type=Path, nargs="+", help="session JSONL directories")
     parser.add_argument("--out", type=Path, default=Path(".yi/mining"))
     parser.add_argument("--mark", nargs=2, metavar=("FINGERPRINT", "STATE"))
     parser.add_argument("--ref", default=None, help="case path or commit for --mark")
@@ -1056,11 +1194,17 @@ def main(argv=None):
         if not scored:
             print("0.00 ok    no overlap with any available source")
         return 0
-    sessions = args.sessions or session_dir_for_cwd(str(Path.cwd()))
-    if not sessions.is_dir():
-        print(f"no session directory: {sessions}", file=sys.stderr)
+    sessions = args.sessions or [session_dir_for_cwd(str(Path.cwd()))]
+    missing = [str(d) for d in sessions if not d.is_dir()]
+    if missing:
+        print(f"no session directory: {', '.join(missing)}", file=sys.stderr)
         return 1
+    if len(sessions) == 1:
+        sessions = sessions[0]
     if args.backtest:
+        if isinstance(sessions, list):
+            print("--backtest takes one session directory", file=sys.stderr)
+            return 2
         hits = backtest(args.backtest, sessions)
         print(f"backtest /{args.backtest}/: would fire {len(hits)} times")
         for sid, seq, line in hits[:15]:

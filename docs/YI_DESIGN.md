@@ -308,10 +308,14 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   CC BY 4.0 citation, the snapshot's age and what was left out, and applies nothing.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
-- State: `models { primary, summarizer, advisor, autoReview, classifier, webSearch }` and
+- State: `models { primary, summarizer, advisor, autoReview, classifier, selector, webSearch }` and
   `webSearch { engine }` in `~/.yi/config.json`
   ([`config.rs`](../crates/types/src/config.rs)); advisor, autoReview and classifier off until named;
   [`RetryPolicy`](../crates/ai/src/retry.rs). Shapes: [`model.rs`](../crates/types/src/model.rs).
+- A side model lands with the main-model request it deletes or the capability it buys, judged on
+  complete-task cost with its `side:*` usage counted, and it answers an id, a range or an
+  abstention, never tool arguments: a fast stage that fires often and deletes nothing only adds
+  cost (HarnessMM's Substitution Paradox).
 - Settled by: D34, D57, D128, D191, D197, D231
 
 ## 6. Prompt

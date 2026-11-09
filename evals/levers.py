@@ -34,6 +34,11 @@ from yi_usage import LEVERS_ENV  # noqa: E402
 
 LEVERS = ROOT / "evals/levers"
 EFFICIENCY = ("costUsd", "tokens", "wallSec")
+# Incident (D558): a subscription route prices its cache at $0, so where any trial bills
+# nothing the economy road reads these tokens, cache reads and rewrites included.
+TOKEN_KEYS = ("input", "cacheRead", "cacheWrite", "output")
+# The watcher's per-trial charge for a trial whose price never arrived (drivers/trials.py).
+UNPRICED_USD = 1.0
 MAX_KNOBS, MAX_RUNS, CONFIDENCE = 5, 40, 0.95
 # The tasks an interval needs before it can reach CONFIDENCE at all: the whole-sample
 # interval covers 1 - 2 / 2**n, so five tasks buy 0.9375 and no more.
@@ -117,7 +122,7 @@ def measure(rows, floors):
         solved = {row["task"] for row in mine if value(row, "reward") > 0}
         capability[name] = {"pass": len(solved) / len(tasks),
                             "reward": sum(value(row, "reward") for row in mine) / len(mine)}
-    tokens = sum(value(row, k) for row in rows for k in ("input", "cacheRead", "output"))
+    tokens = sum(value(row, k) for row in rows for k in TOKEN_KEYS)
     return {"capability": capability, "tokens": tokens,
             "tasks": sorted({row["task"] for row in rows}),
             "costUsd": sum(value(row, "costUsd") for row in rows),
@@ -224,7 +229,7 @@ def per_task(rows):
     out = {}
     for row in rows:
         mine = out.setdefault(row["task"], dict.fromkeys(EFFICIENCY + ("reward", "graded"), 0))
-        mine["tokens"] += sum(value(row, k) for k in ("input", "cacheRead", "output"))
+        mine["tokens"] += sum(value(row, k) for k in TOKEN_KEYS)
         for key in ("costUsd", "wallSec", "reward"):
             mine[key] += value(row, key)
         mine["graded"] += graded(row) if usable(row) else 0
@@ -272,6 +277,7 @@ def task_differences(baseline, runs):
         diffs[task] = {key: mean["mine"][key] - mean["base"][key] for key in base[0]}
         diffs[task]["relCost"] = relative(mean["mine"]["costUsd"], mean["base"]["costUsd"])
         diffs[task]["relWall"] = relative(mean["mine"]["wallSec"], mean["base"]["wallSec"])
+        diffs[task]["relTokens"] = relative(mean["mine"]["tokens"], mean["base"]["tokens"])
     return diffs, seen, dropped
 
 
@@ -288,8 +294,10 @@ def judge(baseline, runs, floors, accesses=1, delta=DELTA):
     target = 1 - (1 - CONFIDENCE) / accesses
     diffs, seen, dropped = task_differences(baseline, runs)
     intervals = {key: interval([diff[key] for diff in diffs.values()], target)
-                 for key in EFFICIENCY + ("reward", "graded", "relCost", "relWall")}
+                 for key in EFFICIENCY + ("reward", "graded", "relCost", "relWall", "relTokens")}
     base_flat, flat = [row for run in baseline for row in run], [row for run in runs for row in run]
+    priced = all(value(row, "costUsd") > 0 for row in base_flat + flat if not unpriced(row))
+    unit, rel = ("costUsd", "relCost") if priced else ("tokens", "relTokens")
     reason = gate(measure(base_flat, floors), measure(flat, floors), floors)
     if reason == "no_efficiency_gain":
         reason = None
@@ -302,15 +310,23 @@ def judge(baseline, runs, floors, accesses=1, delta=DELTA):
     soft = ("unmeasured" if sum(1 for row in base_flat + flat if unpriced(row)) > 1
             else "pairs_dropped" if seen and dropped / seen > MAX_DROPPED else None)
     sure = {key: row["confidence"] >= target for key, row in intervals.items()}
-    road = None
+    road, by = None, None
     if sure["graded"] and intervals["graded"]["low"] > 0 and all(
-            sure[key] and intervals[key]["high"] <= COST_TOLERANCE for key in ("relCost", "relWall")):
+            sure[key] and intervals[key]["high"] <= COST_TOLERANCE for key in (rel, "relWall")):
         road = "capability"
-    elif sure["graded"] and intervals["graded"]["low"] > -delta and any(
-            sure[key] and intervals[key]["high"] < 0 for key in EFFICIENCY):
-        road = "economy"
+    elif sure["graded"] and intervals["graded"]["low"] > -delta:
+        # Cost first, in the unit the route bills; wall only while cost stays inside the bound.
+        if sure[unit] and intervals[unit]["high"] < 0:
+            road, by = "economy", unit
+        elif sure["wallSec"] and intervals["wallSec"]["high"] < 0 and sure[rel] \
+                and intervals[rel]["high"] <= COST_TOLERANCE:
+            road, by = "economy", "wallSec"
     verdict = "rejected" if hard else "better" if road and not soft else "inconclusive"
+    spend = sum(UNPRICED_USD if unpriced(row) else value(row, "costUsd") for row in base_flat + flat)
+    saving = -statistics.fmean(diff["costUsd"] for diff in diffs.values()) if diffs and priced else 0.0
     return {"verdict": verdict, "reason": hard or soft, "road": None if hard or soft else road,
+            "by": None if hard or soft else by, "unit": unit, "devSpendUsd": round(spend, 6),
+            "breakEvenTasks": math.ceil(round(spend / saving, 9)) if saving > 0 else None,
             "intervals": intervals, "confidence": round(target, 4), "tasks": len(diffs),
             "dropped": dropped, "per_task": {key: {task: diff[key] for task, diff in diffs.items()}
                                              for key in EFFICIENCY + ("reward", "graded")},
@@ -406,6 +422,40 @@ def compare(lever, value, tasks, run, floors, listed, k=3, accesses=1):
     return grid({lever: [value]}, tasks, run, floors, listed, k=k, max_runs=2 * k, accesses=accesses)
 
 
+def runs_of(path):
+    """A trial file as repetitions: the r-th row naming a task is that task's repetition r.
+    `FILE:ARM` keeps only the rows whose `arm` is ARM."""
+    name, _, arm = str(path).partition(":")
+    rows = [json.loads(line) for line in pathlib.Path(name).read_text().splitlines() if line.strip()]
+    rows = [row for row in rows if "task" in row and (not arm or row.get("arm") == arm)]
+    if not rows:
+        raise Refused(f"{path}: no trial rows")
+    runs, seen = [], {}
+    for row in rows:
+        index = seen.get(row["task"], 0)
+        seen[row["task"]] = index + 1
+        while len(runs) <= index:
+            runs.append([])
+        runs[index].append(row)
+    return runs
+
+
+def judge_files(args):
+    floors = json.loads(pathlib.Path(args.floors).read_text()) if args.floors else read("floors.json")
+    verdict = judge(runs_of(args.base), runs_of(args.candidate), floors, accesses=args.accesses)
+    row = {"kind": "verdict", "candidate": args.variant, "base": args.base_sha,
+           **{key: verdict[key] for key in ("verdict", "reason", "road", "by", "unit", "devSpendUsd",
+                                             "breakEvenTasks", "tasks", "confidence")}}
+    if args.store:
+        if not (args.variant and args.base_sha):
+            raise Refused("--store needs --variant and --base-sha, the identity S0 refuses a re-run by")
+        sink = pathlib.Path(args.store_dir) / f"{args.store}.jsonl"
+        with sink.open("a") as out:
+            out.write(json.dumps(row, sort_keys=True) + "\n")
+    print(json.dumps(dict(verdict, stored=bool(args.store)), sort_keys=True))
+    return 0 if verdict["verdict"] == "better" else 3
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--selfcheck", action="store_true", help="hold the manifest, the fixture and the floors together")
@@ -428,7 +478,22 @@ def main(argv=None):
         else:
             sub.add_argument("--knob", action="append", required=True, help="name=v1,v2")
             sub.add_argument("--max-runs", type=int, default=MAX_RUNS)
+    paired = verbs.add_parser("judge", help="one verdict over two trial files; exit 0 better, 3 not")
+    paired.add_argument("--base", required=True, help="FILE[:ARM] of the base arm's trial rows")
+    paired.add_argument("--candidate", required=True, help="FILE[:ARM] of the candidate arm's trial rows")
+    paired.add_argument("--accesses", type=int, default=1)
+    paired.add_argument("--floors", default=None, help="a floors file; default levers/floors.json")
+    paired.add_argument("--store", default=None, help="append the verdict row to evals/trials/<run>.jsonl")
+    paired.add_argument("--variant", default=None, help="the variant's hash, as round.py names it")
+    paired.add_argument("--base-sha", default=None)
+    paired.add_argument("--store-dir", default=str(ROOT / "evals/trials"))
     args = parser.parse_args(argv)
+    if args.verb == "judge":
+        try:
+            return judge_files(args)
+        except (Refused, ValueError, OSError) as refusal:
+            print(f"refused: {refusal}", file=sys.stderr)
+            return 2
     if args.verb == "census":
         try:
             print(json.dumps(census(args.lever, args.value, args.sessions)))

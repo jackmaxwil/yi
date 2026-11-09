@@ -27,7 +27,7 @@ STAGE_SOFT, STAGE_HARD, WEEK_SOFT, WEEK_HARD = 13.0, 15.0, 25.0, 30.0
 # N1's first call: mid-band slice trials cost $0.27 each, not row 0055's $0.13 sweep median
 # (which the cheap tasks pulled down); a call is predicted at this per task before it starts.
 TRIAL_USD = 0.27
-SUMMED = ("input", "cacheRead", "cacheWrite", "output", "turns")
+SUMMED = ("input", "cacheRead", "cacheWrite", "output", "turns", "actions", "requests")
 KEPT = ("task", "trial", "reward", "partialScore", "testsPassed", "testsTotal", "traceScored", "censored",
         "errored", "verifierUnmeasured", "timedOut", "wallSec")
 
