@@ -1,0 +1,196 @@
+{
+ "version": 1,
+ "suites": {
+  "tbv4": {
+   "harness": "harbor",
+   "dataset": "terminal-bench/terminal-bench@sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732",
+   "prefix": "terminal-bench/",
+   "model": "openrouter/z-ai/glm-5.3-flash",
+   "timeoutMult": 0.125,
+   "runner": "evals/drivers/harbor.sh",
+   "trialUsd": 0.27,
+   "requires": [
+    "docker",
+    "harbor",
+    "OPENROUTER_API_KEY"
+   ],
+   "role": "transfer",
+   "groups": {
+    "validation": [
+     "freight-dispatch-shift",
+     "satb-audio-transcription",
+     "session-window-debug",
+     "layout-config-recreation",
+     "risk-scorer-replay",
+     "gsea-proteomics",
+     "pretrain-shard-corruption",
+     "telecom-entity-resolution",
+     "sound-change-cascade",
+     "mvcc-lsm-compaction",
+     "data-anonymization",
+     "production-planning"
+    ],
+    "final": [
+     "html-js-filter",
+     "photonic-waveguide-routing",
+     "heat-pump-warranty",
+     "bun-sourcemap-leak",
+     "foodstuff-beta-activity",
+     "cargo-flight-dispatch"
+    ]
+   },
+   "calibration": null,
+   "note": "the slice's A/A (N1, row 0063) stopped early with 1 of 23 trials usable"
+  },
+  "swe-atlas-qna": {
+   "harness": "harbor",
+   "dataset": null,
+   "prefix": "",
+   "runner": "evals/drivers/harbor.sh",
+   "trialUsd": 0.27,
+   "requires": [
+    "docker",
+    "harbor",
+    "OPENROUTER_API_KEY"
+   ],
+   "role": "transfer",
+   "groups": {},
+   "calibration": null,
+   "note": "no digest is pinned yet; pin one and list its tasks before any run"
+  },
+  "inner-capability": {
+   "harness": "inner",
+   "runner": "evals/inner/runner.py",
+   "trialUsd": 0.02,
+   "requires": [
+    "INNER_REPOS",
+    "OPENROUTER_API_KEY"
+   ],
+   "role": "validate",
+   "groups": {
+    "development": [
+     "revert:0:3",
+     "revert:1:3",
+     "revert:2:3",
+     "revert:6:3",
+     "revert:7:3",
+     "revert:8:3",
+     "revert:12:3",
+     "revert:13:3",
+     "revert:14:3",
+     "revert:18:3",
+     "revert:19:3",
+     "revert:20:3",
+     "revert:24:3",
+     "revert:25:3",
+     "revert:26:3"
+    ],
+    "validation": [
+     "revert:3:3",
+     "revert:4:3",
+     "revert:5:3",
+     "revert:9:3",
+     "revert:10:3",
+     "revert:11:3",
+     "revert:15:3",
+     "revert:16:3",
+     "revert:17:3",
+     "revert:21:3",
+     "revert:22:3",
+     "revert:23:3",
+     "revert:27:3",
+     "revert:28:3",
+     "revert:29:3"
+    ]
+   },
+   "calibration": {
+    "run": "0070",
+    "note": "inner revert level 3 A/A, 19 tasks x 2 same-config arms: 8/19 and 7/19 full"
+   }
+  },
+  "inner-economy": {
+   "harness": "inner",
+   "runner": "evals/inner/runner.py",
+   "trialUsd": 0.008,
+   "requires": [
+    "OPENROUTER_API_KEY"
+   ],
+   "role": "screen",
+   "groups": {
+    "development": [
+     "logs:1:1",
+     "logs:2:1",
+     "logs:3:1",
+     "logs:4:1",
+     "logs:5:1",
+     "logs:6:1",
+     "logs:7:1",
+     "logs:8:1",
+     "logs:9:1",
+     "logs:10:1",
+     "logs:11:1",
+     "logs:12:1",
+     "logs:13:1",
+     "logs:14:1",
+     "logs:15:1",
+     "logs:16:1",
+     "logs:17:1",
+     "logs:18:1",
+     "logs:19:1",
+     "logs:20:1",
+     "bugfix:1:1",
+     "bugfix:2:1",
+     "bugfix:3:1",
+     "bugfix:4:1",
+     "bugfix:5:1",
+     "bugfix:6:1",
+     "bugfix:7:1",
+     "bugfix:8:1",
+     "bugfix:9:1",
+     "bugfix:10:1",
+     "bugfix:11:1",
+     "bugfix:12:1",
+     "bugfix:13:1",
+     "bugfix:14:1",
+     "bugfix:15:1",
+     "bugfix:16:1",
+     "bugfix:17:1",
+     "bugfix:18:1",
+     "bugfix:19:1",
+     "bugfix:20:1",
+     "reconcile:1:1",
+     "reconcile:2:1",
+     "reconcile:3:1",
+     "reconcile:4:1",
+     "reconcile:5:1",
+     "reconcile:6:1",
+     "reconcile:7:1",
+     "reconcile:8:1",
+     "reconcile:9:1",
+     "reconcile:10:1",
+     "reconcile:11:1",
+     "reconcile:12:1",
+     "reconcile:13:1",
+     "reconcile:14:1",
+     "reconcile:15:1",
+     "reconcile:16:1",
+     "reconcile:17:1",
+     "reconcile:18:1",
+     "reconcile:19:1",
+     "reconcile:20:1"
+    ]
+   },
+   "calibration": {
+    "run": "0064",
+    "note": "inner level 1 A/A, 3 generators x 20 seeds: 115/120 full"
+   }
+  }
+ },
+ "cascades": {
+  "yi": {
+   "screen": "inner-economy",
+   "validate": "inner-capability",
+   "transfer": "tbv4"
+  }
+ }
+}

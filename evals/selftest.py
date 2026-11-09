@@ -41,6 +41,7 @@ import surface  # noqa: E402
 import axes  # noqa: E402
 import report  # noqa: E402
 import weekly  # noqa: E402
+import suites  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
@@ -866,6 +867,12 @@ def check_cost_cap():
         tb21_cost.spent = original
 
 
+def check_suites():
+    """The registry: digests pinned, no task in two groups, uncalibrated suites refused by gates."""
+    found = suites.selfcheck()
+    assert not found, found
+
+
 def check_weekly():
     """The weekly job stays under ten dollars: its legs' hard caps and the smokes sum to the total
     or less, a leg is refused before a call its cap cannot cover, and the digest renders offline."""
@@ -1313,6 +1320,7 @@ def check_worker_mode():
     assert result.testsRun >= 11 and result.wasSuccessful(), report.getvalue()
 
 CHECKS = (
+    check_suites,
     check_weekly,
     check_kill,
     check_stops_on_fail,
