@@ -1,5 +1,5 @@
 ---
-issue: Closes #TBD
+issue: Closes #2110
 cut: none crates/tools/src/hashline/normalize.rs
 raise: crate permission +22, crate session +6, tests +186, comments +6
 ---
