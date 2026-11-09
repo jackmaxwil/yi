@@ -489,7 +489,17 @@ async fn tree_rows_read_the_same_from_every_role_and_a_wall_refuses_by_name() ->
 async fn a_check_wait_of_any_float_is_answered_never_a_panic() -> TestResult {
     let rig = rig("waitlimit")?;
     rig.fork("w").await?;
-    for wait in [30.0, 590.0, 591.0, 1e30, f64::MAX, f64::NAN, -1.0] {
+    let waits = [
+        json!(30.0),
+        json!(590.0),
+        json!(591.0),
+        json!(1e30),
+        json!(f64::MAX),
+        json!(-1.0),
+        json!("soon"),
+        json!(null),
+    ];
+    for wait in waits {
         let reply = rig
             .ask(
                 "tree.check",
