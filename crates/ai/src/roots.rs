@@ -26,7 +26,7 @@ pub fn keychain_pem(path: &str) -> Result<Vec<u8>, String> {
 }
 
 /// System trust-store PEM for the cursor handshake and the update fetch: the macOS
-/// SystemRootCertificates keychain, or the Linux bundle rustls-native-certs does not load.
+/// SystemRootCertificates keychain, or the Linux CA bundle file.
 pub fn system_pem() -> Result<Vec<u8>, String> {
     if cfg!(target_os = "macos") {
         return keychain_pem("/System/Library/Keychains/SystemRootCertificates.keychain");
