@@ -605,16 +605,22 @@ mod tests {
         let base = crate::scratch::Scratch::new("yi-host-program")?;
         let join = |name: &str| base.join(name);
         let (tree, bin, outside, links) = (join("tree"), join("tree/bin"), join("out"), join("ln"));
-        for dir in [&bin, &outside, &links, &join("dangling")] {
+        let relative = join("rel");
+        for dir in [&bin, &outside, &links, &join("dangling"), &relative] {
             std::fs::create_dir_all(dir)?;
         }
-        for dir in [&bin, &outside] {
+        for dir in [&bin, &outside, &relative] {
             std::fs::write(dir.join("prog"), "#!/bin/sh\n")?;
             std::fs::set_permissions(dir.join("prog"), std::fs::Permissions::from_mode(0o755))?;
         }
         symlink(bin.join("prog"), links.join("prog"))?;
         symlink(join("gone"), join("dangling/prog"))?;
-        let near = [join("missing"), join("dangling"), bin, links, "rel".into()];
+        // Spelled from the process cwd, so it resolves to a real outside program if the walk follows it.
+        let up = std::env::current_dir()?.components().count() - 1;
+        let spelled = (0..up)
+            .fold(PathBuf::new(), |path, _| path.join(".."))
+            .join(relative.strip_prefix("/")?);
+        let near = [join("missing"), join("dangling"), bin, links, spelled];
         let on = |dirs: &[PathBuf]| {
             let search = std::env::join_paths(dirs)?;
             Ok::<_, Box<dyn std::error::Error>>(host_program_on("prog", &tree, None, &search))
