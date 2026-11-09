@@ -1,4 +1,5 @@
 ---
+version: 0.1014.0
 issue: Closes #2125
 cut: crates/runtime/tests/ipython_faux.rs | (*timestamp, usage.input) = (1, 1_000); | the loop now overwrites a scripted reply time with the real clock, so the journey makes its lapse by resuming an aged session instead
 raise: tests +35
