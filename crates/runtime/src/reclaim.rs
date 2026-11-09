@@ -514,7 +514,7 @@ fn reason(
     now: u64,
     (dropped, rewritten, turns): (u64, u64, u64),
 ) -> Option<&'static str> {
-    // A synthesized reply (an abort before the first token, an error) carries no time or usage.
+    // A synthesized reply (an abort, an error) has no usage; one stored before stamping no time.
     let replies = messages.iter().rev().filter_map(|message| match message {
         AgentMessage::Assistant {
             usage,
@@ -678,12 +678,12 @@ pub(crate) mod tests {
     }
 
     /// The recording with an edit of README.md spliced in after its first reads, in the shape
-    /// the edit tool printed in `01a129b6`, and every reply stamped 1 ms, a lapsed cache.
+    /// the edit tool printed in `01a129b6`, and every reply stamped long before the real clock.
     fn recorded_with_an_edit() -> Result<Vec<AgentMessage>, Box<dyn std::error::Error>> {
         let mut messages = recorded()?;
         for message in &mut messages {
             if let AgentMessage::Assistant { timestamp, .. } = message {
-                *timestamp = 1;
+                *timestamp = REPLIED;
             }
         }
         // README.md's read is answered just before docs/ARCHITECTURE.md's, the batch's last.
@@ -696,7 +696,7 @@ pub(crate) mod tests {
         let edited = serde_json::from_value(json!({"role": "toolResult", "toolCallId": "c-edit",
             "toolName": "edit", "isError": false, "timestamp": 0, "content": [{"type": "text",
             "text": "[README.md#2D18]\nupdated; first change at line 3\n3:Personal coding agent."}]}))?;
-        let edit = assistant(&[("c-edit".to_owned(), "edit", patch)], 1);
+        let edit = assistant(&[("c-edit".to_owned(), "edit", patch)], 0);
         messages.splice(after..after, [edit, edited]);
         Ok(messages)
     }
@@ -824,6 +824,9 @@ pub(crate) mod tests {
         }))
     }
 
+    /// A reply's time as Pi's own writer stamps it (`v4-golden.jsonl`); `at` counts from it.
+    const REPLIED: u64 = 1_765_000_000_001;
+
     fn assistant(calls: &[(String, &str, serde_json::Value)], at: u64) -> AgentMessage {
         let content = calls.iter().map(|(id, name, args)| Content::ToolCall {
             id: id.clone(),
@@ -840,7 +843,7 @@ pub(crate) mod tests {
             timestamp, usage, ..
         } = &mut message
         {
-            (*timestamp, usage.input) = (at, 1_000);
+            (*timestamp, usage.input) = (REPLIED.saturating_add(at), 1_000);
         }
         message
     }
@@ -885,12 +888,12 @@ pub(crate) mod tests {
     #[test]
     fn a_cut_waits_until_the_tokens_it_saves_beat_ten_reads_of_the_rewrite() -> Fallible {
         let model = opus()?;
-        let now = 60_000 * 13 + 1_000;
+        let now = REPLIED + 60_000 * 13 + 1_000;
         assert_eq!(
             decide(&bash_session(14), &Cut::default(), &model, now),
             None
         );
-        let now = 60_000 * 29 + 1_000;
+        let now = REPLIED + 60_000 * 29 + 1_000;
         let record = decide(&bash_session(30), &Cut::default(), &model, now).ok_or("no cut")?;
         assert_eq!(record.reason, "breakeven");
         assert_eq!(record.items.len(), 25, "results older than five requests");
@@ -901,11 +904,20 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A session stored before replies were stamped has no reply time: it ages nothing from it.
     #[test]
-    fn a_lapsed_cache_cuts_at_once() -> Fallible {
-        let late = 60_000 * 9 + 6 * 60_000;
+    fn a_lapsed_cache_cuts_at_once_and_an_unstamped_reply_is_no_lapse() -> Fallible {
+        let late = REPLIED + 60_000 * 9 + 6 * 60_000;
         let record = decide(&bash_session(10), &Cut::default(), &opus()?, late).ok_or("no cut")?;
         assert_eq!((record.reason.as_str(), record.items.len()), ("expired", 5));
+        let mut unstamped = bash_session(10);
+        for message in &mut unstamped {
+            if let AgentMessage::Assistant { timestamp, .. } = message {
+                *timestamp = 0;
+            }
+        }
+        let record = decide(&unstamped, &Cut::default(), &opus()?, late);
+        assert_eq!(record.map(|record| record.reason), None);
         Ok(())
     }
 
@@ -973,7 +985,8 @@ pub(crate) mod tests {
             messages.push(answer);
         }
         messages.extend(bash_session(6).into_iter().skip(1));
-        let record = decide(&messages, &Cut::default(), &opus()?, 3_600_000).ok_or("no cut")?;
+        let record =
+            decide(&messages, &Cut::default(), &opus()?, REPLIED + 3_600_000).ok_or("no cut")?;
         let cut: Vec<&str> = record
             .items
             .iter()
@@ -1027,7 +1040,8 @@ pub(crate) mod tests {
         }
         messages.push(cell);
         messages.extend(bash_session(6).into_iter().skip(1));
-        let record = decide(&messages, &Cut::default(), &opus()?, 3_600_000).ok_or("no cut")?;
+        let record =
+            decide(&messages, &Cut::default(), &opus()?, REPLIED + 3_600_000).ok_or("no cut")?;
         let cut: Vec<&str> = (record.items.iter())
             .map(|item| item.tool_call_id.as_str())
             .collect();
@@ -1041,7 +1055,7 @@ pub(crate) mod tests {
     #[test]
     fn a_cut_renders_the_same_bytes_live_and_after_a_resume() -> Fallible {
         let messages = bash_session(14);
-        let late = 60_000 * 13 + 6 * 60_000;
+        let late = REPLIED + 60_000 * 13 + 6 * 60_000;
         let mut record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
         if let Some(first) = record.items.first_mut() {
             first.entry_id = Some("e-17".to_owned());
@@ -1107,14 +1121,14 @@ pub(crate) mod tests {
             *timestamp = 0;
         }
         messages.push(aborted);
-        let now = 60_000 * 14 + 1_000;
+        let now = REPLIED + 60_000 * 14 + 1_000;
         let model = opus()?;
         let record = decide(&messages, &Cut::default(), &model, now);
         assert_ne!(
             record.as_ref().map(|record| record.reason.as_str()),
             Some("expired")
         );
-        let late = 60_000 * 14 + 6 * 60_000;
+        let late = REPLIED + 60_000 * 14 + 6 * 60_000;
         let record = decide(&messages, &Cut::default(), &model, late).ok_or("no cut")?;
         let mut cut = Cut::default();
         cut.add(&record);
@@ -1154,7 +1168,7 @@ pub(crate) mod tests {
         model.cost.input = serde_json::Number::from(0u64);
         model.cost.cache_read = serde_json::Number::from(0u64);
         model.cost.cache_write = serde_json::Number::from(0u64);
-        let now = 60_000 * 13 + 1_000;
+        let now = REPLIED + 60_000 * 13 + 1_000;
         let read = with_usage(14, |usage| usage.cache_read = 500);
         assert_eq!(decide(&read, &Cut::default(), &model, now), None);
         let cold = with_usage(14, |_| {});
@@ -1179,7 +1193,7 @@ pub(crate) mod tests {
                     }];
                 }
             }
-            let now = 60_000 * 16 + 1_000;
+            let now = REPLIED + 60_000 * 16 + 1_000;
             let record = decide(&messages, &Cut::default(), &model, now).ok_or("no cut")?;
             assert_eq!(record.reason, "breakeven");
         }
@@ -1189,7 +1203,7 @@ pub(crate) mod tests {
     #[test]
     fn an_hour_cache_waits_twice_as_long_for_its_rewrite() -> Fallible {
         let model = opus()?;
-        let now = 60_000 * 21 + 1_000;
+        let now = REPLIED + 60_000 * 21 + 1_000;
         let five = with_usage(22, |_| {});
         assert!(decide(&five, &Cut::default(), &model, now).is_some());
         let hour = with_usage(22, |usage| usage.cache_write1h = Some(1_000));
@@ -1213,7 +1227,7 @@ pub(crate) mod tests {
                 mime_type: "image/png".to_owned(),
             });
         }
-        let now = 60_000 * 29 + 1_000;
+        let now = REPLIED + 60_000 * 29 + 1_000;
         let record = decide(&messages, &Cut::default(), &model, now).ok_or("no cut")?;
         assert_eq!(record.reason, "breakeven");
         assert!(
@@ -1271,7 +1285,8 @@ pub(crate) mod tests {
             })
             .collect::<Result<_, serde_json::Error>>()?;
         let mut cut = Cut::fold(&entries);
-        let record = decide(&messages, &cut, &opus()?, 60_000 * 29 + 1_000).ok_or("no cut")?;
+        let record =
+            decide(&messages, &cut, &opus()?, REPLIED + 60_000 * 29 + 1_000).ok_or("no cut")?;
         let ids: Vec<&str> = record
             .items
             .iter()
@@ -1367,7 +1382,7 @@ pub(crate) mod tests {
     fn a_same_size_overwrite_of_an_image_source_keeps_its_result_whole() -> Fallible {
         let (_scratch, paths) = plots()?;
         let messages = image_session(&paths);
-        let late = 60_000 * 9 + 6 * 60_000;
+        let late = REPLIED + 60_000 * 9 + 6 * 60_000;
         let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
         assert!(
             (record.items.iter()).any(|item| item.tool_call_id == "call-0"),
@@ -1391,7 +1406,7 @@ pub(crate) mod tests {
     #[test]
     fn the_newest_three_image_results_are_never_cut_and_an_older_one_is() -> Fallible {
         let (_scratch, paths) = plots()?;
-        let late = 60_000 * 9 + 6 * 60_000;
+        let late = REPLIED + 60_000 * 9 + 6 * 60_000;
         let model = opus()?;
         let three = decide(&image_session(&paths[..3]), &Cut::default(), &model, late);
         let three = three.ok_or("no cut")?;
@@ -1453,7 +1468,7 @@ pub(crate) mod tests {
             &messages,
             &Cut::default(),
             &opus()?,
-            60_000 * 9 + 6 * 60_000,
+            REPLIED + 60_000 * 9 + 6 * 60_000,
         )
         .ok_or("no cut")?;
         assert!(
@@ -1470,7 +1485,7 @@ pub(crate) mod tests {
     #[test]
     fn a_reclaimed_image_stays_when_its_file_changes_before_apply() -> Fallible {
         let (_scratch, paths) = plots()?;
-        let late = 60_000 * 9 + 6 * 60_000;
+        let late = REPLIED + 60_000 * 9 + 6 * 60_000;
         let messages = image_session(&paths);
         let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
         let mut cut = Cut::default();
@@ -1498,7 +1513,7 @@ pub(crate) mod tests {
     #[test]
     fn a_reclaimed_image_stays_when_its_file_disappears_before_apply() -> Fallible {
         let (_scratch, paths) = plots()?;
-        let late = 60_000 * 9 + 6 * 60_000;
+        let late = REPLIED + 60_000 * 9 + 6 * 60_000;
         let messages = image_session(&paths);
         let record = decide(&messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
         let mut cut = Cut::default();
@@ -1522,7 +1537,7 @@ pub(crate) mod tests {
     fn an_image_whose_file_is_gone_is_never_cut() -> Fallible {
         let (_scratch, paths) = plots()?;
         let messages = image_session(&paths);
-        let late = 60_000 * 9 + 6 * 60_000;
+        let late = REPLIED + 60_000 * 9 + 6 * 60_000;
         let cut = |messages| -> Result<Vec<String>, Box<dyn std::error::Error>> {
             let record = decide(messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
             Ok(record

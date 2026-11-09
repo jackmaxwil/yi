@@ -1713,6 +1713,69 @@ async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
     Ok(())
 }
 
+/// Dies with replies left unstamped: a $0-priced route whose replies read its cache looks
+/// uncached to reclaim, which cuts every aged result at once and rewrites the cache it reads.
+#[tokio::test]
+async fn a_zero_priced_route_that_reads_its_cache_keeps_its_results_and_stamps_its_replies()
+-> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-runtime-reclaim-stamped")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let mut script: Vec<AgentMessage> = (0..12)
+        .map(|turn| {
+            let args = serde_json::json!({"command": format!("seq 1 1500 # {turn}")});
+            let args = args.as_object().cloned().unwrap_or_default();
+            let call = faux_tool_call(&format!("call-{turn}"), "bash", args);
+            faux_assistant_message(vec![call], StopReason::ToolUse)
+        })
+        .collect();
+    script.push(faux_assistant_message(
+        vec![faux_text("done")],
+        StopReason::Stop,
+    ));
+    // A subscription reply as the Kimi lane reports it: priced at $0, its prefix read from cache.
+    for reply in &mut script {
+        if let AgentMessage::Assistant { usage, .. } = reply {
+            (usage.input, usage.cache_read) = (1_200, 24_000);
+        }
+    }
+    provider.queue_faux(script);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(128_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let store = crate::support::memory_store("reclaim-stamped");
+    session.attach_store(Arc::clone(&store))?;
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
+    session.prompt("count")?;
+    session.wait_idle().await;
+    let store = yi_session::lock_session(&store);
+    let records: Vec<yi_types::reclaim::ReclaimRecord> =
+        store.custom_records(yi_session::EntryOrder::OldestFirst, None);
+    assert!(records.is_empty(), "a read cache waits: {records:?}");
+    let entries = store.find_entries_on_branch(
+        "main",
+        &yi_session::EntryQuery::default(),
+        &yi_session::BranchBounds::default(),
+    )?;
+    let stamps: Vec<u64> = (entries.iter())
+        .filter_map(|entry| match entry {
+            yi_types::entry::Entry::Message {
+                message: AgentMessage::Assistant { timestamp, .. },
+                ..
+            } => Some(*timestamp),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stamps.len(), 13, "{stamps:?}");
+    assert!(stamps.iter().all(|at| *at > 0), "{stamps:?}");
+    Ok(())
+}
+
 /// Stage 9: a cut bash output gets the lines `models.selector` named, verbatim under a row that
 /// names the model; its input cap, at the limit and one past it, and a selector giving prose.
 #[tokio::test]

@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, RunEnd, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
@@ -12,6 +11,7 @@ use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
 use crate::end::{end, side_work};
 use crate::interrupt::InterruptSignal;
 use crate::reasoning::ReasoningBudget;
+pub use crate::stream::StreamFn;
 use crate::stream_retry::{STREAM_RETRY_AT, answered, nothing_delivered, stream_retry};
 use crate::tool::{AgentTool, ToolOutcome, error_tool_result};
 
@@ -19,25 +19,6 @@ pub struct LoopContext {
     pub system_prompt: String,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<Arc<dyn AgentTool>>,
-}
-
-pub trait StreamFn: Send + Sync {
-    fn stream(
-        &self,
-        model: &Model,
-        context: &LlmContext,
-        effort: Effort,
-        signal: &InterruptSignal,
-    ) -> Receiver<AssistantMessageEvent>;
-
-    /// The TTL a loop request's history breakpoints carry; a stream with no ledger keeps five
-    /// minutes (D315).
-    fn cache_ttl(&self, _model: &Model) -> yi_types::model::Ttl {
-        yi_types::model::Ttl::Min5
-    }
-    fn cache_tail(&self, _model: &Model) -> bool {
-        true
-    }
 }
 
 /// An errored reply carrying `text`, for a turn that fails before or outside a request.
@@ -729,6 +710,7 @@ async fn stream_assistant_response<S: StreamFn>(
         ..
     } = &mut final_message
     {
+        *timestamp = stream.now_ms().unwrap_or(*timestamp);
         let mut details = Map::new();
         details.insert("stable".to_owned(), stable_key.into());
         // A TTL runs from the request's start; the record's timestamp is its end (#873).
