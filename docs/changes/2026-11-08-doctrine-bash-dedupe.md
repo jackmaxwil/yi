@@ -1,4 +1,5 @@
 ---
+version: 0.1008.0
 issue: Closes #2103
 cut: crates/runtime/src/prompts/doctrine.md | Outside yolo mode every command runs contained where a sandbox exists. | the bash tool description already states every fact in it, and the system prompt paid for it twice on every request
 ---
