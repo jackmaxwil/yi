@@ -484,3 +484,19 @@ async fn tree_rows_read_the_same_from_every_role_and_a_wall_refuses_by_name() ->
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_check_wait_of_any_float_is_answered_never_a_panic() -> TestResult {
+    let rig = rig("waitlimit")?;
+    rig.fork("w").await?;
+    for wait in [30.0, 590.0, 591.0, 1e30, f64::MAX, f64::NAN, -1.0] {
+        let reply = rig
+            .ask(
+                "tree.check",
+                json!({"tree": "w", "cmd": "true", "wait_s": wait}),
+            )
+            .await?;
+        assert_eq!(reply["state"], "green", "wait_s {wait}: {reply:?}");
+    }
+    Ok(())
+}
