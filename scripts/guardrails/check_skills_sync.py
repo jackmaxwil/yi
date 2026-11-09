@@ -3,7 +3,8 @@
 repo (030-style: they are normative for every Rust line), so nothing here can diff them against
 it. This locks their hashes instead, making a hand-edit of the copy loud: the twelve sat 763
 lines behind the source for two months while the copy agents loaded was current. Sync with
-`just sync-skills SRC=<path>`, which copies and then runs --update."""
+`just sync-skills <path-to-har-skills/skills>` (SRC is positional, so an `SRC=` prefix is read
+as part of the path), which copies and then runs --update."""
 import hashlib, json, pathlib, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, fail
