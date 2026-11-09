@@ -28,12 +28,15 @@ source. `cargo llvm-lines` had no install line and is three characters from
 `cargo-witness` was cited as an established tool and 404s on docs.rs, so the
 artifact-to-source gate is now recorded as having no mature tool, with the hand-diff
 that stands in for one. The `rand` bound was two majors out of date. har-threat's
-`frame()` did not compile. The first fix on this branch was wrong twice over: it named
-the error class E0277 when both are E0507, and it added the four-line error enum the `?`
-sites needed without touching the two `take` calls that were the actual defect, so the
-snippet still moved the reader out from behind the `&mut`. It compiles now, with `by_ref()`
-at both sites and `std::io::Read` imported in the block, checked against the pinned 1.94.0
-plus a test that drives both the recoverable and the unrecoverable drain.
+`frame()` did not compile: both `take` calls failed with E0507, not the E0277 this file
+first recorded, and the first fix added the error enum the `?` sites needed while leaving
+the `take` calls untouched. The block now imports `std::io::Read`, which is the whole
+defect — with `BufRead` alone `take` resolves through the supertrait and moves the reader,
+and `by_ref()` does not rescue it. Hand-checked on the pinned 1.94.0 in a scratch crate,
+including a drain that resynchronizes and one that exhausts `MAX_DRAIN` without a newline.
+Nothing in this repo compiles the rust blocks under `.ruler/skills`, so that check is not
+repeatable here and the snippet can regress with every gate green; a gate that builds them
+is worth its own branch.
 
 Nineteen recommendations contradicted YI_DESIGN.md section 18.3 or deny.toml by name.
 Every crate recommendation is now alternative-first: the dependency-free route leads,
