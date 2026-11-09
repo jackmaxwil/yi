@@ -2,7 +2,7 @@
 No model, no docker, no network (docs/plans/2026-09-26-self-improvement-evals.md 5.3, 5.5)."""
 import json, pathlib, subprocess, sys, tempfile, unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "improve"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "refine"))
 import round as rnd  # noqa: E402
 
 SPLIT = {"development": ["alpha", "beta"], "validation": ["gamma"], "final": ["delta"]}
@@ -84,6 +84,60 @@ class S0(unittest.TestCase):
                                                         "reason": "pass_lost"}) + "\n")
             self.assertEqual(rnd.rejected(one, "s1", store), "pass_lost")
             self.assertIsNone(rnd.rejected(one, "s2", store), "a new base may try it again")
+
+
+
+class Round(unittest.TestCase):
+    """The cascade on fakes: S0 and the gate stop a variant before any measurement is paid for,
+    a stage that is not better keeps nothing, and the round never spends past --usd."""
+
+    def rows(self, suite, group, cost, graded=0.5):
+        tasks = rnd.registry()["suites"][suite]["groups"][group]
+        return [[{"task": t, "reward": 0.0, "partialScore": graded, "input": 100, "cacheRead": 0,
+                  "output": 0, "costUsd": cost, "wallSec": 10.0} for t in tasks]]
+
+    def cascade(self, found, usd=20.0, build=None, cheaper=0.005):
+        self.measured = []
+
+        def measure(stage, suite, group, base_binary, variant_binary, run_id):
+            self.measured.append(stage)
+            return self.rows(suite, group, 0.01), self.rows(suite, group, cheaper)
+
+        def built(base, patch, work, code):
+            return pathlib.Path("/bin/true"), None
+
+        with tempfile.TemporaryDirectory() as store:
+            return rnd.run_round(found, "base0", "/bin/true", usd, SPLIT, store=store,
+                                 build_fn=build or built, measure_fn=measure, out=store)
+
+    def patch(self, path):
+        return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-a\n+b\n"
+
+    def test_a_cheaper_variant_passes_every_stage_and_is_kept(self):
+        got = self.cascade([("v", self.patch("crates/runtime/src/prompts/doctrine.md"), {}, "t")])
+        row = got["variants"][0]
+        self.assertEqual([s["stage"] for s in row["stages"]], ["screen", "validate", "transfer"])
+        self.assertTrue(row["kept"].startswith("refine/"), row)
+
+    def test_a_variant_no_better_than_its_base_keeps_nothing(self):
+        got = self.cascade([("v", self.patch("crates/runtime/src/prompts/doctrine.md"), {}, "t")], cheaper=0.01)
+        row = got["variants"][0]
+        self.assertNotIn("kept", row)
+        self.assertEqual(self.measured, ["screen", "validate"], "validation is inconclusive and stops it")
+
+    def test_a_red_gate_and_a_types_edit_are_never_measured(self):
+        red = lambda base, patch, work, code: (None, "gate_red")
+        got = self.cascade([("code", self.patch("crates/loop/src/batch.rs"), {}, "t")], build=red)
+        self.assertEqual(got["variants"][0]["refused"], "gate_red")
+        self.assertTrue(got["variants"][0]["code"])
+        got = self.cascade([("types", self.patch("crates/types/src/event.rs"), {}, "t")])
+        self.assertEqual(got["variants"][0]["refused"], "path_outside_surface:crates/types/src/event.rs")
+        self.assertEqual(self.measured, [])
+
+    def test_a_stage_the_budget_cannot_cover_is_not_run(self):
+        got = self.cascade([("v", self.patch("crates/runtime/src/prompts/doctrine.md"), {}, "t")], usd=0.5)
+        self.assertEqual(self.measured, [])
+        self.assertTrue(got["variants"][0]["stopped"].startswith("screen:"), got)
 
 
 if __name__ == "__main__":

@@ -25,10 +25,10 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 A top-level feature enters only when one leaves, and this list changes in the same commit.
 `isolation=` as the kernel's noun for a child's files left when `Tree` entered: it stays an alias plan
 documents carry, cut at `HEAD` and merged by commit (§14) ·
-A resident MCP client or MCP as a registered tool · ACP v1 · automatic skill creation,
-refinement or self-extension · embeddings and semantic search · resident LSP or DAP servers · a
-JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
-converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
+A resident MCP client or MCP as a registered tool · ACP v1 · unattended skill creation or
+self-modification (a `just refine` variant lands only as a PR the owner merges) · embeddings and
+semantic search · resident LSP or DAP servers · a JavaScript runtime or Node sidecar · embedding
+`yi-runtime` through N-API or WASM · document converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
 §17.1) · a GUI · a model tool for the console's browser pane, which shows the user a page and gives
 the model nothing (driving the desktop is the `agent-desktop` plugin's, and a web page the

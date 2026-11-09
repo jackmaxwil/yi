@@ -269,7 +269,7 @@ class TaskLevel(unittest.TestCase):
         self.assertEqual(got["breakEvenTasks"], 216)
 
     def test_a_stored_verdict_is_refused_again_by_the_round(self):
-        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "improve"))
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "refine"))
         import round as rnd
         base, cand = arms(SLICE, 2, lambda t, r: trial(t, 0.5), lambda t, r: trial(t, 0.4))
         with tempfile.TemporaryDirectory() as tmp:
