@@ -24,6 +24,18 @@ fn session(provider: Arc<ProviderStream>) -> AgentSession {
     )
 }
 
+fn session_with(model: yi_types::model::Model, provider: Arc<ProviderStream>) -> AgentSession {
+    AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model,
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    )
+}
+
 #[tokio::test]
 async fn prompt_runs_to_idle_with_events() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None));
@@ -1739,15 +1751,7 @@ async fn a_zero_priced_route_that_reads_its_cache_keeps_its_results_and_stamps_i
         }
     }
     provider.queue_faux(script);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(128_000),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
+    let mut session = session(provider);
     let store = crate::support::memory_store("reclaim-stamped");
     session.attach_store(Arc::clone(&store))?;
     session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
@@ -1796,13 +1800,7 @@ async fn a_session_resumed_past_its_cache_ttl_cuts_its_aged_results_as_expired()
             }
         }
         provider.queue_faux(replies);
-        let config = SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: model.clone(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        };
-        AgentSession::new(config, provider)
+        session_with(model.clone(), provider)
     };
     let mut script: Vec<AgentMessage> = (0..8)
         .map(|turn| {
