@@ -28,7 +28,12 @@ source. `cargo llvm-lines` had no install line and is three characters from
 `cargo-witness` was cited as an established tool and 404s on docs.rs, so the
 artifact-to-source gate is now recorded as having no mature tool, with the hand-diff
 that stands in for one. The `rand` bound was two majors out of date. har-threat's
-`frame()` did not compile, verified with two E0277s.
+`frame()` did not compile. The first fix on this branch was wrong twice over: it named
+the error class E0277 when both are E0507, and it added the four-line error enum the `?`
+sites needed without touching the two `take` calls that were the actual defect, so the
+snippet still moved the reader out from behind the `&mut`. It compiles now, with `by_ref()`
+at both sites and `std::io::Read` imported in the block, checked against the pinned 1.94.0
+plus a test that drives both the recoverable and the unrecoverable drain.
 
 Nineteen recommendations contradicted YI_DESIGN.md section 18.3 or deny.toml by name.
 Every crate recommendation is now alternative-first: the dependency-free route leads,
