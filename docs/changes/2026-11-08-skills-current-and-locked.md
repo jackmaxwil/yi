@@ -1,4 +1,5 @@
 ---
+version: 0.1012.0
 cut: .ruler/skills/har/SKILL.md | - `overflow-checks = true` under `[profile.release]` buys a loud failure for a small cost. | it reads as free, and with `panic = "abort"` beside it in `[profile.dist]` an overflow becomes a process abort, which under a zero panic budget is a budget violation no lint can see; the replacement states the two settings as one decision
 cut: none .ruler/skills/har-api/SKILL.md
 cut: .ruler/skills/har-async/SKILL.md | `Stream` is the async `Iterator`. **As of 2026-08-19 it is still not in std**: `core::async_iter::AsyncIterator` is nightly-only behind `feature(async_iterator)`, tracking issue rust-lang/rust#79024. The trait you use is `futures_core::Stream`, re-exported by `futures` and `tokio-stream`. | a hard date rots on its own; the claim is restated as the tracking issue's state, which is what a reader can check
