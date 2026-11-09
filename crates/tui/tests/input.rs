@@ -406,6 +406,25 @@ fn a_double_slash_and_a_slash_path_are_prompts() -> TestResult {
     Ok(())
 }
 
+/// Dies with `/learn` panicking off the runtime thread or starting a turn that never opens its
+/// skill: it is sent as a prompt, carrying the user's focus.
+#[test]
+fn learn_is_sent_as_a_prompt_that_opens_its_skill() -> TestResult {
+    let mut app = app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    submitted(&mut app, &tx, "/learn the stale tag");
+    let sent = sent(&mut rx);
+    let [line] = sent.as_slice() else {
+        return Err(format!("{sent:?}").into());
+    };
+    assert!(
+        line.starts_with("prompt /learn: read(\"yi://skills/learn\")"),
+        "{line}"
+    );
+    assert!(line.ends_with("the stale tag"), "{line}");
+    Ok(())
+}
+
 /// The notice says to type `//`, and a typed `/` opens the popup: Enter there ran `//model` and
 /// `//undo` as commands and answered `//plna` with the notice that had just named the escape.
 #[test]

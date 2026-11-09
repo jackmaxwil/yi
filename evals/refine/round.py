@@ -41,7 +41,7 @@ SURFACE = ("crates/runtime/src/prompts/", "crates/tools/src/hashline/prompt.md",
 CODE_SURFACE = ("crates/",)
 CODE_EXCLUDED = ("crates/types/",)
 GATE = os.environ.get("REFINE_GATE", "just check")
-QUEUE = ROOT / ".yi" / "refine" / "queue.jsonl"
+QUEUE = pathlib.Path.home() / ".yi" / "refine" / "queue.jsonl"
 # The environment a variant's build and gate run with: no key, token or credential reaches code a
 # model wrote; HOME stays so cargo and uv find their caches.
 KEPT_ENV = ("PATH", "HOME", "LANG", "TERM", "CARGO_HOME", "RUSTUP_HOME", "TMPDIR")
