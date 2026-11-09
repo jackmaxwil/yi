@@ -1,0 +1,116 @@
+# The weekly evals (evals/drivers/weekly.py): today's main judged against last Monday's main on
+# the inner loop's capability leg (revert level 3) and economy leg (the generated families),
+# paired on the same seeds, under hard caps that sum to under ten dollars with live-weekly's smokes.
+# Terminal-Bench is no weekly leg; in the first week of a month the slice runs once on head as a
+# trend. The measuring job holds no write token and the posting job runs no measured code. Nothing
+# here is a required check, so no money sits in a merge gate (plan law 3); the rows it posts on
+# issue #100 are pasted into docs/eval-ledger.md by a person (plan law 2).
+name: evals-weekly
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: bench
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: last Monday's main beside today's
+        run: |
+          set -euo pipefail
+          base=$(git rev-list -1 --before="6 days ago" HEAD)
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+          git worktree add --detach ../base "$base"
+      - name: both binaries
+        run: |
+          set -euo pipefail
+          cargo build --profile dist -p yi-cli
+          (cd ../base && cargo build --profile dist -p yi-cli)
+      - name: the inner repos at their pins
+        env:
+          INNER_REPOS: ${{ runner.temp }}/inner-repos
+        run: |
+          set -euo pipefail
+          sh evals/drivers/inner_repos.sh "$INNER_REPOS"
+      - name: harbor for the monthly trend
+        run: |
+          set -euo pipefail
+          if [ "$(date +%d)" -gt 7 ]; then echo "not the first week; no trend"; exit 0; fi
+          test -n "${DOCKER_HOST:-}" || { echo "no DOCKER_HOST: the trend needs the bench runner"; exit 1; }
+          uv tool install harbor
+          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends musl-tools >/dev/null
+          rustup target add x86_64-unknown-linux-musl
+          export CC_x86_64_unknown_linux_musl=musl-gcc
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          scripts/build_dist.sh --target x86_64-unknown-linux-musl
+          echo "TREND=--trend" >> "$GITHUB_ENV"
+      - name: the legs
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          INNER_REPOS: ${{ runner.temp }}/inner-repos
+          EVAL_RUN_ID: weekly-${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then echo "no OPENROUTER_API_KEY secret; nothing runs"; exit 0; fi
+          export PATH="$HOME/.local/bin:$PATH"
+          python3 evals/drivers/weekly.py --base ../base/target/dist/yi --head target/dist/yi \
+            --out runs/weekly ${TREND:-}; echo "weekly exit $?"
+          for arm in base head; do
+            python3 evals/axes.py "$HOME/Development/yi-runs/$EVAL_RUN_ID/$arm" --suite inner-weekly \
+              --model openrouter/z-ai/glm-5.3-flash --note "evals-weekly $arm ${BASE_SHA:0:8}..${GITHUB_SHA:0:8}" \
+              | tail -2 > "runs/weekly/ledger-$arm.md" || true
+          done
+          python3 evals/report.py --verdicts runs/weekly/verdicts.json --html runs/weekly/report.html > runs/weekly/digest.md
+          git log --merges --format='%h %s' "$BASE_SHA..HEAD" > runs/weekly/merged.txt
+      - uses: actions/upload-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        if: always()
+        with:
+          name: evals-weekly
+          path: runs/weekly/
+  post:
+    needs: measure
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+        with:
+          name: evals-weekly
+          path: weekly
+      - name: the digest on issue 100, and an issue for a rejected leg
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -s weekly/digest.md || { echo "no digest to post"; exit 0; }
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+          root = pathlib.Path("weekly")
+          api = f"{os.environ['GITHUB_SERVER_URL']}/api/v1/repos/{os.environ['GITHUB_REPOSITORY']}/issues"
+          def post(url, payload):
+              req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
+                  headers={"Authorization": f"token {os.environ['TOKEN']}", "Content-Type": "application/json"})
+              with urllib.request.urlopen(req) as response:
+                  print(response.status)
+          rows = "".join(f"\n{arm}:\n```\n{(root / f'ledger-{arm}.md').read_text().strip()}\n```\n"
+                         for arm in ("base", "head") if (root / f"ledger-{arm}.md").is_file())
+          body = (root / "digest.md").read_text() + "\n\nRows to paste into docs/eval-ledger.md with the next run-ids:\n" + rows
+          post(f"{api}/100/comments", {"body": body})
+          verdicts = json.loads((root / "verdicts.json").read_text()) if (root / "verdicts.json").is_file() else {"legs": []}
+          rejected = [leg["leg"] for leg in verdicts["legs"] if (leg.get("verdict") or {}).get("verdict") == "rejected"]
+          if rejected:
+              merged = (root / "merged.txt").read_text() if (root / "merged.txt").is_file() else ""
+              post(api, {"title": f"Weekly evals rejected this week's main on {', '.join(rejected)}",
+                         "body": "Merged in the window:\n\n```\n" + merged + "```\n\nSee the run's evals-weekly artifact."})
+          PY

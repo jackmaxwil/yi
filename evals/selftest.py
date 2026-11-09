@@ -39,6 +39,8 @@ import run  # noqa: E402
 import yi_arc  # noqa: E402
 import surface  # noqa: E402
 import axes  # noqa: E402
+import report  # noqa: E402
+import weekly  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
@@ -864,6 +866,36 @@ def check_cost_cap():
         tb21_cost.spent = original
 
 
+def check_weekly():
+    """The weekly job stays under ten dollars: its legs' hard caps and the smokes sum to the total
+    or less, a leg is refused before a call its cap cannot cover, and the digest renders offline."""
+    assert weekly.hard_caps() <= weekly.TOTAL_USD <= 10.0, weekly.hard_caps()
+    with tempfile.TemporaryDirectory() as directory:
+        out = Path(directory)
+        class Args:  # the parsed flags run_leg reads
+            base = head = Path("/bin/true")
+            dry, run_id = True, "selftest"
+        tight = dict(weekly.LEGS[1], cap=0.01)
+        capped = weekly.run_leg(tight, Args, 9.5)
+        assert capped["stopped"] and capped["stopped"].startswith("capped"), capped
+        assert weekly.run_leg(weekly.LEGS[1], Args, 9.5)["stopped"] is None
+        legs = [{"leg": "economy", "spentUsd": 0.5, "tasks": 60, "verdict": {"verdict": "better", "by": "costUsd",
+                 "unit": "costUsd", "intervals": {"graded": {"median": d, "low": d - 0.01, "high": d + 0.01}}}}
+                for d in (0.01, 0.02)]
+        paths = []
+        for n, leg in enumerate(legs):
+            path = out / f"v{n}.json"
+            path.write_text(json.dumps({"runId": f"w{n}", "legs": [leg]}))
+            paths.append(str(path))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            assert report.main(["--verdicts", *paths, "--html", str(out / "r.html")]) == 0
+        text, page = buffer.getvalue(), (out / "r.html").read_text()
+        assert all(len(line) <= report.WIDTH for line in text.splitlines()), text
+        assert page.count("<svg") == 2 and "http" not in page and "<script" not in page, page[:200]
+        assert "| w1 | economy | better | costUsd |" in text, text
+
+
 def check_orient_census():
     """P4/P13 census: row counts, escalation labels, the layer parse, no leak."""
     orient_census.selftest()
@@ -1280,6 +1312,7 @@ def check_worker_mode():
     assert result.testsRun >= 11 and result.wasSuccessful(), report.getvalue()
 
 CHECKS = (
+    check_weekly,
     check_kill,
     check_stops_on_fail,
     check_kc_ab,
