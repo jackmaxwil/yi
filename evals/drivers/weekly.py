@@ -10,7 +10,8 @@ the economy leg the generated families, which saturate and so measure cost and w
 docs/plans/2026-09-26-self-improvement-evals.md). Terminal-Bench is no weekly leg: it checks that a
 refine winner transfers, and `--trend` (the first week of a month) runs its slice once on head.
 Before each call the leg's predicted spend is checked against what its cap and the total have left;
-a leg that would pass either stops and is reported as capped, never run past its cap.
+a leg that would pass either stops and is reported as capped, never run past its cap. A revert
+seed whose repo history holds no level-3 commit is an errored row on both arms, which the judge drops.
 """
 import argparse, json, os, pathlib, subprocess, sys, tempfile
 
@@ -41,23 +42,6 @@ def spent(rows):
     return sum(levers.UNPRICED_USD if levers.unpriced(row) else levers.value(row, "costUsd") for row in rows)
 
 
-def usable_tasks(leg):
-    """Revert seeds whose repo history holds no level-3 commit for them are left out, named."""
-    if not leg["name"] == "capability":
-        return leg["tasks"], []
-    sys.path.insert(0, str(ROOT / "inner"))
-    from gen import revert  # noqa: E402
-    kept, dropped = [], []
-    for task in leg["tasks"]:
-        _, seed, level = task.split(":")
-        try:
-            revert._plan(int(seed), int(level))
-            kept.append(task)
-        except (RuntimeError, OSError, subprocess.CalledProcessError):
-            dropped.append(task)
-    return kept, dropped
-
-
 def call(binary, arm, tasks, run_id):
     with tempfile.NamedTemporaryFile("w", suffix=".json") as overrides:
         overrides.write("{}")
@@ -70,7 +54,7 @@ def call(binary, arm, tasks, run_id):
 
 
 def run_leg(leg, args, budget_left):
-    tasks, dropped = usable_tasks(leg)
+    tasks = leg["tasks"]
     floors = {leg["name"]: {"pass_min": 0.0, "reward_min": 0.0, "tolerance": 0.0, "tasks": sorted(tasks)}}
     runs, rows, stopped = {"base": [], "head": []}, [], None
     for _ in range(leg["k"]):
@@ -89,7 +73,7 @@ def run_leg(leg, args, budget_left):
     verdict = None
     if pairs and not args.dry and tasks:
         verdict = levers.judge(runs["base"][:pairs], runs["head"][:pairs], floors)
-    return {"leg": leg["name"], "tasks": len(tasks), "dropped": dropped, "repetitions": pairs,
+    return {"leg": leg["name"], "tasks": len(tasks), "repetitions": pairs,
             "spentUsd": round(spent(rows), 6), "stopped": stopped, "verdict": verdict,
             "predictedUsd": round(len(tasks) * leg["trialUsd"] * 2 * leg["k"], 2)}
 
