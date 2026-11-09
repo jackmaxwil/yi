@@ -426,6 +426,13 @@ impl AgentTool for ToolAdapter {
         }
     }
 
+    fn gates_message(&self, args: &Map<String, Value>) -> bool {
+        match self.tool.kind_for(args) {
+            yi_tools::ToolKind::Write | yi_tools::ToolKind::Exec => true,
+            yi_tools::ToolKind::Read | yi_tools::ToolKind::Ledger => false,
+        }
+    }
+
     fn validate(&self, args: &Map<String, Value>) -> Result<(), String> {
         let args = &unsent_empties(&self.tool.schema(), args.clone());
         let Err(reason) = self.tool.validate(args) else {

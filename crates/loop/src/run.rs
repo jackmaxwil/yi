@@ -677,9 +677,9 @@ pub async fn run_loop<S: StreamFn>(
             if !calls.is_empty() {
                 let (finalized, terminate) = if reason == StopReason::Length {
                     length_stops = length_stops.saturating_add(1);
-                    (fail_calls(calls, TRUNCATED, emit), false)
+                    (fail_calls(calls, TRUNCATED, None, emit), false)
                 } else if last_word_said {
-                    (fail_calls(calls, AFTER_LAST_WORD, emit), true)
+                    (fail_calls(calls, AFTER_LAST_WORD, None, emit), true)
                 } else {
                     length_stops = 0;
                     side_work(config).await;

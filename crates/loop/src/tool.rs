@@ -30,6 +30,12 @@ pub trait AgentTool: Send + Sync {
         Ok(())
     }
 
+    /// Whether this call failing ends the rest of its message; a sequential call does by default.
+    #[must_use]
+    fn gates_message(&self, args: &Map<String, Value>) -> bool {
+        self.execution_mode(args) == crate::config::ExecutionMode::Sequential
+    }
+
     fn execute<'a>(
         &'a self,
         tool_call_id: &'a str,

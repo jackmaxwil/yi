@@ -199,6 +199,8 @@ pub enum ToolErrorKind {
     /// The tool understood the call and the rules said no: a cycle, a failing check, a cap.
     Verdict,
     ToolError,
+    /// Left unrun: an earlier write or command in the same message failed.
+    NotRun,
 }
 
 /// What a person is shown: a call that ran and fell short (a non-zero exit, a rule's verdict in
@@ -228,6 +230,7 @@ impl ToolErrorKind {
             Self::Stale => "stale",
             Self::Verdict => "verdict",
             Self::ToolError => "tool_error",
+            Self::NotRun => "not_run",
         }
     }
 }

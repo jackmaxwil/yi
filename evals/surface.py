@@ -225,6 +225,9 @@ def census(store):
         for tool, count in (row.get("toolCalls") or {}).get("byTool", {}).items():
             calls[tool] = calls.get(tool, 0) + count
     for issue in _read(store, "issues.jsonl"):
+        # A call left unrun behind a failed one is that failure's consequence, counted once there.
+        if issue.get("errorKind") == "not_run":
+            continue
         tool = issue.get("tool") or "?"
         refusals[tool] = refusals.get(tool, 0) + issue.get("count", 0)
         classes[class_of(issue)] += issue.get("count", 0)
