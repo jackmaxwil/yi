@@ -1,6 +1,6 @@
 ---
 name: har-io
-description: Correctness at the edges of a Rust process — durable file writes and fsync, atomic replace, database transactions and retry classes, monotonic vs wall clock, deadlines and clock anomalies, CSPRNG and entropy failure, UTF-8 vs graphemes, normalization and identifier comparison. Load when a write must survive a crash, when code reads a clock or an RNG, or when text is sliced, truncated, or compared.
+description: Correctness at the edges of a Rust process — text that is sliced, truncated, compared or normalized, UTF-8 vs graphemes, durable file writes and fsync, atomic replace, database transactions and retry classes, monotonic vs wall clock, deadlines and clock anomalies, CSPRNG and entropy failure. Load when text is indexed or truncated, when a write must survive a crash, or when code reads a clock or an RNG.
 ---
 
 # The edges of the process
@@ -105,17 +105,19 @@ Randomness is a **deployment capability with a failure mode**, not a helper call
 
 ## Boundaries
 
-- **Never index or slice a `str` by a byte offset you did not get from the string itself.** `&s[..n]` panics mid-character; `har`'s panic budget applies. Use `char_indices`, `floor_char_boundary`/`ceil_char_boundary`, or `get(..n)` when the offset came from arithmetic.
+- **Never index or slice a `str` by a byte offset you did not get from the string itself.** `&s[..n]` panics mid-character; `har`'s panic budget applies. Use `char_indices`, `floor_char_boundary`/`ceil_char_boundary` (1.91), or `get(..n)` when the offset came from arithmetic. When you need an offset back *out* of a value you already hold, `str::substr_range` and `[T]::subslice_range` (1.98) and `[T]::element_offset` (1.94) give you one that is correct by construction instead of recomputed.
+- **Make it a gate, not a habit.** `clippy::string_slice` at the crate root refuses byte-range slicing outright, and `String::truncate` belongs in `disallowed-methods` (`har-supply` owns that file) — it takes a byte index and panics off a boundary. A panic audit that greps for `unwrap` and `panic!` cannot see either, which is exactly how a `truncate(80)` on a non-ASCII string reaches production under a zero-panic policy.
 - Truncating for display or for a length limit is a **grapheme** operation, not a byte or `char` one: an emoji with a skin-tone modifier, or a base letter plus a combining accent, is several `char`s and one thing the user sees. Use a segmentation crate (`unicode-segmentation`) when the boundary is user-visible — characters, words, lines, cursor positions, "at most 20 characters".
 - Byte length, scalar count and grapheme count are three different numbers. A limit states which one it means. A wire bound is bytes (`har-threat`); a UI limit is graphemes; `chars().count()` is almost never what anyone wanted.
 
 ## Ingress and comparison
 
-- Convert and validate at ingress, and make the invalid-text behaviour explicit: reject, or replace with U+FFFD, chosen per boundary — `String::from_utf8` versus `from_utf8_lossy` is that decision, and silently lossy conversion at a security boundary hides an attack.
+- Convert and validate at ingress, and make the invalid-text behaviour explicit: reject, or replace with U+FFFD, chosen per boundary — `String::from_utf8` versus `from_utf8_lossy` is that decision, and silently lossy conversion at a security boundary hides an attack. When the choice is made *after* the failure, `FromUtf8Error::into_utf8_lossy` and `String::from_utf8_lossy_owned` (1.99) take the owned buffer rather than copying it, so "try strict, fall back to lossy, and log that you did" costs no allocation.
 - **Comparison policy is per protocol.** Say whether identifiers are compared by exact bytes, after a named Unicode normalization form (NFC is the usual choice), or with case folding — and apply it in exactly one place. Two strings that look identical can differ in bytes; two that differ visually can fold together.
 - Keep the raw identifier and the display string as separate values wherever authorization or logging is involved. Authorize on the raw form, display the other, and never let a normalization step feed the authorization decision.
-- Confusables, bidirectional control characters and combining marks are display-layer attacks: a name rendered right-to-left can read as something else entirely, including in a log or a terminal. Strip or escape bidi controls in anything you print.
-- Locale-sensitive formatting, collation and the Unicode version itself are dependencies with versions. Pin them and keep multilingual, confusable and combining-character cases in the regression suite.
+- Confusables, bidirectional control characters and combining marks are display-layer attacks: a name rendered right-to-left can read as something else entirely, including in a log or a terminal. Strip or escape bidi controls in anything you print — `char::is_control` (1.97) is the std predicate for the coarse half of that filter.
+- Locale-sensitive formatting, collation and the Unicode version itself are dependencies with versions — **including the compiler's**: `std`'s character tables moved to Unicode 17 in 1.94, so `is_alphabetic`, case conversion and width can change under a toolchain bump. Pin the toolchain (`har-supply`), pin any segmentation or collation crate, and keep multilingual, confusable and combining-character cases in the regression suite so the change is visible rather than silent.
+- Size a stack buffer for one character with `char::MAX_LEN_UTF8` / `MAX_LEN_UTF16` (1.93) rather than a hardcoded 4.
 
 # Checklist
 

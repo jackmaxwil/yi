@@ -77,7 +77,7 @@ Treat an interrupt service routine the way you treat a thread — because it is 
 
 ### Atomics are target-conditional
 
-There is no promised lock-based fallback for a width the target lacks. Gate on capability and ship the alternative:
+`std` guarantees that an atomic type which **exists** on the target is lock-free — not wait-free, and not present everywhere — and there is no promised lock-based fallback for a width the target lacks. Gate on capability and ship the alternative:
 
 ```rust
 #[cfg(target_has_atomic = "32")]
@@ -86,7 +86,9 @@ use core::sync::atomic::AtomicU32 as Counter;
 use crate::critical_section_counter::Counter;
 ```
 
-`portable-atomic` packages that fallback for the common cases. `har-concurrent` owns the ordering rules once you have the atomic.
+`target_has_atomic` accepts `8`, `16`, `32`, `64`, `128` and `ptr`, so anything reaching for `AtomicU64` on a small target, for `AtomicU128`, or for pointer-width atomics states its gate. Since 1.97 there is also `cfg(target_has_atomic_primitive_alignment)`, for the targets where an atomic exists but the primitive's alignment is not the atomic's — relevant when you are reasoning about layout rather than availability.
+
+A critical-section counter and a `portable-atomic`-style shim are the two shapes of fallback; the first is a few lines you own against a disabled-interrupt guard, the second is a dependency that packages the common cases (`har-supply`). `har-concurrent` owns the ordering rules once you have the atomic.
 
 ## Cross-compilation
 
