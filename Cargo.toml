@@ -151,8 +151,8 @@ incremental = false
 [profile.dist.package.yi-orb]
 opt-level = 3
 
-# Replaying a 147-entry session through the TUI highlighter retired 3.9G instructions at "z";
-# at 3 it retires 2.3G, for 148,608 bytes. fancy-regex and syntect at 3 gain nothing.
+# Resuming a 147-entry session in the TUI retired 3.9G instructions at "z" and 2.3G at 3, for
+# 148,608 bytes. fancy-regex and syntect at 3 gain nothing on that resume.
 [profile.dist.package.regex-automata]
 opt-level = 3
 
