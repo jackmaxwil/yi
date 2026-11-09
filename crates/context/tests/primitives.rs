@@ -1526,3 +1526,34 @@ fn a_quote_copied_from_the_escaped_key_row_or_wrapped_onto_its_next_line_is_chec
     );
     Ok(())
 }
+
+/// Dies with a block a newer build wrote dropped from what the summarizer reads, so a summary
+/// forgot a block was there: the user's, the reply's two and the tool result's each read as a notice.
+#[test]
+fn a_block_this_build_cannot_read_reaches_the_summarizer_as_its_notice() -> TestResult {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../types/tests/fixtures/v4-unknown-content.jsonl"
+    );
+    let mut messages = Vec::new();
+    for line in std::fs::read_to_string(fixture)?.lines().skip(1) {
+        if let yi_types::wire::Mutation::Entry {
+            entry: Entry::Message { message, .. },
+            ..
+        } = serde_json::from_str(line)?
+        {
+            messages.push(message);
+        }
+    }
+    let text = serialize_conversation(&messages);
+    assert_eq!(
+        text.matches(yi_types::message::UNREAD_CONTENT).count(),
+        4,
+        "{text}"
+    );
+    assert!(
+        !text.contains("webSearchToolResult") && !text.contains("UklGRg=="),
+        "{text}"
+    );
+    Ok(())
+}

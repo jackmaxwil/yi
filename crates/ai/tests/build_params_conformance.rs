@@ -127,7 +127,7 @@ fn every_adapter_builds_the_recorded_body() -> Result<(), Box<dyn Error>> {
 }
 
 /// Dies with a block a newer build wrote sent to a provider that cannot read it, or dropped with
-/// nothing in its place: every wire carries one notice row per such block, and none of its bytes.
+/// nothing in its place: every wire carries one notice per block (Cursor's drops tool results).
 #[test]
 fn a_block_this_build_cannot_read_reaches_every_wire_as_its_notice() -> Result<(), Box<dyn Error>> {
     let fixture = concat!(
@@ -144,37 +144,40 @@ fn a_block_this_build_cannot_read_reaches_every_wire_as_its_notice() -> Result<(
             messages.push(message);
         }
     }
+    let context = LlmContext {
+        cache_ttl: Ttl::Min5,
+        cache_tail: false,
+        system_prompt: "s".to_owned(),
+        messages,
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: Reuse::Loop,
+        tools: None,
+        tool_choice: None,
+    };
     for api in [
         "anthropic-messages",
         "openai-completions",
         "openai-responses",
+        "cursor-agent",
     ] {
         let mut model = crate::common::model("m", api, "p", "http://h", None);
         model.input = vec!["text".to_owned(), "image".to_owned()];
-        let context = LlmContext {
-            cache_ttl: Ttl::Min5,
-            cache_tail: false,
-            system_prompt: "s".to_owned(),
-            messages: messages.clone(),
-            transient: Vec::new(),
-            schema: None,
-            shared_through: None,
-            reuse: Reuse::Loop,
-            tools: None,
-            tool_choice: None,
-        };
         let body = match api {
+            "cursor-agent" => yi_ai::cursor::prompt_of(&context),
             "anthropic-messages" => {
-                yi_ai::anthropic::build_params(&model, &context, &Default::default())
+                yi_ai::anthropic::build_params(&model, &context, &Default::default()).to_string()
             }
             "openai-completions" => {
-                yi_ai::openai::build_params(&model, &context, &Default::default())
+                yi_ai::openai::build_params(&model, &context, &Default::default()).to_string()
             }
-            _ => yi_ai::openai_responses::build_params(&model, &context, &Default::default()),
-        }
-        .to_string();
+            _ => yi_ai::openai_responses::build_params(&model, &context, &Default::default())
+                .to_string(),
+        };
+        let blocks = if api == "cursor-agent" { 3 } else { 4 };
         let notices = body.matches(yi_types::message::UNREAD_CONTENT).count();
-        assert_eq!(notices, 4, "{api}: {body}");
+        assert_eq!(notices, blocks, "{api}: {body}");
         for raw in [
             "webSearchToolResult",
             "serverToolUse",

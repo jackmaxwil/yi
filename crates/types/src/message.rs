@@ -49,9 +49,9 @@ const CONTENT_TYPES: [&str; 4] = ["text", "thinking", "image", "toolCall"];
 
 /// What a reader is shown in place of an [`Content::Other`] block; never the block's own `type`,
 /// which is file text a forged session could fill with anything.
-pub const UNREAD_CONTENT: &str = "[… 1 content block left out: its type is newer than this build; the session file keeps it as written, and a newer yi reads it]";
+pub const UNREAD_CONTENT: &str = "[… 1 content block left out: its type is newer than this build; the session keeps it as written, and fetch history://<agent>/<entry-id> returns its whole entry]";
 
-/// The block's object as written, so it re-emits byte for byte; nothing reads inside it.
+/// The block's object as read; it re-emits as serde_json writes it, and nothing reads inside it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct UnknownContent(Map<String, Value>);
