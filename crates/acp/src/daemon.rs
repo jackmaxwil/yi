@@ -37,6 +37,7 @@ pub(crate) enum Input {
     ClientLine(ClientId, Value),
     ClientClosed(ClientId),
     WorkerLine(String, u64, Value, String),
+    WorkerNote(String, u64, String, String),
     WorkerReply(String, Value),
     WorkerClosed(String, u64),
     SwapTimeout(String, u64, crate::swap::Stage),
@@ -662,6 +663,22 @@ impl Supervisor {
         }
     }
 
+    /// [`Supervisor::handle_worker_line`]'s tail for a note: parked before its entry exists.
+    fn relay_note(&mut self, session_id: String, line: String) {
+        let Some(entry) = self.sessions.get(&session_id) else {
+            let queue = self.parked.entry(session_id).or_default();
+            if queue.len() < PARKED_MAX
+                && let Ok(frame) = serde_json::from_str(&line)
+            {
+                queue.push(frame);
+            }
+            return;
+        };
+        for &client in &entry.attached {
+            self.send_client(client, line.clone());
+        }
+    }
+
     fn flush_parked(&mut self, session_id: &str, client: ClientId) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             (entry.headless, entry.owed) = (false, Vec::new());
@@ -933,6 +950,12 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                         supervisor.swap_reply(&root, &frame).await;
                     } else {
                         supervisor.handle_worker_line(root, frame, line);
+                    }
+                }
+                Input::WorkerNote(root, generation, session_id, line) => {
+                    if supervisor.serves(&root, generation) {
+                        let _span = yi_types::trace::span("daemon worker session/update");
+                        supervisor.relay_note(session_id, line);
                     }
                 }
                 Input::WorkerReply(root, frame) => {

@@ -18,7 +18,10 @@ impl SseDecoder {
         }
         let event = SseEvent {
             event: self.event.take(),
-            data: self.data.join("\n"),
+            data: match self.data.as_mut_slice() {
+                [one] => std::mem::take(one),
+                many => many.join("\n"),
+            },
         };
         self.data.clear();
         Some(event)
@@ -48,24 +51,26 @@ impl SseDecoder {
     }
 
     pub fn feed(&mut self, chunk: &str) -> Vec<SseEvent> {
-        self.buffer.push_str(chunk);
+        let mut buffer = std::mem::take(&mut self.buffer);
+        buffer.push_str(chunk);
         let mut events = Vec::new();
-        loop {
-            let Some(break_index) = self.buffer.find(['\r', '\n']) else {
-                break;
-            };
+        let mut start = 0;
+        while let Some(rest) = buffer.get(start..)
+            && let Some(break_index) = rest.find(['\r', '\n'])
+        {
             let mut next_index = break_index.saturating_add(1);
-            if self.buffer.as_bytes().get(break_index) == Some(&b'\r')
-                && self.buffer.as_bytes().get(next_index) == Some(&b'\n')
+            if rest.as_bytes().get(break_index) == Some(&b'\r')
+                && rest.as_bytes().get(next_index) == Some(&b'\n')
             {
                 next_index = next_index.saturating_add(1);
             }
-            let line: String = self.buffer.drain(..next_index).collect();
-            let line = line.trim_end_matches(['\r', '\n']);
-            if let Some(event) = self.decode_line(line) {
+            if let Some(event) = self.decode_line(rest.get(..break_index).unwrap_or_default()) {
                 events.push(event);
             }
+            start = start.saturating_add(next_index);
         }
+        buffer.drain(..start);
+        self.buffer = buffer;
         events
     }
 

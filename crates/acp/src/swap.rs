@@ -47,6 +47,17 @@ pub(crate) enum Stage {
     Restoring,
 }
 
+/// The session a worker line is relayed to unparsed: an update that changes no state the
+/// supervisor keeps (a state change or a rename does), and is no request awaiting an answer.
+fn relayed_as_read(route: &yi_types::acp::AcpRoute<'_>) -> Option<String> {
+    let params = route.params.as_ref()?;
+    let kind = params.update.as_ref()?.session_update?;
+    let plain = route.method == Some("session/update")
+        && !route.id
+        && !matches!(kind, "state_update" | "_yi/name");
+    plain.then(|| params.session_id.map(str::to_owned))?
+}
+
 /// The old worker's inventory answer or the new worker's restore answer, by id prefix.
 pub(crate) fn is_reply(frame: &Value) -> bool {
     frame.get("method").is_none()
@@ -111,18 +122,23 @@ impl Supervisor {
             while let Ok(Some(line)) = lines.next_line().await {
                 let parsing =
                     yi_types::trace::span("daemon.parse_worker_line").arg("bytes", line.len());
-                let parsed = serde_json::from_str::<Value>(&line);
+                let note = relayed_as_read(&serde_json::from_str(&line).unwrap_or_default());
+                let frame = match note {
+                    Some(_) => None,
+                    None => serde_json::from_str::<Value>(&line).ok(),
+                };
                 drop(parsing);
-                if let Ok(value) = parsed
-                    && input
-                        .send(Input::WorkerLine(
-                            worker_root.clone(),
-                            generation,
-                            value,
-                            line,
-                        ))
-                        .is_err()
-                {
+                let root = worker_root.clone();
+                let sent = match (note, frame) {
+                    (Some(session), _) => {
+                        input.send(Input::WorkerNote(root, generation, session, line))
+                    }
+                    (None, Some(value)) => {
+                        input.send(Input::WorkerLine(root, generation, value, line))
+                    }
+                    (None, None) => continue,
+                };
+                if sent.is_err() {
                     break;
                 }
             }
@@ -573,5 +589,24 @@ impl AcpState {
             }
         }
         json!({"sessions": restored, "failed": failed})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A state change or a rename relayed unparsed would never reach the supervisor's ledger, and
+    /// a request would never be remembered for its answer.
+    #[test]
+    fn only_an_update_that_moves_no_state_relays_unparsed() {
+        let route = |id: &str, kind: &str| {
+            let line = format!(
+                r#"{{"jsonrpc":"2.0","method":"session/update"{id},"params":{{"sessionId":"s1","update":{{"sessionUpdate":"{kind}","content":{{"text":"hi"}}}}}}}}"#
+            );
+            super::relayed_as_read(&serde_json::from_str(&line).unwrap_or_default())
+        };
+        assert_eq!(route("", "agent_message_chunk"), Some("s1".to_owned()));
+        assert_eq!(route("", "state_update"), None);
+        assert_eq!(route("", "_yi/name"), None);
+        assert_eq!(route(r#","id":null"#, "agent_message_chunk"), None);
     }
 }

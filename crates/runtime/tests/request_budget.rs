@@ -299,6 +299,37 @@ fn second_turn() -> Vec<AgentMessage> {
     messages
 }
 
+/// Invariant: a recorded `stable` key never moves, so the key is the hash the first formula
+/// took of `json!([schema, tools, system]).to_string()`, on the life-sized context and a wide one.
+#[test]
+fn the_stable_key_is_the_hash_every_recorded_key_was_written_with() -> TestResult {
+    use sha2::{Digest, Sha256};
+    let life = context(second_turn())?;
+    let mut wide = life.clone();
+    (wide.system_prompt).push_str("\u{1d}système \u{1F600} \"q\" \\ /\n\t\u{7f}\u{0}\u{2028}");
+    wide.schema = Some(
+        json!({"zeta": 0, "alpha": 1.5, "Mid": [-0.0, 1e300, 5e-324, 0.1,
+        18446744073709551615u64, -9223372036854775808i64], "é": null, "a": {"y": true}}),
+    );
+    (wide.tools.get_or_insert_default()).push(ToolDef {
+        name: "apply_patch".to_owned(),
+        description: "ünïcode \u{1F600}".to_owned(),
+        parameters: json!({"type": "object", "properties": {"z": {}, "a": {}}}),
+        freeform: Some(yi_types::model::FreeformFormat {
+            definition: "start: /.+/\n".to_owned(),
+        }),
+    });
+    for context in [life, wide] {
+        let rendered = json!([context.schema, context.tools, context.system_prompt]).to_string();
+        let digest = Sha256::digest(rendered);
+        let old: String = (digest.iter().take(8))
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(context.stable_key(), old, "a recorded stable key moved");
+    }
+    Ok(())
+}
+
 fn prefix_bytes(params: &Value) -> Result<usize, Box<dyn Error>> {
     let system = serde_json::to_string(params.get("system").unwrap_or(&Value::Null))?;
     let tools = serde_json::to_string(params.get("tools").unwrap_or(&Value::Null))?;
