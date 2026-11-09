@@ -133,7 +133,7 @@ jobs:
           # Incident 2026-11-05: a job's /tmp is a 2 GB tmpfs inside its memory limit, and the Mac
           # link of a clone built there was killed every night; the clone builds on disk instead.
           export PUBLISH_DIR="$GITHUB_WORKSPACE/target/publish"
-          mkdir -p "$PUBLISH_DIR"
+          rm -rf "$PUBLISH_DIR" && mkdir -p "$PUBLISH_DIR"
           echo "yi $VERSION, built nightly from main (${RELEASE_COMMIT:0:10} on the forge)." > "$RUNNER_TEMP/notes.md"
           bash scripts/mirror/publish.sh "$VERSION" "$RUNNER_TEMP/notes.md" "$MIRROR_COMMIT"
       - name: forge releases past the newest seven
