@@ -1,4 +1,5 @@
 ---
+issue: Refs #2129
 decision: The weekly evals judge today's main against last Monday's on the inner loop's capability (revert level 3) and economy legs, paired on the same seeds, under hard caps summing to $7.80 with the adapter smokes and refused past $9.50; Terminal-Bench leaves the weekly cadence and runs only as a refine winner's transfer check and a monthly trend (amends the S5 weekly cadence of D140) | section 19 found Terminal-Bench cannot be the development loop (20 of 42 trials lost before the agent ran, 45-51 minute trials, 12 tasks detect only near-uniform gains) and row 0072 scored 0/12 on both arms, while revert level 3 sits mid-range | restore tbv4-weekly.yml from this change's parent
 ---
 `evals-weekly.yml` replaces `tbv4-weekly.yml`. Every Monday it builds today's main and last Monday's, clones the inner repos at their pins (`evals/drivers/inner_repos.sh`), and `evals/drivers/weekly.py` runs each leg once per arm and repetition before judging the pair with `levers.judge`. A leg whose predicted spend its cap cannot cover stops and is reported as capped. The first week of a month also runs the Terminal-Bench slice once on head, as a trend.

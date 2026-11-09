@@ -1,4 +1,5 @@
 ---
+issue: Refs #2129
 decision: A benchmark suite a gate or refine round reads is a row in evals/suites.json, a Harbor row pinned by digest, and a gate refuses a suite with no recorded A/A calibration | the weekly legs, the refine stages and the Terminal-Bench driver each carried their own task lists and prices, and a verdict on a suite with no measured spread cannot say what it could detect | read task lists from the drivers again and delete evals/suites.json
 ---
 Every benchmark suite a gate or a refine round may run is now one row in `evals/suites.json`: the inner loop's capability suite (revert level 3, split into development and validation seeds) and economy suite (the generated log, bugfix and reconcile families), Terminal-Bench v4 pinned by its digest, and SWE-Atlas QnA waiting for its digest. Each row carries its harness, per-trial price, task groups and the A/A calibration a verdict is judged against. `evals/suites.py --selfcheck` refuses a Harbor row not pinned by digest and a task in two groups, and a gate refuses a suite that is unknown, unpinned or uncalibrated, by name, before anything is built or paid for.
