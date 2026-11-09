@@ -145,33 +145,42 @@ Pick one posture per component and write it down. A mixed posture is how a rejec
 Availability is a security property. Every unbounded thing a peer can grow is a denial of service that needs no memory-safety bug.
 
 ```rust
+use std::io::{BufRead, Read};        // `Read` must be in scope: see below
+
 const MAX_FRAME: u64 = 1 << 20;
+const MAX_DRAIN: u64 = MAX_FRAME * 8;
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error("io")] Io(#[from] std::io::Error),
-    #[error("frame over {max} bytes")] FrameTooLong { max: u64 },
+    /// `resynced` false means the newline was never reached: the stream is
+    /// still mid-frame and the caller must close it, not read again.
+    #[error("frame over {max} bytes (resynced: {resynced})")]
+    FrameTooLong { max: u64, resynced: bool },
 }
 
-/// Reads one newline-terminated frame. An over-long frame is consumed and
-/// rejected, so the stream resynchronizes at the next newline rather than
-/// returning its tail as a frame.
+/// Reads one newline-terminated frame. An over-long frame is drained up to
+/// `MAX_DRAIN` so the stream resynchronizes at the next newline rather than
+/// returning its tail as a frame. Past that the drain gives up and says so.
 fn frame(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, Error> {
     let mut buf = Vec::new();
-    let n = reader.take(MAX_FRAME).read_until(b'\n', &mut buf)?;
+    let n = reader.by_ref().take(MAX_FRAME).read_until(b'\n', &mut buf)?;
     match buf.last() {
         None if n == 0 => Ok(None),                       // clean EOF
         Some(b'\n') => { buf.pop(); Ok(Some(buf)) }
         _ => {                                            // hit the cap mid-line
             let mut drain = Vec::new();
-            reader.take(MAX_FRAME * 8).read_until(b'\n', &mut drain)?;
-            Err(Error::FrameTooLong { max: MAX_FRAME })
+            reader.by_ref().take(MAX_DRAIN).read_until(b'\n', &mut drain)?;
+            Err(Error::FrameTooLong {
+                max: MAX_FRAME,
+                resynced: drain.last() == Some(&b'\n'),
+            })
         }
     }
 }
 ```
 
-Three things that example is being careful about, and that a hand-rolled bound usually is not: hitting the cap leaves the reader **mid-line**, so without an explicit resynchronize the next call returns the tail of the oversize frame as a valid one; `read_until` on bytes rather than `read_line` on `String`, because a peer's bytes are not guaranteed UTF-8 and a decode error is not the failure you want here; and the drain itself is bounded, because an attacker who sends no newline at all must not get an unbounded read either. On a real protocol, prefer a codec that already does this — `LinesCodec::new_with_max_length` resynchronizes for you (`har-async`).
+Four things that example is being careful about, and that a hand-rolled bound usually is not. Hitting the cap leaves the reader **mid-line**, so without an explicit resynchronize the next call returns the tail of the oversize frame as a valid one. `read_until` on bytes rather than `read_line` on `String`, because a peer's bytes are not guaranteed UTF-8 and a decode error is not the failure you want here. The drain itself is bounded, because an attacker who sends no newline at all must not get an unbounded read either — **so the resynchronize is best-effort, and the error has to say which it was**: a peer who sends `MAX_DRAIN` bytes with no newline leaves the reader mid-frame, and a caller that treats every `FrameTooLong` as recoverable then resumes at an attacker-chosen offset. Bound the drain and report `resynced: false` as fatal for that connection; an unbounded drain trades the resynchronize bug for the unbounded read. And `take` consumes its receiver, so each call needs `by_ref()` and `std::io::Read` in scope; with `BufRead` alone the method resolves through the deref and moves the reader out from behind the `&mut` (`E0507`), which is the compile error every hand-rolled version of this hits first. On a real protocol, prefer a codec that already does this — `LinesCodec::new_with_max_length` resynchronizes for you, within the same bound (`har-async`).
 
 - Bound every read. `Read::take` on the stream, not a check after the buffer is already full.
 - Never size an allocation from a peer's length field. `Vec::with_capacity(n)` from the wire is an OOM primitive; grow as bytes actually arrive.

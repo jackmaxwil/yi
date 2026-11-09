@@ -5,6 +5,8 @@ description: High-assurance Rust patterns — newtypes, typestate, exhaustive en
 
 # High-assurance Rust: core patterns
 
+These twelve skills are written against **stable Rust 1.99.1**, and a recent API or lint carries its stabilization version in parentheses. That version is the one thing here you must check against your own `rust-toolchain.toml` rather than trust: an item newer than your pin is an `E0599` for whoever follows the advice, and the parenthesis is there so you catch it before writing it into a crate that has not bumped.
+
 ## Panic budget
 
 A panic on a reachable path is a bug. Every source has a non-panicking form:
