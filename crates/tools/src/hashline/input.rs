@@ -334,13 +334,6 @@ impl PatchSection {
         Ok(parsed)
     }
 
-    pub fn with_path(&self, path: String) -> Self {
-        Self {
-            path,
-            ..self.clone()
-        }
-    }
-
     pub fn collect_anchor_lines(&self) -> Result<Vec<u64>, PatchError> {
         self.anchor_lines(None)
     }

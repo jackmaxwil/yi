@@ -32,7 +32,6 @@ impl Reason {
 /// Without a deadline a reason refuses this many stops per prompt, then passes with a record:
 /// an infinite refusal with no clock is a hang, not a rule.
 pub const REFUSAL_CAP: u8 = 3;
-pub const GREEN_STOP: &str = "spec_green_stop";
 pub const WAIVED: &str = "spec_stop_waived";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
