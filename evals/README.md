@@ -31,7 +31,9 @@ journeys/ab.py               journey prompts under one prompt ref, scored by the
 search_gate.py               paired history-search gate (#1184): a fact printed only in a tool result, graded on the actor
 prose.py                     answer prose measured against the identity prompt's style rules, and the rules themselves (#1862)
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
-improve/                     one round's proposer half: a development-only corpus, a history-free snapshot, S0 (round.py, brief.md)
+refine/                      one gated refine round: the proposer, S0, the gate and the suite cascade (round.py, brief.md)
+suites.json, suites.py       the benchmark suite registry: datasets by digest, groups, prices, calibrations
+report.py                    the weekly digest: verdicts, prefix growth, token sinks; terminal and offline HTML
 inner/                       the inner loop: seeded task generators (gen/) and their runner (runner.py), container-free
 trials/                      the trial store: one row per paid harbor trial, and the weekly budget it sums (trials/README.md)
 arc/yi_arc.py                ARC-AGI-3 bridge: one `yi ask --json --yolo` per action (arc/README.md)
