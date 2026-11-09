@@ -216,7 +216,10 @@ pub(crate) fn handle_bottom_key(
 /// Invariant: Enter in the composer and in the `/` popup both submit here, so `//word` prompts.
 fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
     let text = match slash_line(text) {
-        Slash::Command(command) => return handle_slash(app, &command),
+        Slash::Command(command) => match yi_runtime::slash::split(&command) {
+            ("learn", focus) => format!("{} {focus}", yi_runtime::slash::LEARN),
+            _ => return handle_slash(app, &command),
+        },
         Slash::Prompt(text) => text,
     };
     if let Some(bound) = app.reply_bound.take() {

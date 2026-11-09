@@ -2213,3 +2213,27 @@ fn journal_text(root: &std::path::Path) -> Result<String, Box<dyn Error>> {
         journal.ok_or("no session journal was written")?,
     )?)
 }
+
+/// Dies with `/learn` answering and starting nothing, or starting a turn that does not open the
+/// learn skill or drops what the user asked it to look at.
+#[tokio::test]
+async fn learn_starts_a_turn_that_opens_its_skill_with_the_users_focus()
+-> Result<(), Box<dyn Error>> {
+    let session = session_with_reply("noted");
+    let said = yi_runtime::slash::run(&session, "learn", "the stale tag").ok_or("no /learn")?;
+    assert!(said.starts_with("/learn: reading"), "{said}");
+    session.wait_idle().await;
+    let asked = session
+        .messages()
+        .into_iter()
+        .find_map(|message| match message {
+            AgentMessage::User { content, .. } => Some(format!("{content:?}")),
+            _ => None,
+        })
+        .ok_or("no user turn")?;
+    assert!(
+        asked.contains("yi://skills/learn") && asked.contains("the stale tag"),
+        "{asked}"
+    );
+    Ok(())
+}

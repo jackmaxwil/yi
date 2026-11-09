@@ -3,7 +3,7 @@
 use crate::{AgentSession, PermissionMode};
 
 /// The verbs a host advertises; `/pr` and `/base` still answer, as pointers to `/land`.
-pub const SESSION_VERBS: [&str; 10] = [
+pub const SESSION_VERBS: [&str; 11] = [
     "advisor",
     "plan",
     "goal",
@@ -14,6 +14,7 @@ pub const SESSION_VERBS: [&str; 10] = [
     "discard",
     "heartbeat",
     "todo",
+    "learn",
 ];
 
 pub fn split(line: &str) -> (&str, &str) {
@@ -78,8 +79,22 @@ pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> 
         "discard" => lane_verb(session, "discard", args),
         "heartbeat" => heartbeat(session, args),
         "todo" => todo(session, args),
+        "learn" => learn(session, args),
         _ => return None,
     })
+}
+
+/// Invariant: the verb writes nothing itself; the turn it starts follows the learn skill, which
+/// writes memory and the refine queue only, never a prompt, rule or skill.
+pub const LEARN: &str = "/learn: read(\"yi://skills/learn\") and follow it over this session: save what should outlive it as memory, and queue at most three refine variants, each quoting the line of this session that backs it.";
+
+fn learn(session: &AgentSession, args: &str) -> String {
+    let text = format!("{LEARN} {args}");
+    if session.status() == crate::Status::Idle && session.prompt(&text).is_ok() {
+        return "/learn: reading this session for memories and refine variants".to_owned();
+    }
+    session.follow_up(&text);
+    "/learn: queued to run after this turn".to_owned()
 }
 
 fn todo(session: &AgentSession, args: &str) -> String {
