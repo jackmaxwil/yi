@@ -146,3 +146,53 @@ fn a_parent_swapped_after_the_judgement_deletes_in_the_judged_dir() -> TestResul
     assert!(!left, "the remove left the file in the directory it judged");
     Ok(())
 }
+
+/// `real/proj/.git` is the repo and `a/link` points at `real/inner`, so `a/link/../proj` is
+/// `real/proj` to the kernel and a missing `a/proj` to a lexical pass.
+fn linked_repo(scratch: &Scratch) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    let git = scratch.join("real/proj/.git");
+    std::fs::create_dir_all(&git)?;
+    std::fs::create_dir_all(scratch.join("real/inner"))?;
+    std::fs::create_dir_all(scratch.join("a"))?;
+    std::fs::write(git.join("config"), "[core]\n")?;
+    std::os::unix::fs::symlink(scratch.join("real/inner"), scratch.join("a/link"))?;
+    Ok((
+        scratch.join("a/link/../proj"),
+        git.join("config").canonicalize()?,
+    ))
+}
+
+fn opens(cwd: &std::path::Path, config: &std::path::Path) -> bool {
+    let gate = ReadGate::new(&CatastrophicContext::detect(cwd));
+    gate.open(config, &[]).is_ok()
+}
+
+#[test]
+fn a_cwd_spelled_through_a_link_and_dotdot_keeps_its_git_dir_walled() -> TestResult {
+    let scratch = Scratch::new("yi-open-dotdot")?;
+    let (cwd, config) = linked_repo(&scratch)?;
+    assert_eq!(cwd.join(".git/config").canonicalize()?, config);
+    assert!(
+        !opens(&cwd, &config),
+        "read {} through the wall",
+        config.display()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_relative_cwd_keeps_its_git_dir_walled() -> TestResult {
+    let scratch = Scratch::new("yi-open-relative")?;
+    let (_, config) = linked_repo(&scratch)?;
+    let up: PathBuf = (std::env::current_dir()?.components().skip(1))
+        .map(|_| "..")
+        .collect();
+    let cwd = up.join(scratch.join("real/proj").strip_prefix("/")?);
+    assert!(cwd.is_relative() && cwd.join(".git/config").canonicalize()? == config);
+    assert!(
+        !opens(&cwd, &config),
+        "read {} through the wall",
+        config.display()
+    );
+    Ok(())
+}

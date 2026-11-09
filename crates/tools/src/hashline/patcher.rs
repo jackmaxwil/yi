@@ -354,7 +354,7 @@ impl<'a> Patcher<'a> {
             );
         }
 
-        let (normalized, endings) = split(&raw_content);
+        let (normalized, endings) = split(raw_content);
 
         let edits = if matches!(file_op, Some(FileOp::Rem)) {
             Vec::new()
@@ -515,7 +515,7 @@ impl<'a> Patcher<'a> {
         canonical_path: &str,
         text: &str,
     ) -> Result<String, PatchError> {
-        let (normalized, _) = split(text);
+        let (normalized, _) = split(String::from(text));
         let (anchors, total, shown) = section_rows(section, &normalized)?;
         let tag = self
             .snapshots
