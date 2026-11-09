@@ -1,4 +1,10 @@
 ---
+cut: .forgejo/workflows/tbv4-weekly.yml | name: | replaced by evals-weekly.yml, which judges main against last Monday's under hard caps instead of posting an unjudged row
+cut: crates/loop/src/run.rs | struct ExtractedCall { | moved unchanged into crates/loop/src/batch.rs so the failed-write guard has one home
+cut: docs/YI_DESIGN.md | automatic skill creation, | section 1.2 narrows its non-goal to unattended self-modification; refinement now lands only as owner-merged PRs
+cut: evals/improve/round.py | #!/usr/bin/env python3 | the module moved to evals/refine/round.py, which drains every variant source into one gated round
+cut: evals/levers.py | tokens = sum(value(row, k) for row in rows | the economy road now prices cost first in the unit the route bills, so the token-only sum is rewritten
+cut: skills/yi/session-mining/extract.py | EXTRACTOR_VERSION = 6 | bumped to 7 with the harness census; the sessions-dir plumbing around it was rewritten, not removed
 issue: Refs #2129
 decision: Yi may change its own prompts, levers and code only through a refine variant that passes S0, the gate, and a better verdict at every stage, and lands as a pull request the owner merges; YI_DESIGN §1.2 now excludes unattended skill creation or self-modification instead of all refinement | the owner chose one gated loop over prompts and code with human-merged keeps, and the old exclusion forbade the loop the evals already ran by hand | restore the §1.2 wording and evals/improve from this change's parent
 ---
