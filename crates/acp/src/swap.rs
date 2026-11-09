@@ -49,13 +49,16 @@ pub(crate) enum Stage {
 
 /// The session a worker line is relayed to unparsed: an update that changes no state the
 /// supervisor keeps (a state change or a rename does), and is no request awaiting an answer.
-fn relayed_as_read(route: &yi_types::acp::AcpRoute<'_>) -> Option<String> {
+fn raw_relay_session(route: &yi_types::acp::AcpRoute<'_>) -> Option<String> {
     let params = route.params.as_ref()?;
     let kind = params.update.as_ref()?.session_update?;
-    let plain = route.method == Some("session/update")
-        && !route.id
-        && !matches!(kind, "state_update" | "_yi/name");
-    plain.then(|| params.session_id.map(str::to_owned))?
+    if route.method != Some("session/update")
+        || route.id
+        || matches!(kind, "state_update" | "_yi/name")
+    {
+        return None;
+    }
+    params.session_id.map(str::to_owned)
 }
 
 /// The old worker's inventory answer or the new worker's restore answer, by id prefix.
@@ -122,16 +125,16 @@ impl Supervisor {
             while let Ok(Some(line)) = lines.next_line().await {
                 let parsing =
                     yi_types::trace::span("daemon.parse_worker_line").arg("bytes", line.len());
-                let note = relayed_as_read(&serde_json::from_str(&line).unwrap_or_default());
-                let frame = match note {
+                let raw = raw_relay_session(&serde_json::from_str(&line).unwrap_or_default());
+                let frame = match raw {
                     Some(_) => None,
                     None => serde_json::from_str::<Value>(&line).ok(),
                 };
                 drop(parsing);
                 let root = worker_root.clone();
-                let sent = match (note, frame) {
+                let sent = match (raw, frame) {
                     (Some(session), _) => {
-                        input.send(Input::WorkerNote(root, generation, session, line))
+                        input.send(Input::WorkerNotification(root, generation, session, line))
                     }
                     (None, Some(value)) => {
                         input.send(Input::WorkerLine(root, generation, value, line))
@@ -602,7 +605,7 @@ mod tests {
             let line = format!(
                 r#"{{"jsonrpc":"2.0","method":"session/update"{id},"params":{{"sessionId":"s1","update":{{"sessionUpdate":"{kind}","content":{{"text":"hi"}}}}}}}}"#
             );
-            super::relayed_as_read(&serde_json::from_str(&line).unwrap_or_default())
+            super::raw_relay_session(&serde_json::from_str(&line).unwrap_or_default())
         };
         assert_eq!(route("", "agent_message_chunk"), Some("s1".to_owned()));
         assert_eq!(route("", "state_update"), None);

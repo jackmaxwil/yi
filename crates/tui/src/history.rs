@@ -129,8 +129,8 @@ fn join(
         above = Some(rows);
     }
     let skip = out.len().saturating_sub(keep);
-    // A caller that draws none of the `bare` rows before the last, sparing the first `shown`,
-    // counts them blank instead of cloning them out of the render.
+    // Invariant: the `bare` rows before the last, sparing the first `shown`, are never drawn and
+    // come back blank; the last stays because join_live reads its blankness to place the seam.
     let last = out.len().saturating_sub(1);
     let bare = last.saturating_sub(bare.min(last.saturating_sub(shown)))..last;
     (out.into_iter().enumerate().skip(skip))
