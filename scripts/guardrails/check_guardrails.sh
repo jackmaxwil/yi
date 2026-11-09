@@ -81,6 +81,8 @@ run "$PY" scripts/guardrails/check_boundaries.py
 run "$PY" scripts/guardrails/check_filenames.py
 run "$PY" scripts/guardrails/check_workflows.py
 run "$PY" scripts/guardrails/check_agents_md.py
+run "$PY" scripts/guardrails/check_skills_sync.py
+run "$PY" scripts/guardrails/check_skills_sync.py --selfcheck
 run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
 run "$PY" scripts/guardrails/check_orphans.py

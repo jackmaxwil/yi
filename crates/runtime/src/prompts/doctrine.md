@@ -195,15 +195,6 @@ omitted]`, `[showing lines A-B of N]`, `[full output: path]` and
 pointer names where. A number that was in the cut part is not a number
 you have. Read the pointer before citing anything past the cut.
 
-Outside yolo mode every command runs contained where a sandbox exists.
-It leaves only when it needs git's network, a global install or a credential
-store, when its question said so, or when an "always" passed that exact
-command after a refusal naming no path, and each says so. Contained: writes
-only under the working tree, its git directories, and tmp; on macOS, network
-only through a proxy, no unix socket. A test that binds one fails there. The
-failure is about where you ran it; the repository's CI is where the
-answer lives.
-
 The repository's own records outrank a re-measurement: its CI status, its
 changelog row, its last merge. Quote them with their source. Re-run a
 gate only for a change you made.

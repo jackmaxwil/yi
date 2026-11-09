@@ -380,13 +380,16 @@ impl ReadGate {
         let stores = stores(context);
         let mut trees = stores.clone();
         trees.push(PathBuf::from("/dev"));
-        trees.extend(context.workspace_git.iter().cloned());
+        // Incident: a cwd spelled `link/../proj` names another dir lexically, so the git dirs'
+        // identities come from the spelling the kernel resolves, and only their prefixes normalize.
+        let git = &context.workspace_git;
+        let tree_ids = [identities(&trees), identities(git)].concat();
+        trees.extend(git.iter().map(|dir| lexical_normalize(dir)));
         let above = stores.iter().flat_map(|store| store.ancestors().skip(1));
         let exact: Vec<PathBuf> = (HOME_ROOTS.iter().map(Path::new))
             .chain(above)
             .map(Path::to_path_buf)
             .collect();
-        let tree_ids = identities(&trees);
         let ids = [tree_ids.clone(), identities(&exact)].concat();
         Self {
             context: context.clone(),
@@ -426,6 +429,16 @@ impl ReadGate {
             || denied_file(&self.ids, fs::metadata(path).ok().as_ref())
     }
 
+    /// [`Self::denies`] for a path [`fs::canonicalize`] just returned, which has no link left to
+    /// resolve a second time.
+    fn denies_canonical(&self, real: &Path) -> bool {
+        self.denies_spelling(real)
+            || lexically_under(&self.trees, real)
+            || (real.ancestors())
+                .any(|dir| denied_file(&self.tree_ids, fs::metadata(dir).ok().as_ref()))
+            || denied_file(&self.ids, fs::metadata(real).ok().as_ref())
+    }
+
     /// A walk's entry, whose ancestors the walk judged on its way in: the identity `meta` read
     /// without following it. Its spelling adds nothing, since every guarded directory has one.
     pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
@@ -447,7 +460,7 @@ impl ReadGate {
         held: &mut dyn FnMut(),
     ) -> io::Result<File> {
         let real = fs::canonicalize(path)?;
-        self.opened(&real, walls, READS, OpenOptions::new().read(true), held)
+        self.opened(&real, walls, Act::Read, OpenOptions::new().read(true), held)
     }
 
     /// [`Self::open`] to write, under the destroy gate too: untruncated, or created only where
@@ -475,9 +488,9 @@ impl ReadGate {
         };
         let mut options = OpenOptions::new();
         options.read(true).write(true);
-        match self.opened(&real, walls, WRITES, &options, held) {
+        match self.opened(&real, walls, Act::Write, &options, held) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.opened(&real, walls, WRITES, options.create_new(true), held)
+                self.opened(&real, walls, Act::Write, options.create_new(true), held)
             }
             opened => opened,
         }
@@ -502,17 +515,19 @@ impl ReadGate {
         };
         let parent = fs::canonicalize(parent)?;
         let real = parent.join(name);
-        self.guard_resolved(&real, walls, is_catastrophic)?;
+        self.guard_resolved(&real, walls, Act::Remove)?;
         held();
         let dir = judged_dir(&parent, &real)?;
         held();
         Ok(unlinkat(&dir, name, AtFlags::empty())?)
     }
 
-    fn guard_resolved(&self, real: &Path, walls: &[PathBuf], protects: Protects) -> io::Result<()> {
-        let spared = beneath(&self.spared, real);
-        let denied =
-            self.denies(real) || protects(real, &self.context) || (beneath(walls, real) && !spared);
+    fn guard_resolved(&self, real: &Path, walls: &[PathBuf], act: Act) -> io::Result<()> {
+        let denied = match act {
+            Act::Read => self.denies_canonical(real),
+            Act::Write => self.denies(real) || write_is_catastrophic(real, &self.context),
+            Act::Remove => self.denies(real) || is_catastrophic(real, &self.context),
+        } || (beneath(walls, real) && !beneath(&self.spared, real));
         if denied { Err(refused(real)) } else { Ok(()) }
     }
 
@@ -520,11 +535,11 @@ impl ReadGate {
         &self,
         real: &Path,
         walls: &[PathBuf],
-        protects: Protects,
+        act: Act,
         options: &OpenOptions,
         held: &mut dyn FnMut(),
     ) -> io::Result<File> {
-        self.guard_resolved(real, walls, protects)?;
+        self.guard_resolved(real, walls, act)?;
         held();
         let (_dir, at) = beside(real)?;
         let file = no_link(options)?.open(&at)?;
@@ -545,16 +560,16 @@ impl ReadGate {
         {
             return true;
         }
-        if (self.context.workspace_git.iter()).any(|git| path.starts_with(lexical_normalize(git))) {
-            return true;
-        }
         (self.stores.iter()).any(|store| path.starts_with(store) || store.starts_with(&path))
     }
 }
 
-type Protects = fn(&Path, &CatastrophicContext) -> bool;
-const READS: Protects = |_, _| false;
-const WRITES: Protects = write_is_catastrophic;
+#[derive(Clone, Copy)]
+enum Act {
+    Read,
+    Write,
+    Remove,
+}
 
 /// [`ReadGate::denies`] for one path.
 pub fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
@@ -644,7 +659,8 @@ fn beside(real: &Path) -> io::Result<(Option<File>, PathBuf)> {
 /// Invariant: beneath when it or an ancestor is one of `roots` by spelling or file identity, so
 /// a symlink (dangling too), `..` or letter case cannot reach around it; hard links can.
 pub fn beneath(roots: &[PathBuf], path: &Path) -> bool {
-    !roots.is_empty() && beneath_via(roots, &identities(roots), path, LINK_HOPS)
+    let normal: Vec<PathBuf> = roots.iter().map(|root| lexical_normalize(root)).collect();
+    !roots.is_empty() && beneath_via(&normal, &identities(roots), path, LINK_HOPS)
 }
 
 /// As many links as the kernel follows before `ELOOP`.
@@ -653,7 +669,7 @@ const LINK_HOPS: u8 = 40;
 /// A missing tail is judged by its existing head, and a dangling link just past that head by
 /// where it points, so a refusal never tells a file behind a guard from a missing one.
 fn beneath_via(roots: &[PathBuf], ids: &[FileId], path: &Path, hops: u8) -> bool {
-    if lexically_beneath(roots, path) {
+    if lexically_under(roots, path) {
         return true;
     }
     let Some((head, real)) =
@@ -670,6 +686,12 @@ fn beneath_via(roots: &[PathBuf], ids: &[FileId], path: &Path, hops: u8) -> bool
     };
     let target = real.join(target).join(rest.as_path());
     hops > 0 && beneath_via(roots, ids, &target, hops.saturating_sub(1))
+}
+
+/// Invariant: `roots` are lexically normalized, as [`ReadGate::new`] and [`beneath`] make them.
+fn lexically_under(roots: &[PathBuf], path: &Path) -> bool {
+    let normal = lexical_normalize(path);
+    roots.iter().any(|root| normal.starts_with(root))
 }
 
 pub fn lexically_beneath(roots: &[PathBuf], path: &Path) -> bool {

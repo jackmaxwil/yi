@@ -167,8 +167,6 @@ pub enum ReduceError {
         op: String,
         source: Box<PlanOpError>,
     },
-    #[error("record {seq}: unknown record kind {op:?}")]
-    UnknownKind { seq: Seq, op: String },
     #[error("record {seq} ({op}) names no todo")]
     NoTodo { seq: Seq, op: String },
 }

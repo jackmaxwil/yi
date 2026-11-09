@@ -8,7 +8,9 @@
 # under crates/runtime/tests/fixtures/documents, which a converter wrote (RTF's `\pard`).
 # The framed incident dataset is a hex dump of generated frames, so its ASCII column is
 # payload bytes rather than prose: a byte after a word reads as a misspelling of it.
-# `regraded` is what the archive's incident reviews do to a severity.
+# `regraded` is what the archive's incident reviews do to a severity. `implementor` is the
+# Reference's own word for whoever writes an impl, and `statics` the plural of a `static` item;
+# both are Rust vocabulary the har* skills use and neither is "implementer" or "statistics".
 [codespell]
 skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./runs,./evals/arc/runs,./crates/tui/tests/fixtures/sessions,./scripts/proof/tui_see/*.jsonl,./crates/runtime/tests/fixtures/documents,./evals/fixtures/tasks/fleet-forensics/environment/app/incidents/framed,./crates/ai/tests/fixtures/openrouter-web-search-*.json
-ignore-words-list = ratatui,advices,unparseable,jsut,disjointness,modle,iterm,regraded
+ignore-words-list = ratatui,advices,unparseable,jsut,disjointness,modle,iterm,regraded,implementor,statics

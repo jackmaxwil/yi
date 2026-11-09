@@ -278,10 +278,10 @@ impl SubagentHost {
         let wait = payload
             .get("wait_s")
             .and_then(Value::as_f64)
-            .filter(|wait| wait.is_finite() && *wait >= 0.0);
+            .map(|wait| wait.min(CHECK_WAIT_MAX.as_secs_f64()));
         let wait = wait
-            .map_or(CHECK_WAIT_DEFAULT, Duration::from_secs_f64)
-            .min(CHECK_WAIT_MAX);
+            .and_then(|wait| Duration::try_from_secs_f64(wait).ok())
+            .unwrap_or(CHECK_WAIT_DEFAULT);
         if let Some(refused) = self.check_gate.get().and_then(|gates| gates.1(&command)) {
             return Err(format!("the check is refused: {refused}"));
         }

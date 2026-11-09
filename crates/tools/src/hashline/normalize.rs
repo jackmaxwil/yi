@@ -1,5 +1,5 @@
 /// What `split` took off a file so `restore` can put it back: its BOM and the terminator
-/// that closed each source line, `"\n"`, `"\r\n"` or `"\r"`, in order.
+/// that closed each source line, in order, or none when every one is `"\n"`.
 #[derive(Debug, Clone)]
 pub struct Endings {
     bom: &'static str,
@@ -8,10 +8,14 @@ pub struct Endings {
 
 /// The LF text tools address, BOM off and every terminator read as one line break (a lone
 /// CR is a line break, as `read` and `grep` count it), plus what restores it.
-pub fn split(raw: &str) -> (String, Endings) {
-    let BomResult { bom, text } = strip_bom(raw);
-    let mut out = String::with_capacity(text.len());
+pub fn split(raw: String) -> (String, Endings) {
+    let BomResult { bom, text } = strip_bom(&raw);
     let mut ends = Vec::new();
+    if !text.contains('\r') {
+        let text = if bom.is_empty() { raw } else { text.to_owned() };
+        return (text, Endings { bom, ends });
+    }
+    let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
         let end = match ch {
@@ -71,19 +75,10 @@ impl Endings {
 }
 
 pub fn normalize_to_lf(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\r' {
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            out.push('\n');
-        } else {
-            out.push(ch);
-        }
+    match text.contains('\r') {
+        true => text.replace("\r\n", "\n").replace('\r', "\n"),
+        false => text.to_owned(),
     }
-    out
 }
 
 pub struct BomResult<'a> {
