@@ -97,10 +97,6 @@ impl Op {
         }
     }
 
-    pub fn is_state_change(&self) -> bool {
-        !matches!(self, Self::View)
-    }
-
     fn label(&self) -> Option<&TodoLabel> {
         match self {
             Self::Start { label, .. } | Self::Block { label, .. } | Self::Unblock { label, .. } => {
