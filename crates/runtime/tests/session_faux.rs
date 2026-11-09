@@ -1776,6 +1776,91 @@ async fn a_zero_priced_route_that_reads_its_cache_keeps_its_results_and_stamps_i
     Ok(())
 }
 
+/// Dies with replies left unstamped: a session resumed six minutes after its last reply, past
+/// its five-minute cache, kept every aged result for a warm cache that is gone.
+#[tokio::test]
+async fn a_session_resumed_past_its_cache_ttl_cuts_its_aged_results_as_expired()
+-> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-runtime-reclaim-expired")?;
+    let mut repo = JsonlRepo::new(dir.join("sessions"), "/tmp/yi-reclaim-expired");
+    let mut model = faux_model(128_000);
+    let rate = |rate: f64| serde_json::Number::from_f64(rate).ok_or("rate");
+    (model.cost.input, model.cost.cache_read) = (rate(5.0)?, rate(0.5)?);
+    model.cost.cache_write = rate(6.25)?;
+    let run = |replies: Vec<AgentMessage>| {
+        let provider = Arc::new(ProviderStream::new(None));
+        let mut replies = replies;
+        for reply in &mut replies {
+            if let AgentMessage::Assistant { usage, .. } = reply {
+                usage.input = 1_200;
+            }
+        }
+        provider.queue_faux(replies);
+        let config = SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: model.clone(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        };
+        AgentSession::new(config, provider)
+    };
+    let mut script: Vec<AgentMessage> = (0..8)
+        .map(|turn| {
+            let args = serde_json::json!({"command": format!("seq 1 1500 # {turn}")});
+            let args = args.as_object().cloned().unwrap_or_default();
+            let call = faux_tool_call(&format!("call-{turn}"), "bash", args);
+            faux_assistant_message(vec![call], StopReason::ToolUse)
+        })
+        .collect();
+    script.push(faux_assistant_message(
+        vec![faux_text("counted")],
+        StopReason::Stop,
+    ));
+    let store = repo.create(CreateOptions {
+        id: Some("aged".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let mut first = run(script);
+    first.attach_store(Arc::clone(&store))?;
+    first.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
+    first.prompt("count")?;
+    first.wait_idle().await;
+    let path = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("no session file")?;
+    drop((first, store));
+    // Six minutes pass: every reply's own time moves back, as the clock would have left it.
+    let mut aged = String::new();
+    for line in std::fs::read_to_string(&path)?.lines() {
+        let mut row: serde_json::Value = serde_json::from_str(line)?;
+        if row["message"]["role"] == "assistant" {
+            let at = row["message"]["timestamp"].as_u64().unwrap_or(0);
+            row["message"]["timestamp"] = at.saturating_sub(6 * 60_000).into();
+        }
+        aged.push_str(&serde_json::to_string(&row)?);
+        aged.push('\n');
+    }
+    std::fs::write(&path, aged)?;
+    let store = repo.open("aged")?;
+    let mut resumed = run(vec![faux_assistant_message(
+        vec![faux_text("done")],
+        StopReason::Stop,
+    )]);
+    resumed.attach_store(Arc::clone(&store))?;
+    resumed.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
+    resumed.prompt("go on")?;
+    resumed.wait_idle().await;
+    let records: Vec<yi_types::reclaim::ReclaimRecord> =
+        yi_session::lock_session(&store).custom_records(yi_session::EntryOrder::OldestFirst, None);
+    let reasons: Vec<&str> = records
+        .iter()
+        .map(|record| record.reason.as_str())
+        .collect();
+    assert_eq!(reasons, ["expired"], "{records:?}");
+    Ok(())
+}
+
 /// Stage 9: a cut bash output gets the lines `models.selector` named, verbatim under a row that
 /// names the model; its input cap, at the limit and one past it, and a selector giving prose.
 #[tokio::test]

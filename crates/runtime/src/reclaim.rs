@@ -1089,10 +1089,10 @@ pub(crate) mod tests {
     }
 
     /// Review of #1149: GLM's leaked calls reuse `leak-0` in every message, so a cut keyed by the
-    /// id alone hid the newest result too; a synthesized reply's zero timestamp read as a lapse.
+    /// id alone hid the newest result too. An abort just before a lapsed request hides no lapse.
     #[test]
-    fn a_repeated_call_id_cuts_only_the_old_result_and_a_synthesized_reply_is_no_lapse() -> Fallible
-    {
+    fn a_repeated_call_id_cuts_only_the_old_result_and_a_synthesized_reply_hides_no_lapse()
+    -> Fallible {
         let mut messages = bash_session(14);
         let leak = |text: &str| AgentMessage::ToolResult {
             tool_call_id: "leak-0".to_owned(),
@@ -1115,12 +1115,6 @@ pub(crate) mod tests {
         };
         messages.splice(1..1, [call(1), leak("old ")]);
         messages.extend([call(60_000 * 14), leak("new ")]);
-        let mut aborted =
-            yi_ai::faux::faux_assistant_message(vec![], yi_types::message::StopReason::Aborted);
-        if let AgentMessage::Assistant { timestamp, .. } = &mut aborted {
-            *timestamp = 0;
-        }
-        messages.push(aborted);
         let now = REPLIED + 60_000 * 14 + 1_000;
         let model = opus()?;
         let record = decide(&messages, &Cut::default(), &model, now);
@@ -1128,8 +1122,15 @@ pub(crate) mod tests {
             record.as_ref().map(|record| record.reason.as_str()),
             Some("expired")
         );
+        let mut aborted =
+            yi_ai::faux::faux_assistant_message(vec![], yi_types::message::StopReason::Aborted);
+        if let AgentMessage::Assistant { timestamp, .. } = &mut aborted {
+            *timestamp = REPLIED + 60_000 * 19;
+        }
+        messages.push(aborted);
         let late = REPLIED + 60_000 * 14 + 6 * 60_000;
         let record = decide(&messages, &Cut::default(), &model, late).ok_or("no cut")?;
+        assert_eq!(record.reason, "expired");
         let mut cut = Cut::default();
         cut.add(&record);
         let shown = apply(messages, &cut);
