@@ -1,4 +1,8 @@
 ---
+shares: #2124 | this branch adds ToolErrorKind::NotRun and moves tool-call execution out of run.rs; that PR changes how session events and stop reasons are kept, in other hunks of the same files
+shares: #2123 | this branch moves tool-call execution into batch.rs and adds AgentTool::gates_message; that PR changes what is built per delta and request, in other hunks of the same files
+shares: #2121 | both add a line to docs/YI_DESIGN.md in different sections; this one amends 1.2 and 4.2
+shares: #2098 | this branch adds the /learn popup entry in input.rs and a docs/YI_DESIGN.md row; that PR sizes reasoning and tool-output windows, in other hunks
 cut: .forgejo/workflows/tbv4-weekly.yml | name: | replaced by evals-weekly.yml, which judges main against last Monday's under hard caps instead of posting an unjudged row
 cut: crates/loop/src/run.rs | struct ExtractedCall { | moved unchanged into crates/loop/src/batch.rs so the failed-write guard has one home
 cut: docs/YI_DESIGN.md | automatic skill creation, | section 1.2 narrows its non-goal to unattended self-modification; refinement now lands only as owner-merged PRs
