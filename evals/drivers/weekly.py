@@ -21,14 +21,20 @@ import levers  # noqa: E402
 
 RUNNER = ROOT / "inner/runner.py"
 HARBOR = ROOT / "drivers/tbv4_sweep.sh"
-# Per-trial prices measured on glm-5.3-flash: revert level 3 (row 0070, 38 trials for $0.655) and
-# the level-1 generated families (row 0064, 120 trials for $0.716); a slice trial (drivers/trials.py).
-LEGS = (
-    {"name": "capability", "tasks": [f"revert:{seed}:3" for seed in range(30)], "k": 2, "trialUsd": 0.02, "cap": 1.70},
-    {"name": "economy", "tasks": [f"{family}:{seed}:1" for family in ("logs", "bugfix", "reconcile")
-                                  for seed in range(1, 21)], "k": 1, "trialUsd": 0.008, "cap": 1.10},
-)
-TREND = {"name": "tbv4-trend", "trials": 12, "trialUsd": 0.27, "cap": 4.00}
+import suites  # noqa: E402
+
+REGISTRY = suites.load()
+
+
+def leg(name, suite, k, cap):
+    """A leg's tasks and per-trial price from the registry; the suite must be calibrated."""
+    row = suites.gateable(REGISTRY, suite)
+    tasks = [task for group in ("development", "validation") for task in row["groups"].get(group, [])]
+    return {"name": name, "suite": suite, "tasks": tasks, "k": k, "trialUsd": row["trialUsd"], "cap": cap}
+
+
+LEGS = (leg("capability", "inner-capability", 1, 1.70), leg("economy", "inner-economy", 1, 1.10))
+TREND = {"name": "tbv4-trend", "trials": 12, "trialUsd": REGISTRY["suites"]["tbv4"]["trialUsd"], "cap": 4.00}
 # live-weekly's adapter smokes run in their own workflow under these caps ($0.50 + $0.50).
 SMOKES_USD = 1.00
 TOTAL_USD = 9.50
