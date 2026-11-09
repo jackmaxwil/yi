@@ -15,7 +15,9 @@ import argparse, hashlib, json, os, pathlib, shutil, subprocess, sys, tarfile, t
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "evals" / "graph"))
+sys.path.insert(0, str(ROOT / "evals" / "adapters"))
 from refine import names  # noqa: E402
+from yi_usage import parse_events  # noqa: E402
 
 STORE = ROOT / "evals" / "trials"
 SPLIT = ROOT / "evals" / "levers" / "split.json"
@@ -152,8 +154,10 @@ def propose(base, binary, out, n, model, runs):
         candidate = candidate_hash(patch, levers)
         reason = reason or (f"already_rejected:{rejected(candidate, base)}" if rejected(candidate, base) else None)
         (out / f"c{index}" / "candidate.patch").write_text(patch)
+        # The proposer's own spend is development cost the verdict's break-even must cover.
+        spent = parse_events(out / f"c{index}" / "events.jsonl").get("costUsd")
         verdict = {"kind": "s0", "candidate": candidate, "base": base, "levers": levers,
-                   "target": spec.get("target"), "refused": reason}
+                   "target": spec.get("target"), "refused": reason, "proposerUsd": spent}
         (out / f"c{index}" / "s0.json").write_text(json.dumps(verdict, indent=1) + "\n")
         print(json.dumps(verdict))
         shutil.rmtree(pristine)

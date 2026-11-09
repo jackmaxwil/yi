@@ -542,6 +542,19 @@ Real-model rollouts are budgeted, deliberate, and ledgered.
 - μ metrics for a run come from the session-mining extractor over the trial's
   collected session directory. One extractor owns that schema; the adapters
   emit harness fields only.
+- **Requests before bytes.** A change that removes main-model requests is weighed
+  before one that shrinks them: the static prefix is re-read on every request.
+  The gate's objective is cost per graded point, then median wall; cost is the
+  provider's dollars where every trial is priced, and tokens (cache reads and
+  writes counted) where a route bills $0 (D558). Raw tokens on a priced route are
+  a diagnostic, never a road.
+- **A verdict states what it cost.** `levers.py judge` prints `devSpendUsd` (both
+  arms, an unpriced trial at $1) and `breakEvenTasks` (spend over the per-task
+  saving; none without a saving), and `--store` appends the verdict row S0 reads.
+  A proposer's own spend is `proposerUsd` in its `s0.json`.
+- **Variants come with coverage.** A mechanism variant names the census count that
+  bounds it (`extract.py`'s harness census); prose rewrites are expected to come
+  back inconclusive (row 0071).
 
 ## Kill tests: one spend ledger
 
