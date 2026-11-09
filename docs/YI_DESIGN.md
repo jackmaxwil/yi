@@ -162,6 +162,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   once the interrupt has fired neither `maybe_compact` nor `StreamFn::stream` runs (§4.5).
   Steering is taken after each turn; follow-ups only when the loop would end.
 - A maximal run of `Parallel` calls executes concurrently; the first `Sequential` call closes it.
+  The first failed write or command (`AgentTool::gates_message`, judged by `shown_failed`, so a
+  non-zero exit counts) ends the message: every later call is answered `not_run`, naming it, unless
+  an interrupt answers it `aborted` first. A failed read or ledger call ends nothing.
   `StopReason::Length` fails every tool call in the message unrun.
 - An unknown tool name is repaired only by a unique normalized match (case, separators,
   namespace prefix, `tool` affix). Text opening `<tool_call>` with no call is `UNPARSED_MARKUP`.

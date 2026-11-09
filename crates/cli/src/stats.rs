@@ -102,6 +102,29 @@ impl Totals {
     }
 }
 
+/// One tool result plus the nested calls its kernel cell ran; a floor, since a cell's reads dedupe.
+fn actions_of(details: &Value) -> u64 {
+    let nested = details
+        .get("calls")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let dropped = details
+        .get("callsDropped")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    1_u64
+        .saturating_add(u64::try_from(nested).unwrap_or(u64::MAX))
+        .saturating_add(dropped)
+}
+
+fn per_request(actions: u64, turns: u64) -> f64 {
+    if turns > 0 {
+        actions as f64 / turns as f64
+    } else {
+        0.0
+    }
+}
+
 fn share(part: i64, tokens: &Tokens) -> f64 {
     let whole = tokens
         .input
@@ -122,6 +145,7 @@ struct Totals {
     last_model: Option<String>,
     categories: BTreeMap<String, u64>,
     edit_ops: BTreeMap<String, u64>,
+    actions: u64,
 }
 
 fn rows(map: &BTreeMap<String, Tokens>, key: &str) -> Vec<Value> {
@@ -182,6 +206,7 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
             let row = tools.entry(tool_name.clone()).or_default();
             row.calls = row.calls.saturating_add(1);
             let details = details.clone().unwrap_or(Value::Null);
+            totals.actions = totals.actions.saturating_add(actions_of(&details));
             if *is_error {
                 row.errors = row.errors.saturating_add(1);
                 let kind =
@@ -333,6 +358,8 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
             "session": id,
             "tools": tool_rows,
             "turns": totals.all.turns,
+            "actions": totals.actions,
+            "actionsPerRequest": per_request(totals.actions, totals.all.turns),
             "tokens": {
                 "input": totals.all.input,
                 "output": totals.all.output,
@@ -356,6 +383,8 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
     }
     println!("session {id}");
     println!("{}", totals.all.line());
+    let ratio = per_request(totals.actions, totals.all.turns);
+    println!("actions {} ({ratio:.2} a request)", totals.actions);
     if totals.by_model.len() + totals.by_cause.len() > 1 {
         for (model, tokens) in &totals.by_model {
             println!("  {model}  {}", tokens.line());
@@ -596,6 +625,38 @@ mod tests {
             reduce_entry(entry, &mut tools, &mut totals);
         }
         totals
+    }
+
+    fn tool_result(details: Value) -> Entry {
+        Entry::Message {
+            id: String::new(),
+            terminate: None,
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+            message: AgentMessage::ToolResult {
+                tool_call_id: "c".to_owned(),
+                tool_name: "ipython".to_owned(),
+                content: Vec::new(),
+                details: Some(details),
+                usage: None,
+                added_tool_names: None,
+                is_error: false,
+                timestamp: 0,
+            },
+        }
+    }
+
+    /// A cell's nested calls are actions its one request bought: two kept rows and one dropped
+    /// read beside the cell's own result make four, over the one request that sent it.
+    #[test]
+    fn a_cell_s_nested_calls_count_as_actions() {
+        let cell =
+            serde_json::json!({"calls": [{"tool": "read"}, {"tool": "grep"}], "callsDropped": 1});
+        let totals = reduce(&[assistant(0, 0), tool_result(cell)]);
+        assert_eq!(totals.actions, 4);
+        assert_eq!(per_request(totals.actions, totals.all.turns), 4.0);
+        assert_eq!(per_request(0, 0), 0.0);
     }
 
     /// The first request is cold by definition; a warm same-model request that

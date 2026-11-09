@@ -1187,3 +1187,72 @@ fn invalid_web_search_config_is_refused_with_an_actionable_reason() -> TestResul
     }
     Ok(())
 }
+
+/// The real binary stops a message at its first failed write or command: an edit refused for a
+/// file never read, then a command that exits non-zero, each leave the marker-writing command
+/// queued behind them unrun, answered `not_run`, so no result reports on a change that never
+/// landed. A marker file is the proof, as the wall's deny was proven.
+#[test]
+fn a_failed_edit_leaves_its_test_unrun() -> TestResult {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+    let journey = Journey::new("stop-at-first-failure")?;
+    std::fs::write(journey.project().join("notes.txt"), "alpha\nbravo\n")?;
+    let first = [
+        (
+            "e1",
+            "edit",
+            json!({"patch": "[notes.txt]\nPUT 2.=2:\n+BRAVO"}),
+        ),
+        ("b1", "bash", json!({"command": "touch ran-after-edit"})),
+    ];
+    let second = [
+        ("b2", "bash", json!({"command": "exit 3"})),
+        ("b3", "bash", json!({"command": "touch ran-after-exit"})),
+    ];
+    for (n, calls) in [first, second].into_iter().enumerate() {
+        let blocks = calls
+            .iter()
+            .map(|(id, tool, args)| {
+                faux_tool_call(id, tool, args.as_object().cloned().unwrap_or_default())
+            })
+            .collect();
+        let lines = [
+            serde_json::to_string(&faux_assistant_message(blocks, StopReason::ToolUse))?,
+            serde_json::to_string(&faux_assistant_message(
+                vec![faux_text("done")],
+                StopReason::Stop,
+            ))?,
+        ];
+        let script = journey.project().join(format!("script-{n}.jsonl"));
+        std::fs::write(&script, lines.join("\n"))?;
+        let script = script.display().to_string();
+        let stdout = succeeded(
+            &journey.yi(&[
+                "ask",
+                "--yolo",
+                "--json",
+                "--faux",
+                &script,
+                "edit then check",
+            ])?,
+            "headless ask",
+        )?;
+        let skipped = stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|event| event["type"] == "tool_execution_end")
+            .filter(|event| event["result"]["details"]["errorKind"] == "not_run")
+            .count();
+        if skipped != 1 {
+            return Err(format!("run {n}: {skipped} not_run results, wanted 1:\n{stdout}").into());
+        }
+    }
+    for marker in ["ran-after-edit", "ran-after-exit"] {
+        if journey.project().join(marker).exists() {
+            return Err(format!("{marker} exists: the call behind a failure ran").into());
+        }
+    }
+    journey.reclaim();
+    Ok(())
+}

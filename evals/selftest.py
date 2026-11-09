@@ -976,6 +976,7 @@ def check_surface():
             {"tool": "bash", "count": 4, "errorClass": "command"},
             {"tool": "ipython", "count": 2, "errorClass": "api_misuse"},
             {"tool": "read", "count": 1, "errorClass": "tool"},
+            {"tool": "bash", "count": 5, "errorClass": "tool", "errorKind": "not_run"},
         ]
         (store / "issues.jsonl").write_text("".join(json.dumps(issue) + "\n" for issue in issues))
         classes = surface.census(store)["classes"]

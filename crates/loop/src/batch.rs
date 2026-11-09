@@ -15,6 +15,7 @@ pub(crate) struct Finalized {
     call: ExtractedCall,
     result: ToolResult,
     is_error: bool,
+    stops_message: bool,
 }
 
 fn tool_result_message(finalized: &Finalized) -> AgentMessage {
@@ -78,9 +79,11 @@ async fn execute_one(
                 yi_types::event::ToolErrorKind::NotFound,
             ),
             is_error: true,
+            stops_message: false,
         };
     };
     if let Err(reason) = tool.validate(&call.arguments) {
+        let stops_message = tool.gates_message(&call.arguments);
         return Finalized {
             call,
             result: crate::tool::error_tool_result_kind(
@@ -88,6 +91,7 @@ async fn execute_one(
                 yi_types::event::ToolErrorKind::InvalidArgs,
             ),
             is_error: true,
+            stops_message,
         };
     }
     if signal.is_fired() {
@@ -98,14 +102,18 @@ async fn execute_one(
                 yi_types::event::ToolErrorKind::Aborted,
             ),
             is_error: true,
+            stops_message: false,
         };
     }
+    let gates = tool.gates_message(&call.arguments);
     let ToolOutcome { result, is_error } =
         tool.execute(&call.id, call.arguments.clone(), signal).await;
+    let stops_message = gates && yi_types::event::shown_failed(is_error, &result.details);
     Finalized {
         call,
         result,
         is_error,
+        stops_message,
     }
 }
 
@@ -186,9 +194,24 @@ pub(crate) async fn execute_tool_calls(
                     && tool.execution_mode(&call.arguments) == ExecutionMode::Parallel
             })
     };
-    let mut finalized = Vec::new();
+    let mut finalized: Vec<Finalized> = Vec::new();
+    let mut stop_at: Option<usize> = None;
     let mut queue = calls.into_iter().peekable();
     while queue.peek().is_some() {
+        // Invariant: after an interrupt every unrun call is answered `Aborted` (D245), so the
+        // guard stands aside and execute_one says so.
+        if !signal.is_fired()
+            && let Some(why) = stop_at.and_then(|index| finalized.get(index)).map(not_run)
+        {
+            let rest = fail_calls(
+                queue.by_ref().collect(),
+                &why,
+                Some(yi_types::event::ToolErrorKind::NotRun),
+                emit,
+            );
+            finalized.extend(rest);
+            break;
+        }
         // A maximal run of parallel-safe calls overlaps; the first mutating
         // call closes the run, so writes keep today's strict ordering.
         let mut batch: Vec<ExtractedCall> = queue.next().into_iter().collect();
@@ -218,6 +241,9 @@ pub(crate) async fn execute_tool_calls(
                 result: item.result.clone(),
                 is_error: item.is_error,
             });
+            if stop_at.is_none() && item.stops_message {
+                stop_at = Some(finalized.len());
+            }
             finalized.push(item);
         }
     }
@@ -225,9 +251,17 @@ pub(crate) async fn execute_tool_calls(
     (finalized, terminate)
 }
 
+fn not_run(failed: &Finalized) -> String {
+    format!(
+        "{} ({}) failed earlier in this message, and a message stops at its first failed write or command; send it again once {} succeeds",
+        failed.call.name, failed.call.id, failed.call.name
+    )
+}
+
 pub(crate) fn fail_calls(
     calls: Vec<ExtractedCall>,
     why: &str,
+    kind: Option<yi_types::event::ToolErrorKind>,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Vec<Finalized> {
     calls
@@ -241,8 +275,12 @@ pub(crate) fn fail_calls(
             let text = format!("Tool call \"{}\" was not executed: {why}", call.name);
             let item = Finalized {
                 call,
-                result: error_tool_result(&text),
+                result: match kind {
+                    Some(kind) => crate::tool::error_tool_result_kind(&text, kind),
+                    None => error_tool_result(&text),
+                },
                 is_error: true,
+                stops_message: false,
             };
             emit(AgentEvent::ToolExecutionEnd {
                 tool_call_id: item.call.id.clone(),
