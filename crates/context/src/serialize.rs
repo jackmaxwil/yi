@@ -24,7 +24,8 @@ fn tool_output(text: &str) -> String {
 }
 
 pub(crate) fn text_of(blocks: &[Content]) -> String {
-    yi_types::message::join_text(blocks, "")
+    let shown = blocks.iter().filter_map(yi_types::message::shown_text);
+    shown.collect::<Vec<_>>().concat()
 }
 
 fn user_text(content: &UserContent) -> String {
@@ -57,6 +58,7 @@ fn push_assistant(parts: &mut Vec<String>, content: &[Content]) {
                 calls.push(format!("{name}({args})"));
             }
             Content::Image { .. } => {}
+            Content::Other(_) => texts.push(yi_types::message::UNREAD_CONTENT.to_owned()),
         }
     }
     if !thinking.is_empty() {

@@ -205,17 +205,17 @@ pub fn stream_with_deltas(message: &AgentMessage) -> Vec<AssistantMessageEvent> 
                     tool_call: block.clone(),
                 });
             }
-            Content::Image { .. } => {}
+            Content::Image { .. } | Content::Other(_) => {}
         }
     }
 
     match stop_reason {
         StopReason::Error | StopReason::Aborted => events.push(AssistantMessageEvent::Error {
-            reason: *stop_reason,
+            reason: stop_reason.clone(),
             error: message.clone(),
         }),
         reason => events.push(AssistantMessageEvent::Done {
-            reason: *reason,
+            reason: reason.clone(),
             message: message.clone(),
         }),
     }

@@ -1,20 +1,21 @@
 use serde_json::Value;
-use yi_types::message::{Content, UserContent};
+use yi_types::message::{Content, UserContent, shown_text as shown};
 
 pub(crate) fn text_of(content: &[Content]) -> String {
-    yi_types::message::join_text(content, "\n")
+    content
+        .iter()
+        .filter_map(shown)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// An assistant message's text blocks, one paragraph each.
 pub(crate) fn prose_of(content: &[Content]) -> String {
-    content
+    let prose = content
         .iter()
-        .filter_map(|c| match c {
-            Content::Text { text, .. } if !text.is_empty() => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+        .filter_map(shown)
+        .filter(|text| !text.is_empty());
+    prose.collect::<Vec<_>>().join("\n\n")
 }
 
 /// Incident: a raw tab is one cell to ratatui and a tab stop to the terminal, so card rows spilled

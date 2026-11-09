@@ -211,11 +211,13 @@ impl IdMap {
     }
 }
 
-fn stop_reason(reason: StopReason) -> AcpStopReason {
+fn stop_reason(reason: &StopReason) -> AcpStopReason {
     match reason {
-        StopReason::Stop | StopReason::ToolUse | StopReason::Pending | StopReason::Deferred => {
-            AcpStopReason::EndTurn
-        }
+        StopReason::Stop
+        | StopReason::ToolUse
+        | StopReason::Pending
+        | StopReason::Deferred
+        | StopReason::Other(_) => AcpStopReason::EndTurn,
         StopReason::Length => AcpStopReason::MaxTokens,
         StopReason::Aborted => AcpStopReason::Cancelled,
         StopReason::Error => AcpStopReason::Other("_yi/error".to_owned()),
@@ -404,7 +406,7 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             }
             AssistantMessageEvent::Done { reason, .. }
             | AssistantMessageEvent::Error { reason, .. } => {
-                ids.last_stop = Some(stop_reason(*reason));
+                ids.last_stop = Some(stop_reason(reason));
                 Vec::new()
             }
             _ => Vec::new(),

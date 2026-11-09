@@ -125,3 +125,64 @@ fn every_adapter_builds_the_recorded_body() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+/// Dies with a block a newer build wrote sent to a provider that cannot read it, or dropped with
+/// nothing in its place: every wire carries one notice row per such block, and none of its bytes.
+#[test]
+fn a_block_this_build_cannot_read_reaches_every_wire_as_its_notice() -> Result<(), Box<dyn Error>> {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../types/tests/fixtures/v4-unknown-content.jsonl"
+    );
+    let mut messages = Vec::new();
+    for line in std::fs::read_to_string(fixture)?.lines().skip(1) {
+        if let yi_types::wire::Mutation::Entry {
+            entry: yi_types::entry::Entry::Message { message, .. },
+            ..
+        } = serde_json::from_str(line)?
+        {
+            messages.push(message);
+        }
+    }
+    for api in [
+        "anthropic-messages",
+        "openai-completions",
+        "openai-responses",
+    ] {
+        let mut model = crate::common::model("m", api, "p", "http://h", None);
+        model.input = vec!["text".to_owned(), "image".to_owned()];
+        let context = LlmContext {
+            cache_ttl: Ttl::Min5,
+            cache_tail: false,
+            system_prompt: "s".to_owned(),
+            messages: messages.clone(),
+            transient: Vec::new(),
+            schema: None,
+            shared_through: None,
+            reuse: Reuse::Loop,
+            tools: None,
+            tool_choice: None,
+        };
+        let body = match api {
+            "anthropic-messages" => {
+                yi_ai::anthropic::build_params(&model, &context, &Default::default())
+            }
+            "openai-completions" => {
+                yi_ai::openai::build_params(&model, &context, &Default::default())
+            }
+            _ => yi_ai::openai_responses::build_params(&model, &context, &Default::default()),
+        }
+        .to_string();
+        let notices = body.matches(yi_types::message::UNREAD_CONTENT).count();
+        assert_eq!(notices, 4, "{api}: {body}");
+        for raw in [
+            "webSearchToolResult",
+            "serverToolUse",
+            "UklGRg==",
+            "file:///tmp",
+        ] {
+            assert!(!body.contains(raw), "{api} sent {raw}: {body}");
+        }
+    }
+    Ok(())
+}

@@ -10,6 +10,9 @@ pure loop + event enum | `openai_responses::responses_params_are_not_chat_comple
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
+entry tree sessions (Pi byte-compat) | `jsonl_load::a_session_with_content_and_stop_reasons_yi_lacks_loads_and_keeps_its_bytes`
+entry tree sessions (Pi byte-compat) | `build_params_conformance::a_block_this_build_cannot_read_reaches_every_wire_as_its_notice`
+entry tree sessions (Pi byte-compat) | `resume::a_replayed_block_this_build_cannot_read_draws_its_notice_not_its_type`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 Pi RPC mode | `rpc_protocol::a_command_in_flight_does_not_starve_the_event_stream`
 Pi RPC mode | `rpc_protocol::a_compact_in_flight_reports_compacting`

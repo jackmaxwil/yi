@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Number, Value};
 
 pub const ENVIRONMENT_TAG: &str = "<environment>";
@@ -40,6 +40,26 @@ pub enum Content {
         #[serde(skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
     },
+    /// A block `type` this build does not know, written by a newer build or by Pi; kept as written.
+    #[serde(untagged)]
+    Other(UnknownContent),
+}
+
+const CONTENT_TYPES: [&str; 4] = ["text", "thinking", "image", "toolCall"];
+
+/// What a reader is shown in place of an [`Content::Other`] block; never the block's own `type`,
+/// which is file text a forged session could fill with anything.
+pub const UNREAD_CONTENT: &str = "[… 1 content block left out: its type is newer than this build; the session file keeps it as written, and a newer yi reads it]";
+
+/// The block's object as written, so it re-emits byte for byte; nothing reads inside it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UnknownContent(Map<String, Value>);
+
+impl<'de> Deserialize<'de> for UnknownContent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::wire::unknown_tag(deserializer, "type", &CONTENT_TYPES).map(Self)
+    }
 }
 
 /// The `api` of an assistant message whose tool calls the provider already ran: the loop
@@ -114,7 +134,7 @@ pub enum UserContent {
     Blocks(Vec<Content>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StopReason {
     Pending,
@@ -124,6 +144,9 @@ pub enum StopReason {
     Error,
     Aborted,
     Deferred,
+    /// A reason a newer build or Pi wrote; kept as written, and read as a turn that ended.
+    #[serde(untagged)]
+    Other(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -355,6 +378,16 @@ pub fn join_text(blocks: &[Content], sep: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(sep)
+}
+
+/// A block's words for a reader who should know it is there: a text block's own text, and
+/// [`UNREAD_CONTENT`] for a block this build cannot read; every other kind is not text.
+pub fn shown_text(block: &Content) -> Option<&str> {
+    match block {
+        Content::Text { text, .. } => Some(text),
+        Content::Other(_) => Some(UNREAD_CONTENT),
+        Content::Thinking { .. } | Content::Image { .. } | Content::ToolCall { .. } => None,
+    }
 }
 
 /// Whether any text block carries a non-empty answer; tool calls and thinking are not text.

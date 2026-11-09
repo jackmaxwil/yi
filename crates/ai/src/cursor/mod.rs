@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, Usage};
+use yi_types::message::{AgentMessage, Content, StopReason, UNREAD_CONTENT, Usage};
 use yi_types::model::{LlmContext, Model};
 
 use crate::request::{empty_assistant, fail_message};
@@ -162,6 +162,7 @@ fn blocks_text(blocks: &[Content]) -> String {
                 Some("[… image dropped: the cursor provider receives text only]".to_owned())
             }
             Content::Thinking { .. } => None,
+            Content::Other(_) => Some(UNREAD_CONTENT.to_owned()),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -279,7 +280,7 @@ fn failed(model: &Model, blocks: Blocks, error: &str) -> AssistantMessageEvent {
 
 fn stop_of(message: &AgentMessage) -> StopReason {
     match message {
-        AgentMessage::Assistant { stop_reason, .. } => *stop_reason,
+        AgentMessage::Assistant { stop_reason, .. } => stop_reason.clone(),
         _ => StopReason::Stop,
     }
 }

@@ -346,6 +346,36 @@ fn a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes() -
     Ok(())
 }
 
+/// Dies with a session a newer build wrote refused whole as invalid: one content block or stop
+/// reason this build lacks no longer costs the file, its bytes stay, and a new turn appends after.
+#[test]
+fn a_session_with_content_and_stop_reasons_yi_lacks_loads_and_keeps_its_bytes() -> TestResult {
+    let dir = Scratch::new("yi-session-jsonl")?;
+    let path = dir.join("unknown-content.jsonl");
+    fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../types/tests/fixtures/v4-unknown-content.jsonl"),
+        &path,
+    )?;
+    let before = fs::read_to_string(&path)?;
+    let mut store = load_session(&path)?;
+    assert_eq!(store.stats().message_count, 5);
+    assert_eq!(store.leaf_id("main")?.as_deref(), Some("u2"));
+    let message = yi_types::message::AgentMessage::User {
+        content: yi_types::message::UserContent::Text("resumed".to_owned()),
+        timestamp: 1,
+        attribution: Default::default(),
+    };
+    store.append_message("main", message)?;
+    let after = fs::read_to_string(&path)?;
+    assert!(
+        after.starts_with(&before),
+        "a known build rewrote the blocks it cannot read"
+    );
+    assert_eq!(load_session(&path)?.stats().message_count, 6);
+    Ok(())
+}
+
 struct FailsMidLine {
     file: fs::File,
     budget: usize,

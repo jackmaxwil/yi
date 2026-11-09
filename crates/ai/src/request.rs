@@ -101,7 +101,7 @@ pub(crate) fn content_end_events(
                     tool_call: block.clone(),
                 })
             }
-            Content::ToolCall { .. } | Content::Image { .. } => None,
+            Content::ToolCall { .. } | Content::Image { .. } | Content::Other(_) => None,
         })
         .collect()
 }
@@ -779,7 +779,7 @@ pub fn fail_message(output: &mut AgentMessage, text: &str) -> crate::EventOut {
 
 pub fn terminal_event(output: AgentMessage) -> crate::EventOut {
     let stop_reason = match &output {
-        AgentMessage::Assistant { stop_reason, .. } => *stop_reason,
+        AgentMessage::Assistant { stop_reason, .. } => stop_reason.clone(),
         _ => StopReason::Error,
     };
     if stop_reason == StopReason::Error || stop_reason == StopReason::Aborted {

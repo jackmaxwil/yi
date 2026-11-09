@@ -169,7 +169,10 @@ fn asking_user(message: &AgentMessage) -> bool {
         .rev()
         .find_map(|block| match block {
             Content::Text { text, .. } => Some(text.trim_end().ends_with('?')),
-            Content::Thinking { .. } | Content::Image { .. } | Content::ToolCall { .. } => None,
+            Content::Thinking { .. }
+            | Content::Image { .. }
+            | Content::ToolCall { .. }
+            | Content::Other(_) => None,
         })
         .unwrap_or(false)
 }

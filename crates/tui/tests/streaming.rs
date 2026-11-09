@@ -919,7 +919,7 @@ fn prose_then_answer(app: &mut App, call: Content, stop: StopReason, accepted: O
     let whole = vec![text(BODY), call];
     app.reduce_agent(AgentEvent::MessageUpdate {
         assistant_message_event: AssistantMessageEvent::Start {
-            partial: assistant(whole.clone(), stop),
+            partial: assistant(whole.clone(), stop.clone()),
         },
     });
     app.reduce_agent(AgentEvent::MessageEnd {
