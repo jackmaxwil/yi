@@ -94,6 +94,15 @@ fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
         .and_then(crate::plugin::search_path)
         .or_else(|| std::env::var_os("PATH"))
         .unwrap_or_else(|| "/usr/bin:/bin".into());
+    host_program_on(program, cwd, home.as_deref(), &search)
+}
+
+fn host_program_on(
+    program: &str,
+    cwd: &Path,
+    home: Option<&Path>,
+    search: &std::ffi::OsStr,
+) -> Option<PathBuf> {
     let cwds = [Some(cwd.to_path_buf()), std::env::current_dir().ok()];
     let trees: Vec<PathBuf> = (cwds.into_iter().flatten())
         .map(|dir| git_root(&dir).unwrap_or(dir))
@@ -113,9 +122,11 @@ fn host_program(program: &str, cwd: &Path) -> Option<PathBuf> {
         let real = cwd.join(program).canonicalize().ok()?;
         return outside(&real).then_some(real);
     }
-    std::env::split_paths(&search)
+    std::env::split_paths(search)
         .filter(|dir| dir.is_absolute())
-        .filter_map(|dir| dir.join(program).canonicalize().ok())
+        .map(|dir| dir.join(program))
+        .filter(|path| path.exists())
+        .filter_map(|path| path.canonicalize().ok())
         .find(|real| outside(real))
 }
 
@@ -585,6 +596,34 @@ mod tests {
     use std::time::Instant;
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
+
+    /// A PATH entry that is missing, dangling, relative, inside the tree, or a link into it must
+    /// never win; only the real program outside the tree does.
+    #[test]
+    fn host_program_skips_every_path_entry_that_is_not_an_outside_program() -> Fallible {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        let base = crate::scratch::Scratch::new("yi-host-program")?;
+        let join = |name: &str| base.join(name);
+        let (tree, bin, outside, links) = (join("tree"), join("tree/bin"), join("out"), join("ln"));
+        for dir in [&bin, &outside, &links, &join("dangling")] {
+            std::fs::create_dir_all(dir)?;
+        }
+        for dir in [&bin, &outside] {
+            std::fs::write(dir.join("prog"), "#!/bin/sh\n")?;
+            std::fs::set_permissions(dir.join("prog"), std::fs::Permissions::from_mode(0o755))?;
+        }
+        symlink(bin.join("prog"), links.join("prog"))?;
+        symlink(join("gone"), join("dangling/prog"))?;
+        let near = [join("missing"), join("dangling"), bin, links, "rel".into()];
+        let on = |dirs: &[PathBuf]| {
+            let search = std::env::join_paths(dirs)?;
+            Ok::<_, Box<dyn std::error::Error>>(host_program_on("prog", &tree, None, &search))
+        };
+        assert_eq!(on(&near)?, None);
+        let all = [near.as_slice(), std::slice::from_ref(&outside)].concat();
+        assert_eq!(on(&all)?, Some(outside.join("prog").canonicalize()?));
+        Ok(())
+    }
 
     /// A spawn missing these runs the daemon with no box: its Chrome could read every file.
     #[test]
