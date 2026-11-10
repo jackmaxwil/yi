@@ -3,7 +3,7 @@ use std::error::Error;
 use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::model::{LlmContext, Reuse, ToolDef, Ttl};
 
-const RECORDED: &str = include_str!("fixtures/build_params_2026-10-29.txt");
+const RECORDED: &str = include_str!("fixtures/build_params_2026-11-09.txt");
 
 fn assistant(
     api: &str,

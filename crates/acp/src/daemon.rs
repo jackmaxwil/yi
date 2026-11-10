@@ -37,6 +37,7 @@ pub(crate) enum Input {
     ClientLine(ClientId, Value),
     ClientClosed(ClientId),
     WorkerLine(String, u64, Value, String),
+    WorkerNotification(String, u64, String, String),
     WorkerReply(String, Value),
     WorkerClosed(String, u64),
     SwapTimeout(String, u64, crate::swap::Stage),
@@ -662,6 +663,19 @@ impl Supervisor {
         }
     }
 
+    /// [`Supervisor::handle_worker_line`]'s fan-out; a notification ahead of its entry parks there.
+    fn relay_notification(&mut self, root: String, session_id: String, line: String) {
+        let Some(entry) = self.sessions.get(&session_id) else {
+            if let Ok(frame) = serde_json::from_str(&line) {
+                self.handle_worker_line(root, frame, line);
+            }
+            return;
+        };
+        for &client in &entry.attached {
+            self.send_client(client, line.clone());
+        }
+    }
+
     fn flush_parked(&mut self, session_id: &str, client: ClientId) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             (entry.headless, entry.owed) = (false, Vec::new());
@@ -935,6 +949,12 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                         supervisor.handle_worker_line(root, frame, line);
                     }
                 }
+                Input::WorkerNotification(root, generation, session_id, line) => {
+                    if supervisor.serves(&root, generation) {
+                        let _span = yi_types::trace::span("daemon worker session/update");
+                        supervisor.relay_notification(root, session_id, line);
+                    }
+                }
                 Input::WorkerReply(root, frame) => {
                     supervisor.forward_response_to_worker(&root, frame).await;
                 }
@@ -1056,6 +1076,19 @@ mod tests {
         })
         .await
         .map_err(|_| format!("no failure letter answered {request}"))
+    }
+
+    /// A client sees a worker's update as the worker wrote it; a re-serialized relay would
+    /// reorder keys and respace the line.
+    #[test]
+    fn a_plain_update_reaches_an_attached_client_byte_for_byte() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        let (sink, mut seen) = mpsc::channel(4);
+        supervisor.clients.insert(7, sink);
+        let line = r#"{"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"h\u00e9 "}},"sessionId":"pinned"},"jsonrpc":"2.0", "method":"session/update"}"#;
+        supervisor.relay_notification("/repo".to_owned(), "pinned".to_owned(), line.to_owned());
+        assert_eq!(seen.try_recv().map_err(|e| e.to_string())?, line);
+        Ok(())
     }
 
     /// Dies with a dead worker's pinned row still attached or still running, which lists a

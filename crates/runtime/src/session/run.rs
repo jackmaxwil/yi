@@ -422,7 +422,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
     config.tool_execution = tool_execution;
     config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
     // A cut names `read` as its restore, so a session without it, a narrow reader, cuts nothing.
-    let reads = (context.tools.iter()).any(|tool| tool.definition().name == "read");
+    let reads = (context.tools.iter()).any(|tool| tool.name() == "read");
     let cut = Arc::clone(&shared.reclaimed);
     let stores = Arc::clone(&shared);
     let overlay = crate::reclaim::Overlay::new(
@@ -767,7 +767,7 @@ pub(super) fn loop_request(
     effort: Effort,
 ) -> crate::compaction::LoopRequest {
     let tools = session.tools();
-    let reads = tools.iter().any(|tool| tool.definition().name == "read");
+    let reads = tools.iter().any(|tool| tool.name() == "read");
     let convert = crate::reclaim::convert(reads.then_some(session.reclaimed()));
     crate::compaction::LoopRequest::new(session.system_prompt(), &tools, effort, convert)
 }

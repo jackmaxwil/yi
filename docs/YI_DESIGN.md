@@ -1414,7 +1414,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `serde` | `derive`, `std` | types | every wire and disk shape (§20) | hand-rolled JSON: compat correctness matters more |
 | `serde_json` | `std`, `preserve_order` | all but orb, permission | JSON with key order kept, so a session file round-trips byte for byte | same |
 | `tokio` | `rt`, `sync`, `time`, `macros`, `process`, `io-util`, `net`; no `rt-multi-thread` | ai, kernel, loop, runtime, acp, tui, cli | provider streams, kernel sockets, scheduler timers | `smol`: `zeromq` is tokio-shaped |
-| `ureq` | `tls`, `native-certs` | ai, oauth, mcp-cli, kernel, cli | blocking HTTP and SSE to providers, OAuth, MCP HTTP, the uv download, the release tarball | `reqwest` (hyper stack), `native-tls` (openssl on Linux) |
+| `ureq` | `tls` | ai, oauth, mcp-cli, kernel, cli | blocking HTTP and SSE to providers, OAuth, MCP HTTP, the uv download, the release tarball; bundled webpki roots only, because `native-certs` linked CoreFoundation into every command's startup, a flat ~13.05M instructions per command: 33.8% of `--version`, 8.3% of `ask` | `reqwest` (hyper stack), `native-tls` (openssl on Linux), `native-certs` (keychain CAs, a corporate-proxy CA, at that startup cost) |
 | `h2` | — | ai | HTTP/2 Connect to Cursor's agent `Run` method; the server rejects HTTP/1.1 | `reqwest` / `hyper` (banned); `ureq` (HTTP/1.1) |
 | `http` | `std` | ai | request type `h2`'s handshake takes | hand-rolling header frames |
 | `bytes` | — | ai | body buffers `h2` sends and reads | `Vec<u8>` copies at the crate boundary |

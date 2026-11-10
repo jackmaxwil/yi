@@ -281,7 +281,7 @@ fn a_binary_that_is_no_document_keeps_the_plain_error() -> TestResult {
     assert_eq!(
         text(&output),
         format!(
-            "failed to read {0}: a PNG image, not text; in ipython run `print(await attach_image(\"{0}\"))` to put it in front of the model",
+            "failed to read {}: the PNG image has no whole header for its type, so no decoder opens it",
             path.display()
         )
     );
@@ -304,6 +304,348 @@ fn a_binary_that_is_no_document_keeps_the_plain_error() -> TestResult {
         )
     );
     assert_eq!(copies(&scratch.home), 0);
+    Ok(())
+}
+
+fn read_image(dir: &Path, name: &str, bytes: &[u8]) -> Result<ToolOutput, Box<dyn Error>> {
+    std::fs::write(dir.join(name), bytes)?;
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    call(&read, dir, json!({ "path": name }))
+}
+
+fn images(output: &ToolOutput) -> Vec<(&str, &str)> {
+    (output.result.content.iter())
+        .filter_map(|part| match part {
+            Content::Image { data, mime_type } => Some((data.as_str(), mime_type.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// checker.png with its IHDR size field rewritten; the decoder-facing CRC is not checked.
+fn checker_sized(width: u32, height: u32) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut png = std::fs::read(Path::new(FIXTURES).join("checker.png"))?;
+    let size = [width.to_be_bytes(), height.to_be_bytes()].concat();
+    png.get_mut(16..24)
+        .ok_or("short png")?
+        .copy_from_slice(&size);
+    Ok(png)
+}
+
+#[test]
+fn a_png_the_provider_takes_reads_as_the_image_itself() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-png")?;
+    let output = read_image(
+        &dir,
+        "checker.png",
+        &std::fs::read(Path::new(FIXTURES).join("checker.png"))?,
+    )?;
+    assert!(!output.is_error, "{}", text(&output));
+    assert_eq!(
+        text(&output),
+        "checker.png: a PNG image, 64x64 px, 379 bytes"
+    );
+    let sent = images(&output);
+    assert_eq!(sent.len(), 1, "{}", text(&output));
+    let (data, mime) = sent.first().copied().ok_or("no image")?;
+    assert_eq!(mime, "image/png");
+    assert!(
+        data.starts_with("iVBORw0KGgo"),
+        "PNG signature in base64: {data}"
+    );
+    assert_eq!(data.len(), 508, "379 bytes are 508 padded base64 chars");
+    let media = &output.result.details["attachmentMedia"][0];
+    let path = dir.join("checker.png");
+    assert_eq!(media["path"], json!(path));
+    assert_eq!(media["bytes"], json!(379));
+    let mtime = std::fs::metadata(&path)?
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)?;
+    assert_eq!(
+        media["modified_ns"],
+        json!(u64::try_from(mtime.as_nanos())?)
+    );
+    Ok(())
+}
+
+#[test]
+fn an_image_past_a_provider_limit_is_refused_with_the_cell_that_resizes_it() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-limits")?;
+    let at = read_image(&dir, "at.png", &checker_sized(8000, 8000)?)?;
+    assert!(!at.is_error, "{}", text(&at));
+    assert_eq!(images(&at).len(), 1);
+    let over = read_image(&dir, "over.png", &checker_sized(8001, 64)?)?;
+    assert!(over.is_error);
+    assert!(images(&over).is_empty());
+    let path = dir.join("over.png");
+    assert_eq!(
+        text(&over),
+        format!(
+            "failed to read {0}: the PNG image is 8001x64 px, over MAX_IMAGE_SIDE 8000 px a side; in ipython run `path = \"{0}\"; print(await attach_image(path))`",
+            path.display()
+        )
+    );
+    let mut png = std::fs::read(Path::new(FIXTURES).join("checker.png"))?;
+    png.resize(7_500_000, 0);
+    let at = read_image(&dir, "chars-at.png", &png)?;
+    assert!(!at.is_error, "{}", text(&at));
+    assert_eq!(
+        images(&at).first().map(|(data, _)| data.len()),
+        Some(10_000_000)
+    );
+    png.push(0);
+    let over = read_image(&dir, "chars-over.png", &png)?;
+    assert!(over.is_error);
+    assert!(
+        text(&over).contains(": the PNG image is 10000004 base64 chars, over MAX_IMAGE_CHARS 10000000; in ipython run `path = "),
+        "{}",
+        text(&over)
+    );
+    Ok(())
+}
+
+const REMEDY_CELL: &str = "import tempfile; from PIL import Image; out = tempfile.NamedTemporaryFile(suffix='.png', delete=False).name; Image.open(path).convert('RGBA').save(out); print(await attach_image(out))";
+
+/// checker.bmp and .tiff are checker.png re-encoded by macOS `sips`, .ico by the kernel venv's
+/// Pillow 13.0.0 (sips writes an ICO Pillow cannot open); little.tiff has its byte-order mark flipped.
+#[test]
+fn an_image_type_the_model_cannot_take_is_refused_with_the_cell_that_re_encodes_it() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-types")?;
+    let tiff = std::fs::read(Path::new(FIXTURES).join("checker.tiff"))?;
+    let little = [b"II*\0".as_slice(), tiff.get(4..).ok_or("short tiff")?].concat();
+    for (name, kind, bytes) in [
+        (
+            "checker.bmp",
+            "BMP",
+            std::fs::read(Path::new(FIXTURES).join("checker.bmp"))?,
+        ),
+        ("checker.tiff", "TIFF", tiff),
+        ("little.tiff", "TIFF", little),
+        (
+            "checker.ico",
+            "ICO",
+            std::fs::read(Path::new(FIXTURES).join("checker.ico"))?,
+        ),
+    ] {
+        let output = read_image(&dir, name, &bytes)?;
+        assert!(output.is_error, "{name}");
+        assert!(images(&output).is_empty());
+        assert_eq!(
+            text(&output),
+            format!(
+                "failed to read {0}: the {kind} image is not png, jpeg, gif or webp; in ipython run `path = \"{0}\"; {REMEDY_CELL}`",
+                dir.join(name).display()
+            )
+        );
+    }
+    Ok(())
+}
+
+/// A NUL-led text-like file is no ICO unless its image count is nonzero.
+#[test]
+fn a_nul_file_with_no_ico_count_stays_binary() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-ico-count")?;
+    let output = read_image(&dir, "zero.dat", &[0, 0, 1, 0, 0, 0, 0, 0])?;
+    assert!(
+        text(&output).contains("a binary file (NUL bytes)"),
+        "{}",
+        text(&output)
+    );
+    Ok(())
+}
+
+/// A window asked of an image is dropped, and the read says so.
+#[test]
+fn a_window_on_an_image_is_named_as_ignored() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-window")?;
+    std::fs::copy(Path::new(FIXTURES).join("checker.png"), dir.join("c.png"))?;
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    let output = call(
+        &read,
+        &dir,
+        json!({ "path": "c.png", "offset": 2, "limit": 3 }),
+    )?;
+    assert!(!output.is_error);
+    assert!(
+        text(&output).ends_with("\n[offset, limit ignored: an image is sent whole]"),
+        "{}",
+        text(&output)
+    );
+    assert_eq!(images(&output).len(), 1);
+    let plain = call(&read, &dir, json!({ "path": "c.png" }))?;
+    assert!(!text(&plain).contains("ignored"));
+    Ok(())
+}
+
+/// The wide-* fixtures are 8000x1 and 8001x1 images saved by the kernel venv's Pillow 13.0.0:
+/// JPEG, and WebP as lossy (VP8), lossless (VP8L) and with alpha (VP8X).
+#[test]
+fn a_jpeg_or_webp_wider_than_the_side_limit_is_refused() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-wide")?;
+    for (stem, kind) in [
+        ("{w}.jpg", "JPEG"),
+        ("{w}-lossy.webp", "WebP"),
+        ("{w}-lossless.webp", "WebP"),
+        ("{w}-alpha.webp", "WebP"),
+    ] {
+        let [at, over] =
+            [8000, 8001].map(|w| format!("wide-{}", stem.replace("{w}", &w.to_string())));
+        let bytes = std::fs::read(Path::new(FIXTURES).join(&at))?;
+        let sent = read_image(&dir, &at, &bytes)?;
+        assert_eq!(
+            text(&sent),
+            format!("{at}: a {kind} image, 8000x1 px, {} bytes", bytes.len())
+        );
+        assert_eq!(images(&sent).len(), 1, "{at}");
+        let refused = read_image(
+            &dir,
+            &over,
+            &std::fs::read(Path::new(FIXTURES).join(&over))?,
+        )?;
+        assert!(refused.is_error && images(&refused).is_empty(), "{over}");
+        assert_eq!(
+            text(&refused),
+            format!(
+                "failed to read {0}: the {kind} image is 8001x1 px, over MAX_IMAGE_SIDE 8000 px a side; in ipython run `path = \"{0}\"; print(await attach_image(path))`",
+                dir.join(&over).display()
+            )
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_image_past_the_text_cap_is_refused_as_too_large_not_as_text() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-huge")?;
+    let path = dir.join("huge.png");
+    std::fs::write(
+        &path,
+        std::fs::read(Path::new(FIXTURES).join("checker.png"))?,
+    )?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)?
+        .set_len(16 * 1024 * 1024 + 1)?;
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    let output = call(&read, &dir, json!({ "path": "huge.png" }))?;
+    assert!(output.is_error);
+    assert_eq!(
+        text(&output),
+        format!(
+            "failed to read {0}: the PNG image is 22369624 base64 chars, over MAX_IMAGE_CHARS 10000000; in ipython run `path = \"{0}\"; print(await attach_image(path))`",
+            path.display()
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn a_backtick_in_the_path_cannot_close_the_cell_it_is_named_in() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-tick")?;
+    let output = read_image(&dir, "a`b.png", &checker_sized(8001, 64)?)?;
+    assert!(output.is_error);
+    let cell = format!(
+        "``path = \"{}\"; print(await attach_image(path))``",
+        dir.join("a`b.png").display()
+    );
+    assert!(
+        text(&output).ends_with(&format!("; in ipython run {cell}")),
+        "{}",
+        text(&output)
+    );
+    Ok(())
+}
+
+/// The cell a size refusal names is `attach_image`, which takes no BMP, so a BMP past either
+/// size limit is refused for its type instead.
+#[test]
+fn a_bmp_past_a_size_limit_gets_the_re_encode_cell() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-big-bmp")?;
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    for (name, len) in [("big.bmp", 8_000_000), ("huge.bmp", 17 * 1024 * 1024)] {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            std::fs::read(Path::new(FIXTURES).join("checker.bmp"))?,
+        )?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(len)?;
+        let output = call(&read, &dir, json!({ "path": name }))?;
+        assert!(output.is_error);
+        assert_eq!(
+            text(&output),
+            format!(
+                "failed to read {0}: the BMP image is not png, jpeg, gif or webp; in ipython run `path = \"{0}\"; {REMEDY_CELL}`",
+                path.display()
+            )
+        );
+    }
+    Ok(())
+}
+
+/// wide-8000.jpg cut after its JFIF segment, so no frame header gives its size.
+#[test]
+fn a_jpeg_whose_size_cannot_be_read_still_names_a_cell() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-no-frame")?;
+    let jpeg = std::fs::read(Path::new(FIXTURES).join("wide-8000.jpg"))?;
+    let head = [jpeg.get(..20).ok_or("short jpeg")?, &[0xff, 0xd9]].concat();
+    let output = read_image(&dir, "cut.jpg", &head)?;
+    assert!(output.is_error);
+    assert_eq!(
+        text(&output),
+        format!(
+            "failed to read {0}: the JPEG image has no whole header for its type; in ipython run `path = \"{0}\"; print(await attach_image(path))`",
+            dir.join("cut.jpg").display()
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn a_glob_names_the_image_it_does_not_send() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-glob-png")?;
+    let png = std::fs::read(Path::new(FIXTURES).join("checker.png"))?;
+    std::fs::write(dir.join("notes.txt"), "plain\n")?;
+    let huge = dir.join("huge.png");
+    std::fs::write(&huge, &png)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&huge)?
+        .set_len(17 * 1024 * 1024)?;
+    let output = read_image(&dir, "checker.png", &png)?;
+    assert_eq!(images(&output).len(), 1);
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    let glob = call(&read, &dir, json!({ "path": "*" }))?;
+    assert!(images(&glob).is_empty());
+    assert!(
+        text(&glob).lines().any(|row| row
+            == r#"checker.png: a PNG image, 379 bytes  [not shown: a glob sends no image; read("checker.png") sends it or says why not]"#),
+        "{}",
+        text(&glob)
+    );
+    assert!(
+        text(&glob).lines().any(|row| row
+            == r#"huge.png: a PNG image, 17825792 bytes  [not shown: a glob sends no image; read("huge.png") sends it or says why not]"#),
+        "{}",
+        text(&glob)
+    );
     Ok(())
 }
 

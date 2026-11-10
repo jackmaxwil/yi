@@ -540,7 +540,9 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
     };
     let want = above.saturating_sub(live.len()).saturating_add(1);
     let at_most = follow.map_or(usize::MAX, |(_, _, pinned, _)| pinned.saturating_sub(1));
-    let (_, mut column, owners) = app.history.tail(width, &theme, mode, want, at_most);
+    let (_, mut column, owners) = app
+        .history
+        .tail(width, &theme, mode, (want, at_most), (0, 0));
     drop(history);
     let marks: Vec<(usize, Chip)> = owners
         .iter()
@@ -636,7 +638,9 @@ pub fn paint_pane(
             .pane_hold
             .filter(|&(w, m, _, _)| (w, m) == (width, mode));
         if let Some((_, _, pinned, extent)) = hold {
-            let (at, now, _) = app.history.tail(width, &theme, mode, 0, pinned);
+            let (at, now, _) = app
+                .history
+                .tail(width, &theme, mode, (0, pinned), (usize::MAX, 0));
             if at == pinned {
                 let grown = now.len().saturating_add(live.len()).saturating_sub(above);
                 *scroll = scroll.saturating_add(grown).saturating_sub(extent);
@@ -644,7 +648,10 @@ pub fn paint_pane(
         }
         let need = above.saturating_add(*scroll).saturating_sub(live.len());
         let at_most = hold.map_or(usize::MAX, |(_, _, pinned, _)| pinned);
-        let (from, mut column, owners) = app.history.tail(width, &theme, mode, need, at_most);
+        // Rows below the window come back blank; the first `above` stay for a top-clamped scroll.
+        let bare = (scroll.saturating_sub(live.len().saturating_add(1)), above);
+        let (from, mut column, owners) =
+            app.history.tail(width, &theme, mode, (need, at_most), bare);
         let history_rows = column.len();
         let marks: Vec<(usize, Chip)> = owners
             .iter()
