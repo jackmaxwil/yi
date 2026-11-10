@@ -100,9 +100,7 @@ not (
   (binary_id(=yi-runtime::integration) & test(=kernel_data_surface::the_cell_a_cut_traceback_names_prints_the_exception_again)) |
   (binary_id(=yi-runtime::integration) & test(=lanes::a_red_check_on_a_child_that_changed_nothing_names_no_branch)) |
   (binary_id(=yi-runtime::integration) & test(=lanes::handing_a_worktree_back_leaves_the_executor_free)) |
-  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_overwrites_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_reads_no_key)) |
-  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_overwrites_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_reads_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=plan_capacity::two_acceptances_verify_at_once_and_a_third_waits)) |
   (binary_id(=yi-runtime::integration) & test(=plan_declare::every_dogfood_call_lands_or_says_where_it_goes)) |
@@ -182,9 +180,7 @@ not (
   (binary_id(=yi-runtime::integration) & test(=kernel_data_surface::the_cell_a_cut_traceback_names_prints_the_exception_again)) |
   (binary_id(=yi-runtime::integration) & test(=lanes::a_red_check_on_a_child_that_changed_nothing_names_no_branch)) |
   (binary_id(=yi-runtime::integration) & test(=lanes::handing_a_worktree_back_leaves_the_executor_free)) |
-  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_overwrites_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_link_swapped_after_the_check_reads_no_key)) |
-  (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_overwrites_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=permission_scope::a_parent_swapped_after_the_check_reads_no_key)) |
   (binary_id(=yi-runtime::integration) & test(=plan_capacity::two_acceptances_verify_at_once_and_a_third_waits)) |
   (binary_id(=yi-runtime::integration) & test(=plan_declare::every_dogfood_call_lands_or_says_where_it_goes)) |
