@@ -2,7 +2,10 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
-use yi_session::{EntryQuery, JsonlRepo, LogOptions, SessionRepo, load_session};
+use yi_session::{
+    CreateOptions, EntryQuery, ForkScope, JsonlRepo, LogOptions, SessionRepo, SessionStore,
+    load_session, lock_session, session_directory_name,
+};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -384,5 +387,48 @@ fn a_short_write_leaves_the_file_as_it_was() -> TestResult {
     assert!(written.is_err(), "the short write must still fail");
     assert_eq!(fs::read(&path)?, before);
     load_session(&path)?;
+    Ok(())
+}
+
+fn every_accessor(store: &mut SessionStore) -> Result<String, Box<dyn Error>> {
+    let unread = store.take_unread_lines();
+    let log = store.log(&LogOptions::default())?;
+    let (meta, lanes, stats) = (store.metadata(), store.lanes(), store.stats());
+    let (goal, name) = (store.goal(), store.name());
+    Ok(format!(
+        "{log:?}\n{meta:?}\n{lanes:?}\n{stats:?}\n{goal:?}\n{name:?}\n{unread:?}"
+    ))
+}
+
+/// A fork builds its store from the mutations it wrote rather than reading them back, so the
+/// store must be the one its file loads as: the session a later resume shows.
+#[test]
+fn a_forked_store_is_the_store_its_file_loads_as() -> TestResult {
+    let dir = Scratch::new("yi-session-fork-reread")?;
+    let sessions = dir.join(session_directory_name("/tmp/yi-fixture"));
+    fs::create_dir_all(&sessions)?;
+    fs::copy(
+        golden_fixture(),
+        sessions.join("1787544431469_fixture-a.jsonl"),
+    )?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp/yi-fixture");
+    let branch = ForkScope::Branch {
+        entry_id: Some("e8".to_owned()),
+        position: None,
+    };
+    for (id, scope) in [("tree", ForkScope::Tree), ("branch", branch)] {
+        let options = CreateOptions {
+            id: Some(id.to_owned()),
+            ..CreateOptions::default()
+        };
+        let fork = repo.fork("fixture-a", &scope, options)?;
+        let mut fork = lock_session(&fork);
+        let mut reread = load_session(fork.file_path().ok_or("a fork has a file")?)?;
+        assert_eq!(
+            every_accessor(&mut fork)?,
+            every_accessor(&mut reread)?,
+            "{id}"
+        );
+    }
     Ok(())
 }

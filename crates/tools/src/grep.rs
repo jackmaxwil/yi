@@ -358,7 +358,7 @@ fn collect(
                 ),
             },
         };
-        let (normalized, endings) = split(&raw);
+        let (normalized, endings) = split(raw);
         let mut hits = hits_in(matcher, &normalized, options.multiline, options.def);
         if hits.is_empty() {
             return true;

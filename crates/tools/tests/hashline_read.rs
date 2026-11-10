@@ -308,3 +308,38 @@ fn a_document_past_the_converter_ceiling_without_pages_names_no_page_selection()
     assert!(!text.contains("pages="), "{text}");
     Ok(())
 }
+
+/// Many ranges near the end of a large CRLF file, overlapping and out of order: every row shows
+/// the line its number names, and exactly the requested lines show.
+#[test]
+fn many_ranges_near_the_end_of_a_large_file_show_the_lines_they_name() -> TestResult {
+    let dir = Scratch::new("yi-read-many-ranges")?;
+    let lines: Vec<String> = (1..=60_000)
+        .map(|n| format!("{n:06} the quick brown fox {n}"))
+        .collect();
+    fs::write(dir.join("big.txt"), lines.join("\r\n"))?;
+    let mut ranges: Vec<(usize, usize)> = (1..=200)
+        .map(|k| (60_000 - 3 * k, 60_000 - 3 * k))
+        .collect();
+    ranges.extend([(59_990, 60_000), (5, 7), (6, 9), (3, 3)]);
+    let mut wanted: Vec<usize> = ranges
+        .iter()
+        .flat_map(|&(start, end)| start..=end)
+        .collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let output = read_with_args(
+        &dir,
+        args(&[("path", json!("big.txt")), ("ranges", json!(ranges))]),
+    );
+    let shown: Vec<(usize, String)> = (text(&output).lines())
+        .filter_map(|row| row.split_once(':'))
+        .filter_map(|(number, line)| Some((number.parse().ok()?, line.to_owned())))
+        .collect();
+    let numbers: Vec<usize> = shown.iter().map(|(number, _)| *number).collect();
+    assert_eq!(numbers, wanted, "{}", text(&output));
+    for (number, line) in &shown {
+        assert_eq!(Some(line), lines.get(number - 1), "row {number}");
+    }
+    Ok(())
+}
