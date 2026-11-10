@@ -547,13 +547,13 @@ async fn each_tool_reaches_its_hook_in_claude_codes_name_and_input_shape() -> Te
         ("bash", json!({"command": "printf hi", "timeout_secs": 5})),
         ("read", json!({"path": "a.txt", "offset": 1, "limit": 2})),
         ("write", json!({"path": "b.txt", "content": "new"})),
-        ("edit", json!({"patch": patch})),
         ("grep", grep),
         (
             "grep",
             json!({"pattern": "one", "replace": "uno", "apply": true, "path": "a.txt"}),
         ),
         ("ipython", json!({"code": "1 + 1"})),
+        ("edit", json!({"patch": patch})),
     ];
     (case.run_calls(calls, Gate::default(), "x")).await?;
     let lines = read_lines(&log)?;
@@ -575,21 +575,21 @@ async fn each_tool_reaches_its_hook_in_claude_codes_name_and_input_shape() -> Te
             json!("Write"),
             json!({"file_path": abs("b.txt"), "content": "new"}),
         ),
+        (json!("Grep"), grep_input),
+        (json!("Edit"), rewrite),
+        (json!("mcp__yi__ipython"), json!({"code": "1 + 1"})),
         (
             json!("Edit"),
             json!({"file_path": abs("a.txt"), "patch": patch}),
         ),
-        (json!("Grep"), grep_input),
-        (json!("Edit"), rewrite),
-        (json!("mcp__yi__ipython"), json!({"code": "1 + 1"})),
     ];
     let expected: Vec<(&Value, &Value)> =
         expected.iter().map(|(name, input)| (name, input)).collect();
     assert_eq!(seen, expected);
-    let ipython = lines.last().ok_or("no ipython input")?;
+    let ipython = (lines.iter()).find(|line| line["tool_name"] == "mcp__yi__ipython");
     assert_eq!(
-        ipython["mcp_server"],
-        json!({"name": "yi", "source": "sdk"})
+        ipython.map(|line| &line["mcp_server"]),
+        Some(&json!({"name": "yi", "source": "sdk"}))
     );
     let doc = read_json(&fixture("doc-pretooluse-bash.json"))?;
     let bash = lines.first().ok_or("no bash input")?;
