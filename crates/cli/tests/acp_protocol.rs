@@ -24,10 +24,7 @@ fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
 
 fn blocking_tool(dir: &std::path::Path) -> (std::path::PathBuf, String) {
     let go = dir.join("go");
-    let wait = format!(
-        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
-        go.display()
-    );
+    let wait = format!("until [ -e {} ]; do sleep 0.05; done", go.display());
     (go, wait)
 }
 
@@ -1790,16 +1787,21 @@ fn committed_updates_include_ordered_model_and_tool_entries() -> TestResult {
         } else {
             "openrouter/anthropic/claude-sonnet-5"
         };
-        let response = client.request(
-            &format!("model-{change}"),
-            "session/set_config_option",
-            json!({
+        let id = format!("model-{change}");
+        client.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/set_config_option",
+            "params": {
                 "sessionId": session_id,
                 "configId": "model",
                 "type": "id",
                 "value": model,
-            }),
-        )?;
+            },
+        }))?;
+        let response = read_allowing(&mut client, |frame| {
+            frame["id"] == id && frame.get("method").is_none()
+        })?;
         assert!(
             response
                 .last()

@@ -17,9 +17,9 @@ The paths .gitguardian.yaml ignores are the planted fakes and vendored upstream 
 not scanned. filter-repo substitutes nothing in a binary blob, so neither does this. The mirror
 itself carries no rules, and there the gate announces a skip.
 """
-import fnmatch, re, subprocess, sys, pathlib
+import fnmatch, re, subprocess, sys, pathlib, tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, base_commit, fail, git, scratch_repo
+from _common import ROOT, base_commit, fail, git, is_public_mirror, scratch_repo
 
 RULES = ROOT / "scripts/mirror"
 
@@ -105,6 +105,11 @@ def wired():
         assert refused.returncode == 1 and "ESTATE.LAN" in refused.stdout, f"a denied message passed: {refused.stdout}"
 
 def selfcheck():
+    with tempfile.TemporaryDirectory() as temp:
+        root = pathlib.Path(temp)
+        assert is_public_mirror(root)
+        (root / "scripts/mirror").mkdir(parents=True)
+        assert not is_public_mirror(root)
     deny = [re.compile(r"(?i)estate\.lan")]
     swaps = swaps_of(["git.estate.lan==>git.example.invalid", "gone"])
     # The deny patterns find a line, and name it.
@@ -151,8 +156,8 @@ def selfcheck():
 def main():
     if "--selfcheck" in sys.argv:
         return selfcheck()
-    if not (RULES / "deny.txt").is_file():
-        return print("skip public_surface (no scripts/mirror: this tree is the mirror)")
+    if is_public_mirror():
+        return print("skip public_surface (no scripts/mirror: this tree is the mirror; run in unfiltered source checkout)")
     deny = [re.compile(p) for p in rule_lines(RULES / "deny.txt")]
     if "--stdin" in sys.argv:
         return fail(history(sys.stdin, deny, unscanned()), "public_surface --stdin")

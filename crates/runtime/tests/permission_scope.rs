@@ -757,10 +757,8 @@ fn a_url_that_serves_a_host_file_meets_the_read_gate() -> TestResult {
     Ok(())
 }
 
-/// A link swapped between the check and the open (#890): the broker judges the name, then the
-/// real tool opens it while a thread flips `x` from an ordinary file to a link to a key
-/// (`Swap::File`), or `d` from a directory to a link to the key store (`Swap::Parent`), at an
-/// offset swept across the call so some round lands in each window; `reached` names a hit.
+/// Swaps a checked path for a link to the key store exactly after the gate judges it (#890).
+/// `Swap::File` changes `x`; `Swap::Parent` changes `d`.
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 enum Swap {
@@ -770,7 +768,7 @@ enum Swap {
 
 #[cfg(unix)]
 impl Swap {
-    /// Whether the link stands afterwards: a swap that half-happened raced nothing.
+    /// Whether the symlink was installed successfully.
     fn arm(self, workspace: &std::path::Path, home: &std::path::Path) -> bool {
         let at = |name: &str| workspace.join(name);
         match self {
@@ -812,12 +810,6 @@ impl Swap {
 
 #[cfg(unix)]
 const BENIGN: &str = "ordinary\n";
-/// Swaps a run stops at: a broken guard leaks in bursts, so fewer lets a run miss them, and this
-/// many can still miss them. A run fails below half this, within [`ROUNDS`] calls.
-#[cfg(unix)]
-const INSIDE: usize = 5_000;
-#[cfg(unix)]
-const ROUNDS: usize = 20_000;
 
 #[cfg(unix)]
 type KeyStore = (
@@ -842,15 +834,9 @@ fn key_store(name: &str) -> Result<KeyStore, Box<dyn Error>> {
     Ok((scratch, home, workspace, key))
 }
 
-/// Runs checked calls, each with the swap timed to land at a different point of the call, until
-/// [`INSIDE`] swaps landed in the window; returns that count and how many calls reached the key.
+/// Runs one real tool call and swaps its path in the gate's post-judgement test hook.
 #[cfg(unix)]
-fn race(
-    tool: &str,
-    swap: Swap,
-    args: &Map<String, Value>,
-    reached: &dyn Fn(&yi_tools::ToolOutput, &std::path::Path) -> bool,
-) -> Result<(usize, usize), Box<dyn Error>> {
+fn swap_after_guard(tool: &str, swap: Swap, args: &Map<String, Value>) -> TestResult {
     let (_scratch, home, workspace, key) = key_store("yi-scope-swap")?;
     std::fs::write(workspace.join("x"), BENIGN)?;
     let broker = PermissionBroker::new(
@@ -864,88 +850,61 @@ fn race(
     let tool_impl = (tools.iter())
         .find(|candidate| candidate.name() == tool)
         .ok_or("no such tool")?;
-    let context = yi_tools::ToolContext::new(workspace.clone());
+    let mut context = yi_tools::ToolContext::new(workspace.clone());
     let (kind, irreversible) = (tool_impl.kind_for(args), tool_impl.irreversible(args));
-    // Invariant: the offsets follow the rounds' own calls, or a spike here misses every round.
-    let settle = |span: &mut std::time::Duration, seen: std::time::Duration| {
-        *span = (*span * 7 + seen) / 8;
-    };
-    let (mut check, mut call, mut calm) = Default::default();
-    for _ in 0..9 {
-        swap.disarm(&workspace)?;
-        let timed = std::time::Instant::now();
-        broker.decide_call(tool, kind, irreversible, "c1", args, None);
-        settle(&mut check, timed.elapsed());
-        let timed = std::time::Instant::now();
-        calm = format!("{:?}", tool_impl.execute(args.clone(), &context).result);
-        settle(&mut call, timed.elapsed());
-    }
-    let (arm, armed) = std::sync::mpsc::channel::<std::time::Instant>();
-    let (land, landed) = std::sync::mpsc::channel::<Option<std::time::Instant>>();
-    let swapper = {
-        let (workspace, home) = (workspace.clone(), home.clone());
-        std::thread::spawn(move || {
-            let spin = std::time::Duration::from_micros(200);
-            for at in armed {
-                loop {
-                    let left = at.saturating_duration_since(std::time::Instant::now());
-                    if left <= spin {
-                        break;
-                    }
-                    std::thread::park_timeout(left - spin);
-                }
-                while std::time::Instant::now() < at {
-                    std::hint::spin_loop();
-                }
-                let stands = swap.arm(&workspace, &home);
-                if land.send(stands.then(std::time::Instant::now)).is_err() {
-                    break;
-                }
+    let hook_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let swapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hold = {
+        let (hook_calls, swapped, workspace, home) = (
+            hook_calls.clone(),
+            swapped.clone(),
+            workspace.clone(),
+            home.clone(),
+        );
+        move || {
+            if hook_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                swapped.store(
+                    swap.arm(&workspace, &home),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
             }
-        })
+        }
     };
-    let (mut inside, mut leaks) = (0_usize, 0_usize);
-    for round in 0..ROUNDS {
-        if inside >= INSIDE {
-            break;
-        }
-        swap.disarm(&workspace)?;
-        let step = u32::try_from(round.wrapping_mul(61) % 64).unwrap_or(0);
-        let started = std::time::Instant::now();
-        arm.send(started + check / 2 + (check / 2 + call) * step / 64)?;
-        let allowed = (broker.decide_call(tool, kind, irreversible, "c1", args, None)).allowed;
-        let checked = std::time::Instant::now();
-        settle(&mut check, checked - started);
-        let output = allowed.then(|| tool_impl.execute(args.clone(), &context));
-        settle(&mut call, checked.elapsed());
-        let at = landed.recv_timeout(std::time::Duration::from_secs(10))?;
-        let Some(output) = output else {
-            continue;
-        };
-        // Invariant: a swap landing after the tool's open leaves the undisturbed output.
-        if at.is_some_and(|at| at >= checked) && format!("{:?}", output.result) != calm {
-            inside += 1;
-        }
-        if reached(&output, &key) {
-            leaks += 1;
-            std::fs::write(&key, "FAKE KEY MARKER\n")?;
-        }
-    }
-    drop(arm);
-    swapper.join().map_err(|_| "the swapper panicked")?;
-    Ok((inside, leaks))
+    context.hold_opens = Some(Arc::new(hold));
+
+    assert!(
+        broker
+            .decide_call(tool, kind, irreversible, "c1", args, None)
+            .allowed,
+        "{tool} call was denied"
+    );
+    let output = tool_impl.execute(args.clone(), &context);
+    assert_ne!(
+        hook_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "{tool} did not invoke the guarded-open hook"
+    );
+    assert!(
+        swapped.load(std::sync::atomic::Ordering::SeqCst),
+        "{tool} did not install the swap in the gate hook"
+    );
+    assert!(
+        !shows_key(&output),
+        "{tool} output contained the key: {:?}",
+        output.result
+    );
+    swap.disarm(&workspace)?;
+    assert_eq!(
+        std::fs::read_to_string(&key)?,
+        "FAKE KEY MARKER\n",
+        "{tool} changed the key"
+    );
+    Ok(())
 }
 
 #[cfg(unix)]
-fn shows_key(output: &yi_tools::ToolOutput, _: &std::path::Path) -> bool {
+fn shows_key(output: &yi_tools::ToolOutput) -> bool {
     format!("{:?}", output.result).contains("MARKER")
-}
-
-/// A write that lands on the key replaces it; an edit's refusal that prints its rows shows it.
-#[cfg(unix)]
-fn changes_key(output: &yi_tools::ToolOutput, key: &std::path::Path) -> bool {
-    shows_key(output, key)
-        || std::fs::read_to_string(key).is_ok_and(|text| !text.contains("MARKER"))
 }
 
 #[cfg(unix)]
@@ -956,58 +915,30 @@ fn path_arg(path: &str) -> Map<String, Value> {
 }
 
 #[cfg(unix)]
-fn assert_no_leak(tool: &str, swap: Swap, (inside, leaks): (usize, usize)) {
-    let swapped = match swap {
-        Swap::File => "file",
-        Swap::Parent => "parent",
-    };
-    assert!(
-        inside >= INSIDE / 2,
-        "{tool}: only {inside} of {ROUNDS} swaps landed between the check and the open"
-    );
-    assert_eq!(
-        leaks, 0,
-        "{tool}, {swapped} swap: {leaks} of {inside} swaps in the window reached the key"
-    );
-}
-
-#[cfg(unix)]
 #[test]
 fn a_link_swapped_after_the_check_reads_no_key() -> TestResult {
-    assert_no_leak(
-        "read",
-        Swap::File,
-        race("read", Swap::File, &path_arg("x"), &shows_key)?,
-    );
+    swap_after_guard("read", Swap::File, &path_arg("x"))?;
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
 fn a_parent_swapped_after_the_check_reads_no_key() -> TestResult {
-    let tried = race("read", Swap::Parent, &path_arg("d/id_rsa"), &shows_key)?;
-    assert_no_leak("read", Swap::Parent, tried);
+    swap_after_guard("read", Swap::Parent, &path_arg("d/id_rsa"))?;
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
 fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult {
-    let args = write("x", "overwritten\n");
-    assert_no_leak(
-        "write",
-        Swap::File,
-        race("write", Swap::File, &args, &changes_key)?,
-    );
+    swap_after_guard("write", Swap::File, &write("x", "overwritten\n"))?;
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
 fn a_parent_swapped_after_the_check_overwrites_no_key() -> TestResult {
-    let args = write("d/id_rsa", "overwritten\n");
-    let tried = race("write", Swap::Parent, &args, &changes_key)?;
-    assert_no_leak("write", Swap::Parent, tried);
+    swap_after_guard("write", Swap::Parent, &write("d/id_rsa", "overwritten\n"))?;
     Ok(())
 }
 
@@ -1112,9 +1043,8 @@ fn a_parent_swapped_at_any_open_rewrites_no_key_by_grep() -> TestResult {
     no_open_reaches_the_key("grep", 2, &args)
 }
 
-/// The remedy the ping hint names: after the sandbox refuses a real `ping`, the next `ping` asks,
-/// and approving it runs that call outside the sandbox. The refusal is the bash tool's own, read
-/// off a contained run of `ping`.
+/// The test checks contained `ping` refusal and broker retry; a working host network also proves
+/// the approved retry succeeds outside the sandbox.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
@@ -1124,16 +1054,42 @@ fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
     std::fs::create_dir_all(&home)?;
     let sandbox = yi_tools::Sandbox::for_workspace(&scratch, &home, None);
     let context = yi_tools::ToolContext::new(scratch.to_path_buf());
-    let timeout = std::time::Duration::from_secs(60);
+    let timeout = std::time::Duration::from_secs(5);
+
+    // Probe this exact external-ICMP command. Exit 1 or 2 means no outside reply; launch errors
+    // and timeouts remain test failures.
+    let yi_tools::Run::Finished(probe) =
+        yi_tools::run_or_background(command, &context, None, timeout, None, None)?
+    else {
+        return Err("ping capability probe did not finish".into());
+    };
+    let outside_icmp_works = match probe.exit_code {
+        Some(0) => true,
+        Some(1 | 2) => false,
+        code => {
+            return Err(format!(
+                "unexpected ping probe exit {code:?}: {}{}",
+                probe.stdout, probe.stderr
+            )
+            .into());
+        }
+    };
+
     let yi_tools::Run::Finished(capture) =
         yi_tools::run_or_background(command, &context, None, timeout, Some(&sandbox), None)?
     else {
-        return Err("ping did not finish".into());
+        return Err("contained ping did not finish".into());
     };
     let output = format!("{}{}", capture.stdout, capture.stderr);
     let refusal =
-        yi_tools::sandbox_refusal(&sandbox, &scratch, capture.exit_code, &output, command)
-            .ok_or_else(|| format!("no refusal read from: {output}"))?;
+        yi_tools::sandbox_refusal(&sandbox, &scratch, capture.exit_code, &output, command);
+    if outside_icmp_works {
+        assert!(
+            refusal.is_some(),
+            "ping capability works outside, but contained run was not refused: {output}"
+        );
+    }
+
     let (broker, asks) = counted(Vec::new(), |_| AskOutcome::AllowOnce);
     let decide =
         |id: &str| broker.decide_call("bash", ToolKind::Exec, true, id, &bash_args(command), None);
@@ -1141,11 +1097,30 @@ fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
         decide("c1").containment,
         Containment::Contained { .. }
     ));
-    broker.note_containment_failure(refusal);
+    // Invariant: without outside ICMP, command failure can mask sandbox denial; only the broker
+    // transition uses the known scope, while a capable host must show a real refusal.
+    broker.note_containment_failure(
+        refusal.unwrap_or_else(|| yi_tools::SandboxRefusal::Scopes(vec!["ping".to_owned()])),
+    );
     let retry = decide("c2");
     assert!(retry.allowed, "{}", retry.reason);
     assert_eq!(retry.containment, Containment::Uncontained);
     assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 1, "the retry asks");
+
+    if outside_icmp_works {
+        let yi_tools::Run::Finished(retried) =
+            yi_tools::run_or_background(command, &context, None, timeout, None, None)?
+        else {
+            return Err("approved ping did not finish outside the sandbox".into());
+        };
+        assert_eq!(
+            retried.exit_code,
+            Some(0),
+            "{}{}",
+            retried.stdout,
+            retried.stderr
+        );
+    }
     Ok(())
 }
 

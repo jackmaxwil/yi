@@ -13,12 +13,8 @@ run-wrapper = "tmp-sandbox"
 
 [test-groups]
 kernel = { max-threads = 1 }
-# Every test in these binaries spawns the built `yi` as a child, and that child
-# is itself multithreaded. Turned loose in one global pool they oversubscribe
-# the machine and blow the slow-timeout: unbounded, 14 of them time out and the
-# run takes 121.9s; capped, all 671 pass in 66.4s. The cap is a scheduling
-# bound, not a coverage one — every test still runs. Three, because the PR
-# runners have three and four cores; raise it when the runners grow.
+# Invariant: these grouped workloads spawn Yi/Cargo or sync many files; an unbounded pool oversubscribes.
+# Incident: 14 timed out in 121.9s; capped at three, all 671 passed in 66.4s; local widens selected suites to eight.
 subprocess = { max-threads = 3 }
 # The `local` profile's wider cap: a 16-core Mac ran the suite in 83-85 s at eight against
 # 103-140 s at three, same CPU. CI keeps the default profile and its three.
@@ -32,6 +28,11 @@ binary(ready_check) + binary(request_budget)
 '''
 test-group = 'subprocess'
 
+[[profile.default.overrides]]
+filter = 'test(child_forks::the_dep_info_count_holds_at_its_limit_and_refuses_one_past)'
+test-group = 'subprocess'
+priority = 100
+
 # Longest first: 10-45 s each, and each reached late in scheduling order. In a run whose
 # other work ended at 57 s, plan_fuzz started at 26 s and held the run open to 70 s.
 # Priority moves the start, not the test: every one still runs, under the same timeout.
@@ -44,6 +45,15 @@ test(a_last_word_that_streams_for_twenty_seconds_lands_inside_the_deadline)
 | test(agent_messages_route_by_name_and_broadcast_with_receipts)
 | test(a_large_sheet_points_at_a_pandas_route_that_works)
 '''
+priority = 100
+[[profile.default.overrides]]
+filter = '''
+test(permission_scope::a_link_swapped_after_the_check_reads_no_key)
+| test(permission_scope::a_parent_swapped_after_the_check_reads_no_key)
+| test(permission_scope::a_link_swapped_after_the_check_overwrites_no_key)
+| test(permission_scope::a_parent_swapped_after_the_check_overwrites_no_key)
+'''
+test-group = 'subprocess'
 priority = 100
 
 [profile.local]

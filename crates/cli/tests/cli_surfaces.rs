@@ -1670,6 +1670,39 @@ fn version_prints_the_architecture_version() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn bare_version_skips_invalid_config_without_widening_the_fast_path() -> TestResult {
+    let map = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/ARCHITECTURE.md"
+    ))?;
+    let version = map
+        .lines()
+        .find_map(|line| line.strip_prefix("version:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .ok_or("docs/ARCHITECTURE.md has no version line")?;
+    let workspace = Workspace::new("bare-version-config")?;
+    write_config(&workspace, r#"{"unknown_key":true}"#)?;
+    let home = workspace.0.join("home");
+    let printed = yi_command(&home)
+        .arg("--version")
+        .current_dir(workspace.project())
+        .output()?;
+    assert_eq!(printed.status.code(), Some(0), "{printed:?}");
+    assert_eq!(stdout(&printed).trim(), format!("yi {version}"));
+    let rejected = yi_command(&home)
+        .args(["--version", "extra"])
+        .current_dir(workspace.project())
+        .output()?;
+    assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+    let complaint = String::from_utf8_lossy(&rejected.stderr);
+    assert!(
+        complaint.contains("unknown field `unknown_key`"),
+        "{complaint}"
+    );
+    Ok(())
+}
+
 /// The verbs and flags `yi --help` prints: two-space rows under `verbs:` and `flags:`.
 fn help_table(help: &str) -> (Vec<String>, Vec<String>) {
     let (verbs, flags) = help.split_once("\nflags:\n").unwrap_or((help, ""));

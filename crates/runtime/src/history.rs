@@ -745,7 +745,12 @@ mod tests {
         let (sessions, cwd) = (root.join("sessions"), root.join("cwd"));
         fs::create_dir_all(&cwd)?;
         for n in 0..6 {
-            session(&sessions, &cwd, &format!("s-{n}"), &[user("buildhost lane")]);
+            session(
+                &sessions,
+                &cwd,
+                &format!("s-{n}"),
+                &[user("buildhost lane")],
+            );
         }
         let corpus = Corpus::default();
         let files = corpus.sessions(&sessions, &cwd).files;

@@ -818,6 +818,11 @@ fn mcp_fast_path() {
 }
 
 fn main() {
+    let mut argv = std::env::args_os().skip(1);
+    if argv.next().as_deref() == Some(std::ffi::OsStr::new("--version")) && argv.next().is_none() {
+        println!("yi {}", env!("ARCHITECTURE_VERSION"));
+        return;
+    }
     contain::early();
     doctor::early();
     update::early();
@@ -835,6 +840,13 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if args.command == "version"
+        && args.prompt.is_empty()
+        && !args.help
+        && matches!(args.flags.as_slice(), [flag] if flag == "version")
+    {
+        std::process::exit(run_version(&args));
+    }
     let code = dispatch(args);
     yi_runtime::kill_running_jobs();
     std::process::exit(code);
@@ -883,6 +895,10 @@ fn dispatch(args: Args) -> i32 {
 }
 
 fn run_version(_: &Args) -> i32 {
+    print_version()
+}
+
+fn print_version() -> i32 {
     println!("yi {}", env!("ARCHITECTURE_VERSION"));
     0
 }

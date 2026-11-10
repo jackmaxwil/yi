@@ -58,11 +58,16 @@ pub(super) fn run(args: &Args) -> i32 {
     };
     let lane = session.lane();
     let checks = args.check.clone();
-    let dir = crate::work_dir(lane.as_ref().and_then(|lane| lane.path()), args);
-    if let Some(refusal) = crate::ask_check::first_refusal(&checks, &dir) {
-        release_lane(lane.as_deref());
-        return refuse(args.json, 2, &config, &refusal);
-    }
+    let dir = if checks.is_empty() {
+        None
+    } else {
+        let dir = crate::work_dir(lane.as_ref().and_then(|lane| lane.path()), args);
+        if let Some(refusal) = crate::ask_check::first_refusal(&checks, &dir) {
+            release_lane(lane.as_deref());
+            return refuse(args.json, 2, &config, &refusal);
+        }
+        Some(dir)
+    };
     if args.no_tools {
         session.set_tools(Vec::new());
     }
@@ -116,8 +121,8 @@ pub(super) fn run(args: &Args) -> i32 {
             deadline,
         };
         let mut outcome = stream(&screen).await;
-        if !checks.is_empty() {
-            outcome = crate::ask_check::chase(&screen, &checks, &dir, outcome).await;
+        if let Some(dir) = dir.as_deref() {
+            outcome = crate::ask_check::chase(&screen, &checks, dir, outcome).await;
         }
         if let Some((said, line)) = leftovers_now(&session, &host) {
             eprintln!("warning: {said}");

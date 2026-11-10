@@ -1213,9 +1213,11 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   call was refused with no one to ask: stderr names it, `--json` ends with `{"type": "denied", "tool",
   "args", "reason"}`, and the tool result already carried the `permissions.allow` entry that would run
   that exact call (a `--scope` refusal carries none: no rule lifts it). Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
-- `~/.yi/config.json` is the only config file, parsed strictly before dispatch and read again as each
-  session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
-  and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
+- `~/.yi/config.json` is the only config file. The exact bare `yi --version` prints the compile-time
+  version before loading it; every invocation that reaches dispatch parses it strictly before
+  dispatch and reads it again as each session starts, since the console's settings page saves it
+  while workers run; every struct is `deny_unknown_fields` and `migrate` drops keys an older build
+  read, reporting each. Keys: `model`, `thinking`,
   `models{primary,summarizer,advisor,autoReview,classifier,selector,webSearch}`, `webSearch{engine}`,
   `bash{autoBackgroundMs}`, `plans{dir}`, `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`,
   `kernel{prewarm}`, `console{autoSide}`,
@@ -1468,8 +1470,8 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 |---|---|---|---|
 | direct deps | 23 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 176 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
-| `yi ask --model faux/faux-1 hi` | 178.0 ms | the same, under a scratch HOME (kernel prewarm off) in an empty cwd under `target/` with `GIT_CEILING_DIRECTORIES` above it, so no lane is claimed | same; `--selfcheck` proves each entry can fail on a stand-in binary |
+| `yi --version` | 6.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
+| `yi ask --model faux/faux-1 hi` | 253.4 ms | the same, under a scratch HOME (kernel prewarm off) in an empty cwd under `target/` with `GIT_CEILING_DIRECTORIES` above it, so no lane is claimed | same; `--selfcheck` proves each entry can fail on a stand-in binary |
 
 The startup gate runs only after a dist build; a failed build fails it. Under `--fast` both are
 skipped by a printed line. When `CI` is set, startup and the dist build are skipped because a
@@ -1541,7 +1543,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/`, tests, scripts, workflows and the justfile is declared, every declared name is read, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
 | `check_scan` | pinned zizmor over workflows, gitleaks over tree/PR diff/rewritten mirror history, and vendored-rule Semgrep over Python and production Rust; new rule ids and counts above baseline fail; local tool/cache misses announce a skip and CI refuses them | `scan.json` |
-| `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
+| `check_request_budget` | system-prompt and tool-table bytes; bare per-role prefix sizes; tool-surface texts and hashes (D188) | `request_budget.json`, `role_prefix.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |
 | `check_growth` | net `src/` growth over the fork point past 150 lines needs `growth: +N <memo>` in the change file, past 2,000 a `decision:`; full run only | the fork point |

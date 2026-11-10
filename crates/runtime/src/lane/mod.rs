@@ -356,6 +356,60 @@ fn remember_repo(dir: &Path, repo: &Path) {
     }
 }
 
+fn git_marker_may_be_discovered(cwd: &Path, ceilings: Option<&std::ffi::OsStr>) -> Option<bool> {
+    let cwd = cwd.canonicalize().ok()?;
+    let ceiling = ceilings
+        .filter(|paths| !paths.is_empty())
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(paths))
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| cwd.starts_with(path))
+        .max_by_key(|path| path.components().count());
+    let mut dir = cwd.as_path();
+    loop {
+        if dir != cwd.as_path() && Some(dir) == ceiling.as_deref() {
+            return Some(false);
+        }
+        match dir.join(".git").try_exists() {
+            Ok(true) => return Some(true),
+            Ok(false) if dir.join("HEAD").is_file() && dir.join("objects").is_dir() => {
+                return Some(true);
+            }
+            Ok(false) => {}
+            Err(_) => return None,
+        }
+        if Some(dir) == ceiling.as_deref() {
+            return Some(false);
+        }
+        let Some(parent) = dir.parent() else {
+            return Some(false);
+        };
+        dir = parent;
+    }
+}
+
+fn git_marker_fast_negative(cwd: &Path) -> bool {
+    if ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+    {
+        return false;
+    }
+    let ceilings = std::env::var_os("GIT_CEILING_DIRECTORIES");
+    git_marker_may_be_discovered(cwd, ceilings.as_deref()) == Some(false)
+}
+
+pub(crate) fn repo_discovery_blocked(cwd: &Path) -> bool {
+    if FOUND
+        .lock()
+        .ok()
+        .is_some_and(|found| found.iter().any(|(dir, _)| dir == cwd))
+    {
+        return false;
+    }
+    git_marker_fast_negative(cwd)
+}
+
 /// Invariant: a lane is itself a worktree, so lanes and memory key off the common git dir.
 pub fn canonical_repo(cwd: &Path) -> Option<PathBuf> {
     let hit = FOUND.lock().ok().and_then(|found| {
@@ -367,6 +421,10 @@ pub fn canonical_repo(cwd: &Path) -> Option<PathBuf> {
     if hit.is_some() {
         return hit;
     }
+    if git_marker_fast_negative(cwd) {
+        return None;
+    }
+
     let _span = yi_types::trace::span("lane.canonical_repo");
     let common = git(
         cwd,
@@ -925,6 +983,61 @@ impl Lane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git_marker_temp_tree() -> std::io::Result<PathBuf> {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "yi-git-ceiling-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    #[test]
+    fn repository_marker_scan_respects_git_ceilings() -> Result<(), Box<dyn std::error::Error>> {
+        let root = git_marker_temp_tree()?;
+        let ceiling = root.join("ceiling");
+        let child = ceiling.join("child");
+        std::fs::create_dir_all(&child)?;
+        std::fs::create_dir_all(root.join(".git"))?;
+        assert_eq!(
+            git_marker_may_be_discovered(&child, Some(ceiling.as_os_str())),
+            Some(false)
+        );
+        std::fs::create_dir_all(ceiling.join(".git"))?;
+        assert_eq!(
+            git_marker_may_be_discovered(&child, Some(ceiling.as_os_str())),
+            Some(false)
+        );
+        let nested = ceiling.join("nested");
+        let nested_child = nested.join("child");
+        std::fs::create_dir_all(nested.join(".git"))?;
+        std::fs::create_dir_all(&nested_child)?;
+        assert_eq!(
+            git_marker_may_be_discovered(&nested_child, Some(ceiling.as_os_str())),
+            Some(true)
+        );
+        assert_eq!(
+            git_marker_may_be_discovered(&ceiling, Some(ceiling.as_os_str())),
+            Some(true)
+        );
+        let bare = ceiling.join("bare");
+        std::fs::create_dir_all(bare.join("objects"))?;
+        std::fs::write(bare.join("HEAD"), "ref: refs/heads/main\n")?;
+        assert_eq!(
+            git_marker_may_be_discovered(&bare, Some(ceiling.as_os_str())),
+            Some(true)
+        );
+        assert_eq!(git_marker_may_be_discovered(&child, None), Some(true));
+        assert_eq!(
+            git_marker_may_be_discovered(&child, Some(std::ffi::OsStr::new(""))),
+            Some(true)
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
 
     #[test]
     fn a_denied_sync_names_the_toolchains_write_target_not_the_wrapper() -> Result<(), String> {
