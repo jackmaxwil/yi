@@ -1,4 +1,6 @@
 ---
+version: 0.1025.0
+decisions: D583
 issue: Refs #2129
 decision: The weekly evals judge today's main against last Monday's on the inner loop's capability (revert level 3) and economy legs, paired on the same seeds, under hard caps summing to $7.80 with the adapter smokes and refused past $9.50; Terminal-Bench leaves the weekly cadence and runs only as a refine winner's transfer check and a monthly trend (amends the S5 weekly cadence of D140) | section 19 found Terminal-Bench cannot be the development loop (20 of 42 trials lost before the agent ran, 45-51 minute trials, 12 tasks detect only near-uniform gains) and row 0072 scored 0/12 on both arms, while revert level 3 sits mid-range | restore tbv4-weekly.yml from this change's parent
 ---

@@ -1,4 +1,6 @@
 ---
+version: 0.1024.0
+decisions: D582
 issue: Refs #2129
 decision: A benchmark suite a gate or refine round reads is a row in evals/suites.json, a Harbor row pinned by digest, and a gate refuses a suite with no recorded A/A calibration | the weekly legs, the refine stages and the Terminal-Bench driver each carried their own task lists and prices, and a verdict on a suite with no measured spread cannot say what it could detect | read task lists from the drivers again and delete evals/suites.json
 ---

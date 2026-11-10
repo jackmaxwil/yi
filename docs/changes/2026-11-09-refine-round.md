@@ -1,4 +1,6 @@
 ---
+version: 0.1022.0
+decisions: D580
 shares: #2124 | this branch adds ToolErrorKind::NotRun and moves tool-call execution out of run.rs; that PR changes how session events and stop reasons are kept, in other hunks of the same files
 shares: #2123 | this branch moves tool-call execution into batch.rs and adds AgentTool::gates_message; that PR changes what is built per delta and request, in other hunks of the same files
 shares: #2121 | both add a line to docs/YI_DESIGN.md in different sections; this one amends 1.2 and 4.2

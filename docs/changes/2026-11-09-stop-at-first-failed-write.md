@@ -1,4 +1,6 @@
 ---
+version: 0.1023.0
+decisions: D581
 issue: Refs #2129
 raise: crate loop +58, crate cli +61, crate runtime +7, crate types +3, crate acp +1, comments +5, tests +334
 decision: A message stops at its first failed write or command, judged by shown_failed so a non-zero exit counts, and every later call in it is answered not_run naming that call; an interrupt still answers aborted (amends YI_DESIGN §4.2, which ran every call) | an edit refused on a stale tag still ran its test, and the next request read a result for code that never changed, so batching an edit with its check was unsafe | stop consulting AgentTool::gates_message in crates/loop/src/batch.rs

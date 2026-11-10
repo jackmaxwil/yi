@@ -1,4 +1,6 @@
 ---
+version: 0.1020.0
+decisions: D578, D579
 issue: Refs #2129
 decision: The improve gate's economy road reads cost, then wall with cost inside ten percent, never raw tokens on a priced route; cost is provider dollars where every trial is priced and tokens (cache reads and writes counted) where a route bills $0 (amends D220) | the owner's objective is dollars per graded point, wall second, and D558 showed a $0 route hides its spend from a price test | put tokens back among levers.judge's road keys
 decision: The eval cost counts side:* and tool:* usage records beside assistant usage | side calls were booked in the session file but no eval read them, so a side model's cost was invisible to the gate | drop the record branch in extract.py's cost sum
