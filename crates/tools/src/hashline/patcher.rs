@@ -15,7 +15,7 @@ use super::messages::{
     rebased_warning, refusal_footer, refusal_rows, stale_ends_warning, unseen_lines_message,
 };
 use super::mismatch::mismatch_message;
-use super::normalize::{Endings, split};
+use super::normalize::{Endings, normalize_to_lf, split, strip_bom};
 use super::rebase::{LineMap, remap_edits};
 use super::snapshots::{Snapshot, SnapshotStore};
 use super::types::{ApplyResult, BlockResolverRequest, BlockSpan, Clipboard, Edit, FileOp};
@@ -354,7 +354,7 @@ impl<'a> Patcher<'a> {
             );
         }
 
-        let (normalized, endings) = split(&raw_content);
+        let (normalized, endings) = split(raw_content);
 
         let edits = if matches!(file_op, Some(FileOp::Rem)) {
             Vec::new()
@@ -515,7 +515,7 @@ impl<'a> Patcher<'a> {
         canonical_path: &str,
         text: &str,
     ) -> Result<String, PatchError> {
-        let (normalized, _) = split(text);
+        let normalized = normalize_to_lf(strip_bom(text).text);
         let (anchors, total, shown) = section_rows(section, &normalized)?;
         let tag = self
             .snapshots

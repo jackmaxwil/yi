@@ -9,7 +9,6 @@ use super::ops::OWNER_AGENT;
 use crate::goal::StoreHandle;
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
 
-pub const LEDGER_TOOL: &str = "plan";
 pub const LEDGER_CUSTOM_TYPE: &str = "ledger_prompt";
 
 /// Every threshold the loop coupling reads is named here and nowhere else,

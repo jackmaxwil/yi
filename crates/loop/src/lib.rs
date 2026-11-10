@@ -8,6 +8,7 @@ pub mod interrupt;
 pub mod reasoning;
 pub mod repair;
 pub mod run;
+mod stream;
 mod stream_retry;
 pub mod tool;
 

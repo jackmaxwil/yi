@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use serde_json::Value;
 use yi_types::mcp::{McpOauthProfile, McpProfilesFile};
 
 use crate::oauth::profile_key;
@@ -45,8 +44,4 @@ impl ProfilesStore {
         let text = serde_json::to_string_pretty(&self.file).map_err(|error| error.to_string())?;
         std::fs::write(self.root.join("profiles.json"), text).map_err(|error| error.to_string())
     }
-}
-
-pub fn value_url(value: &Value) -> Option<&str> {
-    value.get("serverUrl").and_then(Value::as_str)
 }

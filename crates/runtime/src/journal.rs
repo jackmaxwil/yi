@@ -50,8 +50,6 @@ pub enum JournalError {
     RecordOverCap { bytes: usize, cap: usize },
     #[error("journal record: {0}")]
     Canonical(#[from] CanonicalError),
-    #[error("journal {path} has a torn or damaged tail; set it aside before appending")]
-    TailNotClean { path: PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
