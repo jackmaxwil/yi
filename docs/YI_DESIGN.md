@@ -1362,8 +1362,9 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   a row (name; what it needs or is doing, its list, its age). A click on a header folds the group
   for this console only; a folded header still shows a session that needs you. A done session
   stays loud until focused; a poll never clears it. The rail keeps the same order, pinned first,
-  a blank row between workspaces and no headers. A working or blocked session's avatar plays its
-  state loop at 15 fps in place of its identicon.
+  a blank row between workspaces and no headers. A session's identicon and accent are the
+  directory it was started in, so one workspace wears one creature; a child wears its parent's.
+  A working or blocked session's avatar plays its state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
 - The focused session's OSC 2 title prefixes its label with the same 250 ms pulse while `Working`,
