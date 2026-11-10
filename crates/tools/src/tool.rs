@@ -83,6 +83,14 @@ impl ToolContext {
         )
     }
 
+    /// [`Self::read`] with the stat of the handle it read, taken before the read: a rewrite after
+    /// it moves the file's mtime off the recorded one rather than onto it.
+    pub(crate) fn read_stat(&self, path: &Path) -> std::io::Result<(Vec<u8>, std::fs::Metadata)> {
+        let file = self.read_gate().open(path, &self.deny_read)?;
+        let stat = file.metadata()?;
+        Ok((read_capped(file, path, Cap::Text)?, stat))
+    }
+
     /// [`Self::read`] for a document, under the converter's own ceiling: the parsed text, not the
     /// source bytes, is what reaches the model, and a page selection parses only those pages.
     pub(crate) fn read_document(&self, path: &Path, cap: Cap) -> std::io::Result<Vec<u8>> {

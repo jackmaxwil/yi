@@ -157,3 +157,62 @@ fn an_image_without_a_whole_header_is_refused_and_a_trailer_is_kept() -> Result<
     }
     Ok(())
 }
+
+fn segment(marker: u8, payload: &[u8]) -> Vec<u8> {
+    let len = u16::try_from(payload.len() + 2)
+        .unwrap_or(u16::MAX)
+        .to_be_bytes();
+    [&[0xff, marker], &len[..], payload].concat()
+}
+
+fn frame(width: u16, height: u16) -> Vec<u8> {
+    let [h0, h1] = height.to_be_bytes();
+    let [w0, w1] = width.to_be_bytes();
+    segment(0xc0, &[8, h0, h1, w0, w1, 1, 1, 0x11, 0])
+}
+
+fn jpeg(parts: &[Vec<u8>]) -> Vec<u8> {
+    [vec![0xff, 0xd8], parts.concat(), vec![0xff, 0xd9]].concat()
+}
+
+/// A JPEG's size is in its first frame header, found by walking segment lengths: a table that
+/// reads like a frame, a thumbnail's frame inside EXIF, fill and stray bytes all sit before it.
+#[test]
+fn a_jpeg_is_measured_at_its_own_frame_header() {
+    let table = [0x08, 0x00, 0x10, 0x00, 0x20, 0x01, 0x01, 0x11, 0x00];
+    let thumbnail = [b"Exif\0\0".to_vec(), jpeg(&[frame(160, 120)])].concat();
+    let cases = [
+        (
+            "a Huffman table first",
+            jpeg(&[segment(0xc4, &table), frame(8001, 1)]),
+        ),
+        (
+            "an arithmetic table first",
+            jpeg(&[segment(0xcc, &table), frame(8001, 1)]),
+        ),
+        (
+            "an EXIF thumbnail first",
+            jpeg(&[segment(0xe1, &thumbnail), frame(8001, 1)]),
+        ),
+        (
+            "fill bytes before the marker",
+            jpeg(&[vec![0xff, 0xff], frame(8001, 1)]),
+        ),
+        (
+            "a stray byte before the marker",
+            jpeg(&[segment(0xe0, b"JFIF\0"), vec![0x42], frame(8001, 1)]),
+        ),
+        (
+            "a zero-length segment",
+            jpeg(&[vec![0xff, 0xe2, 0, 0], frame(8001, 1)]),
+        ),
+    ];
+    for (shape, bytes) in cases {
+        assert_eq!(
+            yi_types::image::image_side("image/jpeg", &bytes),
+            Some((8001, 1)),
+            "{shape}"
+        );
+    }
+    assert_eq!(yi_types::image::image_side("image/jpeg", &jpeg(&[])), None);
+}

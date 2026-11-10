@@ -426,8 +426,7 @@ async fn the_remedy_an_image_refusal_names_attaches_the_image() -> TestResult {
     ];
     let mut outcomes = Vec::new();
     for (defect, name, make) in sources {
-        let remedy = defect.remedy();
-        let call = remedy.split('`').nth(1).ok_or("no call in the remedy")?;
+        let call = defect.cell();
         let cell = format!(
             "from PIL import Image\nfrom attach_image import run as attach_image\npath = {:?}\n{make}\n{call}",
             dir.join(name).display().to_string()
