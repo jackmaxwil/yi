@@ -151,14 +151,13 @@ impl StableScan {
         }
         let rest = source.get(self.from..).unwrap_or_default();
         count(rest.len(), 0);
-        let (doc, head) = match &self.opener {
-            Some(opener) => (format!("{opener}\n{rest}"), opener.len() + 1),
-            None => (rest.to_owned(), 0),
-        };
-        let stream = stable_stream(&doc);
+        let joined = (self.opener.as_ref()).map(|opener| format!("{opener}\n{rest}"));
+        let doc = joined.as_deref().unwrap_or(rest);
+        let head = doc.len().saturating_sub(rest.len());
+        let stream = stable_stream(doc);
         let at = |offset: usize| (self.from + offset).saturating_sub(head);
         // A cut of 0 is an undecided block, which may yet join the block before it.
-        let decided = stream.cut > 0 || !undecided(&doc, stream.block);
+        let decided = stream.cut > 0 || !undecided(doc, stream.block);
         let cut = if decided { at(stream.cut) } else { 0 };
         if decided && stream.block >= head {
             self.block = at(stream.block);
