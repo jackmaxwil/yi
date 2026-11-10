@@ -273,7 +273,7 @@ fn http_get(url: &str) -> Result<Vec<u8>, String> {
     if !error.contains("UnknownIssuer") {
         return Err(error);
     }
-    let agent = match login_agent() {
+    let agent = match local_agent() {
         Ok(agent) => agent,
         Err(cause) => return Err(format!("{error} ({cause})")),
     };
@@ -328,10 +328,11 @@ fn login_keychain() -> Result<String, String> {
     Ok(format!("{home}/Library/Keychains/login.keychain-db"))
 }
 
-#[cfg(target_os = "macos")]
-fn login_agent() -> Result<ureq::Agent, String> {
-    let keychain = login_keychain()?;
-    let pem = yi_runtime::roots::keychain_pem(&keychain)?;
+fn local_agent() -> Result<ureq::Agent, String> {
+    #[cfg(target_os = "macos")]
+    let pem = yi_runtime::roots::keychain_pem(&login_keychain()?)?;
+    #[cfg(not(target_os = "macos"))]
+    let pem = yi_runtime::roots::system_pem()?;
     let roots = yi_runtime::roots::root_store(&pem)?;
     let config = ureq::rustls::ClientConfig::builder_with_provider(
         ureq::rustls::crypto::ring::default_provider().into(),
@@ -343,11 +344,6 @@ fn login_agent() -> Result<ureq::Agent, String> {
     Ok(tarball::agent()
         .tls_config(std::sync::Arc::new(config))
         .build())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn login_agent() -> Result<ureq::Agent, String> {
-    Err("no login keychain".to_owned())
 }
 
 fn fgj_config() -> String {
