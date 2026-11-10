@@ -1128,6 +1128,11 @@ async fn a_wait_whose_source_stays_unchanged_backs_off_and_a_change_resets_it() 
         channel.open(uri, None)?;
         adapter::ensure(uri, &channel, &cwd, 1_000, eager)?;
     }
+    let started = || cases.iter().all(|(name, ..)| runs(&dir.join(name)) > 0);
+    assert!(
+        wait_until(5_000, started).await,
+        "not every adapter completed its first run"
+    );
     tokio::time::sleep(std::time::Duration::from_millis(6_000)).await;
     let counted: Vec<usize> = cases
         .iter()

@@ -261,12 +261,15 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 
 ## 5. Provider
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
-- Dispatch by `model.api`: `anthropic-messages` (`anthropic`), `openai-responses` (`openai`,
-  `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
-  `kimi` models take any of the first three by their listed `protocol`, Moonshot's wire rules
-  derived from the route. Any other api is faux. Catalog:
+- Dispatch by `model.api`: `anthropic-messages` (`anthropic`, `openrelay`), `openai-responses`
+  (`openai`, `openai-codex`, `openrelay`), `openai-completions` (`openrouter`, `google`),
+  `cursor-agent` (`cursor`); `kimi` models take any of the first three by their listed `protocol`,
+  Moonshot's wire rules derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`, then the `providers` the config
   declares. Model: `--model`, else `models.primary`, else `model`; none is built in.
+  OpenRelay has no bundled model entries; `~/.yi/catalog/openrelay.json` supplies its models.
+  Its Anthropic route sends the stored OpenRelay key as Bearer and keeps `anthropic-version`;
+  ordinary Anthropic uses `x-api-key`.
 - Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
   `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
   default. This default does not select a primary model.
@@ -1319,6 +1322,9 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - The palette is fixed: tier from `COLORTERM`/`TERM`, light or dark from `COLORFGBG` (default
   dark). The orb is [`yi-orb`](../crates/orb/src/lib.rs) over kitty graphics: the `Yi` mark at rest and one
   exact loop per agent state, left only at its exit points by a least-travel morph.
+- The OSC 2 title keeps `Yi — <prompt>`; `◌ ◍ ◉ ◍` pulses every 250 ms while the foreground
+  run has an `OrbState`, `!` marks `Listening`, and no marker means ready. Background jobs and
+  child sessions may outlive the parent run without keeping its title pulsing.
 - `yi tui --headless --keys <script> --frames <dir> [--record] [--snap]` drives the real loop on
   an in-memory screen (steps `key`, `type`, `type-ms`, `wait`, `wait-idle`, `wait-frame`, `quit`);
   it implies `--here` unless `--lanes`, and the drive flags are refused without `--headless`.
@@ -1360,6 +1366,9 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
+- The focused session's OSC 2 title prefixes its label with the same 250 ms pulse while `Working`,
+  `!` while `Blocked`, and no marker otherwise; `DoneUnseen` is ready, not attention. Background
+  jobs and child sessions do not keep the parent title pulsing after its run ends.
 - ⌘⇧R opens Review beside a session: its scope is the lane's branch against its merge base with
   main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
   session with no git base shows its own edits). Each file names the todo that was running when

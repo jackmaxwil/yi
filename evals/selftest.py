@@ -594,14 +594,25 @@ def check_watch_stops():
     finishes first hands back its own exit code."""
     watch = ROOT / "drivers" / "watch.py"
     with tempfile.TemporaryDirectory() as tmp:
+        # Keep this process-group test independent of slow host disk and Docker probes.
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir()
+        for name, script in (("osascript", "#!/bin/sh\nprintf '100000000000'\n"),
+                             ("docker", "#!/bin/sh\nexit 0\n")):
+            executable = bin_dir / name
+            executable.write_text(script)
+            executable.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
         runs = Path(tmp) / "runs"
         done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "20", "--wall", "0",
-                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60,
+                              env=env)
         assert done.returncode == 2, done
         assert "passed 0 s" in (Path(tmp) / "runs.STOPPED").read_text(), done.stdout
         done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "20", "--wall", "60",
                                "--poll", "0.2", "--", "sh", "-c", "exit 3"], capture_output=True, text=True,
-                              timeout=60)
+                              timeout=60, env=env)
         assert done.returncode == 3, done
 
     def trial_events(path, cost=None, unknown=False):
