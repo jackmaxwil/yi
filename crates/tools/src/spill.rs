@@ -32,8 +32,8 @@ pub struct Spill {
 impl Spill {
     /// `None` keeps nothing, and so does a redactor that cannot build.
     pub fn new(dir: Option<&Path>) -> Self {
-        let redactors = Redactor::new()
-            .zip(Redactor::new())
+        let redactors = dir
+            .and_then(|_| Redactor::new().zip(Redactor::new()))
             .map(<[Redactor; 2]>::from);
         Self {
             dir: dir.filter(|_| redactors.is_some()).map(Path::to_path_buf),
@@ -226,6 +226,14 @@ mod tests {
     use crate::scratch::Scratch;
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn a_spill_with_no_dir_compiles_no_redactor_and_keeps_nothing() {
+        let mut spill = Spill::new(None);
+        assert!(spill.redactors.is_none());
+        spill.write(b"output");
+        assert_eq!(spill.keep(), None);
+    }
 
     #[test]
     fn a_clipped_spill_says_where_it_stopped() -> Fallible {

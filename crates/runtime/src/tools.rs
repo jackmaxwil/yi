@@ -416,6 +416,10 @@ impl AgentTool for ToolAdapter {
         }
     }
 
+    fn name(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(self.tool.name())
+    }
+
     /// Only read-kind calls overlap; a mutation keeps the transcript's order.
     fn execution_mode(&self, args: &Map<String, Value>) -> yi_loop::config::ExecutionMode {
         match self.tool.kind_for(args) {

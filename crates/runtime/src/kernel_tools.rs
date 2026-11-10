@@ -187,8 +187,8 @@ async fn call(
     if let Some(refusal) = refused_before(name, &args, root) {
         return refusal;
     }
-    let Some(tool) = table.iter().find(|tool| tool.definition().name == name) else {
-        let names: Vec<String> = (table.iter().map(|tool| tool.definition().name))
+    let Some(tool) = table.iter().find(|tool| tool.name() == name) else {
+        let names: Vec<String> = (table.iter().map(|tool| tool.name().into_owned()))
             .filter(|other| excluded(other, root).is_none())
             .collect();
         let message = format!("this session has no tool {name}");

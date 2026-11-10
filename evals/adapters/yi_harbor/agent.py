@@ -48,10 +48,9 @@ import atif  # noqa: E402
 TRAJECTORY_FILENAME = "trajectory.json"
 
 REMOTE_BINARY = "/usr/local/bin/yi"
-# Incident: `oven/bun` ships no CA roots, and the platform verifier (YI_DESIGN
-# §18.3: no bundled store) refused OpenRouter's certificate ("UnknownIssuer") on
-# the first request; harbor's own certifi bundle rides along and SSL_CERT_FILE
-# names it, which rustls-native-certs honours on Linux.
+# Incident: `oven/bun` ships no CA roots, and yi's old native-certs loader refused
+# OpenRouter's certificate ("UnknownIssuer"); yi now bundles webpki roots and ignores
+# SSL_CERT_FILE, so the certifi bundle only serves the task's own tools (uv, pip).
 REMOTE_CA_BUNDLE = "/logs/agent/yi/ca.pem"
 SUITE_REV_ENV = "EVAL_SUITE_REV"
 TIMEOUT_MULT_ENV = "EVAL_TIMEOUT_MULT"

@@ -15,6 +15,39 @@ pub struct AcpFrame {
     pub params: Option<Value>,
 }
 
+/// The fields a relay routes a frame by, read in place; the frame itself travels as its bytes.
+/// A field spelled with an escape fails the read, and the caller parses the whole frame.
+#[derive(Debug, Default, Deserialize)]
+pub struct AcpRoute<'a> {
+    #[serde(borrow, default)]
+    pub method: Option<&'a str>,
+    /// Presence only, a null included, since presence is what makes a request.
+    #[serde(default, deserialize_with = "present")]
+    pub id: bool,
+    #[serde(borrow, default)]
+    pub params: Option<AcpRouteParams<'a>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpRouteParams<'a> {
+    #[serde(borrow, default)]
+    pub session_id: Option<&'a str>,
+    #[serde(borrow, default)]
+    pub update: Option<AcpRouteUpdate<'a>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpRouteUpdate<'a> {
+    #[serde(borrow, default)]
+    pub session_update: Option<&'a str>,
+}
+
+fn present<'de, D: serde::Deserializer<'de>>(value: D) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(value).map(|_| true)
+}
+
 /// JSON-RPC 2.0 success response to an ACP client request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcpResponse {

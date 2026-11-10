@@ -22,6 +22,11 @@ pub type ProgramFuture<'a> =
 pub trait AgentTool: Send + Sync {
     fn definition(&self) -> ToolDef;
 
+    /// Equals `definition().name`; an override lets a lookup by name build no schema.
+    fn name(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(self.definition().name)
+    }
+
     fn execution_mode(&self, _args: &Map<String, Value>) -> crate::config::ExecutionMode {
         crate::config::ExecutionMode::Parallel
     }
