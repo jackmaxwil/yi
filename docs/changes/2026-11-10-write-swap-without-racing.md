@@ -1,4 +1,5 @@
 ---
+version: 0.1027.0
 cut: crates/runtime/tests/permission_scope.rs | fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult { | each write's sync_all is a full drive flush on macOS, so 5,000 window hits outran nextest's 60 s kill; the owner chose removal, and the gate is proven one open at a time by a_parent_swapped_at_any_open_writes_no_key
 cut: crates/runtime/tests/permission_scope.rs | fn a_parent_swapped_after_the_check_overwrites_no_key() -> TestResult { | each write's sync_all is a full drive flush on macOS, so 5,000 window hits outran nextest's 60 s kill; the owner chose removal, and the gate is proven one open at a time by a_parent_swapped_at_any_open_writes_no_key
 ---
