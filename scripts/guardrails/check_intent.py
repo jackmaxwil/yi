@@ -20,11 +20,38 @@ from collections import defaultdict
 sys.path[:0] = [str(pathlib.Path(__file__).parent), str(pathlib.Path(__file__).parents[1])]
 from _common import ROOT, fail, fork, git, no_fork  # noqa: E402
 from check_changes import CELL, files, held, parse, pending  # noqa: E402
-from fixer_guard import CUT_AT, commits, substantive  # noqa: E402
 
 FIXTURES = ROOT / "scripts/guardrails/fixtures/intent"
 # A finding about deleted text sits beside where it was: #2062's high asking for the cut block back was 3 lines below it.
 NEAR = 3
+CUT_AT = 5
+
+
+def substantive(line):
+    """A blank, a brace or a short comment comes and goes in any edit; a line of content does not."""
+    s = line.strip()
+    return len(s) >= 40 or (len(s) >= 25 and not s.startswith(("//", "#")))
+
+
+def commits(log):
+    """(sha, {path: (added, deleted)}) per commit. A deleted `-- x` line prints as `--- x`, so file
+    headers are read only between `diff --git` and the first hunk."""
+    out, files, header, old, path = [], None, False, None, None
+    for line in log.splitlines():
+        if line.startswith("commit "):
+            files, header, path = defaultdict(lambda: ([], [])), False, None
+            out.append((line.split()[1], files))
+        elif line.startswith("diff --git "):
+            header, old, path = True, None, None
+        elif header and line.startswith("--- "):
+            old = line[6:] if line.startswith("--- a/") else None
+        elif header and line.startswith("+++ "):
+            path = line[6:] if line.startswith("+++ b/") else old
+        elif line.startswith("@@"):
+            header = False
+        elif not header and path and files is not None and line[:1] in ("+", "-"):
+            files[path][line[0] == "-"].append(line[1:])
+    return out
 
 
 def anchors(fields, key, off=""):

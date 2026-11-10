@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.1025.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.1026.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -352,6 +352,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D584 | the autofixer pushes what its fixer wrote with no gate that guesses the author's intent from the PR's own history: `scripts/fixer_guard.py` is cut, and `scripts/guardrails/check_intent.py` (a recorded `cut:` or `keep:` line, read on every branch by any author) is the only gate on a deliberate cut | the guard read "a commit deleted five or more lines an earlier commit of the same PR added" as a reversal, so on a young or imported PR every review-driven dedupe tripped it; on PR 2130 the fixer spent $3.38 (Opus 5.5, 63 turns) on findings that asked for exactly those edits and nothing was pushed, because the check ran only after the spend and a finding was deliberately no exemption, so removing `autofix:hold` retried into the same refusal | restore `scripts/fixer_guard.py` and its two incident logs from the commit before this one, put back the `scan` call before `push_head` and the `reversed` verdict in `scripts/pr_autofix.py`, and the selfcheck line in `scripts/guardrails/check_guardrails.sh` |
 | D583 | The weekly evals judge today's main against last Monday's on the inner loop's capability (revert level 3) and economy legs, paired on the same seeds, under hard caps summing to $7.80 with the adapter smokes and refused past $9.50; Terminal-Bench leaves the weekly cadence and runs only as a refine winner's transfer check and a monthly trend (amends the S5 weekly cadence of D140) | section 19 found Terminal-Bench cannot be the development loop (20 of 42 trials lost before the agent ran, 45-51 minute trials, 12 tasks detect only near-uniform gains) and row 0072 scored 0/12 on both arms, while revert level 3 sits mid-range | restore tbv4-weekly.yml from this change's parent |
 | D582 | A benchmark suite a gate or refine round reads is a row in evals/suites.json, a Harbor row pinned by digest, and a gate refuses a suite with no recorded A/A calibration | the weekly legs, the refine stages and the Terminal-Bench driver each carried their own task lists and prices, and a verdict on a suite with no measured spread cannot say what it could detect | read task lists from the drivers again and delete evals/suites.json |
 | D581 | A message stops at its first failed write or command, judged by shown_failed so a non-zero exit counts, and every later call in it is answered not_run naming that call; an interrupt still answers aborted (amends YI_DESIGN §4.2, which ran every call) | an edit refused on a stale tag still ran its test, and the next request read a result for code that never changed, so batching an edit with its check was unsafe | stop consulting AgentTool::gates_message in crates/loop/src/batch.rs |
