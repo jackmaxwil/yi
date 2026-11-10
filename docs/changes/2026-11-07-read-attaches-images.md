@@ -1,4 +1,5 @@
 ---
+version: 0.1017.0
 issue: Closes #2093
 growth: +278 the TIFF and ICO magic numbers, the ignored-window notice, the JPEG and WebP header readers the side limit needs (a JPEG's size sits past its first 24 bytes, behind any segment, and libjpeg resyncs past stray bytes), the type refusal ahead of every size refusal, the refusals before encoding and past the text cap in read and glob, the stat taken from the read's own handle, and a cell that survives a non-UTF-8 or backticked path; refusing every JPEG and WebP whose size the 24-byte head cannot give was weighed and cut, as it refuses nearly every photo
 raise: crate tools +210, crate types +68, tests +454, comments +12
