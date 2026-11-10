@@ -1,6 +1,7 @@
 """The improvement round's offline half: the proposer's corpus, its snapshot, the S0 refusals.
 No model, no docker, no network (docs/plans/2026-09-26-self-improvement-evals.md 5.3, 5.5)."""
-import json, pathlib, subprocess, sys, tempfile, unittest
+import contextlib, io, json, os, pathlib, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "refine"))
 import round as rnd  # noqa: E402
@@ -106,9 +107,14 @@ class Round(unittest.TestCase):
         def built(base, patch, work, code):
             return pathlib.Path("/bin/true"), None
 
-        with tempfile.TemporaryDirectory() as store:
-            return rnd.run_round(found, "base0", "/bin/true", usd, SPLIT, store=store,
+        self.git = []
+        ran = lambda argv, **kw: self.git.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")
+        with tempfile.TemporaryDirectory() as store, mock.patch.object(rnd.subprocess, "run", ran):
+            self.work = pathlib.Path(store) / f"work-{rnd.candidate_hash(found[0][1], found[0][2])}"
+            return rnd.run_round(found, "base0", "/bin/true", usd, SPLIT, store=self.store or store,
                                  build_fn=build or built, measure_fn=measure, out=store)
+
+    store = None
 
     def patch(self, path):
         return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-a\n+b\n"
@@ -118,6 +124,7 @@ class Round(unittest.TestCase):
         row = got["variants"][0]
         self.assertEqual([s["stage"] for s in row["stages"]], ["screen", "validate", "transfer"])
         self.assertTrue(row["kept"].startswith("refine/"), row)
+        self.assertIn(["git", "worktree", "remove", "--force", str(self.work)], self.git, "a dist build per variant")
 
     def test_a_variant_no_better_than_its_base_keeps_nothing(self):
         got = self.cascade([("v", self.patch("crates/runtime/src/prompts/doctrine.md"), {}, "t")], cheaper=0.01)
@@ -134,10 +141,54 @@ class Round(unittest.TestCase):
         self.assertEqual(got["variants"][0]["refused"], "path_outside_surface:crates/types/src/event.rs")
         self.assertEqual(self.measured, [])
 
+    def test_a_refused_variant_is_stored_so_the_next_round_never_rebuilds_it(self):
+        built = []
+        red = lambda base, patch, work, code: built.append(work) or (None, "gate_red")
+        found = [("code", self.patch("crates/loop/src/batch.rs"), {}, "t"),
+                 ("types", self.patch("crates/types/src/event.rs"), {}, "t")]
+        with tempfile.TemporaryDirectory() as self.store:
+            self.cascade(found, build=red)
+            got = self.cascade(found, build=red)
+        self.assertEqual(len(built), 1, "the red gate ran again on the same base")
+        self.assertEqual([row["refused"] for row in got["variants"]],
+                         ["already_rejected:gate_red", "already_rejected:path_outside_surface:crates/types/src/event.rs"])
+
+    def test_a_variants_build_and_gate_see_a_scratch_home_and_no_key(self):
+        seen = []
+        ran = lambda argv, **kw: seen.append((argv, kw.get("env"))) or subprocess.CompletedProcess(argv, 0, "", "")
+        owner = {"HOME": "/owner", "CARGO_HOME": "/owner/.cargo", "OPENROUTER_API_KEY": "sk-or-planted"}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, owner), \
+                mock.patch.object(rnd.subprocess, "run", ran):
+            work = pathlib.Path(tmp) / "work-v"
+            rnd.build("base0", self.patch("crates/loop/src/batch.rs"), work, True)
+        steps = [(argv, env) for argv, env in seen if env is not None]
+        self.assertEqual([argv[0] for argv, _ in steps], ["cargo", "just"])
+        for _, env in steps:
+            self.assertEqual(env["HOME"], str(pathlib.Path(tmp) / "home-work-v"))
+            self.assertEqual(env["CARGO_HOME"], "/owner/.cargo")
+            self.assertNotIn("sk-or-planted", json.dumps(env))
+
     def test_a_stage_the_budget_cannot_cover_is_not_run(self):
         got = self.cascade([("v", self.patch("crates/runtime/src/prompts/doctrine.md"), {}, "t")], usd=0.5)
         self.assertEqual(self.measured, [])
         self.assertTrue(got["variants"][0]["stopped"].startswith("screen:"), got)
+
+
+class Keep(unittest.TestCase):
+    def test_a_kept_branch_carries_its_patch_and_leaves_no_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, git = pathlib.Path(tmp), lambda *argv: subprocess.run(
+                ["git", *argv], cwd=tmp, check=True, capture_output=True, text=True).stdout
+            (repo / "a.txt").write_text("a\n")
+            for argv in (["init", "-q"], ["config", "user.name", "t"], ["config", "user.email", "t@example.invalid"],
+                         ["add", "-A"], ["commit", "-qm", "s"]):
+                git(*argv)
+            patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
+            row = {"variant": rnd.candidate_hash(patch, {}), "kept": "refine/v", "target": "t"}
+            with contextlib.redirect_stdout(io.StringIO()):
+                rnd.keep({"variants": [row]}, git("rev-parse", "HEAD").strip(), [("v", patch, {}, "t")], repo=repo)
+            self.assertEqual(git("show", "refine/v:a.txt"), "b\n")
+            self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)
 
 
 if __name__ == "__main__":

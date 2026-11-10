@@ -40,11 +40,9 @@ SURFACE = ("crates/runtime/src/prompts/", "crates/tools/src/hashline/prompt.md",
 # shapes and fixtures stay human-owned, and only through the gate below.
 CODE_SURFACE = ("crates/",)
 CODE_EXCLUDED = ("crates/types/",)
-GATE = os.environ.get("REFINE_GATE", "just check")
+GATE = ("just", "check")
 QUEUE = pathlib.Path.home() / ".yi" / "refine" / "queue.jsonl"
-# The environment a variant's build and gate run with: no key, token or credential reaches code a
-# model wrote; HOME stays so cargo and uv find their caches.
-KEPT_ENV = ("PATH", "HOME", "LANG", "TERM", "CARGO_HOME", "RUSTUP_HOME", "TMPDIR")
+KEPT_ENV = ("PATH", "LANG", "TERM", "TMPDIR", "CARGO_BUILD_TARGET")
 WITHHELD = ("docs/eval-ledger.md", "evals/trials")
 IMAGE = "python:3.12-slim"
 
@@ -189,8 +187,16 @@ STAGES = (("screen", "inner-economy", "development"), ("validate", "inner-capabi
           ("transfer", "tbv4", "validation"))
 
 
-def scrubbed_env():
-    return {key: os.environ[key] for key in KEPT_ENV if key in os.environ}
+def scrubbed_env(home):
+    """Invariant: no provider key in the env, and HOME is scratch, so `~` never reaches ~/.yi; only
+    the caches are shared. Not a sandbox: an absolute path still reads the owner's files."""
+    real = pathlib.Path.home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".gitconfig").write_text("[user]\n\tname = refine\n\temail = refine@example.invalid\n")
+    return {**{key: os.environ[key] for key in KEPT_ENV if key in os.environ}, "HOME": str(home),
+            "CARGO_HOME": os.environ.get("CARGO_HOME", str(real / ".cargo")),
+            "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(real / ".rustup")),
+            "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", str(real / ".cache" / "uv"))}
 
 
 def variants(sources, queue=QUEUE):
@@ -219,12 +225,11 @@ def build(base, patch, work, code):
     applied = subprocess.run(["git", "apply", "-"], cwd=work, input=patch, text=True, capture_output=True)
     if applied.returncode:
         return None, "patch_does_not_apply"
-    env = {**scrubbed_env(), **({"CARGO_BUILD_TARGET": os.environ["CARGO_BUILD_TARGET"]}
-                                if os.environ.get("CARGO_BUILD_TARGET") else {})}
-    steps = [["cargo", "build", "--profile", "dist", "-p", "yi-cli"]] + ([["sh", "-c", GATE]] if code else [])
+    env = scrubbed_env(work.parent / f"home-{work.name}")
+    steps = [["cargo", "build", "--profile", "dist", "-p", "yi-cli"]] + ([list(GATE)] if code else [])
     for step in steps:
         if subprocess.run(step, cwd=work, env=env, capture_output=True).returncode:
-            return None, "gate_red" if step[0] == "sh" else "build_red"
+            return None, "gate_red" if step == list(GATE) else "build_red"
     triple = os.environ.get("CARGO_BUILD_TARGET")
     return work / "target" / (f"{triple}/dist" if triple else "dist") / "yi", None
 
@@ -284,51 +289,74 @@ def run_round(found, base, binary, usd, split, store=STORE, dry=False, build_fn=
     for name, patch, levers_set, target in found:
         code = is_code(patch)
         variant = candidate_hash(patch, levers_set)
-        reason = s0(patch, levers_set, split, code=code)
-        reason = reason or (f"already_rejected:{rejected(variant, base, store)}" if rejected(variant, base, store) else None)
+        prior = rejected(variant, base, store)
+        reason = f"already_rejected:{prior}" if prior else s0(patch, levers_set, split, code=code)
         row = {"variant": variant, "name": name, "target": target, "code": code, "stages": []}
         report.append(row)
         if reason:
             row["refused"] = reason
+            if not prior:
+                store_verdict(store, run_id, {"kind": "verdict", "candidate": variant, "base": base, "stage": "s0",
+                                              "verdict": "rejected", "reason": reason})
             continue
         if dry:
             row["predictedUsd"] = round(sum(2 * len(registry()["suites"][suite]["groups"].get(group, [])) * prices[suite]
                                             for _, suite, group in STAGES), 2)
             continue
         work = pathlib.Path(out or tempfile.mkdtemp()) / f"work-{variant}"
-        variant_binary, refused = build_fn(base, patch, work, code)
-        if refused:
-            row["refused"] = refused
-            continue
-        for stage, suite, group in STAGES:
-            predicted = 2 * len(registry()["suites"][suite]["groups"].get(group, [])) * prices[suite]
-            if predicted > left:
-                row["stopped"] = f"{stage}: ${predicted:.2f} predicted, ${left:.2f} left of --usd"
-                break
-            base_runs, runs = measure_fn(stage, suite, group, binary, variant_binary, run_id)
-            verdict = judge_stage(stage, suite, base_runs, runs, accesses)
-            left -= verdict.get("devSpendUsd", 0.0)
-            stored = {"kind": "verdict", "candidate": variant, "base": base, "stage": stage, "suite": suite,
-                      **{k: verdict.get(k) for k in ("verdict", "reason", "road", "by", "unit", "devSpendUsd", "breakEvenTasks")}}
-            pathlib.Path(store).mkdir(parents=True, exist_ok=True)
-            with (pathlib.Path(store) / f"{run_id}.jsonl").open("a") as sink:
-                sink.write(json.dumps(stored, sort_keys=True) + "\n")
-            row["stages"].append(stored)
-            if verdict["verdict"] != "better":
-                break
-        else:
-            row["kept"] = f"refine/{variant}"
+        try:
+            variant_binary, refused = build_fn(base, patch, work, code)
+            if refused:
+                row["refused"] = refused
+                store_verdict(store, run_id, {"kind": "verdict", "candidate": variant, "base": base, "stage": "gate",
+                                              "verdict": "rejected", "reason": refused})
+                continue
+            for stage, suite, group in STAGES:
+                predicted = 2 * len(registry()["suites"][suite]["groups"].get(group, [])) * prices[suite]
+                if predicted > left:
+                    row["stopped"] = f"{stage}: ${predicted:.2f} predicted, ${left:.2f} left of --usd"
+                    break
+                base_runs, runs = measure_fn(stage, suite, group, binary, variant_binary, run_id)
+                verdict = judge_stage(stage, suite, base_runs, runs, accesses)
+                left -= verdict.get("devSpendUsd", 0.0)
+                stored = {"kind": "verdict", "candidate": variant, "base": base, "stage": stage, "suite": suite,
+                          **{k: verdict.get(k) for k in ("verdict", "reason", "road", "by", "unit", "devSpendUsd", "breakEvenTasks")}}
+                store_verdict(store, run_id, stored)
+                row["stages"].append(stored)
+                if verdict["verdict"] != "better":
+                    break
+            else:
+                row["kept"] = f"refine/{variant}"
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(work)], cwd=ROOT, capture_output=True)
     return {"base": base, "usd": usd, "leftUsd": round(left, 6), "variants": report}
 
 
-def keep(result, base):
-    """A branch per kept variant, its patch committed on the base: the owner opens and merges it."""
+def store_verdict(store, run_id, stored):
+    pathlib.Path(store).mkdir(parents=True, exist_ok=True)
+    with (pathlib.Path(store) / f"{run_id}.jsonl").open("a") as sink:
+        sink.write(json.dumps(stored, sort_keys=True) + "\n")
+
+
+def keep(result, base, found, repo=ROOT):
+    """A branch per kept variant with its patch committed on the base: the owner opens and merges it."""
+    patches = {candidate_hash(patch, levers): (patch, levers) for _, patch, levers, _ in found}
     for row in result["variants"]:
         if row.get("kept"):
+            patch, levers = patches[row["variant"]]
             work = pathlib.Path(tempfile.mkdtemp()) / "keep"
-            subprocess.run(["git", "worktree", "add", "-b", row["kept"], str(work), base], cwd=ROOT, check=True,
-                           capture_output=True)
-            print(f"kept {row['variant']}: branch {row['kept']} at {work}; commit the patch there, then `just pr open`")
+
+            def git(*argv, cwd=work, **kw):
+                return subprocess.run(["git", *argv], cwd=cwd, check=True, capture_output=True, text=True, **kw)
+            git("worktree", "add", "-b", row["kept"], str(work), base, cwd=repo)
+            try:
+                if patch.strip():
+                    git("apply", "--index", "-", input=patch)
+                git("commit", "-q", "--allow-empty", "-m", f"Apply refine variant {row['variant']}",
+                    "-m", json.dumps({"levers": levers, "target": row.get("target")}))
+            finally:
+                git("worktree", "remove", "--force", str(work), cwd=repo)
+            print(f"kept {row['variant']}: branch {row['kept']} carries it; open it with `just pr open`")
 
 
 def main(argv=None):
@@ -354,11 +382,11 @@ def main(argv=None):
             print("refused: --usd must be positive for a round that measures", file=sys.stderr)
             return 2
         split = json.loads(SPLIT.read_text())
-        result = run_round(variants(args.variant), args.base, args.binary, args.usd, split, dry=args.dry,
-                           run_id=args.run_id)
+        found = variants(args.variant)
+        result = run_round(found, args.base, args.binary, args.usd, split, dry=args.dry, run_id=args.run_id)
         print(json.dumps(result, indent=1, sort_keys=True))
         if not args.dry:
-            keep(result, args.base)
+            keep(result, args.base, found)
         return 0 if any(row.get("kept") for row in result["variants"]) else 3
     if not os.environ.get("OPENROUTER_API_KEY"):
         print("refused: OPENROUTER_API_KEY is unset", file=sys.stderr)
