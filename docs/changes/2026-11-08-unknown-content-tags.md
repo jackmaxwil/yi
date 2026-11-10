@@ -1,4 +1,6 @@
 ---
+version: 0.1019.0
+decisions: D577
 issue: Closes #2112
 cut: none crates/acp/src/update.rs
 shares: #2120 both edit crates/loop/src/run.rs: this branch clones the now non-Copy StopReason, #2120 moves StreamFn out and stamps the final reply
