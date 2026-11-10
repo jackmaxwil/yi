@@ -33,13 +33,18 @@ test:
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
       [ -z "${CI:-}" ] || profile=default
-      cargo nextest run --workspace --profile "$profile" -- --skip linked_tables
+      cargo nextest run --workspace --profile "$profile" -- --skip linked_tables --skip environment:: --skip a_thousand_spill_dirs_leave_a_contained_command_fast
     else
       scripts/test_tmp.sh cargo test --workspace -- --test-threads=1 --skip linked_tables
     fi
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
     scripts/test_tmp.sh cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
+    if command -v cargo-nextest >/dev/null; then
+      # Invariant: host Git probes and the wall-clock benchmark run after the parallel pool drains.
+      cargo nextest run -p yi-runtime --test integration --profile "$profile" --no-capture -E 'test(/environment::/)'
+      cargo nextest run -p yi-runtime --test integration --profile "$profile" -E 'test(/a_thousand_spill_dirs_leave_a_contained_command_fast/)'
+    fi
 py := `scripts/py.sh`
 
 # A local inner loop, never a gate: the generated quick profiles omit tests measured at 5 s or more.

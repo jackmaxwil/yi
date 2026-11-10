@@ -168,6 +168,40 @@ fn tool_result_is_a_function_call_output_item() -> TestResult {
 }
 
 #[test]
+fn orphan_tool_result_becomes_assistant_text() -> TestResult {
+    let mut ctx = context();
+    ctx.messages.push(AgentMessage::ToolResult {
+        tool_call_id: "missing_call|item_id".to_owned(),
+        tool_name: "bash".to_owned(),
+        content: vec![Content::Text {
+            text: "lost output".to_owned(),
+            text_signature: None,
+        }],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: false,
+        timestamp: 0,
+    });
+
+    let params = build_params(&model(true), &ctx, &OpenAiOptions::default());
+    let input = params["input"].as_array().ok_or("input array")?;
+    assert!(!input.iter().any(|item| matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("function_call_output" | "custom_tool_call_output")
+    )));
+    let note = input
+        .iter()
+        .find(|item| item["type"] == "message" && item["role"] == "assistant")
+        .ok_or("missing assistant note")?;
+    assert_eq!(
+        note["content"][0]["text"],
+        "Tool output for call_id missing_call (no matching call):\nlost output"
+    );
+    Ok(())
+}
+
+#[test]
 fn mapper_replays_typed_sse_without_done_sentinel() -> TestResult {
     let model = model(true);
     let mut mapper = EventMapper::new(&model);

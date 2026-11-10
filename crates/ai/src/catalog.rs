@@ -8,13 +8,14 @@ use yi_types::model::Model;
 /// Deflated by `build.rs`. [`Catalog::bundled`] inflates them once, behind its `OnceLock`.
 const ANTHROPIC_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/anthropic.zz"));
 const OPENAI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai.zz"));
+const OPENRELAY_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openrelay.zz"));
 const OPENROUTER_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openrouter.zz"));
 const CODEX_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai-codex.zz"));
 const GOOGLE_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/google.zz"));
 const CURSOR_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cursor.zz"));
 const KIMI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kimi.zz"));
 
-pub const PROVIDERS: [&str; 7] = yi_types::CATALOG_PROVIDERS;
+pub const PROVIDERS: [&str; 8] = yi_types::CATALOG_PROVIDERS;
 
 /// A fetched file's top-level `"schema"`. One under another is stale and rewritten by the next
 /// session; its entries still load, so a model only the fetch knows keeps resolving.
@@ -76,6 +77,7 @@ impl Catalog {
         for (provider, packed) in PROVIDERS.into_iter().zip([
             ANTHROPIC_DATA,
             OPENAI_DATA,
+            OPENRELAY_DATA,
             OPENROUTER_DATA,
             CODEX_DATA,
             GOOGLE_DATA,

@@ -149,6 +149,25 @@ fn convert_assistant(
     items
 }
 
+fn orphan_tool_result(call_id: &str, content: &[Content]) -> Value {
+    let text: String = yi_types::message::join_text(content, "\n");
+    let output = if text.is_empty() {
+        "(no tool output)"
+    } else {
+        text.as_str()
+    };
+    json!({
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{
+            "type": "output_text",
+            "text": format!("Tool output for call_id {call_id} (no matching call):\n{output}"),
+            "annotations": [],
+        }],
+    })
+}
+
 fn convert_tool_result(
     tool_call_id: &str,
     content: &[Content],
@@ -235,7 +254,9 @@ fn convert_input(model: &Model, context: &LlmContext) -> (Vec<Value>, Vec<Value>
         model,
         Some(normalize_responses_tool_call_id),
     );
-    let items = |messages: &[Cow<'_, AgentMessage>]| {
+    let mut function_calls = std::collections::BTreeSet::new();
+    let mut custom_tool_calls = std::collections::BTreeSet::new();
+    let mut items = |messages: &[Cow<'_, AgentMessage>]| {
         let mut out = Vec::new();
         for message in messages {
             match message.as_ref() {
@@ -245,19 +266,48 @@ fn convert_input(model: &Model, context: &LlmContext) -> (Vec<Value>, Vec<Value>
                     }
                 }
                 AgentMessage::Assistant { content, .. } => {
-                    out.extend(convert_assistant(content, &freeform));
+                    for item in convert_assistant(content, &freeform) {
+                        let call_id = item.get("call_id").and_then(Value::as_str);
+                        match item.get("type").and_then(Value::as_str) {
+                            Some("function_call") => {
+                                if let Some(call_id) = call_id {
+                                    function_calls.insert(call_id.to_owned());
+                                }
+                            }
+                            Some("custom_tool_call") => {
+                                if let Some(call_id) = call_id {
+                                    custom_tool_calls.insert(call_id.to_owned());
+                                }
+                            }
+                            _ => {}
+                        }
+                        out.push(item);
+                    }
                 }
                 AgentMessage::ToolResult {
                     tool_call_id,
                     tool_name,
                     content,
                     ..
-                } => out.push(convert_tool_result(
-                    tool_call_id,
-                    content,
-                    vision,
-                    freeform.contains(tool_name),
-                )),
+                } => {
+                    let is_freeform = freeform.contains(tool_name);
+                    let (call_id, _) = call_and_item(tool_call_id);
+                    let calls = if is_freeform {
+                        &custom_tool_calls
+                    } else {
+                        &function_calls
+                    };
+                    if calls.contains(call_id) {
+                        out.push(convert_tool_result(
+                            tool_call_id,
+                            content,
+                            vision,
+                            is_freeform,
+                        ));
+                    } else {
+                        out.push(orphan_tool_result(call_id, content));
+                    }
+                }
                 _ => {}
             }
         }

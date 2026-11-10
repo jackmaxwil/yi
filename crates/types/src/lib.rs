@@ -16,9 +16,10 @@ pub const PROVIDER_KEY_VARS: [(&str, &str); 4] = [
 
 /// The providers the compiled-in catalog carries, in its load order; a custom provider in
 /// `config.json` may take none of these ids.
-pub const CATALOG_PROVIDERS: [&str; 7] = [
+pub const CATALOG_PROVIDERS: [&str; 8] = [
     "anthropic",
     "openai",
+    "openrelay",
     "openrouter",
     "openai-codex",
     "google",

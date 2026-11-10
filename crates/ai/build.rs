@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for name in [
         "anthropic",
         "openai",
+        "openrelay",
         "openrouter",
         "openai-codex",
         "google",
