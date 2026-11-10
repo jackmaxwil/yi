@@ -158,6 +158,36 @@ fn follow_modes_change_only_the_following_view() {
     }
 }
 
+/// A row the cached frame hands back blank must be one the pane never draws: one row further up
+/// the view is the last view moved down a row, and a scroll past the top still draws the top.
+#[test]
+fn each_scroll_step_moves_the_view_a_row_and_the_clamped_top_draws() {
+    let mut app = seeded();
+    let mut view = |at: usize| {
+        let mut scroll = at;
+        let (rows, _) = paint(&mut app, &mut scroll);
+        let floor = |row: &String| row.contains('╭');
+        rows.into_iter()
+            .take_while(|row| !floor(row))
+            .collect::<Vec<_>>()
+    };
+    let mut last = view(0);
+    for at in 1..=40 {
+        let now = view(at);
+        assert_eq!(
+            now.get(1..),
+            last.get(..last.len().saturating_sub(1)),
+            "scroll {at}"
+        );
+        last = now;
+    }
+    let top = view(100_000);
+    assert!(
+        top.iter().any(|row| !row.trim().is_empty()),
+        "clamped top drew blank: {top:#?}"
+    );
+}
+
 /// Incident: a multi-row card committed one more row than the transcript grew, so each
 /// finished call pushed a held view up a row.
 #[test]

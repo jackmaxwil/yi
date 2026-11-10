@@ -326,10 +326,10 @@ fn item_stub(source: &str, at: usize, (first, seen): (Option<u64>, u64)) -> Stri
 fn context(seam: &Seam, tail: &str) -> String {
     // Invariant: the prefix parses the tail as prose and renders no column; an ordered marker's
     // escape sits after its digits, where a prefix `\` would print.
-    let escape = match crate::transcript::escaped(tail, true) {
-        escaped if !seam.mid || escaped == tail => "",
-        escaped if escaped.starts_with('\\') => "\\",
-        _ => "\u{200b}",
+    let escape = match seam.mid.then(|| crate::transcript::escaped(tail, true)) {
+        Some(escaped) if escaped != tail && escaped.starts_with('\\') => "\\",
+        Some(escaped) if escaped != tail => "\u{200b}",
+        _ => "",
     };
     format!("{}{escape}", seam.stub.as_deref().unwrap_or_default())
 }
@@ -720,8 +720,8 @@ impl App {
         let now = self.clock.now();
         self.close_segments(content);
         let open = content.get(self.segment..).unwrap_or_default();
-        self.live_markdown = crate::transcript::prose_of(open);
-        self.live_thought = crate::transcript::thinking_of(open);
+        crate::transcript::prose_into(open, &mut self.live_markdown);
+        crate::transcript::thinking_into(open, &mut self.live_thought);
         self.pacing.prose.on_arrival(self.live_markdown.len(), now);
         self.pacing.thought.on_arrival(self.live_thought.len(), now);
         self.step_reveal(now);

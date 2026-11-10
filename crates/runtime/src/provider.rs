@@ -526,7 +526,7 @@ fn offered(
         .map(|tool| tool.name.as_str())
         .collect();
     (tools.iter())
-        .filter(|tool| names.contains(&tool.definition().name.as_str()))
+        .filter(|tool| names.contains(&tool.name().as_ref()))
         .cloned()
         .collect()
 }
@@ -547,7 +547,7 @@ fn cursor_tool(
             if stop() {
                 return "aborted".to_owned();
             }
-            let Some(found) = tools.iter().find(|tool| tool.definition().name == name) else {
+            let Some(found) = tools.iter().find(|tool| tool.name() == name.as_str()) else {
                 return format!("unknown tool {name}");
             };
             if let Err(reason) = found.validate(&args) {

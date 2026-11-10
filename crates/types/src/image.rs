@@ -20,17 +20,33 @@ pub enum ImageDefect {
     TooWide { width: u32, height: u32 },
 }
 
+/// The ipython statements that send an image at `path` again: `attach_image` resizes one to fit,
+/// and Pillow re-encodes one of a type `attach_image` does not take; each is run by a kernel test.
+pub const RESIZE_CELL: &str = "print(await attach_image(path))";
+pub const REENCODE_CELL: &str = "import tempfile; from PIL import Image; out = tempfile.NamedTemporaryFile(suffix='.png', delete=False).name; Image.open(path).convert('RGBA').save(out); print(await attach_image(out))";
+
 impl ImageDefect {
-    /// The call that sends the image again, each one run in the kernel venv by a test.
+    /// The statement that sends the image again, `path` naming its source file.
     #[must_use]
-    pub fn remedy(self) -> &'static str {
+    pub fn cell(self) -> &'static str {
         match self {
-            Self::TooLarge { .. } | Self::TooWide { .. } => {
-                "If its source file is still on disk, run `print(await attach_image(path))` in ipython; it resizes to fit."
-            }
-            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => {
-                "If its source file is still on disk, re-encode it in ipython: `from PIL import Image; Image.open(path).convert('RGB').save(f'{path}.jpg'); print(await attach_image(f'{path}.jpg'))`."
-            }
+            Self::TooLarge { .. } | Self::TooWide { .. } => RESIZE_CELL,
+            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => REENCODE_CELL,
+        }
+    }
+
+    /// [`ImageDefect::cell`] as the sentence a refusal ends with.
+    #[must_use]
+    pub fn remedy(self) -> String {
+        match self {
+            Self::TooLarge { .. } | Self::TooWide { .. } => format!(
+                "If its source file is still on disk, run `{}` in ipython; it resizes to fit.",
+                self.cell()
+            ),
+            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => format!(
+                "If its source file is still on disk, re-encode it in ipython: `{}`.",
+                self.cell()
+            ),
         }
     }
 }
@@ -88,25 +104,77 @@ pub fn image_defect(mime_type: &str, data: &str) -> Option<ImageDefect> {
     if !whole {
         return Some(ImageDefect::NoHeader);
     }
-    let u32_at = |at: usize| head.get(at..at.saturating_add(4))?.try_into().ok();
-    let u16_at = |at: usize| head.get(at..at.saturating_add(2))?.try_into().ok();
-    let side = match mime_type {
-        "image/png" => u32_at(16)
-            .zip(u32_at(20))
-            .map(|(w, h)| (u32::from_be_bytes(w), u32::from_be_bytes(h))),
-        "image/gif" => u16_at(6).zip(u16_at(8)).map(|(w, h)| {
-            (
-                u32::from(u16::from_le_bytes(w)),
-                u32::from(u16::from_le_bytes(h)),
-            )
-        }),
-        _ => None,
-    };
-    match side {
+    match image_side(mime_type, &head) {
         Some((width, height)) if width.max(height) > MAX_IMAGE_SIDE => {
             Some(ImageDefect::TooWide { width, height })
         }
         _ => None,
+    }
+}
+
+/// The width and height an image's header names, read from `bytes` as far as they go: PNG and
+/// GIF in their first 24 bytes, WebP in its first 30, JPEG at its first frame marker.
+#[must_use]
+pub fn image_side(mime_type: &str, bytes: &[u8]) -> Option<(u32, u32)> {
+    let be = |at, len| int(bytes, at, len, true);
+    let le = |at, len| int(bytes, at, len, false);
+    let plus_one = |side: u32| side.saturating_add(1);
+    match mime_type {
+        "image/png" => be(16, 4).zip(be(20, 4)),
+        "image/gif" => le(6, 2).zip(le(8, 2)),
+        "image/webp" => match bytes.get(12..16)? {
+            b"VP8 " if bytes.get(23..26) == Some(&[0x9d, 0x01, 0x2a]) => {
+                Some((le(26, 2)? & 0x3fff, le(28, 2)? & 0x3fff))
+            }
+            b"VP8L" if bytes.get(20) == Some(&0x2f) => {
+                let bits = le(21, 4)?;
+                Some((plus_one(bits & 0x3fff), plus_one(bits >> 14 & 0x3fff)))
+            }
+            b"VP8X" => Some((plus_one(le(24, 3)?), plus_one(le(27, 3)?))),
+            _ => None,
+        },
+        "image/jpeg" => jpeg_side(bytes),
+        _ => None,
+    }
+}
+
+/// The `len`-byte unsigned integer at `at`, big- or little-endian; `len` is at most 4.
+fn int(bytes: &[u8], at: usize, len: usize, big: bool) -> Option<u32> {
+    let field = bytes.get(at..at.checked_add(len)?)?;
+    let fold = |value: u32, byte: &u8| value << 8 | u32::from(*byte);
+    Some(match big {
+        true => field.iter().fold(0, fold),
+        false => field.iter().rev().fold(0, fold),
+    })
+}
+
+/// A JPEG's size from its first start-of-frame segment, walking the segments after SOI and, as
+/// libjpeg does, past stray bytes to the next marker; [`None`] once the scan or the end comes first.
+fn jpeg_side(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut at = 2_usize;
+    loop {
+        let skipped = bytes.get(at..)?.iter().position(|&byte| byte == 0xff)?;
+        at = at.checked_add(skipped)?;
+        while bytes.get(at) == Some(&0xff) {
+            at = at.checked_add(1)?;
+        }
+        let marker = *bytes.get(at)?;
+        match marker {
+            0x00 | 0x01 | 0xd0..=0xd7 => at = at.checked_add(1)?,
+            0xd9 | 0xda => return None,
+            0xc0..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) => {
+                return int(bytes, at.checked_add(6)?, 2, true).zip(int(
+                    bytes,
+                    at.checked_add(4)?,
+                    2,
+                    true,
+                ));
+            }
+            _ => {
+                let len = usize::try_from(int(bytes, at.checked_add(1)?, 2, true)?).ok()?;
+                at = at.checked_add(1)?.checked_add(len)?;
+            }
+        }
     }
 }
 

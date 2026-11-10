@@ -7,14 +7,23 @@ pub(crate) fn text_of(content: &[Content]) -> String {
 
 /// An assistant message's text blocks, one paragraph each.
 pub(crate) fn prose_of(content: &[Content]) -> String {
-    content
-        .iter()
-        .filter_map(|c| match c {
-            Content::Text { text, .. } if !text.is_empty() => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let mut out = String::new();
+    prose_into(content, &mut out);
+    out
+}
+
+pub(crate) fn prose_into(content: &[Content], out: &mut String) {
+    out.clear();
+    for c in content {
+        if let Content::Text { text, .. } = c
+            && !text.is_empty()
+        {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(text);
+        }
+    }
 }
 
 /// Incident: a raw tab is one cell to ratatui and a tab stop to the terminal, so card rows spilled
@@ -89,14 +98,22 @@ pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String>
 }
 
 pub(crate) fn thinking_of(content: &[Content]) -> String {
-    content
-        .iter()
-        .filter_map(|c| match c {
-            Content::Thinking { thinking, .. } => Some(thinking.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::new();
+    thinking_into(content, &mut out);
+    out
+}
+
+pub(crate) fn thinking_into(content: &[Content], out: &mut String) {
+    out.clear();
+    let mut first = true;
+    for c in content {
+        if let Content::Thinking { thinking, .. } = c {
+            if !std::mem::take(&mut first) {
+                out.push('\n');
+            }
+            out.push_str(thinking);
+        }
+    }
 }
 
 pub(crate) fn user_text(content: &UserContent) -> String {

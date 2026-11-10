@@ -110,6 +110,7 @@ fn join(
     cells: &[Vec<Line<'static>>],
     first: usize,
     keep: usize,
+    (bare, shown): (usize, usize),
 ) -> (Vec<Line<'static>>, Vec<usize>) {
     let blank = Line::default();
     let mut out: Vec<(usize, &Line<'static>)> = Vec::new();
@@ -128,9 +129,15 @@ fn join(
         above = Some(rows);
     }
     let skip = out.len().saturating_sub(keep);
-    out.into_iter()
-        .skip(skip)
-        .map(|(owner, line)| (line.clone(), owner))
+    // Invariant: the `bare` rows before the last, sparing the first `shown`, are never drawn and
+    // come back blank; the last stays because join_live reads its blankness to place the seam.
+    let last = out.len().saturating_sub(1);
+    let bare = last.saturating_sub(bare.min(last.saturating_sub(shown)))..last;
+    (out.into_iter().enumerate().skip(skip))
+        .map(|(at, (owner, line))| match bare.contains(&at) {
+            true => (Line::default(), owner),
+            false => (line.clone(), owner),
+        })
         .unzip()
 }
 
@@ -355,7 +362,7 @@ impl History {
                 }
             }
             let first = start.saturating_add(from);
-            join(cells.get(from..).unwrap_or_default(), first, keep)
+            join(cells.get(from..).unwrap_or_default(), first, keep, (0, 0))
         })
     }
 
@@ -368,8 +375,8 @@ impl History {
         width: usize,
         theme: &Theme,
         mode: TranscriptMode,
-        rows: usize,
-        at_most: usize,
+        (rows, at_most): (usize, usize),
+        bare: (usize, usize),
     ) -> (usize, Vec<Line<'static>>, Vec<usize>) {
         self.rendered(width, theme, mode, (rows, at_most), |start, cells| {
             let mut held = 0usize;
@@ -382,7 +389,7 @@ impl History {
                 }
             }
             let tail = cells.get(from.saturating_sub(start)..).unwrap_or_default();
-            let (lines, owners) = join(tail, from, usize::MAX);
+            let (lines, owners) = join(tail, from, usize::MAX, bare);
             (from, lines, owners)
         })
     }

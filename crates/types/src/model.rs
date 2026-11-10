@@ -397,6 +397,19 @@ fn is_marked(value: &bool) -> bool {
     *value
 }
 
+struct Hashing(sha2::Sha256);
+
+impl std::io::Write for Hashing {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        sha2::Digest::update(&mut self.0, bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The assistant diagnostic that records [`LlmContext::stable_key`] per request (C5).
 pub const CACHE_DIAGNOSTIC: &str = "cache";
 
@@ -405,9 +418,13 @@ impl LlmContext {
     /// A change between two requests is a miss yi caused (design §7, invariant 3).
     pub fn stable_key(&self) -> String {
         use sha2::{Digest, Sha256};
-        let rendered = serde_json::json!([self.schema, self.tools, self.system_prompt]);
-        let digest = Sha256::digest(rendered.to_string().as_bytes());
-        digest
+        let mut hasher = Hashing(Sha256::new());
+        let parts = (&self.schema, &self.tools, &self.system_prompt);
+        // A tuple writes the bytes `json!([..]).to_string()` did, with no tree or string between.
+        let _infallible = serde_json::to_writer(&mut hasher, &parts);
+        hasher
+            .0
+            .finalize()
             .iter()
             .take(8)
             .map(|byte| format!("{byte:02x}"))
