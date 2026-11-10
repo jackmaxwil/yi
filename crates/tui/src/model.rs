@@ -6,7 +6,26 @@ use crate::app::{App, Bottom};
 use crate::cell::Cell;
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey};
-use crate::popup::{BottomView, PopupResult};
+use crate::popup::{BottomView, ListPopup, PopupResult};
+
+fn current_theme_name(dark: bool) -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let id = if dark { "theme.dark" } else { "theme.light" };
+    let rows = yi_runtime::settings::current(std::path::Path::new(&home)).ok()?;
+    rows.into_iter().find(|row| row.id == id).and_then(|row| {
+        row.value
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn themes_dir() -> std::path::PathBuf {
+    match std::env::var_os("HOME") {
+        Some(home) => std::path::PathBuf::from(home).join(".yi").join("themes"),
+        None => std::path::PathBuf::from(".yi").join("themes"),
+    }
+}
 
 const MAX_VISIBLE: usize = 8;
 const MORE: &str = "↑ More reasoning…";
@@ -400,6 +419,70 @@ impl App {
     pub(crate) fn select(&mut self, model: Model, effort: Effort) {
         self.selection.select(model, effort);
         self.scheduler.request();
+    }
+
+    pub fn set_theme(&mut self, mut theme: crate::colors::Theme) {
+        theme.run = self.theme.run;
+        theme.rows = self.theme.rows;
+        self.theme = theme;
+        self.scheduler.request();
+    }
+
+    pub(crate) fn open_theme_list(&mut self) {
+        let names = crate::theme_file::list(&themes_dir());
+        let current = current_theme_name(self.theme.dark);
+        self.theme_restore = Some(self.theme);
+        self.theme_warned = false;
+        let mut popup = ListPopup::new(' ', names);
+        if let Some(at) = current
+            .as_deref()
+            .and_then(|name| popup.items.iter().position(|item| item == name))
+        {
+            popup.selected = at;
+        }
+        popup.note = Some("enter saves · esc restores".to_owned());
+        self.bottom = Some(Bottom::Theme(popup));
+        self.scheduler.request();
+    }
+
+    pub(crate) fn preview_theme(&mut self, name: &str) {
+        let loaded =
+            crate::theme_file::preview(self.theme.tier, self.theme.dark, &themes_dir(), name);
+        if let Some(warning) = loaded.warning.filter(|_| !self.theme_warned) {
+            self.theme_warned = true;
+            self.notice(format!("warning: {warning}"));
+        }
+        self.set_theme(loaded.theme);
+    }
+
+    pub(crate) fn restore_theme(&mut self) {
+        self.theme_warned = false;
+        if let Some(theme) = self.theme_restore.take() {
+            self.set_theme(theme);
+        }
+    }
+
+    pub(crate) fn commit_theme(&mut self, name: &str) {
+        let dark = self.theme.dark;
+        let id = if dark { "theme.dark" } else { "theme.light" };
+        let value = if name.is_empty() || name == crate::theme_file::BUILT_IN {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(name.to_owned())
+        };
+        let Some(home) = std::env::var_os("HOME") else {
+            self.restore_theme();
+            self.notice("theme: no home directory, so the choice was not saved");
+            return;
+        };
+        self.preview_theme(name);
+        match yi_runtime::settings::save(std::path::Path::new(&home), id, value) {
+            Ok(_) => self.theme_restore = None,
+            Err(why) => {
+                self.restore_theme();
+                self.notice(format!("theme: {why}"));
+            }
+        }
     }
 
     pub fn notice(&mut self, text: impl Into<String>) {

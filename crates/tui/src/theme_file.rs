@@ -13,6 +13,47 @@ pub struct Loaded {
     pub warning: Option<String>,
 }
 
+/// The choice that keeps [`Theme::new`](crate::colors::Theme::new).
+pub const BUILT_IN: &str = "built-in";
+
+/// A theme file name is one path segment: letters, digits, `-`, `_`, and `.`.
+pub fn theme_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// `built-in`, then every `*.json` stem in `dir` whose name can be a theme file.
+pub fn list(dir: &Path) -> Vec<String> {
+    let mut names = vec![BUILT_IN.to_owned()];
+    let mut found = Vec::new();
+    if let Ok(read) = std::fs::read_dir(dir) {
+        for entry in read.flatten() {
+            let Some(file) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(stem) = file.strip_suffix(".json") else {
+                continue;
+            };
+            if theme_name_ok(stem) {
+                found.push(stem.to_owned());
+            }
+        }
+    }
+    found.sort();
+    names.extend(found);
+    names
+}
+
+/// `built-in` is the palette with no file. Any other name loads `dir/<name>.json`.
+pub fn preview(tier: ColorTier, dark: bool, dir: &Path, name: &str) -> Loaded {
+    let file = (name != BUILT_IN && theme_name_ok(name)).then(|| dir.join(format!("{name}.json")));
+    load(tier, dark, file.as_deref())
+}
+
 /// `file` is `~/.yi/themes/<name>.json`. Absent, the built-in palette is the whole answer.
 pub fn load(tier: ColorTier, dark: bool, file: Option<&Path>) -> Loaded {
     let theme = Theme::new(tier, dark);
@@ -243,6 +284,55 @@ mod tests {
         );
         let warning = loaded.warning.expect("a warning");
         assert!(warning.contains("not a color"), "{warning}");
+    }
+
+    #[test]
+    fn a_themes_dir_lists_built_in_and_the_file_stem() {
+        let dir = std::env::temp_dir().join(format!("yi-theme-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("acid.json"), "{}").unwrap();
+        std::fs::write(dir.join("..sneak.json"), "{}").unwrap();
+        let names = list(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(names, vec!["built-in".to_owned(), "acid".to_owned()]);
+    }
+
+    #[test]
+    fn a_preview_paints_the_named_file_and_built_in_restores_the_palette() {
+        let dir = std::env::temp_dir().join(format!("yi-theme-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("acid.json"),
+            r##"{"name":"acid","colors":{"accent":"#010203"}}"##,
+        )
+        .unwrap();
+        let painted = preview(ColorTier::TrueColor, true, &dir, "acid");
+        let restored = preview(ColorTier::TrueColor, true, &dir, BUILT_IN);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(painted.theme.accent, Color::Rgb(0x01, 0x02, 0x03));
+        assert!(painted.warning.is_none());
+        assert_eq!(
+            restored.theme.accent,
+            Theme::new(ColorTier::TrueColor, true).accent
+        );
+    }
+
+    #[test]
+    fn a_16_color_preview_keeps_the_named_accent() {
+        let dir = std::env::temp_dir().join(format!("yi-theme-ansi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("acid.json"),
+            r##"{"name":"acid","colors":{"accent":"#010203"}}"##,
+        )
+        .unwrap();
+        let loaded = preview(ColorTier::Ansi16, true, &dir, "acid");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(loaded.theme.accent, Color::Cyan);
+        assert!(loaded.warning.is_some());
     }
 
     #[test]

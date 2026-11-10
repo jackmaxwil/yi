@@ -57,6 +57,7 @@ pub(crate) enum Bottom {
     File(ListPopup),
     Agents(crate::agents::AgentsPopup),
     Model(Box<crate::model::ModelPopup>),
+    Theme(ListPopup),
 }
 pub type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
 pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
@@ -73,6 +74,9 @@ pub(crate) const ORB_PX: usize = 320;
 
 pub struct App {
     pub(crate) theme: Theme,
+    /// The palette from when `/theme` opened, put back on Esc.
+    pub(crate) theme_restore: Option<Theme>,
+    pub(crate) theme_warned: bool,
     pub(crate) keymap: Keymap,
     pub(crate) scheduler: FrameScheduler,
     pub(crate) composer: Composer,
@@ -229,6 +233,8 @@ impl App {
         let follow = options.follow;
         let mut app = Self {
             theme,
+            theme_restore: None,
+            theme_warned: false,
             keymap,
             scheduler: FrameScheduler::default(),
             composer: Composer::default(),

@@ -320,12 +320,7 @@ fn theme_file(dark: bool) -> Option<std::path::PathBuf> {
     if name.is_empty() {
         return None;
     }
-    let plain = !name.starts_with('.')
-        && !name.contains("..")
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    if !plain {
+    if !yi_tui::theme_file::theme_name_ok(name) {
         eprintln!("warning: theme: `{name}` is not a theme name");
         return None;
     }
