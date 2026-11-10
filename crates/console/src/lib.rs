@@ -70,6 +70,8 @@ pub struct ConsoleOptions {
     pub browser: Option<PathBuf>,
     pub chrome_pin: Option<crate::browser::Pinned>,
     pub home: Option<String>,
+    /// `~/.yi/themes/<name>.json` for this terminal's ground. Unset keeps the built-in palette.
+    pub theme_file: Option<PathBuf>,
 }
 
 pub struct DriveOptions {
@@ -276,13 +278,18 @@ fn draw<B: Backend>(
 }
 
 pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
-    let theme = Theme::new(
+    let loaded = yi_tui::theme_file::load(
         detect_tier(
             std::env::var("COLORTERM").ok().as_deref(),
             std::env::var("TERM").ok().as_deref(),
         ),
         detect_dark(std::env::var("COLORFGBG").ok().as_deref()),
+        options.theme_file.as_deref(),
     );
+    if let Some(warning) = loaded.warning {
+        eprintln!("warning: {warning}");
+    }
+    let theme = loaded.theme;
     let setup = yi_types::trace::span("console.setup");
     yi_tui::highlight::prewarm();
     let (event_tx, events) = client::events();

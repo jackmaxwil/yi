@@ -884,6 +884,7 @@ pub fn run_tui(
     ask_rx: Receiver<AskRequest>,
     options: TuiOptions,
     mut control: Option<crate::drive::Control>,
+    theme_file: Option<&std::path::Path>,
 ) -> i32 {
     crate::highlight::prewarm();
     let (ui_rx, cmd_tx, runtime_thread) =
@@ -935,7 +936,11 @@ pub fn run_tui(
         eprintln!("warning: keys config: {error}");
     }
 
-    let mut app = App::new(options, Theme::new(tier, dark), keymap, usize::from(cols));
+    let loaded = crate::theme_file::load(tier, dark, theme_file);
+    if let Some(warning) = loaded.warning {
+        eprintln!("warning: {warning}");
+    }
+    let mut app = App::new(options, loaded.theme, keymap, usize::from(cols));
     app.set_rows(usize::from(rows));
     app.kitty = yi_orb::kitty::supported();
 

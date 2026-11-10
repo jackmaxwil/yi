@@ -693,6 +693,7 @@ fn run_console(
             chrome_pin: None,
             project_order,
             home: Some(drive_home().display().to_string()),
+            theme_file: None,
         },
         DriveOptions {
             script: steps,
@@ -738,6 +739,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             chrome_pin: None,
             project_order: Vec::new(),
             home: Some(drive_home().display().to_string()),
+            theme_file: None,
         },
         DriveOptions {
             script: steps,

@@ -203,14 +203,16 @@ impl Theme {
         match token {
             Token::Plain => Style::default().fg(self.text),
             Token::Comment => self.dim_style(),
-            Token::Str => Style::default().fg(self.success),
-            Token::Number => Style::default().fg(self.orange),
+            Token::Str => Style::default().fg(self.syntax_string.unwrap_or(self.success)),
+            Token::Number => Style::default().fg(self.syntax_number.unwrap_or(self.orange)),
             Token::Keyword => Style::default()
-                .fg(self.magenta)
+                .fg(self.syntax_keyword.unwrap_or(self.magenta))
                 .add_modifier(Modifier::BOLD),
-            Token::Type => Style::default().fg(self.teal).add_modifier(Modifier::BOLD),
-            Token::Function => Style::default().fg(self.accent),
-            Token::Variable => Style::default().fg(self.magenta),
+            Token::Type => Style::default()
+                .fg(self.syntax_type.unwrap_or(self.teal))
+                .add_modifier(Modifier::BOLD),
+            Token::Function => Style::default().fg(self.syntax_function.unwrap_or(self.accent)),
+            Token::Variable => Style::default().fg(self.syntax_variable.unwrap_or(self.magenta)),
             Token::Deleted => Style::default().fg(self.error),
         }
     }
