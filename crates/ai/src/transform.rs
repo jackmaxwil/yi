@@ -1,7 +1,7 @@
 use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet};
 
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Content, StopReason, UNREAD_CONTENT, UserContent};
 use yi_types::model::{Model, SYSTEM_BLOCK_SEPARATOR};
 
 /// The assembled system prompt for a wire that takes one string: each block separator
@@ -38,6 +38,27 @@ fn downgrade_images(content: &[Content], placeholder: &str) -> Vec<Content> {
     result
 }
 
+fn has_unread(content: &[Content]) -> bool {
+    content
+        .iter()
+        .any(|block| matches!(block, Content::Other(_)))
+}
+
+fn unread_text() -> Content {
+    Content::Text {
+        text: UNREAD_CONTENT.to_owned(),
+        text_signature: None,
+    }
+}
+
+fn mark_unread(content: Vec<Content>) -> Vec<Content> {
+    let unread = |block| match block {
+        Content::Other(_) => unread_text(),
+        block => block,
+    };
+    content.into_iter().map(unread).collect()
+}
+
 pub fn normalize_anthropic_tool_call_id(id: &str) -> String {
     id.chars()
         .map(|character| {
@@ -69,12 +90,14 @@ pub fn transform_messages<'a>(
                 content: UserContent::Blocks(blocks),
                 timestamp,
                 attribution,
-            } if !vision => {
+            } if !vision || has_unread(blocks) => {
+                let blocks = if vision {
+                    blocks.clone()
+                } else {
+                    downgrade_images(blocks, "(image omitted: model does not support images)")
+                };
                 transformed.push(Cow::Owned(AgentMessage::User {
-                    content: UserContent::Blocks(downgrade_images(
-                        blocks,
-                        "(image omitted: model does not support images)",
-                    )),
+                    content: UserContent::Blocks(mark_unread(blocks)),
                     timestamp: *timestamp,
                     attribution: *attribution,
                 }));
@@ -91,18 +114,18 @@ pub fn transform_messages<'a>(
                 timestamp,
             } => {
                 let mapped = id_map.get(tool_call_id);
-                if vision && mapped.is_none() {
+                if vision && mapped.is_none() && !has_unread(content) {
                     transformed.push(Cow::Borrowed(message));
                     continue;
                 }
-                let content = if vision {
+                let content = mark_unread(if vision {
                     content.clone()
                 } else {
                     downgrade_images(
                         content,
                         "(tool image omitted: model does not support images)",
                     )
-                };
+                });
                 transformed.push(Cow::Owned(AgentMessage::ToolResult {
                     tool_call_id: mapped.cloned().unwrap_or_else(|| tool_call_id.clone()),
                     tool_name: tool_name.clone(),
@@ -197,6 +220,7 @@ pub fn transform_messages<'a>(
                                 namespace: namespace.clone(),
                             });
                         }
+                        Content::Other(_) => new_content.push(unread_text()),
                         other => new_content.push(other.clone()),
                     }
                 }

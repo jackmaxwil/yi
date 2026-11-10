@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod app;
 pub mod approval;
+pub mod budget;
 pub mod capture;
 pub mod card;
 pub mod cell;
@@ -41,6 +42,7 @@ pub mod status;
 pub mod table;
 pub mod term;
 pub mod terminal;
+pub mod thought;
 pub mod title;
 pub mod transcript;
 pub mod tree;

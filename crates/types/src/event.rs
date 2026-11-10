@@ -279,14 +279,16 @@ pub enum RunEnd {
 
 impl RunEnd {
     /// The end a run reaches when it stops on this reply's own stop reason.
-    pub fn of(stop: StopReason) -> Self {
+    pub fn of(stop: &StopReason) -> Self {
         match stop {
             StopReason::Length => Self::Length,
             StopReason::Error => Self::Error,
             StopReason::Aborted => Self::Aborted,
-            StopReason::Stop | StopReason::ToolUse | StopReason::Pending | StopReason::Deferred => {
-                Self::Stop
-            }
+            StopReason::Stop
+            | StopReason::ToolUse
+            | StopReason::Pending
+            | StopReason::Deferred
+            | StopReason::Other(_) => Self::Stop,
         }
     }
 }

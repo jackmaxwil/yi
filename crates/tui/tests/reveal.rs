@@ -286,3 +286,36 @@ fn a_hold_banks_no_budget() {
         full.len()
     );
 }
+
+/// Dies on a head drawn before any reasoning shows: a paced thought that has arrived but not
+/// been revealed drew `thinking · 0 chars`, or `thought · 0 chars`, counting nothing yet seen.
+#[test]
+fn a_thought_not_yet_revealed_draws_no_head() -> TestResult {
+    let backend = common::VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    let mut paced = app_with_pace(PACE);
+    paced.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let message = yi_runtime::faux::faux_assistant_message(
+        vec![yi_runtime::faux::faux_thinking(
+            "Weighing the two parts first.",
+        )],
+        yi_types::message::StopReason::Stop,
+    );
+    paced.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+        assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+            reason: yi_types::message::StopReason::Stop,
+            message,
+        },
+    });
+    yi_tui::render::draw(&mut paced, &mut terminal, None);
+    let rows: Vec<String> = (0..24)
+        .map(|row| terminal.backend().row_text(row))
+        .collect();
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.contains("thinking · ") || row.contains("thought · ")),
+        "{rows:#?}"
+    );
+    Ok(())
+}

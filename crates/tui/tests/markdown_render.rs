@@ -3,9 +3,10 @@ use std::error::Error;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthStr;
-use yi_tui::cell::{Cell, TranscriptMode, thought_lines};
+use yi_tui::cell::{Cell, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::markdown::render;
+use yi_tui::thought::lines as thought_lines;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -269,9 +270,10 @@ fn widths_count_columns_not_bytes() -> TestResult {
 fn a_thought_keeps_list_nesting_and_hanging_indents() -> TestResult {
     let lines = thought_lines(
         "- a\n  - b\n    - c deep item that wraps around the width",
+        None,
         30,
         &theme(),
-        TranscriptMode::Thinking,
+        TranscriptMode::Verbose,
         false,
     );
     let text: Vec<String> = lines.iter().map(flat).collect();
@@ -316,10 +318,11 @@ fn a_thought_renders_code_plain_and_reads_the_same() -> TestResult {
         .iter()
         .map(|line| format!("  {}", flat(line)).trim_end().to_owned())
         .collect();
-    let thought: Vec<String> = thought_lines(source, 60, &theme, TranscriptMode::Thinking, false)
-        .iter()
-        .map(flat)
-        .collect();
+    let thought: Vec<String> =
+        thought_lines(source, None, 60, &theme, TranscriptMode::Verbose, false)
+            .iter()
+            .map(flat)
+            .collect();
     assert_eq!(thought, expected);
     Ok(())
 }

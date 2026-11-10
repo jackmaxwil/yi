@@ -1298,8 +1298,15 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   A `spawnedBy` row waits for that antecedent, unresolved references flush at turn or replay
   settlement, and a late end appends at finish. Entry-zero replay rebuilds the same rows without
   creating live cards; eviction, resize and every transcript mode preserve them.
-- A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
-  rows then `… N more lines` when collapsed. Running tool cards reserve that bounded preview
+- One row budget, read off the screen's height, sizes reasoning and results. A live thought
+  streams its newest rows in a window of rows/4 (4..=12, never shrinking while live) under
+  `thinking · <elapsed> · <chars>`, which adds `last N rows · ctrl+o` once the window cuts;
+  settled, it commits one `thought · <elapsed> · <chars> · ctrl+o` row, never a model summary.
+  Verbose (ctrl+o) keeps thoughts whole; the console opens a folded thought beside the chat on a
+  press.
+- A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, rows/6
+  result rows (4..=12, doubled for a failed call; the whole result when it is at most one row
+  more) then `… N more lines` when collapsed, a failed cut keeping its tail after that count. Running tool cards reserve that bounded preview
   region and its elision row, so a collapsed result fills in place; child cards use a bounded
   four-row answer window, and verbose rows still use the existing row pacing.
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
@@ -1506,7 +1513,8 @@ covers, and the attribute covers the one item after it, to its matching brace or
 - Owner: [`crates/types/src`](../crates/types/src),
   [`check_schemas_lock.py`](../scripts/guardrails/check_schemas_lock.py)
 
-Versions: the session file is §4.1 (`Entry` is internally tagged, no catch-all); permission state
+Versions: the session file is §4.1 (`Entry` and `Content` are internally tagged; an unknown entry
+type, content block type or stop reason decodes to `Other`, kept raw); permission state
 `SessionPermissionState.version`, default 2; the session todo list `format`, 2, where an absent
 format is 1 and migrates on read (D282); kernel venv `BOOTSTRAP_SCHEMA = 1` (§9.1); ACP
 `protocolVersion` at `initialize` (§17.2).

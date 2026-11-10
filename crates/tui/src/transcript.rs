@@ -1,8 +1,12 @@
 use serde_json::Value;
-use yi_types::message::{Content, UserContent};
+use yi_types::message::{AgentMessage, Content, StopReason, UserContent, shown_text as shown};
 
 pub(crate) fn text_of(content: &[Content]) -> String {
-    yi_types::message::join_text(content, "\n")
+    content
+        .iter()
+        .filter_map(shown)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// An assistant message's text blocks, one paragraph each.
@@ -14,15 +18,12 @@ pub(crate) fn prose_of(content: &[Content]) -> String {
 
 pub(crate) fn prose_into(content: &[Content], out: &mut String) {
     out.clear();
-    for c in content {
-        if let Content::Text { text, .. } = c
-            && !text.is_empty()
-        {
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            out.push_str(text);
-        }
+    for text in content
+        .iter()
+        .filter_map(shown)
+        .filter(|text| !text.is_empty())
+    {
+        out.extend([if out.is_empty() { "" } else { "\n\n" }, text]);
     }
 }
 
@@ -406,5 +407,80 @@ pub fn said_in(entry: &yi_types::entry::Entry) -> Vec<(Said, String)> {
             said
         }
         _ => Vec::new(),
+    }
+}
+
+/// The parent stream's prose cells, so the appended answer can take back the ones it repeats.
+#[derive(Debug, Default)]
+pub(crate) struct AnswerTrack {
+    pub(super) parent: bool,
+    turned: bool,
+    spoke: bool,
+    appended: bool,
+    bodied: bool,
+    message: Vec<usize>,
+    /// Invariant: only uncut cells of this run's drafts: replies beside an `answer` or plain stops.
+    withheld: Vec<usize>,
+}
+
+impl AnswerTrack {
+    pub(super) fn turn(&mut self) {
+        (self.turned, self.spoke) = (true, false);
+    }
+
+    /// Opens a parent reply; an appended answer returns the draft cells it repeats.
+    pub(crate) fn open_message(&mut self, appended: bool) -> Vec<usize> {
+        (self.parent, self.appended) = (true, appended);
+        self.message.clear();
+        let withheld = std::mem::take(&mut self.withheld);
+        if !appended {
+            self.withheld = withheld;
+            return Vec::new();
+        }
+        if std::mem::take(&mut self.bodied) {
+            withheld
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Live, the loop appends the answer inside the turn whose reply called it; a stream with no
+    /// turn events marks none.
+    pub(super) fn open_live(&mut self) -> Vec<usize> {
+        let appended = std::mem::replace(&mut self.spoke, true) && self.turned;
+        self.open_message(appended)
+    }
+
+    pub(crate) fn wrote(&mut self, before: usize, after: usize) {
+        if self.parent && after > before {
+            self.message.push(before);
+        }
+    }
+
+    pub(crate) fn close_message(&mut self, message: &AgentMessage) {
+        if let AgentMessage::Assistant {
+            content,
+            stop_reason,
+            ..
+        } = message
+            && !self.appended
+        {
+            let calls = content
+                .iter()
+                .filter(|b| matches!(b, Content::ToolCall { .. }));
+            let answers = (calls.clone())
+                .any(|b| matches!(b, Content::ToolCall { name, .. } if name == ANSWER_TOOL));
+            let cut = matches!(
+                stop_reason,
+                StopReason::Length | StopReason::Error | StopReason::Aborted
+            );
+            let plain = *stop_reason == StopReason::Stop && calls.count() == 0;
+            if (answers && !cut) || plain {
+                self.bodied |= plain || answers_with_body(content);
+                self.withheld.append(&mut self.message);
+            }
+        }
+        self.message.clear();
+        (self.parent, self.appended) = (false, false);
     }
 }

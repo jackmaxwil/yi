@@ -26,7 +26,7 @@ impl App {
     pub fn advance_follow(&mut self, rows: usize) {
         let Some((width, mode, pinned, below)) = self.pane_follow else {
             if !self.pane {
-                self.pane_follow = Some((self.content_width(), self.mode, 0, rows));
+                self.pane_follow = Some((self.pane_key(), self.mode, 0, rows));
             }
             return;
         };

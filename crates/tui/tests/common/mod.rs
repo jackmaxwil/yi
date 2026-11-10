@@ -12,7 +12,7 @@ use ratatui::text::Line;
 /// handle): wraps a CrosstermBackend over a vt100::Parser to mock a real
 /// terminal without ever touching stdout — size and cursor position come
 /// from the parser.
-mod session {
+pub mod session {
     include!("session.rs");
 }
 pub use crate::tool_cell_support::flat;

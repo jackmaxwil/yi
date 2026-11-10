@@ -35,7 +35,12 @@ pub fn handle_terminal_event(
         }
         CtEvent::Resize(cols, rows) => {
             app.width = usize::from(cols);
+            let budget = crate::budget::card_rows(app.rows, false);
             app.set_rows(usize::from(rows));
+            // Settled cards are sized by the height, so a height that moves the budget rebuilds.
+            if crate::budget::card_rows(app.rows, false) != budget {
+                app.reflow.schedule_debounced(None, Instant::now());
+            }
             app.mark_orb_stale();
             app.scheduler.request();
         }

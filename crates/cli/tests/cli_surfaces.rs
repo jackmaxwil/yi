@@ -3292,7 +3292,7 @@ fn turns_script(
     let lines = turns
         .iter()
         .map(|(content, stop)| {
-            serde_json::to_string(&faux_assistant_message(content.clone(), *stop))
+            serde_json::to_string(&faux_assistant_message(content.clone(), stop.clone()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let path = workspace.project().join(format!("{name}.jsonl"));

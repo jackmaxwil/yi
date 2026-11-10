@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Number, Value};
 
 pub const ENVIRONMENT_TAG: &str = "<environment>";
@@ -8,7 +8,7 @@ pub const ENVIRONMENT_TAG: &str = "<environment>";
 pub const RAW_STOP_IN_BAND_ERROR: &str = "error";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(remote = "Self", tag = "type", rename_all = "camelCase")]
 pub enum Content {
     #[serde(rename_all = "camelCase")]
     Text {
@@ -40,6 +40,41 @@ pub enum Content {
         #[serde(skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
     },
+    /// A block `type` this build does not know, written by a newer build or by Pi; kept as written.
+    #[serde(skip)]
+    Other(UnknownContent),
+}
+
+const CONTENT_TYPES: [&str; 4] = ["text", "thinking", "image", "toolCall"];
+
+/// What a reader is shown in place of an [`Content::Other`] block; never the block's own `type`,
+/// which is file text a forged session could fill with anything.
+pub const UNREAD_CONTENT: &str = "[… 1 content block left out: its type is newer than this build, which cannot read it; the session file keeps it as written, and no call here returns it]";
+
+/// The block's object as read; it re-emits as serde_json writes it, and nothing reads inside it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UnknownContent(Map<String, Value>);
+
+impl Serialize for Content {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Other(raw) => raw.serialize(serializer),
+            known => Self::serialize(known, serializer),
+        }
+    }
+}
+
+/// Invariant: only a `type` outside [`CONTENT_TYPES`] is kept raw; a known one that does not
+/// decode reports its own missing or mistyped field.
+impl<'de> Deserialize<'de> for Content {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Map::deserialize(deserializer)?;
+        match raw.get("type").and_then(Value::as_str) {
+            Some(tag) if !CONTENT_TYPES.contains(&tag) => Ok(Self::Other(UnknownContent(raw))),
+            _ => Self::deserialize(Value::Object(raw)).map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 /// The `api` of an assistant message whose tool calls the provider already ran: the loop
@@ -114,8 +149,8 @@ pub enum UserContent {
     Blocks(Vec<Content>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", rename_all = "camelCase")]
 pub enum StopReason {
     Pending,
     Stop,
@@ -124,6 +159,29 @@ pub enum StopReason {
     Error,
     Aborted,
     Deferred,
+    /// A reason a newer build or Pi wrote; kept as written, and read as a turn that ended.
+    #[serde(skip)]
+    Other(String),
+}
+
+impl Serialize for StopReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Other(raw) => raw.serialize(serializer),
+            known => Self::serialize(known, serializer),
+        }
+    }
+}
+
+/// Invariant: a string that names no variant is kept raw; anything but a string is refused.
+impl<'de> Deserialize<'de> for StopReason {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::IntoDeserializer;
+        let raw = String::deserialize(deserializer)?;
+        let known: Result<Self, serde::de::value::Error> =
+            Self::deserialize(raw.as_str().into_deserializer());
+        Ok(known.unwrap_or(Self::Other(raw)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -355,6 +413,16 @@ pub fn join_text(blocks: &[Content], sep: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(sep)
+}
+
+/// A block's words for a reader who should know it is there: a text block's own text, and
+/// [`UNREAD_CONTENT`] for a block this build cannot read; every other kind is not text.
+pub fn shown_text(block: &Content) -> Option<&str> {
+    match block {
+        Content::Text { text, .. } => Some(text),
+        Content::Other(_) => Some(UNREAD_CONTENT),
+        Content::Thinking { .. } | Content::Image { .. } | Content::ToolCall { .. } => None,
+    }
 }
 
 /// Whether any text block carries a non-empty answer; tool calls and thinking are not text.

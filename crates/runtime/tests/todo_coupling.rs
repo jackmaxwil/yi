@@ -480,7 +480,7 @@ fn terminal_stops_are_never_re_driven_and_empty_stops_are_capped() -> TestResult
         },
     );
     for reason in [StopReason::Aborted, StopReason::Error, StopReason::Length] {
-        let message = faux_assistant_message(vec![faux_text("half")], reason);
+        let message = faux_assistant_message(vec![faux_text("half")], reason.clone());
         assert!(
             (hooks.intercept_stop)(&TurnSnapshot {
                 message: &message,

@@ -10,6 +10,11 @@ pure loop + event enum | `openai_responses::responses_params_are_not_chat_comple
 entry tree sessions (Pi byte-compat) | `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2)
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_pi_session_with_entry_types_yi_lacks_loads_keeps_its_tree_and_its_bytes`
 entry tree sessions (Pi byte-compat) | `jsonl_load::a_short_write_leaves_the_file_as_it_was`
+entry tree sessions (Pi byte-compat) | `jsonl_load::a_session_with_content_and_stop_reasons_yi_lacks_loads_and_keeps_its_bytes`
+entry tree sessions (Pi byte-compat) | `build_params_conformance::a_block_this_build_cannot_read_reaches_every_wire_as_its_notice`
+entry tree sessions (Pi byte-compat) | `resume::a_replayed_block_this_build_cannot_read_draws_its_notice_not_its_type`
+entry tree sessions (Pi byte-compat) | `primitives::a_block_this_build_cannot_read_reaches_the_summarizer_as_its_notice`
+entry tree sessions (Pi byte-compat) | `acp_unit::a_replayed_block_this_build_cannot_read_reaches_the_client_as_its_notice`
 Pi RPC mode | `rpc_protocol::responds_per_command_streams_events_and_persists_v4`
 Pi RPC mode | `rpc_protocol::a_command_in_flight_does_not_starve_the_event_stream`
 Pi RPC mode | `rpc_protocol::a_compact_in_flight_reports_compacting`
@@ -280,6 +285,11 @@ TUI | `toolcells::digests_come_from_the_typed_details_and_survive_rewording_the_
 terminal text follow | `pane_scroll::page_moves_only_in_half_page_jumps` (T0)
 TUI | `toolcells::nine_sources_are_one_row_cut_with_the_count` (T0)
 TUI | `toolcells::a_run_of_read_only_calls_commits_as_one_row` (T0)
+TUI | `streaming::a_live_thought_window_never_outgrows_its_rows_below_a_viewport_offset` (T0)
+TUI | `streaming::every_recorded_thought_settles_as_one_counted_row` (T0)
+TUI | `toolcells::a_card_one_row_past_its_budget_shows_whole_and_two_past_is_cut` (T0)
+TUI | `toolcells::a_recorded_sessions_results_fill_their_budgets` (T0)
+TUI | `drive::pressing_a_folded_thought_opens_it_beside_the_chat` (T2)
 TUI | `toolcells::a_lone_read_shows_live_as_the_cell_it_commits` (T0)
 TUI | `toolcells::a_source_wider_than_the_row_is_cut_with_an_ellipsis` (T0)
 TUI child cards | `tui_e2e::a_card_lands_under_the_cell_its_record_names` (T0)

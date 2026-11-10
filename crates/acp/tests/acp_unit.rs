@@ -880,3 +880,27 @@ fn replay_frames_close_at_the_entry_and_byte_limits() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a block a newer build wrote replayed to an editor as nothing: an ACP client drew a
+/// user prompt and a reply with no sign a block was there, where the TUI drew the notice.
+#[test]
+fn a_replayed_block_this_build_cannot_read_reaches_the_client_as_its_notice() -> TestResult {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../types/tests/fixtures/v4-unknown-content.jsonl"
+    );
+    let mut entries = Vec::new();
+    for line in std::fs::read_to_string(fixture)?.lines().skip(1) {
+        if let yi_types::wire::Mutation::Entry { entry, .. } = serde_json::from_str(line)? {
+            entries.push(entry);
+        }
+    }
+    let replayed = serde_json::to_string(&replay_updates(&entries, &mut IdMap::new(1000)))?;
+    let notices = replayed.matches(yi_types::message::UNREAD_CONTENT).count();
+    assert_eq!(
+        notices, 3,
+        "the prompt's and the reply's two; replay sends no tool results: {replayed}"
+    );
+    assert!(!replayed.contains("webSearchToolResult"), "{replayed}");
+    Ok(())
+}

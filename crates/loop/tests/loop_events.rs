@@ -1752,7 +1752,7 @@ async fn run_script(script: Vec<AgentMessage>) -> (usize, Option<StopReason>) {
         .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE))
         .count();
     let last = match collected.last() {
-        Some(AgentMessage::Assistant { stop_reason, .. }) => Some(*stop_reason),
+        Some(AgentMessage::Assistant { stop_reason, .. }) => Some(stop_reason.clone()),
         _ => None,
     };
     (retries, last)
@@ -2043,7 +2043,7 @@ async fn an_interrupt_mid_stream_ends_the_turn_instead_of_riding_it_out() {
     let reasons: Vec<StopReason> = collected
         .iter()
         .filter_map(|message| match message {
-            AgentMessage::Assistant { stop_reason, .. } => Some(*stop_reason),
+            AgentMessage::Assistant { stop_reason, .. } => Some(stop_reason.clone()),
             _ => None,
         })
         .collect();

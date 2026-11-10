@@ -62,7 +62,7 @@ fn aborted_message(partial: Option<&AgentMessage>, model: &Model) -> AgentMessag
 
 fn stop_reason_of(message: &AgentMessage) -> StopReason {
     match message {
-        AgentMessage::Assistant { stop_reason, .. } => *stop_reason,
+        AgentMessage::Assistant { stop_reason, .. } => stop_reason.clone(),
         _ => StopReason::Stop,
     }
 }
@@ -645,7 +645,7 @@ pub async fn run_loop<S: StreamFn>(
                     message,
                     tool_results: Vec::new(),
                 });
-                return end(config, emit, collected, RunEnd::of(reason)).await;
+                return end(config, emit, collected, RunEnd::of(&reason)).await;
             }
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;

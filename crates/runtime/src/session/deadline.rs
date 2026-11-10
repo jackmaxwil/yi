@@ -169,7 +169,7 @@ mod tests {
     fn texts(session: &super::super::AgentSession) -> Vec<(StopReason, String)> {
         let assistant = |message: &AgentMessage| match message {
             AgentMessage::Assistant { stop_reason, .. } => {
-                Some((*stop_reason, message.plain_text()))
+                Some((stop_reason.clone(), message.plain_text()))
             }
             _ => None,
         };
@@ -219,7 +219,7 @@ mod tests {
         assert!(ran.is_ok(), "the endless stream was never cut");
         let said = texts(&session);
         assert_eq!(
-            said.first().map(|(stop, _)| *stop),
+            said.first().map(|(stop, _)| stop.clone()),
             Some(StopReason::Aborted),
             "{said:?}"
         );
