@@ -18,7 +18,7 @@ import threading
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import BASE, ROOT, fail, test_mask
+from _common import BASE, ROOT, fail, is_public_mirror, test_mask
 from check_public_surface import rule_lines, unscanned
 
 BASELINE = BASE / "scan.json"
@@ -339,6 +339,8 @@ def selfcheck(off="", fixtures=None):
     global BASELINE
     fixtures = fixtures or {}
     errors = []
+    if not off:
+        errors.extend(mirror_input_cases())
     for tool, (cases, clean_names) in FAMILIES.items():
         findings = [row for row in fixtures.get(tool, []) if row[1] != off]
         expected = {(path, rule) for path, rules in cases.items() for rule in rules}
@@ -358,10 +360,18 @@ def selfcheck(off="", fixtures=None):
     if off == "credentials":
         origin_jobs = {("probe.yml", "probe")}
     for workflow, job in sorted(origin_jobs):
-        text = (ROOT / ".forgejo/workflows" / workflow).read_text() if off != "credentials" else (
-            "jobs:\n  probe:\n    steps:\n      - uses: actions/checkout@v4\n"
-            "        with:\n          persist-credentials: false\n"
-        )
+        if off == "credentials":
+            text = "jobs:\n  probe:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n"
+        else:
+            path = ROOT / ".forgejo/workflows" / workflow
+            if not path.is_file():
+                if is_public_mirror():
+                    if not off:
+                        print(f"skip scan selfcheck workflow {workflow}:{job} (public mirror omits .forgejo/workflows/{workflow}; run in unfiltered source checkout)")
+                else:
+                    errors.append(f"workflow audit could not find {workflow}:{job}")
+                continue
+            text = path.read_text()
         parts = text.split(f"\n  {job}:\n", 1)
         if len(parts) != 2:
             errors.append(f"workflow audit could not find {workflow}:{job}")
@@ -392,10 +402,11 @@ def selfcheck(off="", fixtures=None):
     for real in ("crates/runtime/src/memory/doc.rs", "skills/yi/session-mining/extract.py"):
         if any(fnmatch.fnmatch(real, pattern) for pattern in gitleaks_ignores()):
             errors.append(f"gitleaks skips real source: {real}")
-    deny = set(rule_lines(ROOT / "scripts/mirror/deny.txt"))
-    for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
-        if regex not in deny:
-            errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
+    if not is_public_mirror():
+        deny = set(rule_lines(ROOT / "scripts/mirror/deny.txt"))
+        for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
+            if regex not in deny:
+                errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
     argv = semgrep_args(["scripts"])
@@ -582,11 +593,33 @@ def normal_tasks(history=False):
 
 def fixture_tasks():
     config = gitleaks_config(False, "gitleaks-fixtures.toml")
-    return {
+    tasks = {
         "zizmor": lambda: zizmor(sorted((FIXTURES / "zizmor").glob("*.yml"))),
-        "gitleaks": lambda: gitleaks("dir", config, repo=FIXTURES / "gitleaks"),
         "semgrep": lambda: semgrep([FIXTURES / "semgrep"], True),
     }
+    if (FIXTURES / "gitleaks").is_dir():
+        tasks["gitleaks"] = lambda: gitleaks("dir", config, repo=FIXTURES / "gitleaks")
+    return tasks
+
+
+def source_fixture_missing(root=ROOT):
+    return not is_public_mirror(root) and not (root / "scripts/scan/fixtures/gitleaks").is_dir()
+
+
+def mirror_input_cases():
+    errors = []
+    with tempfile.TemporaryDirectory() as temp:
+        root = pathlib.Path(temp)
+        if source_fixture_missing(root):
+            errors.append("a public mirror was treated as a source checkout missing fixtures")
+        source = root / "source"
+        (source / "scripts/mirror").mkdir(parents=True)
+        if not source_fixture_missing(source):
+            errors.append("a source checkout missing gitleaks fixtures was not refused")
+        (source / "scripts/scan/fixtures/gitleaks").mkdir(parents=True)
+        if source_fixture_missing(source):
+            errors.append("a source checkout with gitleaks fixtures was refused")
+    return errors
 
 
 def main(argv):
@@ -597,6 +630,13 @@ def main(argv):
     args = parser.parse_args(argv)
     strict = bool(os.environ.get("CI"))
     if args.selfcheck:
+        if source_fixture_missing():
+            fail(["source fixture directory missing: scripts/scan/fixtures/gitleaks"], "scan selfcheck")
+            return
+        if is_public_mirror() and not (FIXTURES / "gitleaks").is_dir():
+            print("skip scan selfcheck gitleaks fixtures (public mirror omits scripts/scan/fixtures/gitleaks; run in unfiltered source checkout)")
+        if is_public_mirror():
+            print("skip scan selfcheck mirror rules (public mirror omits scripts/mirror/deny.txt; run in unfiltered source checkout)")
         findings, tools = gather(fixture_tasks(), strict)
         absent = sorted(set(FAMILIES) - tools)
         if absent:

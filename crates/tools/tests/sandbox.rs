@@ -782,7 +782,8 @@ except socket.gaierror:
 #[test]
 fn a_contained_command_has_loopback_and_no_other_network() -> TestResult {
     seatbelt()?;
-    let (_root, project, home) = workspace("network")?;
+    // Invariant: /tmp keeps the socket within Darwin's sun_path limit when TMPDIR is wrapped.
+    let (_root, project, home) = workspace_at(Path::new("/tmp"), "network")?;
     std::fs::write(project.join("probe.py"), NETWORK_PROBE)?;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -1437,41 +1438,77 @@ fn only_sandbox_exec_speaking_is_a_nested_apply_failure() {
     }
 }
 
-/// `ping` to a host past loopback fails in `sendto` with exit 2, which the exit filter skips as a
-/// shell failure; the sandbox refused it, and the hint names ICMP rather than a generic network.
+/// Probe external ICMP outside the sandbox first. Require the ICMP-specific refusal hint only
+/// when that exact command gets a reply; network-unavailable hosts still exercise other checks.
 #[test]
 fn a_refused_ping_gets_its_own_hint() -> TestResult {
     let (_root, project, home) = workspace("ping")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
-    let (code, output) = run("ping -c1 -W1 1.1.1.1", &project, Some(&sandbox))?;
-    let refusal = sandbox_refusal(
-        &sandbox,
-        &project,
-        Some(code),
-        &output,
-        "ping -c1 -W1 1.1.1.1",
-    )
-    .ok_or_else(|| format!("exit {code}: {output}"))?;
-    let hint = denial_hint(&refusal);
-    assert!(hint.contains("ICMP") && hint.contains("`ping`"), "{hint}");
+    let (host_ping, host_output) = run("ping -c1 -W1 127.0.0.1", &project, None)?;
+    let loopback_available = host_ping == 0;
+    let external_ping = "ping -c1 -W1 1.1.1.1";
+    let (host_code, host_external_output) = run(external_ping, &project, None)?;
+    let icmp_available = match host_code {
+        0 => true,
+        1 | 2 => {
+            let output = host_external_output.to_ascii_lowercase();
+            [
+                "request timeout for icmp_seq",
+                "0 packets received",
+                "network is down",
+                "network is unreachable",
+                "no route to host",
+                "operation not permitted",
+                "permission denied",
+                "host is down",
+            ]
+            .iter()
+            .any(|message| output.contains(message))
+            .then_some(false)
+            .ok_or_else(|| {
+                format!("unexpected external ping exit {host_code}: {host_external_output}")
+            })?
+        }
+        _ => {
+            return Err(format!(
+                "unexpected external ping exit {host_code}: {host_external_output}"
+            )
+            .into());
+        }
+    };
+    if icmp_available {
+        let (code, output) = run(external_ping, &project, Some(&sandbox))?;
+        let refusal = sandbox_refusal(&sandbox, &project, Some(code), &output, external_ping)
+            .ok_or_else(|| format!("exit {code}: {output}"))?;
+        let hint = denial_hint(&refusal);
+        assert!(hint.contains("ICMP") && hint.contains("`ping`"), "{hint}");
+    } else {
+        eprintln!(
+            "skipped ICMP sandbox hint check; outside ping received no reply/network unavailable: {host_external_output}"
+        );
+    }
     // Another program refused beside it: ICMP is named for none of them.
     let mixed = "ping -c1 -W1 1.1.1.1; curl -sS -m5 https://example.com";
     let (code, output) = run(mixed, &project, Some(&sandbox))?;
     let refusal = sandbox_refusal(&sandbox, &project, Some(code), &output, mixed)
         .ok_or_else(|| format!("exit {code}: {output}"))?;
     assert!(!denial_hint(&refusal).contains("ICMP"), "{refusal:?}");
-    let (code, output) = run("ping -c1 127.0.0.1", &project, Some(&sandbox))?;
-    assert_eq!(code, 0, "loopback ping works: {output}");
-    assert_eq!(
-        sandbox_refusal(
-            &sandbox,
-            &project,
-            Some(code),
-            &output,
-            "ping -c1 127.0.0.1"
-        ),
-        None
-    );
+    if loopback_available {
+        let (code, output) = run("ping -c1 -W1 127.0.0.1", &project, Some(&sandbox))?;
+        assert_eq!(code, 0, "loopback ping works: {output}");
+        assert_eq!(
+            sandbox_refusal(
+                &sandbox,
+                &project,
+                Some(code),
+                &output,
+                "ping -c1 127.0.0.1"
+            ),
+            None
+        );
+    } else {
+        eprintln!("skipped loopback ping checks; uncontained host ping failed: {host_output}");
+    }
     Ok(())
 }
 

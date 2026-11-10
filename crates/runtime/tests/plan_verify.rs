@@ -412,7 +412,7 @@ fn a_refused_case_keeps_the_cases_the_product_already_failed() -> TestResult {
     let (wrote, verdict) = refused_examples(
         "yi-verify-refused-after-failure",
         json!([{"input": 1, "expected": 1}, {"input": 2, "expected": 2}]),
-        "input=$(cat); case \"$input\" in *2*) D=\"$HOME/yi-refused-$$\"; touch \"$D\";; esac; exit 1",
+        "input=$(cat); case \"$input\" in *2*) touch \"DENIED\";; esac; exit 1",
     )?;
     assert!(!wrote, "the sandbox let the runner write into HOME");
     assert_eq!(verdict.outcome, Outcome::Fail, "{}", verdict.lines());

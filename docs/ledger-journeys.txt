@@ -56,6 +56,10 @@ check probe | `goal_e2e::a_declared_check_that_cannot_start_is_refused_not_run`
 check probe | `check_probe::a_check_whose_program_is_absent_is_refused_by_name`
 permission modes/rules/holds, deterministic auto | `decide::auto_reads_a_command_segment_by_segment`
 permission modes/rules/holds, deterministic auto | `safety::a_flag_that_runs_or_writes_is_not_read_only`
+permission modes/rules/holds, deterministic auto | `open::a_hard_link_to_a_key_file_is_refused`
+permission modes/rules/holds, deterministic auto | `decide::a_credential_read_is_named_by_glob_parent_link_and_case`
+permission modes/rules/holds, deterministic auto | `decide::recursive_search_cannot_walk_to_a_hard_linked_credential`
+permission modes/rules/holds, deterministic auto | `decide::recursive_grep_cannot_reach_a_hard_link_through_a_store_descendant_symlink`
 model auto-review M7/M8 | `auto_review::a_reviewer_denial_carries_its_evidence_and_a_request_number`
 model auto-review M7/M8 | `auto_review::an_approved_request_lets_the_identical_call_through_once`
 bash reduce (launch set) | `tools::bash_output_is_reduced_and_recoverable`
@@ -429,6 +433,7 @@ verb table, `yi --help` and completions | `cli_surfaces::a_lone_word_near_a_verb
 verb table, `yi --help` and completions | `cli_surfaces::undo_with_a_sentence_restores_nothing_and_names_the_ask`
 verb table, `yi --help` and completions | `cli_surfaces::a_verb_that_takes_no_words_refuses_one`
 verb table, `yi --help` and completions | `cli_surfaces::console_and_serve_refuse_a_flag_they_would_drop`
+verb table, `yi --help` and completions | `cli_surfaces::bare_version_skips_invalid_config_without_widening_the_fast_path`
 channels: buffer, subscriptions, adapters | `channel_e2e::a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix` (T1)
 channels: buffer, subscriptions, adapters | `channel_e2e::an_adapter_past_its_restart_intensity_stops_and_pauses_its_subscription_loudly`
 channels: buffer, subscriptions, adapters | `channel_e2e::a_halt_stops_the_adapters_and_a_resume_restores_them`

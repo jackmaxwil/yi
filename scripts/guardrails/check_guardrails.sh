@@ -57,10 +57,16 @@ after() {
   fi
   return "$rc"
 }
+public_mirror() { [ ! -d "$1/scripts/mirror" ]; }
 
 # Only this flag proves --quiet keeps a green gate's skip row while dropping the rest of its output.
 if [ "${1:-}" = --selfcheck ]; then
   N=3 QUIET=1
+  mkdir -p "$OUT/source/scripts/mirror"
+  if ! public_mirror "$OUT/public" || public_mirror "$OUT/source"; then
+    echo "FAIL public mirror detection"
+    exit 1
+  fi
   printf 'skip deny (advisory database unreachable)\nnoise\n' > "$OUT/1.out"; echo 0 > "$OUT/1.rc"
   printf 'only noise\n' > "$OUT/2.out"; echo 0 > "$OUT/2.rc"
   printf 'FAIL x\nwhy\n' > "$OUT/3.out"; echo 1 > "$OUT/3.rc"; echo 'check_x.py' > "$OUT/3.cmd"
@@ -109,6 +115,9 @@ run "$PY" scripts/guardrails/check_behavior.py
 if [ "$FAST" -eq 1 ]; then
   run echo "skip scan (--fast: pinned external scanners run in the full lane)"
   run echo "skip scan selfcheck (--fast: pinned external scanners run in the full lane)"
+elif [ ! -d scripts/scan ] && public_mirror .; then
+  run echo "skip scan (public mirror omits scripts/scan; run full check in unfiltered source checkout)"
+  run echo "skip scan selfcheck (public mirror omits scripts/scan; run full check in unfiltered source checkout)"
 else
   run "$PY" scripts/guardrails/check_scan.py
   run "$PY" scripts/guardrails/check_scan.py --selfcheck
@@ -208,7 +217,11 @@ run "$PY" scripts/guardrails/check_host_git.py --selfcheck
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
 # The GitHub release's scan (scripts/mirror/publish.sh), refuted with each check off.
-run "$PY" -I scripts/mirror/scan.py --selfcheck
+if public_mirror .; then
+  run echo "skip mirror archive scan (public mirror omits scripts/mirror; run full check in unfiltered source checkout)"
+else
+  run "$PY" -I scripts/mirror/scan.py --selfcheck
+fi
 # Prose is not exempt: check_comments.py ratchets the comment volume and prints the count, and
 # the design docs set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi
@@ -220,7 +233,7 @@ DIST=0
 if [ "$FAST" -eq 1 ]; then
   run echo "skip startup (--fast: hyperfine is most of the run)"
 elif [ -n "${CI:-}" ]; then
-  run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
+  run echo "skip startup (D68: a shared runner cannot measure a 6 ms budget)"
   run echo "skip build-dist (nothing on a CI host reads target/dist/yi)"
 else
   run scripts/build_dist.sh

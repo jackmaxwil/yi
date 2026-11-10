@@ -240,10 +240,19 @@ fn an_archive_signed_by_another_key_installs_nothing() -> TestResult {
 fn a_release_without_a_signature_says_the_sha256_is_its_only_check() -> TestResult {
     let scratch = Scratch::new("yi-install-nosig")?;
     let release_key = key(&scratch.join("keys"), "test-release")?;
-    package(&scratch, "9.9.7", "yi 9.9.7", &release_key)?;
+    let packed = package(&scratch, "9.9.7", "yi 9.9.7", &release_key)?;
+    let archive_path = packaged("9.9.7")?;
+    let (archive_exists, digest_exists) = (
+        archive_path.is_file(),
+        beside(&archive_path, ".sha256").is_file(),
+    );
     let [archive, digest, _] = unpackage("9.9.7")?;
     let (Some(archive), Some(digest)) = (archive, digest) else {
-        return Err("package.sh wrote no archive".into());
+        return Err(format!(
+            "package.sh missing archive/digest ({archive_exists}/{digest_exists}): {}",
+            text(&packed)
+        )
+        .into());
     };
     release(&scratch.join("release"), "9.9.7", &archive, &digest, None)?;
 

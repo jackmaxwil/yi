@@ -358,7 +358,7 @@ async fn a_contained_childs_kernel_creates_no_board_file() -> TestResult {
     let denied = !kernel.writes_board();
     let ran = cell(
         &kernel,
-        "import rlm\ntry:\n    rlm.put('x', {'a': 1})\n    print('put ok')\nexcept OSError as e:\n    print('denied', e.errno)".to_owned(),
+        "import rlm\ntry:\n    rlm.put('x', {'a': 1})\n    print('put ok')\nexcept OSError as e:\n    print('denied', type(e).__name__)".to_owned(),
     )
     .await;
     kernel.dispose().await;
@@ -366,7 +366,7 @@ async fn a_contained_childs_kernel_creates_no_board_file() -> TestResult {
     let _ = std::fs::remove_dir_all(&board);
     let ran = ran?;
     assert!(
-        denied && !put && ran.result.stdout.contains("denied 1"),
+        denied && !put && ran.result.stdout.contains("denied PermissionError"),
         "the board was writable ({denied}) or carried the put ({put}): {}",
         ran.result.stdout
     );

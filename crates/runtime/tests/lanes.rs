@@ -3158,6 +3158,16 @@ fn binding_the_claimed_id_again_leaves_the_lock_alone() -> TestResult {
 fn the_repository_root_is_found_once_per_directory() -> TestResult {
     let rig = Rig::new("canonical")?;
     let found = yi_runtime::lane::canonical_repo(&rig.repo).ok_or("not a repo")?;
+    #[cfg(unix)]
+    {
+        let linked_cwd = rig.root.join("linked-cwd");
+        std::os::unix::fs::symlink(&rig.repo, &linked_cwd)?;
+        assert_eq!(
+            yi_runtime::lane::canonical_repo(&linked_cwd).as_ref(),
+            Some(&found),
+            "a symlinked cwd still resolves its repository"
+        );
+    }
     let lane = rig.pool(1)?.claim("s-root", ClaimBase::Main)?;
     let moved = rig.root.join("moved.git");
     std::fs::rename(rig.repo.join(".git"), &moved)?;

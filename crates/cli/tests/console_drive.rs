@@ -118,7 +118,8 @@ fn a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_w
     let mut rows = Vec::new();
     // Invariant: a daemon per run, so the rail starts empty and `untitled` can only be this run's.
     for (name, record) in [("plain", false), ("recorded", true)] {
-        let dir = Scratch::new(&format!("yi-console-pace-{name}"))?;
+        // Invariant: /tmp keeps the socket within Darwin's sun_path limit when TMPDIR is wrapped.
+        let dir = Scratch::new_at(Path::new("/tmp"), &format!("yi-console-pace-{name}"))?;
         // At 10% pace each character outlasts a 50 ms step even in drain mode, so a frame shows part.
         let config = dir.home()?.join(".yi/config.json");
         let mut value: serde_json::Value = std::fs::read_to_string(&config)?.parse()?;

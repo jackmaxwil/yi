@@ -17,6 +17,9 @@ type Summary = Option<(String, usize, usize)>;
 /// The branch from the one HEAD reader, and the (modified, untracked) counts from `git status`.
 pub fn git_summary(cwd: &Path) -> Summary {
     let head = crate::lane::head(cwd).ok()?;
+    if crate::lane::repo_discovery_blocked(cwd) {
+        return None;
+    }
     let out = crate::lane::capture(cwd, "git", &["status", "--porcelain"], PROBE).ok()?;
     let (mut modified, mut untracked) = (0usize, 0usize);
     for line in out.lines() {

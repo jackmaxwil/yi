@@ -168,7 +168,13 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
                 300,
                 None,
             ),
-            ("buildhost-idle", "/w/buildhost", SessionStatus::Idle, 400, None),
+            (
+                "buildhost-idle",
+                "/w/buildhost",
+                SessionStatus::Idle,
+                400,
+                None,
+            ),
             ("solo-pin", "/w/solo", SessionStatus::Idle, 20, Some(3_000)),
         ],
     );

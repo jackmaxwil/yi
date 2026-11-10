@@ -82,7 +82,7 @@ def errors(bin_path, budgets, runs=50, off="", env=None):
 STAND_IN = """#!/bin/sh
 case "$HOME:$PWD" in */startup-*/home:*/startup-*/cwd) ;; *) echo "not in the scratch HOME and cwd" >&2; exit 3 ;; esac
 [ "$GIT_CEILING_DIRECTORIES/cwd" = "$PWD" ] || { echo "the cwd can see a repository above it" >&2; exit 4; }
-[ "$1" = "$SLOW" ] && sleep 0.02
+[ "$1" = "$SLOW" ] && sleep 0.1
 echo ok
 """
 
@@ -104,8 +104,10 @@ def selfcheck(off=""):
         stand_in.write_text(STAND_IN)
         stand_in.chmod(0o755)
         for slow, args in (("--version", VERSION), ("ask", ASK)):
-            found, _ = errors(stand_in, budgets, runs=3, off=off, env={"SLOW": slow})
-            if len(found) != 1 or not found[0].startswith(f"{args}: ") or " ms > 10.0 ms" not in found[0]:
+            scenario = dict.fromkeys(COMMANDS, 1_000.0)
+            scenario[args] = 50.0
+            found, _ = errors(stand_in, scenario, runs=3, off=off, env={"SLOW": slow})
+            if len(found) != 1 or not found[0].startswith(f"{args}: ") or " ms > 50.0 ms" not in found[0]:
                 errs.append(f"slow {slow}: gate said {found}, not one over-budget line for {args!r}")
         missing = f"startup budget missing required command {ASK!r}"
         renamed = "yi ask --model faux/faux-1 renamed"
