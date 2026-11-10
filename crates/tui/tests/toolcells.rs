@@ -1015,8 +1015,44 @@ fn a_failed_card_cut_past_the_runtime_elision_counts_once() -> TestResult {
     Ok(())
 }
 
+/// Dies on a failed cut the runtime had not elided: a 16-line failure on a 24-row screen kept its
+/// first eight rows and hid the last ones, where a command's error is; it keeps both ends.
+#[test]
+fn a_failed_card_cut_short_of_the_runtime_elision_keeps_its_tail() -> TestResult {
+    let mut app = app();
+    app.set_rows(24);
+    let text: Vec<String> = (1..=16).map(|n| format!("row {n}")).collect();
+    started(&mut app, "b0", "bash", "seq");
+    ended_with(
+        &mut app,
+        "b0",
+        "bash",
+        &text.join("\n"),
+        true,
+        json!({ "exitCode": 1 }),
+    );
+    let rows = common::rows_sized(&mut app, 80, 24)?;
+    let body: Vec<&str> = (rows.iter())
+        .map(|row| row.trim_start_matches('│').trim())
+        .filter(|row| row.starts_with("row ") || row.ends_with("more lines"))
+        .collect();
+    let want = [
+        "row 1",
+        "row 1",
+        "row 2",
+        "row 3",
+        "… 9 more lines",
+        "row 13",
+        "row 14",
+        "row 15",
+        "row 16",
+    ];
+    assert_eq!(body, want, "{rows:#?}");
+    Ok(())
+}
+
 /// A recorded session's 47-line `wc` table and 28-line failed scan, replayed on a 36-row screen:
-/// the table keeps its budget of rows and counts the rest, the failure keeps twice that.
+/// the table keeps its budget of rows and counts the rest, the failure twice that with its tail.
 #[test]
 fn a_recorded_sessions_results_fill_their_budgets() -> TestResult {
     let path = concat!(
@@ -1053,18 +1089,30 @@ fn a_recorded_sessions_results_fill_their_budgets() -> TestResult {
         let second = (rows.iter().position(|row| row.contains(opens)))
             .ok_or_else(|| format!("no card opening {opens}: {rows:#?}"))?;
         let at = second.checked_sub(1).ok_or("the card has no first row")?;
-        for (offset, line) in lines.iter().take(budget).enumerate() {
+        let (head, tail) = if failed {
+            (budget - 1 - budget / 2, budget / 2)
+        } else {
+            (budget, 0)
+        };
+        let kept = (lines.iter().take(head).enumerate()).chain(
+            lines
+                .iter()
+                .skip(lines.len() - tail)
+                .enumerate()
+                .map(|(n, line)| (head + 1 + n, line)),
+        );
+        for (offset, line) in kept {
             let row = rows.get(at + offset).map_or("", String::as_str);
             assert!(
                 row.contains(line.trim()),
                 "row {offset} of {opens}: {row:?} for {line:?}"
             );
         }
-        let more = format!("… {} more lines", lines.len() - budget);
-        let elision = rows.get(at + budget).map_or("", String::as_str);
+        let more = format!("… {} more lines", lines.len() - head - tail);
+        let elision = rows.get(at + head).map_or("", String::as_str);
         assert!(
             elision.contains(&more),
-            "{elision:?} after {budget} rows of {opens}"
+            "{elision:?} after {head} rows of {opens}"
         );
     }
     Ok(())

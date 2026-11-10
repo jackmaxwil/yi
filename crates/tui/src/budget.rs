@@ -49,3 +49,21 @@ pub fn shown_rows(budget: usize, total: usize) -> usize {
         budget
     }
 }
+
+/// Incident: a cut past the runtime's `… N more lines` row drew two counts, and a failed cut hid
+/// its error tail; a cut keeps the head, one recount, then the tail, or for a pass the head alone.
+pub fn cut_ends(
+    keep: usize,
+    total: usize,
+    marker: Option<usize>,
+    failed: bool,
+) -> Option<(usize, usize)> {
+    let after = marker.map_or(0, |at| at.saturating_add(1));
+    let tail = match marker {
+        _ if keep >= total => return None,
+        Some(at) if at < keep => keep.saturating_sub(at).saturating_sub(1),
+        _ if failed => (keep / 2).min(total.saturating_sub(after)),
+        _ => return None,
+    };
+    Some((keep.saturating_sub(tail).saturating_sub(1), tail))
+}

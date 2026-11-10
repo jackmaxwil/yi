@@ -1735,7 +1735,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer() -> TestResult {
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let label = committed
         .iter()
-        .position(|line| line.contains("thought ·") && line.ends_with("· 21 chars"))
+        .position(|line| line.contains("thought ·") && line.ends_with("· 21 chars · ctrl+o"))
         .ok_or("no thought row")?;
     let answer = committed
         .iter()
@@ -1769,7 +1769,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer_in_normal_mode() ->
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let label = committed
         .iter()
-        .position(|line| line.contains("thought ·") && line.ends_with("· 21 chars"))
+        .position(|line| line.contains("thought ·") && line.ends_with("· 21 chars · ctrl+o"))
         .ok_or_else(|| format!("no one-line count row: {committed:?}"))?;
     let answer = committed
         .iter()
@@ -1876,7 +1876,7 @@ fn a_thought_sliced_in_verbose_folds_to_one_count_of_all_its_chars() -> TestResu
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("thought ·") && line.ends_with("· 19 chars")),
+            .any(|line| line.contains("thought ·") && line.ends_with("· 19 chars · ctrl+o")),
         "the count covers the whole thought, not its last slice: {lines:?}"
     );
     assert!(

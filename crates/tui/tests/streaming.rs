@@ -901,7 +901,7 @@ fn a_live_thought_window_never_outgrows_its_rows_below_a_viewport_offset() -> Te
         .map(|n| format!("Step {n}: weigh the next part of the plan.\n\n"))
         .collect();
     app.reduce_agent(AgentEvent::AgentStart);
-    let (mut cut, mut held) = (0, 0);
+    let (mut cut, mut held, mut head) = (0, 0, None);
     while cut < thought.len() {
         cut = (cut + 29).min(thought.len());
         let said = thought.get(..cut).ok_or("an ASCII thought cuts anywhere")?;
@@ -926,8 +926,17 @@ fn a_live_thought_window_never_outgrows_its_rows_below_a_viewport_offset() -> Te
         assert!(window.len() <= budget, "over {budget} rows: {rows:#?}");
         assert!(window.len() >= held, "shrank from {held} rows: {rows:#?}");
         held = window.len();
+        head = rows
+            .into_iter()
+            .find(|row| row.starts_with("  thinking · "));
     }
     assert_eq!(held, budget, "a thirty-step thought fills its window");
+    let head = head.ok_or("no head row")?;
+    assert!(
+        head.trim_end()
+            .ends_with(&format!(" · last {budget} rows · ctrl+o")),
+        "the cut window names itself: {head:?}"
+    );
     app.reduce_agent(AgentEvent::MessageEnd {
         message: assistant(vec![thinking(&thought)], StopReason::Stop),
     });
@@ -940,7 +949,7 @@ fn a_live_thought_window_never_outgrows_its_rows_below_a_viewport_offset() -> Te
     assert!(
         folds
             .iter()
-            .all(|row| row.trim_end() == "  thought · 45s · 1.2k chars"),
+            .all(|row| row.trim_end() == "  thought · 45s · 1.2k chars · ctrl+o"),
         "{folds:?}"
     );
     assert!(
@@ -983,8 +992,8 @@ fn every_recorded_thought_settles_as_one_counted_row() -> TestResult {
     for (fold, thought) in folds.iter().zip(&thoughts) {
         let chars = thought.chars().count();
         let size = match chars {
-            0..1000 => format!(" · {chars} chars"),
-            _ => format!(" · {}.{}k chars", chars / 1000, chars % 1000 / 100),
+            0..1000 => format!(" · {chars} chars · ctrl+o"),
+            _ => format!(" · {}.{}k chars · ctrl+o", chars / 1000, chars % 1000 / 100),
         };
         assert!(
             fold.ends_with(&size),
@@ -997,7 +1006,9 @@ fn every_recorded_thought_settles_as_one_counted_row() -> TestResult {
         );
     }
     assert!(
-        folds.iter().any(|row| row.ends_with(" · 2.9k chars")),
+        folds
+            .iter()
+            .any(|row| row.ends_with(" · 2.9k chars · ctrl+o")),
         "{folds:#?}"
     );
     Ok(())
@@ -1061,6 +1072,21 @@ fn a_non_ascii_thought_window_never_shrinks_while_live() -> TestResult {
         held = window.len();
     }
     assert_eq!(held, budget, "a twelve-paragraph thought fills its window");
+    Ok(())
+}
+
+/// Dies on a line-start snap past a long line: the window kept only the short line after it,
+/// a third of its rows, and its height dropped mid-thought.
+#[test]
+fn a_thought_window_holds_its_rows_past_one_long_line() -> TestResult {
+    let thought = format!("{}\n{}", "weigh ".repeat(150), "check ".repeat(70));
+    let budget = yi_tui::budget::thought_rows(32);
+    let mut held = 0;
+    for window in window_frames(&thought)? {
+        assert!(window.len() >= held, "shrank from {held} rows: {window:#?}");
+        held = window.len();
+    }
+    assert_eq!(held, budget, "a long line and its tail fill the window");
     Ok(())
 }
 
@@ -1463,4 +1489,52 @@ fn a_later_answer_leaves_a_cut_off_draft() {
     stream(&mut app, "Final reply.");
     assert_eq!(history_rows(&app, "Third."), 1);
     assert_eq!(history_rows(&app, "Final reply."), 1);
+}
+
+/// A one-to-three-row screen, and one zero columns wide, under a failed 40-line card and a live
+/// thought: nothing panics, and the live area never outgrows the screen it is laid out for.
+#[test]
+fn a_tiny_screen_keeps_its_live_area_inside_its_rows() -> TestResult {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    let result: Vec<String> = (1..=40).map(|n| format!("row {n}")).collect();
+    let thought = "Step: weigh the next part of the plan.\n\n".repeat(30);
+    for (rows, width) in [(1, 80), (2, 80), (3, 80), (1, 0), (3, 0)] {
+        let mut app = app(usize::from(rows));
+        app.set_width(usize::from(width));
+        app.reduce_agent(AgentEvent::AgentStart);
+        app.reduce_agent(AgentEvent::ToolExecutionStart {
+            tool_call_id: "b0".to_owned(),
+            tool_name: "bash".to_owned(),
+            args: json!({ "command": "seq 40" }),
+        });
+        app.reduce_agent(AgentEvent::ToolExecutionEnd {
+            tool_call_id: "b0".to_owned(),
+            tool_name: "bash".to_owned(),
+            result: ToolResult {
+                content: vec![text(&result.join("\n"))],
+                details: json!({ "exitCode": 1 }),
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            },
+            is_error: true,
+        });
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![thinking(&thought)], StopReason::Stop),
+            },
+        });
+        let committed = flat(&app.take_commits());
+        let layout = yi_tui::render::layout_chat(&mut app, None, None, rows);
+        let live = layout.rows().saturating_sub(layout.floor);
+        assert!(live <= rows, "{live} live rows on a {rows}x{width} screen");
+        let area = Rect::new(0, 0, width, rows);
+        yi_tui::render::paint_chat(&app, &layout, &mut Buffer::empty(area), area);
+        assert!(
+            width == 0 || committed.iter().any(|row| row.contains("more lines")),
+            "a {rows}x{width} screen cut no card: {committed:#?}"
+        );
+    }
+    Ok(())
 }

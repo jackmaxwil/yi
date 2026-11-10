@@ -335,7 +335,7 @@ fn context(seam: &Seam, tail: &str) -> String {
 }
 
 /// Only what can fill the window's newest rows renders each frame, the whole thought being uncut:
-/// twice its cells in chars, never bytes, from a line start when one falls in the first half.
+/// twice its cells in chars, never bytes, from a line start when the cut there still keeps them.
 fn window_source(tail: &str, rows: usize, width: usize) -> std::borrow::Cow<'_, str> {
     let fenced = crate::transcript::fence_tail(tail, rows);
     if matches!(fenced, std::borrow::Cow::Owned(_)) {
@@ -359,9 +359,9 @@ fn window_source(tail: &str, rows: usize, width: usize) -> std::borrow::Cow<'_, 
         .get(from..)
         .and_then(|line| line.char_indices().nth(skip)))
     .map_or(start, |(at, _)| from.saturating_add(at));
-    let half = tail
-        .get(start..)
-        .and_then(|kept| kept.char_indices().nth(room / 2));
+    let kept = tail.get(start..).unwrap_or_default();
+    let reach = kept.chars().count().saturating_sub(room / 2);
+    let half = kept.char_indices().nth(reach);
     let half = half.map_or(tail.len(), |(at, _)| start.saturating_add(at));
     let line = (tail.get(start..half).and_then(|head| head.find('\n')))
         .map_or(start, |at| start.saturating_add(at).saturating_add(1));
@@ -535,25 +535,34 @@ impl App {
         let (width, theme) = (self.content_width(), self.theme);
         let shown = self.pacing.thought.shown();
         let text = self.live_thought.get(..shown).unwrap_or_default();
-        let head = crate::thought::head("thinking", text, self.thought_elapsed(), &theme);
         let budget = match self.mode {
             TranscriptMode::Normal => 0,
             _ => crate::budget::thought_rows(self.rows).max(self.thought_rows),
         };
         let tail = text.get(self.live_thought_cut..).unwrap_or_default();
         let source = window_source(tail, budget, width);
+        let whole = self.live_thought_cut == 0
+            && matches!(source, std::borrow::Cow::Borrowed(kept) if kept.len() == tail.len());
         let tail = crate::transcript::close_spans(&source);
         let rows =
             crate::thought::lines(&tail, None, width, &theme, TranscriptMode::Verbose, false);
+        let whole = whole && rows.len() <= budget;
         let rows = crate::render::keep_last(rows, budget);
         self.thought_rows = self.thought_rows.max(rows.len());
+        let cut = match rows.len() {
+            _ if whole => String::new(),
+            0 => crate::thought::FOLDED.to_owned(),
+            kept => format!(" · last {kept} rows{}", crate::thought::FOLDED),
+        };
+        let head = crate::thought::head("thinking", text, self.thought_elapsed(), &cut, &theme);
         std::iter::once(head).chain(rows).collect()
     }
 
     pub(crate) fn thought_block(&self, slice: &str, took: Option<u64>) -> Vec<Line<'static>> {
         let (width, theme, mode) = (self.content_width(), &self.theme, self.mode);
         if mode != TranscriptMode::Verbose {
-            return vec![crate::thought::head("thought", slice, took, theme)];
+            let folded = crate::thought::FOLDED;
+            return vec![crate::thought::head("thought", slice, took, folded, theme)];
         }
         let seam = &self.live_thought_seam;
         let slice = crate::transcript::escaped(slice, seam.mid);

@@ -7,10 +7,17 @@ use crate::markdown;
 use crate::wrap::wrap_line;
 
 const THOUGHT_INDENT: &str = "  ";
+pub(crate) const FOLDED: &str = " · ctrl+o";
 
-/// A thought's one-line face, `thought · 24s · 8.3k chars`: counted, never summarised, so the
-/// row says nothing the thought did not; `took` is its live milliseconds, which replay lacks.
-pub fn head(word: &str, markdown: &str, took: Option<u64>, theme: &Theme) -> Line<'static> {
+/// A thought's one-line face, `thought · 24s · 8.3k chars · ctrl+o`, counted, never summarised;
+/// `cut` names what it hides from ctrl+o's verbose view, `took` the live ms replay lacks.
+pub fn head(
+    word: &str,
+    markdown: &str,
+    took: Option<u64>,
+    cut: &str,
+    theme: &Theme,
+) -> Line<'static> {
     let chars = markdown.chars().count();
     let size = match chars {
         0..1000 => count_label(chars, "char"),
@@ -18,7 +25,7 @@ pub fn head(word: &str, markdown: &str, took: Option<u64>, theme: &Theme) -> Lin
     };
     let when = took.map_or_else(String::new, |ms| format!(" · {}", elapsed_label(ms)));
     let style = theme.dim_style().add_modifier(Modifier::ITALIC);
-    Line::from(Span::styled(format!("  {word}{when} · {size}"), style))
+    Line::from(Span::styled(format!("  {word}{when} · {size}{cut}"), style))
 }
 
 /// Reasoning prose, dim and italic, with nothing over it: the style is the label. `header`
@@ -33,7 +40,7 @@ pub fn lines(
 ) -> Vec<Line<'static>> {
     let style = theme.dim_style().add_modifier(Modifier::ITALIC);
     if mode != TranscriptMode::Verbose {
-        return vec![head("thought", markdown, took, theme)];
+        return vec![head("thought", markdown, took, FOLDED, theme)];
     }
     let mut out = Vec::new();
     if header {

@@ -359,22 +359,19 @@ impl ToolCell {
                 let budget = crate::budget::card_rows(theme.rows, failed);
                 let keep = crate::budget::shown_rows(budget, body.len());
                 let cut = keep < body.len();
-                // Incident: a cut past the runtime's `… N more lines` row drew two counts, the
-                // second off by that row; the cut keeps the head, one recount, then the tail.
                 let elision = |row: &Line| {
                     let [span] = row.spans.as_slice() else {
                         return false;
                     };
                     span.content.starts_with("… ") && span.content.ends_with(" more lines")
                 };
-                let marker = cut.then(|| body.iter().position(elision)).flatten();
-                match marker.filter(|marker| *marker < keep) {
-                    Some(marker) => {
-                        let tail = keep.saturating_sub(marker).saturating_sub(1);
-                        let real = marker.saturating_add(tail);
+                let marker = body.iter().position(elision);
+                match crate::budget::cut_ends(keep, body.len(), marker, failed) {
+                    Some((head, tail)) => {
+                        let real = head.saturating_add(tail);
                         let hidden = self.lines_total().saturating_sub(real);
                         let mut rows: Vec<Line<'static>> =
-                            body.get(..marker).unwrap_or_default().to_vec();
+                            body.get(..head).unwrap_or_default().to_vec();
                         rows.push(Line::from(Span::styled(
                             format!("… {hidden} more lines"),
                             theme.dim_style(),
