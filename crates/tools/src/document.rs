@@ -79,7 +79,7 @@ pub(crate) fn describe(base: &str, formats: &[String]) -> String {
 }
 
 pub(crate) fn has_nul(bytes: &[u8]) -> bool {
-    bytes.iter().take(HEAD).any(|byte| *byte == 0)
+    bytes.get(..HEAD).unwrap_or(bytes).contains(&0)
 }
 
 fn after_bom(bytes: &[u8]) -> &[u8] {

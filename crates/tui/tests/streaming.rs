@@ -883,3 +883,227 @@ fn a_thought_in_an_open_fence_shows_its_last_lines() {
         "{rows:?}"
     );
 }
+
+const BODY: &str = "First paragraph of the reply.\n\nSecond paragraph of the reply.\n\nThird.";
+
+fn answer_call(text: Option<&str>) -> Content {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("summary".to_owned(), json!("Done: the reply."));
+    if let Some(text) = text {
+        arguments.insert("text".to_owned(), json!(text));
+    }
+    Content::ToolCall {
+        id: "call_answer".to_owned(),
+        name: "answer".to_owned(),
+        arguments,
+        thought_signature: None,
+        namespace: None,
+    }
+}
+
+/// Streams `BODY` as prose in its own turn, then ends the message on `call`; `accepted` runs the
+/// answer tool with that verdict.
+fn prose_then_answer(app: &mut App, call: Content, stop: StopReason, accepted: Option<bool>) {
+    app.reduce_agent(AgentEvent::TurnStart);
+    app.reduce_agent(AgentEvent::MessageStart {
+        message: assistant(Vec::new(), StopReason::Stop),
+    });
+    for (at, ch) in BODY.char_indices() {
+        let grown = BODY.get(..at + ch.len_utf8()).unwrap_or_default();
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![text(grown)], StopReason::Stop),
+            },
+        });
+    }
+    let whole = vec![text(BODY), call];
+    app.reduce_agent(AgentEvent::MessageUpdate {
+        assistant_message_event: AssistantMessageEvent::Start {
+            partial: assistant(whole.clone(), stop),
+        },
+    });
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: assistant(whole, stop),
+    });
+    if let Some(accepted) = accepted {
+        answer_ran(app, accepted);
+    }
+}
+
+fn answer_ran(app: &mut App, accepted: bool) {
+    app.reduce_agent(AgentEvent::ToolExecutionStart {
+        tool_call_id: "call_answer".to_owned(),
+        tool_name: "answer".to_owned(),
+        args: json!({}),
+    });
+    let said = if accepted {
+        "Answer delivered; the turn ends."
+    } else {
+        "Refused: say more."
+    };
+    app.reduce_agent(AgentEvent::ToolExecutionEnd {
+        tool_call_id: "call_answer".to_owned(),
+        tool_name: "answer".to_owned(),
+        result: ToolResult {
+            content: vec![text(said)],
+            details: serde_json::Value::Null,
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: !accepted,
+    });
+}
+
+fn history_rows(app: &App, needle: &str) -> usize {
+    flat(&app.reflowed(100_000))
+        .iter()
+        .filter(|row| row.contains(needle))
+        .count()
+}
+
+/// Prose that streamed into scrollback before its `answer` body was accepted leaves it once the
+/// loop appends the answer inside the same turn; that copy is the reply's one.
+#[test]
+fn an_accepted_answer_takes_back_the_prose_that_streamed_beside_it() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    prose_then_answer(
+        &mut app,
+        answer_call(Some(BODY)),
+        StopReason::ToolUse,
+        Some(true),
+    );
+    stream(&mut app, BODY);
+    assert_eq!(history_rows(&app, "First paragraph"), 1);
+    assert_eq!(history_rows(&app, "Third."), 1);
+}
+
+/// After the last word the loop fails the call yet still appends its answer: one copy.
+#[test]
+fn an_answer_appended_after_the_last_word_shows_once() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    prose_then_answer(
+        &mut app,
+        answer_call(Some(BODY)),
+        StopReason::ToolUse,
+        Some(false),
+    );
+    stream(&mut app, BODY);
+    assert_eq!(history_rows(&app, "Third."), 1);
+}
+
+/// A refused answer leaves its prose whole, the tail that had not committed included.
+#[test]
+fn a_refused_answer_keeps_every_row_of_its_prose() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    prose_then_answer(
+        &mut app,
+        answer_call(Some(BODY)),
+        StopReason::ToolUse,
+        Some(false),
+    );
+    app.reduce_agent(AgentEvent::TurnStart);
+    stream(&mut app, "Let me say more.");
+    assert_eq!(history_rows(&app, "Third."), 1);
+}
+
+/// A refused body resubmitted by a summary alone is appended as the held draft, so both drafts
+/// leave scrollback for it.
+#[test]
+fn a_resubmitted_draft_shows_once() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    prose_then_answer(
+        &mut app,
+        answer_call(Some(BODY)),
+        StopReason::ToolUse,
+        Some(false),
+    );
+    prose_then_answer(&mut app, answer_call(None), StopReason::ToolUse, Some(true));
+    stream(&mut app, BODY);
+    assert_eq!(history_rows(&app, "Third."), 1);
+}
+
+/// A message cut off mid-answer runs no answer, so the prose the reader saw stays, tail included.
+#[test]
+fn a_cut_off_answer_leaves_the_streamed_prose() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    prose_then_answer(&mut app, answer_call(Some(BODY)), StopReason::Length, None);
+    assert_eq!(history_rows(&app, "Third."), 1);
+}
+
+/// A summary alone heads the prose beside it, so that prose is the body and stays whole.
+#[test]
+fn a_summary_only_answer_keeps_its_prose_as_the_body() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    prose_then_answer(&mut app, answer_call(None), StopReason::ToolUse, Some(true));
+    stream(&mut app, "Done: the reply.");
+    assert_eq!(history_rows(&app, "Third."), 1);
+}
+
+/// A focused child's reply committed while the parent streams is the child's, and the parent's
+/// appended answer leaves it.
+#[test]
+fn an_accepted_answer_leaves_a_focused_childs_reply() {
+    let mut app = app(40);
+    app.set_focus(Some("sub-x".to_owned()));
+    app.reduce_agent(AgentEvent::AgentStart);
+    app.reduce_agent(AgentEvent::TurnStart);
+    app.reduce_agent(AgentEvent::MessageStart {
+        message: assistant(Vec::new(), StopReason::Stop),
+    });
+    app.reduce_child(
+        "sub-x",
+        AgentEvent::MessageEnd {
+            message: assistant(vec![text("The child says hello.")], StopReason::Stop),
+        },
+    );
+    let whole = vec![text(BODY), answer_call(Some(BODY))];
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: assistant(whole, StopReason::ToolUse),
+    });
+    answer_ran(&mut app, true);
+    stream(&mut app, BODY);
+    assert_eq!(history_rows(&app, "The child says hello."), 1);
+}
+
+/// A reply of its own turn that carries only `call`, so no prose streams beside it.
+fn answer_alone(app: &mut App, call: Content) {
+    app.reduce_agent(AgentEvent::TurnStart);
+    app.reduce_agent(AgentEvent::MessageStart {
+        message: assistant(Vec::new(), StopReason::Stop),
+    });
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: assistant(vec![call], StopReason::ToolUse),
+    });
+    answer_ran(app, true);
+}
+
+/// A plain reply the stop check held is the draft a summary alone resubmits: one copy.
+#[test]
+fn a_held_plain_reply_resubmitted_by_a_summary_shows_once() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    app.reduce_agent(AgentEvent::TurnStart);
+    stream(&mut app, BODY);
+    answer_alone(&mut app, answer_call(None));
+    stream(&mut app, BODY);
+    assert_eq!(history_rows(&app, "Third."), 1);
+}
+
+/// A draft cut off mid-answer was never judged, so a later accepted answer leaves it.
+#[test]
+fn a_later_answer_leaves_a_cut_off_draft() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    prose_then_answer(&mut app, answer_call(Some(BODY)), StopReason::Length, None);
+    answer_alone(&mut app, answer_call(Some("Final reply.")));
+    stream(&mut app, "Final reply.");
+    assert_eq!(history_rows(&app, "Third."), 1);
+    assert_eq!(history_rows(&app, "Final reply."), 1);
+}

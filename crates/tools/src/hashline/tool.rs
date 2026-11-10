@@ -529,12 +529,13 @@ impl HashlineReadTool {
         };
         let file_bytes = raw.len();
         let normalized = normalize_to_lf(strip_bom(raw).text);
-        let all_lines: Vec<&str> = normalized.split('\n').collect();
+        let line_total = normalized.matches('\n').count() + 1;
         let line_count = if normalized.ends_with('\n') {
-            all_lines.len().saturating_sub(1)
+            line_total.saturating_sub(1)
         } else {
-            all_lines.len()
+            line_total
         };
+        let all_lines = || -> Vec<&str> { normalized.split('\n').collect() };
         let explicit_limit = match integer_argument(input, "limit") {
             Ok(limit) => limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
             Err(message) => return invalid(message),
@@ -558,7 +559,7 @@ impl HashlineReadTool {
                     display_path,
                     resolve_as,
                     &normalized,
-                    &all_lines[..line_count],
+                    &all_lines()[..line_count],
                     needle,
                 ) {
                     Ok(found) => Some(found),
@@ -591,6 +592,8 @@ impl HashlineReadTool {
         let mut byte_capped_at: Option<u64> = None;
         let mut previous_end: Option<usize> = None;
         let mut shown_end = 0_usize;
+        // Invariant: `read_windows` sorts and merges, so one forward pass serves every window.
+        let (mut source, mut at) = (normalized.split('\n'), 0_usize);
         'windows: for &(start, end) in &windows {
             if let Some(previous) = previous_end
                 && start > previous + 1
@@ -599,9 +602,10 @@ impl HashlineReadTool {
             }
             previous_end = Some(end);
             for index in (start - 1)..end {
-                let Some(line) = all_lines.get(index) else {
-                    continue;
+                let Some(line) = index.checked_sub(at).and_then(|skip| source.nth(skip)) else {
+                    break;
                 };
+                at = index + 1;
                 let number = index as u64 + 1;
                 if spent >= budget {
                     byte_capped_at = Some(number);
@@ -610,7 +614,7 @@ impl HashlineReadTool {
                 let (text, was_clipped) = if on_disk {
                     crate::tool::clip(line, READ_LINE_CLIP)
                 } else {
-                    ((*line).to_owned(), false)
+                    (line.to_owned(), false)
                 };
                 spent = spent.saturating_add(text.len());
                 rows.push(format_numbered_line(number, &text));
@@ -632,7 +636,7 @@ impl HashlineReadTool {
         let to_end =
             found.is_none() && !input.contains_key("limit") && !input.contains_key("ranges");
         let program = (context.program).then(|| {
-            super::values::program_lines(&all_lines[..line_count], to_end, &windows, context.fuse)
+            super::values::program_lines(&all_lines()[..line_count], to_end, &windows, context.fuse)
         });
         let mut state = lock_state(&self.state);
         let tag = state.snapshots.record(&canonical, &normalized, Some(&seen));

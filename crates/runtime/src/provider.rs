@@ -343,6 +343,10 @@ impl StreamFn for ProviderStream {
         self.advice()
             .is_none_or(|advice| advice.tail(yi_session::now_ms(), &route))
     }
+
+    fn now_ms(&self) -> Option<u64> {
+        Some(yi_session::now_ms())
+    }
 }
 
 impl ProviderStream {
@@ -377,6 +381,10 @@ impl StreamFn for ArmedStream<'_> {
 
     fn cache_ttl(&self, model: &Model) -> yi_types::model::Ttl {
         self.provider.cache_ttl(model)
+    }
+
+    fn now_ms(&self) -> Option<u64> {
+        self.provider.now_ms()
     }
 }
 

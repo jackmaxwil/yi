@@ -12,7 +12,7 @@
     {
       "id": "long-todo-label",
       "road": "#474 a todo the renderer cut at 80 chars cannot be named back",
-      "prompt": "Set up a todo list with exactly these three items, verbatim:\n- `gateway`: trace the root failure behind an alert in an interleaved multi-process log file\n- `billing`: reconcile the ledger against the daily settlement export\n- `quota`: report the first daily quota breach per account\nThen do the first item's work in miniature: write a file `gateway.md` with one sentence saying what such a trace would need. Then mark that first todo done with evidence, naming it by its label rather than its id.",
+      "prompt": "Set up a todo list with exactly these three items, verbatim, one per line:\n`gateway`: trace the root failure behind an alert in an interleaved multi-process log file\n`billing`: reconcile the ledger against the daily settlement export\n`quota`: report the first daily quota breach per account\nThen do the first item's work in miniature: write a file `gateway.md` with one sentence saying what such a trace would need. Then mark that first todo done with evidence, naming it by its label rather than its id.",
       "timeoutSec": 420,
       "seed": {},
       "clean": {"files": ["gateway.md"], "noRefusalsFrom": ["todo"]}

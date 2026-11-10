@@ -49,6 +49,17 @@ pub(crate) fn result_preview(text: &str, details: &Value) -> Vec<String> {
     rows.into_iter().map(show_controls).collect()
 }
 
+/// The tool whose call ends a turn; its draft becomes the reply, so it draws no card.
+pub(crate) const ANSWER_TOOL: &str = "answer";
+
+/// An `answer` with a `text` body replaces the prose beside it; a summary alone heads that prose.
+pub(crate) fn answers_with_body(content: &[Content]) -> bool {
+    content.iter().any(|block| {
+        matches!(block, Content::ToolCall { name, arguments, .. } if name == ANSWER_TOOL
+            && arguments.get("text").and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty()))
+    })
+}
+
 /// The head says what ran and the tail how it ended, and a command's error is
 /// in the tail — keeping ten head lines dropped the half worth reading.
 pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
