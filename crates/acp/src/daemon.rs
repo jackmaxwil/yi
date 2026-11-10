@@ -1078,6 +1078,19 @@ mod tests {
         .map_err(|_| format!("no failure letter answered {request}"))
     }
 
+    /// A client sees a worker's update as the worker wrote it; a re-serialized relay would
+    /// reorder keys and respace the line.
+    #[test]
+    fn a_plain_update_reaches_an_attached_client_byte_for_byte() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        let (sink, mut seen) = mpsc::channel(4);
+        supervisor.clients.insert(7, sink);
+        let line = r#"{"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"h\u00e9 "}},"sessionId":"pinned"},"jsonrpc":"2.0", "method":"session/update"}"#;
+        supervisor.relay_notification("/repo".to_owned(), "pinned".to_owned(), line.to_owned());
+        assert_eq!(seen.try_recv().map_err(|e| e.to_string())?, line);
+        Ok(())
+    }
+
     /// Dies with a dead worker's pinned row still attached or still running, which lists a
     /// session nothing serves as Working forever; the root's unpinned row goes with the worker.
     #[test]

@@ -113,6 +113,15 @@ mod tests {
     }
 
     #[test]
+    fn a_data_line_split_across_chunks_arrives_whole() {
+        let mut decoder = SseDecoder::default();
+        assert!(decoder.feed("data: ab").is_empty());
+        let events = decoder.feed("c\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "abc");
+    }
+
+    #[test]
     fn trailing_event_without_blank_line_flushes_on_finish() {
         let mut decoder = SseDecoder::default();
         let mut events = decoder.feed("data: tail");
