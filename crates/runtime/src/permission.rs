@@ -473,12 +473,6 @@ impl PermissionBroker {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
     }
 
-    pub fn clear_holds(&self) {
-        if let Ok(mut holds) = self.holds.lock() {
-            holds.clear();
-        }
-    }
-
     /// Headless, an Ask degrades to a denial carrying the evidence, never a
     /// silent terminal error.
     pub fn decide_call(

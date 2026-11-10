@@ -1,0 +1,16 @@
+{
+  "files": {
+    "har-api/SKILL.md": "8546f9a0d6c2537be5ab68a12843358fb2daeae81bea51464a4febf8a0b49575",
+    "har-async/SKILL.md": "2a7f63f7b1c9167720d0e17b7f6f38fb128dffcece95448ce75f4a5c91eacdce",
+    "har-concurrent/SKILL.md": "1d79edb8f89bcbe96e457414b58c51eadb900974554c2900cfd957f9765842f7",
+    "har-hot-path/SKILL.md": "04983a3fe519c553ae0161b4edaf4b34dc9f2bfb71c39864bf1d01cc0976637d",
+    "har-io/SKILL.md": "9856591cada3f668158e794036345fe9dc640b5e01312d3c37c2e2e3296c0979",
+    "har-layout/SKILL.md": "3dd943d71c41d4320cca3a2e5bcb812cb09860b76a4090a0b087004107e4f49d",
+    "har-supply/SKILL.md": "1a63c3021e5d164384c6e5557e87df63c9fa6d654669e9ea01b37d3cd8b78b85",
+    "har-target/SKILL.md": "4985cb3be464329f78bab7312f8109500804e2820c72ce92a1f0e857959a6711",
+    "har-threat/SKILL.md": "96428d47dd5b52be273ac9ce6cd5aa9e3e998bb3bd06d38ae2e8bcffbcef8214",
+    "har-unsafe/SKILL.md": "2320fc134c1c8dee45635be976f24b590ffd8c1a1756693d13f411a6b9f96fb2",
+    "har-verify/SKILL.md": "aeb79ad43a7f04603f76aa3dc5f63fd1ba07a7326354cacc91862403e9aa3262",
+    "har/SKILL.md": "b604e494afebd6f2a3b61a8ee0e92dfd0ae9e981983224c29ca3c2daee78c9e4"
+  }
+}

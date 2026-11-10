@@ -1,6 +1,6 @@
 ---
 name: har-api
-description: Rust API and ownership shape — generics vs dyn Trait, standard traits to derive, From/Into and builders, Drop and RAII, lifetimes and the borrow-checker ladder, Rc/RefCell/Cow choices, iterator and combinator idioms, thiserror vs anyhow, visibility, method naming, docs. Load when designing a type, trait, or public interface.
+description: Rust API and ownership shape — generics vs dyn Trait, dyn compatibility and upcasting, sealed and extension traits, RPITIT and edition-2024 RPIT capture, standard traits to derive, must_use, From/Into and builders, Drop and RAII, lifetimes and the borrow-checker ladder, Rc/RefCell/Cow choices, iterator and combinator idioms, thiserror and error source chains, visibility, MSRV, semver. Load when designing a type, trait, or public interface.
 ---
 
 # API and ownership shape
@@ -14,21 +14,44 @@ description: Rust API and ownership shape — generics vs dyn Trait, standard tr
 | Dispatch | static, monomorphized | vtable, two derefs |
 | Binary size / compile time | one copy per type, slower build | one copy, faster build |
 | Multiple bounds | free (`T: Debug + Draw`) | needs an invented combined trait |
-| Upcast to a supertrait | works | does not |
+| Upcast to a supertrait | works | works since Rust 1.86 |
 | Heterogeneous collection | impossible | the reason it exists |
 | Type known only at runtime | no | yes |
-| Constraints | none | no generic methods, no `-> Self` |
+| Constraints | none | no generic methods, no `-> Self`, no GATs, no `async fn` |
 
 Default to generics. Switch to `dyn` for a heterogeneous collection or a type unknown until runtime. Switch for code size or build time **only after measuring**.
 
-Object safety: no generic methods, no method returning `Self` or a `Self`-containing type. `where Self: Sized` exempts one method and keeps the rest of the trait object-safe.
+**Dyn compatibility** (the Reference's current name for what was called object safety): no generic methods, no method returning `Self` or a `Self`-containing type, no generic associated types, no `async fn` or RPITIT method. `where Self: Sized` exempts one method and keeps the rest of the trait dyn-compatible. Since **1.86** a `dyn Sub` coerces directly to `dyn Super` for a declared supertrait — through `&`, `Rc`, `Arc`, and raw pointers — so do not add an `as_super()` method for that alone. Below that MSRV the explicit upcast method is still required.
 
 | `impl Trait` position | Means | Use when | Don't |
 | --- | --- | --- | --- |
-| Argument `fn f(x: impl Draw)` | anonymous generic param; caller cannot turbofish | the bound appears once and is never named | the bound appears twice, or the caller must pick the type |
+| Argument `fn f(x: impl Draw)` | anonymous type parameter; caller cannot turbofish | the bound appears once and is never named | the bound appears twice, the caller must pick the type, or an RPIT `use<..>` list must name the parameter |
 | Return `fn f() -> impl Iterator<Item = u8>` | one hidden concrete type | returning a closure or an adapter chain | branches return different concrete types — that needs `Box<dyn Trait>` |
 
-Few required methods, many provided ones: implementor cost is the scarce resource, `Iterator` is the shape to copy (one `next`, fifty provided). A provided method may carry its own bound so it appears only for qualifying types. Adding a defaulted method later is non-breaking except for name collisions.
+Swapping argument-position `impl Trait` for a named generic, or back, changes the caller's generic-argument interface. It is a semver-sensitive edit, not a refactor.
+
+**RPIT capture is edition-dependent.** In edition 2024 a free function or inherent method returning `impl Trait` captures **all** in-scope lifetime, type and const parameters by default; before 2024 it captured only lifetimes named in the bounds. That changes what the caller may still borrow. Write `+ use<'a, T>` (stable since 1.82) for a deliberate capture set, and run the `impl_trait_overcaptures` lint when migrating an edition. Never reach for the old `Captures` trait or an `outlives` trick.
+
+**`async fn` and RPITIT in a public trait are a permanent commitment.** Both are stable since 1.75 and both make the trait not dyn-compatible. Worse: the returned opaque future carries no `Send` bound, callers cannot add one, and you cannot relax or add one later without a major break. So decide before publishing:
+
+| Need | Shape |
+| --- | --- |
+| Static dispatch, futures stay on one thread | native `async fn` in the trait |
+| Static dispatch, futures must be `Send` | `#[trait_variant::make(Trait: Send)]`, or hand-write `-> impl Future<Output = T> + Send` |
+| `dyn` dispatch | `#[async_trait]`, or a separate dyn-compatible trait returning `Pin<Box<dyn Future + Send>>` |
+
+**Seal a trait, or document that it is open.** An open public trait can never gain a required method, and even a defaulted addition can break an implementor through method-name ambiguity. If outside implementations are not part of the contract, seal it from version one with a private supertrait and say so in the docs:
+
+```rust
+mod sealed { pub trait Sealed {} }
+pub trait Frame: sealed::Sealed { fn id(&self) -> FrameId; }
+```
+
+**Extension traits** are the tool for methods you cannot make inherent — on a foreign type, or to split generic and consuming conveniences off a core trait you promised for `dyn`. Name them `*Ext`, keep them narrow, and re-export from a prelude only when blanket import is the intent.
+
+**Generic associated types** (stable 1.65) express an output borrowing from `&mut self` — a lending iterator or a zero-copy parser — without allocation or self-reference. They cost dyn compatibility for the whole trait, and their `where Self: 'a` bounds must be designed in, never retrofitted. Offer a separate owned or erased interface when both are needed.
+
+Few required methods, many provided ones: implementor cost is the scarce resource, `Iterator` is the shape to copy (one `next`, fifty provided). A provided method may carry its own bound so it appears only for qualifying types. Adding a defaulted method later is *possibly* breaking — name collisions and method resolution — not free.
 
 Take `impl Fn(..)` or `F: Fn(..)`, never a bare `fn(..)` pointer — a pointer rejects every closure with captures. Accept the most general trait that works: `FnOnce` ⊃ `FnMut` ⊃ `Fn`. Marker traits with no methods encode promises the signature cannot.
 
@@ -43,15 +66,21 @@ Take `impl Fn(..)` or `F: Fn(..)`, never a bare `fn(..)` pointer — a pointer r
 | `PartialOrd` + `Ord` | both or neither | derived order is lexicographic by field, so field order is API |
 | `Hash` | derive when the type is a map key | if `Eq` is hand-written, `Hash` must be too: `x == y` ⇒ `hash(x) == hash(y)` |
 | `Default` | derive when a meaningful zero exists | never invent a default that is invalid |
-| `Display` | never derive; hand-write | only for end-user-facing types. `Debug` is for programmers |
+| `Display` | never derive; hand-write | only for end-user-facing types. `Debug` is for programmers. For a one-off rendering that does not deserve a type at all, `fmt::from_fn` (1.93) gives you a `Display` from a closure |
 
 House line: `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]` on every id newtype, `#[derive(Debug, Clone, PartialEq)]` on every plain data struct.
 
-Three hard don'ts: never implement `Deref` for a non-pointer type (a newtype with `Deref` leaks its whole inner API and cannot take it back); never overload an operator across unrelated types; never implement half an operator set — `Add` + `Neg` obliges `Sub`, and `x - y == x + (-y)` must hold.
+`#[must_use = "…"]` applies to functions **and to types**, and the reason string is where the caller learns what they dropped. Put it on anything whose discard loses the only evidence that work did not happen: a `close`/`commit` result, a guard, a validated token, a linear protocol state. Leave it off a deliberately fire-and-forget handle. Adding it to a shipped API is a new warning downstream, and downstream may run `-D warnings` — so decide at introduction.
+
+The compiler no longer nags about a `Result` that cannot fail: since 1.92 `unused_must_use` does not fire on `Result<(), !>` or `ControlFlow<!, ()>`, and since 1.97 a `Result<T, Uninhabited>` or `ControlFlow<Uninhabited, T>` is treated as `T` for the lint. So an infallible-by-type `Result` in a generic signature stays honest without forcing every caller to write `let _ =`.
+
+Three hard don'ts: never implement `Deref` for a non-pointer type; never overload an operator across unrelated types; never implement half an operator set — `Add` + `Neg` obliges `Sub`, and `x - y == x + (-y)` must hold.
+
+The `Deref` ban needs a replacement, or the newtype is unusable. Give the wrapper exactly the operations its contract needs — domain accessors, `as_inner()` where a borrow is part of the contract, `into_inner()` where ownership escape is — plus whichever standard traits genuinely hold. `AsRef` only when the conversion is cheap and the contract survives it. Private field throughout. That is the point of the newtype: hide the representation so it can change.
 
 ## Drop and RAII
 
-Constructor acquires, destructor releases. `Drop::drop` takes `&mut self` and returns `()`, so **a destructor cannot report failure**: expose `fn close(self) -> Result<(), Error>` for fallible release and let `drop` do the best-effort remainder. `x.drop()` does not compile — use `drop(x)` or an inner block. Guards release correctly through early returns and `?`. `Drop` is not guaranteed to run (leak, abort, `forget`), so it is never the only path for cleanup that must happen.
+Constructor acquires, destructor releases. `Drop::drop` takes `&mut self` and returns `()`, so **a destructor cannot report failure**: expose `fn close(self) -> Result<(), Error>` for fallible release — `#[must_use]`, per above — and let `drop` do the best-effort remainder. `x.drop()` does not compile — use `drop(x)` or an inner block. Guards release correctly through early returns and `?`. `Drop` is not guaranteed to run (leak, abort, `forget`), so it is never the only path for cleanup that must happen.
 
 ## Conversion and construction
 
@@ -73,6 +102,8 @@ let frame = builder.build()?;
 
 `build` returns `Result` — the builder is where deferred validation lands.
 
+Builder and typestate are not alternatives; they answer different questions. A builder holds **optional configuration** and validates at `build`, including anything only checkable at runtime. Typestate (`har`) encodes a **small, finite, mandatory call order** that the compiler can check, and is wrong for validation that can only fail later. A builder with three `Option` fields that must all be set is a typestate wearing the wrong costume; a typestate parameter threaded through ten optional settings is a builder wearing the wrong one. Keep the state marker private unless the states are deliberately public API.
+
 ## Ownership and borrowing
 
 | Situation | Take |
@@ -81,9 +112,10 @@ let frame = builder.build()?;
 | Struct field, any doubt | **owned** `String` / `Vec<T>` — a lifetime param infects every holder, transitively |
 | Struct field, provably shorter-lived than its source, measured hot path | `&'a T` |
 | Usually borrowed, occasionally extended or mutated | `Cow<'a, T>` |
+| Output borrowing from `&mut self`, no allocation | GAT on a trait, per above |
 | Small immutable value the borrow checker is fighting over | clone it |
 
-A lifetime is the span from creation to drop **or move**. Elision, in three rules: one input reference gives every output reference its lifetime; several input references with no output reference each get their own; a method taking `&self` gives outputs `self`'s lifetime. `'_` names an elided lifetime without inventing one. `'static` comes from statics, promoted consts, and `Box::leak` — not from "lives a long time".
+A lifetime is the span from creation to drop **or move**. Elision, in three rules: one input reference gives every output reference its lifetime; several input references with no output reference each get their own; a method taking `&self` gives outputs `self`'s lifetime. None of the three covers an opaque return — that is the RPIT capture rule above. `'_` names an elided lifetime without inventing one. `'static` comes from statics, promoted consts, and `Box::leak` — not from "lives a long time".
 
 When the borrow checker rejects the code, climb in order and stop at the first rung that works:
 
@@ -140,6 +172,18 @@ Keep the explicit loop when the body is large or multi-purpose, when it returns 
 
 The rule is per crate, not per repo: a `lib` uses `thiserror` while the binary beside it uses `anyhow`.
 
+Both are dependencies, and a project that has declined the boxed-dyn-error one is not stuck. The binary then uses the same `thiserror` enum shape as its libraries, with one top-level variant per subsystem and `#[from]` on each:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+enum Error {
+    #[error(transparent)] Config(#[from] config::Error),
+    #[error(transparent)] Store(#[from] store::Error),
+}
+```
+
+You lose `.context("…")` and gain a surface a test can match on. The cost is one variant per new failure source, which is the cost the libraries already pay — and a `main` that prints the `source()` chain (`har-layout`) reads about as well as a context trail.
+
 ```rust
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -151,7 +195,9 @@ pub enum Error {
 }
 ```
 
-`std::error::Error` needs only `Display` + `Debug`; implement `source()` when the cause is worth walking. `#[from]` is what makes `?` convert instead of `.map_err(..)`. (`har` owns variant granularity and `#[non_exhaustive]`.)
+`std::error::Error` needs only `Display` + `Debug`; `#[from]` is what makes `?` convert instead of `.map_err(..)`. (`har` owns variant granularity and `#[non_exhaustive]`.)
+
+**A wrapping error preserves its cause through `source()`, and says its own piece in `Display` — never both.** `thiserror`'s `#[from]` and `#[source]` wire `source()` for you; a `#[error("io: {0}")]` that also interpolates the cause prints it twice once the application walks the chain. Chain-walking and backtrace rendering belong at the application boundary, not in the library. `std::error::Report` is the std formatter for that job and is **still nightly-only** behind `error_reporter` — a stable binary walks `source()` itself (`har-layout` owns the CLI shape of that output).
 
 ## Method naming is a cost contract
 
@@ -165,11 +211,38 @@ A caller reads the cost off the name, so a `to_` that is free or an `as_` that a
 
 ## Surface
 
-Start narrow: private → `pub(super)` → `pub(crate)` → `pub(in path)` → `pub`. Narrowing later needs a major bump; widening needs a minor one. `pub enum` and `pub trait` expose every variant and method at once — struct fields and inherent methods do not.
+Start narrow: private → `pub(super)` → `pub(crate)` → `pub(in path)` → `pub`. Narrowing later needs a major bump; widening needs a minor one.
 
-Breaking: removing a public item, changing a signature, adding an enum variant without `#[non_exhaustive]`, adding a public field to a struct with no private fields, losing object safety, adding a blanket impl that can conflict, changing the license or the **default features**. Non-breaking: new public items, new defaulted trait methods, new inherent methods — each with a name-collision caveat. Check it with `cargo semver-checks`.
+Visibility is only half of it. A `pub` struct with all-public fields commits every field and lets outsiders build it with literal syntax; a `pub` enum commits its variant set and every outside `match` is exhaustive over it. Adding `#[non_exhaustive]` **later** is itself a major break. So decide at introduction: data meant to grow gets private fields plus a constructor and accessors, or `#[non_exhaustive]` from version one, and the docs say which.
 
-Re-export any dependency whose types appear in your public API: `pub use rand;`. Without it a caller on another version gets trait-bound errors, because `RngCore` at two versions is two unrelated types.
+A const parameter is part of the public type's identity, so changing one is a major break and designing an API around an unstable const-generic capability commits you to nightly forever. `har-target` owns when a const parameter earns its place and what it costs.
+
+### MSRV
+
+`[package] rust-version = "1.99"` is a support contract Cargo enforces, not a comment. Set it, state the policy for raising it, CI-test that exact toolchain across the supported feature sets, and treat a raise as a versioning and release-note event. "It compiles on the newest compiler" is not an MSRV claim. Resolver 3 is the edition-2024 default and prefers MSRV-compatible dependency versions, which reduces accidental raises but does not test the floor for you. (`har-supply` owns toolchain pinning and the CI shape.)
+
+### Breaking changes
+
+Major:
+
+- removing a public item, or changing a signature
+- adding an enum variant without `#[non_exhaustive]`; adding `#[non_exhaustive]` to something already public
+- adding a public field to a struct with no private fields
+- **tightening a generic bound**, or adding a bound to an existing parameter
+- **changing an RPIT capture set**, including by an edition migration
+- **changing a layout or representation guarantee** (`repr`, size, alignment) that callers or FFI rely on
+- adding a trait item that costs dyn compatibility
+- losing dyn compatibility by any other route; adding a blanket impl that can conflict
+- changing the license, or the **default features**
+- removing a feature, moving public code behind one, or removing a default feature
+
+*Possibly* breaking, because of name collisions and method resolution: new public items, new defaulted trait methods, new inherent methods. Review them rather than waving them through.
+
+Under Cargo's convention the left-most non-zero component is the incompatible one, so for a `0.y.z` crate the **minor** position carries breakage. State the crate's 0.x policy rather than applying post-1.0 intuition to it.
+
+`cargo semver-checks` is evidence, not proof. Its checked feature set is configurable and its defaults skip feature names conventionally used for unstable or internal surfaces, and it cannot see inference, method-resolution, behavioral, layout or MSRV changes. So: define the supported feature matrix, run it with explicit baseline and current feature selections for each supported surface, compile a downstream fixture, and review by hand what a public-API diff cannot prove.
+
+Re-export any dependency whose types appear in your public API: `pub use serde;`. Without it a caller on another version gets trait-bound errors, because `Serialize` at two versions is two unrelated traits and an impl against one does not satisfy the other.
 
 Features are additive and Cargo unifies them across the whole graph — never ship two features that are mutually incompatible, because nothing prevents both being enabled. Never feature-gate a public struct field or trait method; an outside constructor or implementor cannot know what to supply. Never `use somecrate::*` from a crate you do not control — a minor upgrade can add a colliding symbol or a trait method that shadows an inherent one. `use super::*` in a test module is fine.
 
@@ -182,8 +255,8 @@ Features are additive and Cargo unifies them across the whole graph — never sh
 | Variadic or DSL-shaped call syntax | `macro_rules!` |
 | Anything else | not a macro |
 
-Macro costs: a second language to learn, opacity to rustfmt and rust-analyzer, invisible code bloat, poor errors. Never hide a `return` inside a macro, never have one insert references, and prefer a `derive` to a proc macro that emits a type. `cargo expand` shows what one actually produced.
+Macro costs: a second language to learn, opacity to rustfmt and rust-analyzer, invisible code bloat, poor errors. Never hide a `return` inside a macro, never have one insert references, and prefer a `derive` to a proc macro that emits a type. `cargo expand` shows what one actually produced. (`har-supply` owns proc macros as build-time attack surface.)
 
 ## Documentation
 
-Every public item is documented. `# Panics` names the precondition that avoids it, `# Errors` names each failure, `# Examples` where use is not obvious — examples are doc tests, so they cannot rot, and they use `?` rather than `unwrap`. Do not restate the signature and do not describe how other code uses the item. Link with intra-doc links `[`Frame`]`; backtick anything that is source. Enforce with `#![warn(missing_docs)]` and `#![deny(rustdoc::broken_intra_doc_links)]`.
+Every public item is documented. `# Panics` names the precondition that avoids it, `# Errors` names each failure, `# Examples` where use is not obvious — examples are doc tests, so they cannot rot, and they use `?` rather than `unwrap`. A sealed trait says it is sealed; an open one says outside implementations are supported. Do not restate the signature and do not describe how other code uses the item. Link with intra-doc links `[`Frame`]`; backtick anything that is source. Enforce with `#![warn(missing_docs)]` and `#![deny(rustdoc::broken_intra_doc_links)]`.

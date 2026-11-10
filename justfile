@@ -386,6 +386,17 @@ package-musl version target='x86_64-unknown-linux-musl':
     echo "package-musl: smoke.sh NOT run on this host (cross binary can't execute on darwin);"
     echo "package-musl: the container's 'yi --version' preflight (evals/README) is the real smoke."
 
+# The har* skills are a copy; their canonical source is another checkout. Copy it in and move the
+# lock in one breath, so check_skills_sync can tell a sync from a hand-edit (030-style).
+sync-skills SRC:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for f in har har-api har-async har-concurrent har-hot-path har-io har-layout har-supply har-target har-threat har-unsafe har-verify; do
+        test -f "{{SRC}}/$f/SKILL.md" || { echo "sync-skills: no $f/SKILL.md under {{SRC}}"; exit 1; }
+        cp "{{SRC}}/$f/SKILL.md" ".ruler/skills/$f/SKILL.md"
+    done
+    python3 scripts/guardrails/check_skills_sync.py --update
+
 # Catalog skills (§7.8) install into the global root (`dest`), which the gate points at a temp dir.
 # The fragments an extension attaches are compiled in.
 install-skills dest="$HOME/.yi/skills":

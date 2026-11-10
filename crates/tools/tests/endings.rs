@@ -408,3 +408,58 @@ fn a_block_put_over_the_same_range_keeps_the_last_hunk() -> TestResult {
     );
     Ok(())
 }
+
+/// The char loop `normalize_to_lf` and `split` ran before their CR-free fast paths.
+fn char_loop_to_lf(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' if chars.next_if_eq(&'\n').is_some() => out.push('\n'),
+            '\r' => out.push('\n'),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Random text over the characters a terminator decision turns on: the fast paths read as the
+/// loop did, each restores to its own bytes, and a CR-free edit gets every break `\n`.
+#[test]
+fn split_and_normalize_match_the_char_loop_they_replaced() {
+    let alphabet = ["a", "é", "\r", "\n", "\r\n", "\u{FEFF}", "\u{FFFD}", "\0"];
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        usize::try_from(seed % 64).unwrap_or(0)
+    };
+    for _ in 0..200_000 {
+        let raw: String = (0..next() % 24)
+            .filter_map(|_| alphabet.get(next() % alphabet.len()).copied())
+            .collect();
+        let (bom, text) = raw
+            .strip_prefix('\u{FEFF}')
+            .map_or(("", raw.as_str()), |text| ("\u{FEFF}", text));
+        let lf = char_loop_to_lf(text);
+        assert_eq!(
+            yi_tools::hashline::normalize::normalize_to_lf(text),
+            lf,
+            "{raw:?}"
+        );
+        let (out, endings) = yi_tools::hashline::normalize::split(raw.clone());
+        assert_eq!(out, lf, "{raw:?}");
+        let after = format!("{out}x\ny");
+        let origin: Vec<Option<usize>> = (0..after.len()).map(|_| next().checked_sub(20)).collect();
+        let same: Vec<Option<usize>> = (0..after.len()).map(Some).collect();
+        assert_eq!(endings.restore(&out, &same), raw, "{raw:?}");
+        if !text.contains('\r') {
+            assert_eq!(
+                endings.restore(&after, &origin),
+                format!("{bom}{after}"),
+                "{raw:?}"
+            );
+        }
+    }
+}

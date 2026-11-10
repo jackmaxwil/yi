@@ -151,6 +151,11 @@ incremental = false
 [profile.dist.package.yi-orb]
 opt-level = 3
 
+# Resuming a 147-entry session in the TUI retired 3.9G instructions at "z" and 2.3G at 3, for
+# 148,608 bytes. fancy-regex and syntect at 3 gain nothing on that resume.
+[profile.dist.package.regex-automata]
+opt-level = 3
+
 # syntect with its regex dependencies cut to the Unicode tables the grammars use (D263).
 [patch.crates-io]
 syntect = { path = "vendor/syntect" }

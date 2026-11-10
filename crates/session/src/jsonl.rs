@@ -366,6 +366,12 @@ impl SessionRepo for JsonlRepo {
             staged.push('\n');
         }
         publish_atomically(&path, staged.as_bytes())?;
-        Ok(Arc::new(Mutex::new(load_session(&path)?)))
+        let mut store = SessionStore::file_backed(metadata_from_header(&header), path.clone());
+        for (index, mutation) in mutations.into_iter().enumerate() {
+            store
+                .replay(mutation, index + 2)
+                .map_err(|error| invalid_file(&path, index + 2, error))?;
+        }
+        Ok(Arc::new(Mutex::new(store)))
     }
 }

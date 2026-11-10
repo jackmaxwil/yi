@@ -9,6 +9,7 @@ use yi_runtime::kernel_tools::ipython_tool;
 use yi_runtime::{
     AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
 };
+use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
 use yi_types::event::AgentEvent;
 use yi_types::message::StopReason;
 
@@ -289,7 +290,6 @@ async fn the_cell_a_reclaimed_image_names_attaches_the_image_again() -> Result<(
     let dir = crate::scratch::Scratch::new("yi-image-reclaim")?;
     let name = "plot \"reclaimed\".png";
     let path = dir.join(name);
-    let provider = Arc::new(ProviderStream::new(None));
     let mut script = Vec::new();
     for turn in 0..10 {
         let code = match turn {
@@ -312,11 +312,8 @@ async fn the_cell_a_reclaimed_image_names_attaches_the_image_again() -> Result<(
             )],
             StopReason::ToolUse,
         );
-        if let yi_types::message::AgentMessage::Assistant {
-            timestamp, usage, ..
-        } = &mut reply
-        {
-            (*timestamp, usage.input) = (1, 1_000);
+        if let yi_types::message::AgentMessage::Assistant { usage, .. } = &mut reply {
+            usage.input = 1_000;
         }
         script.push(reply);
     }
@@ -324,27 +321,65 @@ async fn the_cell_a_reclaimed_image_names_attaches_the_image_again() -> Result<(
         vec![faux_text("done")],
         StopReason::Stop,
     ));
-    provider.queue_faux(script);
     let price = |value| serde_json::Number::from_f64(value).ok_or("invalid price");
     let mut model = faux_model(128_000);
     model.cost.input = price(5.0)?;
     model.cost.cache_read = price(0.5)?;
     model.cost.cache_write = price(6.25)?;
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model,
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
-    session.attach_store(crate::support::memory_store("reclaim-image"))?;
     let service = bare_service(None);
-    let mut tools = yi_tools::builtin_tools();
-    tools.push(ipython_tool(Arc::clone(&service), None));
-    session.use_tools(tools, dir.to_path_buf(), None);
-    session.prompt("plot the drift")?;
+    let open =
+        |replies: Vec<yi_types::message::AgentMessage>, store| -> Result<_, Box<dyn Error>> {
+            let provider = Arc::new(ProviderStream::new(None));
+            provider.queue_faux(replies);
+            let mut session = AgentSession::new(
+                SessionConfig {
+                    system_prompt: "sys".to_owned(),
+                    model: model.clone(),
+                    thinking_level: None,
+                    tool_execution: ExecutionMode::Sequential,
+                },
+                provider,
+            );
+            session.attach_store(store)?;
+            let mut tools = yi_tools::builtin_tools();
+            tools.push(ipython_tool(Arc::clone(&service), None));
+            session.use_tools(tools, dir.to_path_buf(), None);
+            Ok(session)
+        };
+    let mut repo = JsonlRepo::new(dir.join("sessions"), dir.display().to_string());
+    let store = repo.create(CreateOptions {
+        id: Some("reclaim-image".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let first = open(script, Arc::clone(&store))?;
+    first.prompt("plot the drift")?;
+    first.wait_idle().await;
+    let file = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("no session file")?;
+    drop((first, store));
+    // Incident: the loop stamps each reply with the real clock, so a scripted stamp cannot lapse
+    // the cache; the lapse a reclaim cut waits for is a resume six minutes after the last reply.
+    let mut aged = String::new();
+    for line in std::fs::read_to_string(&file)?.lines() {
+        let mut row: serde_json::Value = serde_json::from_str(line)?;
+        if row["message"]["role"] == "assistant" {
+            let at = row["message"]["timestamp"].as_u64().unwrap_or(0);
+            row["message"]["timestamp"] = at.saturating_sub(6 * 60_000).into();
+        }
+        aged.push_str(&serde_json::to_string(&row)?);
+        aged.push('\n');
+    }
+    std::fs::write(&file, aged)?;
+    let session = open(
+        vec![faux_assistant_message(
+            vec![faux_text("done")],
+            StopReason::Stop,
+        )],
+        repo.open("reclaim-image")?,
+    )?;
+    session.prompt("go on")?;
     session.wait_idle().await;
 
     let shown = (session.history_handle())();
