@@ -189,6 +189,27 @@ impl PlanEngine {
                 label: label.clone(),
             });
         }
+        if todo.red_count >= 2 && !todo.readmit {
+            let mut demand = if todo.red_count >= 3 {
+                "stop and ask the user before spending another attempt"
+            } else {
+                "make a structural change before another claim"
+            }
+            .to_owned();
+            if todo.red_repeat {
+                if todo.after.is_empty() {
+                    demand.push_str("; re-check this task's premise before trying again");
+                } else {
+                    let dependencies = todo.after.iter().map(|label| label.as_str()).collect::<Vec<_>>().join(", ");
+                    demand.push_str(&format!("; re-check dependency assumptions for {dependencies} before trying again"));
+                }
+            }
+            return Err(PlanOpError::EscalationRequired {
+                label: label.clone(),
+                count: todo.red_count,
+                demand,
+            });
+        }
         let Some(contract) = todo.contract.clone() else {
             return Ok(Phase1::Plain(Box::new(
                 self.settle(&mut txn, &id, &root, op)?,

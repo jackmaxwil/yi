@@ -36,16 +36,17 @@ pub enum OpKind {
     Reconcile,
     Submit,
     Resolve,
-    Accept,
     Program,
+    Accept,
+    Split,
 }
 
 /// The kinds a call's key may name as its op (`{"done": label}`); the schema shows three, and
 /// the administrative kinds below parse on every surface but cost the prompt no bytes.
-pub const MODEL_OPS: usize = 16;
+pub const MODEL_OPS: usize = 17;
 
 /// Every kind, in wire order: the parser's list; a key may name only its first [`MODEL_OPS`].
-pub const ALL_OPS: [OpKind; 23] = [
+pub const ALL_OPS: [OpKind; 24] = [
     OpKind::Set,
     OpKind::Init,
     OpKind::Append,
@@ -62,6 +63,7 @@ pub const ALL_OPS: [OpKind; 23] = [
     OpKind::Supersede,
     OpKind::View,
     OpKind::Accept,
+    OpKind::Split,
     OpKind::FuseReset,
     OpKind::Repair,
     OpKind::Import,
@@ -96,6 +98,7 @@ pub fn op_name(op: OpKind) -> &'static str {
         OpKind::Resolve => "resolve",
         OpKind::Accept => "accepted_by_user",
         OpKind::Program => "program",
+        OpKind::Split => "split",
     }
 }
 
@@ -171,6 +174,19 @@ impl TryFrom<TodoSpecRepr> for TodoSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SplitSpec {
+    pub title: String,
+    pub acceptance: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<super::contract::Contract>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetRow {
     pub spec: TodoSpec,
     pub state: TodoStateName,
@@ -218,6 +234,8 @@ pub enum Op {
     },
     Append {
         todos: Vec<TodoSpec>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        for_task: Option<TodoLabel>,
     },
     Drop {
         label: TodoLabel,
@@ -238,6 +256,10 @@ pub enum Op {
     },
     Reorder {
         labels: Vec<TodoLabel>,
+    },
+    Split {
+        label: TodoLabel,
+        subtasks: Vec<SplitSpec>,
     },
     AddEdge {
         todo: TodoLabel,
@@ -325,6 +347,7 @@ pub enum Op {
     },
 }
 
+
 impl Op {
     pub fn label(&self) -> Option<&TodoLabel> {
         match self {
@@ -337,12 +360,14 @@ impl Op {
             | Self::Retry { label, .. }
             | Self::Decompose { label, .. }
             | Self::Reconcile { label, .. }
+            | Self::Split { label, .. }
             | Self::Submit { label, .. }
             | Self::Resolve { label, .. }
             | Self::Accept { label, .. } => Some(label),
+            Self::Append { for_task: Some(for_task), .. } => Some(for_task),
             Self::AddEdge { todo, .. } => Some(todo),
             Self::Init { .. }
-            | Self::Append { .. }
+            | Self::Append { for_task: None, .. }
             | Self::Reorder { .. }
             | Self::Supersede { .. }
             | Self::Set { .. }
@@ -378,6 +403,7 @@ impl Op {
             Self::Submit { .. } => OpKind::Submit,
             Self::Resolve { .. } => OpKind::Resolve,
             Self::Accept { .. } => OpKind::Accept,
+            Self::Split { .. } => OpKind::Split,
             Self::Program { .. } => OpKind::Program,
         }
     }

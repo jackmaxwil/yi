@@ -72,6 +72,7 @@ pub fn rewind_to(session: &AgentSession, entry_id: &str) -> Result<Rewound, Stri
         unsent,
         abandoned,
     })
+
 }
 
 fn abandoned_span(store: &yi_session::SharedSession, new_leaf: Option<&str>) -> Option<BranchStub> {

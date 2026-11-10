@@ -315,6 +315,9 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
                 None => None,
                 Some(value) => Some(Claim::parse(value).map_err(bad_args)?),
             };
+            if let Some(todo) = state.plan_mut(&id).map_err(failed)?.todos.iter_mut().find(|todo| todo.label == label) {
+                todo.readmit = false;
+            }
             state.verifications.insert(
                 effect,
                 Verification {
@@ -447,7 +450,7 @@ fn apply_refusal(
     // neither charges the todo (plan section 6.3, step 6).
     let charges = kind != KIND_VERIFICATION_STALE
         && !(kind == KIND_DONE_REFUSED
-            && verdict.is_some_and(|verdict| verdict.outcome == Outcome::Abstain));
+            && verdict.as_ref().is_some_and(|verdict| verdict.outcome == Outcome::Abstain));
     if charges
         && let (Some(label), Some(plan)) = (&record.record.todo, state.plans.get_mut(id))
         && let Some(todo) = plan.todos.iter_mut().find(|todo| &todo.label == label)
@@ -456,6 +459,16 @@ fn apply_refusal(
             .refusals
             .checked_add(1)
             .ok_or_else(|| bad_args("refusals cannot advance past their cap".to_owned()))?;
+    }
+    if kind == KIND_DONE_REFUSED
+        && verdict.as_ref().is_some_and(|verdict| verdict.outcome == Outcome::Fail)
+        && let (Some(label), Some(plan)) = (&record.record.todo, state.plans.get_mut(id))
+        && let Some(todo) = plan.todos.iter_mut().find(|todo| &todo.label == label)
+    {
+        let fingerprint = verdict.as_ref().map(|verdict| failure_fingerprint(&verdict.lines()));
+        todo.red_repeat = todo.red_fingerprint == fingerprint;
+        todo.red_count = todo.red_count.saturating_add(1);
+        todo.red_fingerprint = fingerprint;
     }
     state.mark = Some((record.seq, record.digest));
     Ok(())
@@ -468,6 +481,16 @@ fn verdict_of(record: &JournalRecord) -> Result<Option<Verdict>, String> {
             .map(Some)
             .map_err(|error| format!("verdict: {error}")),
     }
+}
+
+pub(super) fn failure_fingerprint(evidence: &str) -> Digest {
+    let normalized = evidence
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Digest::of(normalized.as_bytes())
 }
 
 /// A settling record names its effect: `done` and `done_refused` in `extra`, `verification_stale`
@@ -569,6 +592,7 @@ pub fn leaving_running(
         | Op::Start { .. }
         | Op::Retry { .. }
         | Op::Decompose { .. }
+        | Op::Split { .. }
         | Op::View { .. }
         | Op::FuseReset
         | Op::Repair { .. }
@@ -651,7 +675,28 @@ pub fn apply_op(
             return Err(PlanOpError::NotJournaled { op: kind });
         }
         Op::Program { .. } => {}
-        Op::Append { todos } => append_todos(state.plan_mut(id)?, todos.clone())?,
+        Op::Append { todos, for_task } => {
+            let plan = state.plan_mut(id)?;
+            let target = for_task
+                .as_ref()
+                .map(|for_task| {
+                    plan.todos
+                        .iter()
+                        .position(|todo| todo.label == *for_task)
+                        .ok_or_else(|| PlanOpError::UnknownLabel {
+                            plan: id.clone(),
+                            label: for_task.clone(),
+                        })
+                })
+                .transpose()?;
+            append_todos(plan, todos.clone())?;
+            if let Some(target) = target {
+                if plan.todos[target].red_count == 2 {
+                    plan.todos[target].readmit = true;
+                }
+                plan.version = plan.version.bump();
+            }
+        }
         Op::Drop { label, .. } => {
             step_todo(state.plan_mut(id)?, label, OpKind::Drop, decided, |_| {
                 TodoState::Abandoned
@@ -667,12 +712,29 @@ pub fn apply_op(
                 }
             })?;
         }
-        Op::Unblock { label, .. } => {
+        Op::Unblock { label, answer } => {
+            let user_answer = answer.is_some()
+                && state.plan(id)?.todo(label).is_some_and(|todo| {
+                    matches!(&todo.state, TodoState::Blocked { on: BlockedOn::User, .. })
+                        && todo.ask.as_ref().is_some_and(|ask| ask.answer.is_none())
+                });
             step_todo(state.plan_mut(id)?, label, OpKind::Unblock, decided, |_| {
                 TodoState::Pending
             })?;
+            if user_answer
+                && let Some(todo) = state
+                    .plan_mut(id)?
+                    .todos
+                    .iter_mut()
+                    .find(|todo| todo.label == *label)
+                && todo.red_count >= 3
+            {
+                todo.readmit = true;
+            }
         }
-        Op::Reorder { labels } => reorder_todos(state.plan_mut(id)?, labels.clone())?,
+        Op::Reorder { labels } => {
+            reorder_todos(state.plan_mut(id)?, labels.clone())?;
+        }
         Op::AddEdge { todo, after } => {
             add_edge(state.plan_mut(id)?, todo.clone(), after.clone())?;
         }
@@ -681,6 +743,7 @@ pub fn apply_op(
             let output = output.clone();
             check_terminal(label, output.as_ref())?;
             let resolution = completion(state.plan(id)?, label, decided.resolution)?;
+            let green = resolution == Some(contract::Resolution::VerifiedDone);
             step_todo(
                 state.plan_mut(id)?,
                 label,
@@ -688,6 +751,13 @@ pub fn apply_op(
                 decided,
                 move |_| TodoState::Done { output, resolution },
             )?;
+            if green
+                && let Some(todo) = state.plan_mut(id)?.todos.iter_mut().find(|todo| todo.label == *label)
+            {
+                todo.red_count = 0;
+                todo.red_fingerprint = None;
+                todo.red_repeat = false;
+            }
         }
         Op::Fail { label, cause, .. } => {
             let cause = cause.clone();
@@ -701,6 +771,9 @@ pub fn apply_op(
         }
         Op::Retry { label, delegation } => {
             apply_retry(state.plan_mut(id)?, label, delegation.as_deref())?;
+        }
+        Op::Split { label, subtasks } => {
+            apply_split(state.plan_mut(id)?, label, subtasks)?;
         }
         Op::Decompose { label, todos } => {
             applied.subplan = Some(apply_decompose(state, id, label, todos, decided)?);
@@ -947,6 +1020,107 @@ fn apply_retry(
     Ok(())
 }
 
+fn at_escalation_rung(todo: &Todo) -> bool {
+    todo.red_count >= 2
+}
+
+fn apply_split(plan: &mut Plan, label: &TodoLabel, subtasks: &[yi_types::plan::op::SplitSpec]) -> Result<(), PlanOpError> {
+    use std::collections::HashSet;
+    if subtasks.is_empty() || subtasks.len() > 4 {
+        return Err(PlanOpError::SplitInvalid { detail: "width must be between 1 and 4".into() });
+    }
+    let index = plan
+        .todos
+        .iter()
+        .position(|todo| todo.label == *label)
+        .ok_or_else(|| PlanOpError::SplitInvalid {
+            detail: format!("unknown task {label:?}"),
+        })?;
+    let parent = &plan.todos[index];
+    if parent.split_parent.is_some() {
+        return Err(PlanOpError::SplitInvalid { detail: "split depth is limited to one".into() });
+    }
+    if matches!(parent.state, TodoState::Done { .. }) {
+        return Err(PlanOpError::SplitInvalid { detail: "a done task cannot be split".into() });
+    }
+    let dependency_labels = parent.after.clone();
+    let inherited_cites = parent.cites.clone();
+    let permitted = at_escalation_rung(parent) || dependency_labels.iter().any(|dependency| plan.todo(dependency).is_some_and(at_escalation_rung));
+    if !permitted {
+        return Err(PlanOpError::SplitInvalid { detail: "the task or one of its dependencies must have at least two failed verdicts".into() });
+    }
+    let mut writes = HashSet::new();
+    for spec in subtasks {
+        if spec.title.trim().is_empty() || spec.acceptance.trim().is_empty() {
+            return Err(PlanOpError::SplitInvalid { detail: "titles and acceptance must be non-empty".into() });
+        }
+        for key in &spec.writes {
+            if !writes.insert(key) {
+                return Err(PlanOpError::SplitInvalid { detail: format!("siblings overlap write key {key:?}") });
+            }
+        }
+    }
+    for (index, spec) in subtasks.iter().enumerate() {
+        if let Some(key) = spec.reads.iter().find(|key| !spec.writes.contains(*key) && subtasks.iter().enumerate().any(|(other, sibling)| other != index && sibling.writes.contains(*key))) {
+            return Err(PlanOpError::SplitInvalid { detail: format!("sibling reads key {key:?} written by another sibling") });
+        }
+    }
+    let used: HashSet<String> = plan.todos.iter().map(|todo| todo.label.as_str().to_owned()).collect();
+    let mut parent_prefix = String::new();
+    for ch in label.as_str().chars() {
+        if parent_prefix.len() + ch.len_utf8() > yi_types::plan::doc::TODO_LABEL_MAX.saturating_sub(17) { break; }
+        parent_prefix.push(ch);
+    }
+    let prefix = format!("{parent_prefix}-split-");
+    let mut suffix = 1u32;
+    let mut children = Vec::with_capacity(subtasks.len());
+    let mut edges = Vec::with_capacity(subtasks.len());
+    for spec in subtasks {
+        let child_label = loop {
+            let candidate = format!("{prefix}{suffix}");
+            suffix = suffix.checked_add(1).ok_or_else(|| PlanOpError::SplitInvalid { detail: "child id space exhausted".into() })?;
+            if !used.contains(&candidate) && !children.iter().any(|todo: &Todo| todo.label.as_str() == candidate) {
+                break TodoLabel::new(candidate).map_err(|error| PlanOpError::SplitInvalid {
+                    detail: error.to_string(),
+                })?;
+            }
+        };
+        let mut child = Todo::pending(child_label.clone());
+        child.split_parent = Some(label.clone());
+        child.after = dependency_labels.clone();
+        child.cites = inherited_cites.clone();
+        child.contract = spec.contract.clone();
+        let note = format!("{}\n\nAcceptance: {}", spec.title, spec.acceptance);
+        child.note = Some(
+            yi_types::plan::doc::Note::new(note).map_err(|error| PlanOpError::SplitInvalid {
+                detail: error.to_string(),
+            })?,
+        );
+        children.push(child);
+        edges.push(child_label);
+    }
+    for child in children {
+        plan.todos.push(child);
+    }
+    let parent = &mut plan.todos[index];
+    parent.after.extend(edges);
+    if parent.red_count <= 2 {
+        parent.red_count = 0;
+        parent.red_fingerprint = None;
+        parent.red_repeat = false;
+        parent.readmit = false;
+    }
+    for dependency in dependency_labels {
+        if let Some(todo) = plan.todos.iter_mut().find(|todo| todo.label == dependency) && todo.red_count == 2 {
+            todo.readmit = true;
+        }
+    }
+    plan.version = plan.version.bump();
+    validate_plan(plan).map_err(|error| PlanOpError::SplitInvalid {
+        detail: error.to_string(),
+    })
+}
+
 fn apply_decompose(
     state: &mut RootState,
     id: &PlanId,
@@ -1039,44 +1213,39 @@ fn apply_supersede(
 /// `keep_rest` an unnamed row stays, after the named ones, edges intact, and without it leaves.
 fn apply_set(plan: &mut Plan, rows: &[SetRow], keep_rest: bool) -> Result<(), PlanOpError> {
     let mut todos: Vec<Todo> = Vec::with_capacity(rows.len());
+    let mut reopened = Vec::new();
     for row in rows {
         let found = plan.todos.iter().find(|todo| todo.label == row.spec.label);
+        let was_done = found.is_some_and(|todo| matches!(todo.state, TodoState::Done { .. }));
         let mut todo = found.cloned().unwrap_or_else(|| new_todo(row.spec.clone()));
         todo.children = row.spec.children.clone();
-        todo.after
-            .retain(|after| keep_rest || rows.iter().any(|row| row.spec.label == *after));
-        if let Some(contract) = &row.spec.contract {
-            todo.contract = Some(contract.clone());
-        }
-        if !row.spec.cites.is_empty() {
-            todo.cites = row.spec.cites.clone();
-        }
+        todo.after.retain(|after| keep_rest || rows.iter().any(|row| row.spec.label == *after));
+        if let Some(contract) = &row.spec.contract { todo.contract = Some(contract.clone()); }
+        if !row.spec.cites.is_empty() { todo.cites = row.spec.cites.clone(); }
         if TodoStateName::of(&todo.state) != row.state {
             todo.state = match row.state {
-                TodoStateName::Running => TodoState::Running {
-                    by: AgentId::new(OWNER_AGENT)?,
-                },
-                // Invariant: `set` requests a transition through the one validator and never
-                // authors a resolution (plan section 6.5).
-                TodoStateName::Done => TodoState::Done {
-                    output: None,
-                    resolution: completion_of(&todo, None)?,
-                },
-                TodoStateName::Blocked => TodoState::Blocked {
-                    on: BlockedOn::User,
-                    note: String::new(),
-                },
-                TodoStateName::Pending
-                | TodoStateName::Failed
-                | TodoStateName::Abandoned
-                | TodoStateName::Other(_) => TodoState::Pending,
+                TodoStateName::Running => TodoState::Running { by: AgentId::new(OWNER_AGENT)? },
+                TodoStateName::Done => TodoState::Done { output: None, resolution: completion_of(&todo, None)? },
+                TodoStateName::Blocked => TodoState::Blocked { on: BlockedOn::User, note: String::new() },
+                TodoStateName::Pending | TodoStateName::Failed | TodoStateName::Abandoned | TodoStateName::Other(_) => TodoState::Pending,
             };
+        }
+        if was_done && row.state != TodoStateName::Done {
+            todo.red_count = 0;
+            todo.red_fingerprint = None;
+            todo.red_repeat = false;
+            todo.readmit = false;
+            reopened.push(todo.label.clone());
         }
         todos.push(todo);
     }
-    plan.todos
-        .retain(|t| keep_rest && rows.iter().all(|r| r.spec.label != t.label));
+    plan.todos.retain(|todo| keep_rest && rows.iter().all(|row| row.spec.label != todo.label));
     plan.todos.splice(0..0, todos);
+    for dependency in reopened {
+        for todo in &mut plan.todos {
+            if todo.after.contains(&dependency) && todo.red_count == 2 { todo.readmit = true; }
+        }
+    }
     plan.version = plan.version.bump();
     validate_plan(plan)
 }
@@ -1196,4 +1365,112 @@ fn apply_reconcile(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_types::plan::contract::{ItemLine, ItemVerdict};
+    use yi_types::plan::ledger::{PlanOpRecord, RequestId};
+
+    fn refusal_record(id: &PlanId, label: &TodoLabel, kind: &str, outcome: Outcome) -> JournalRecord {
+        let plan = Plan::opening(
+            id.clone(),
+            GoalText::new("test red counts").expect("goal"),
+            PlanTier::Root,
+            vec![Todo::pending(label.clone())],
+        );
+        let verdict = Verdict {
+            token: VerificationToken {
+                plan: id.clone(),
+                version: plan.version,
+                todo: label.clone(),
+                attempt: AttemptId::FIRST,
+                contract_digest: Digest::of(b"contract"),
+                criteria_digest: Digest::of(b"criteria"),
+                output_digest: Digest::of(b"output"),
+                snapshot: "snapshot".to_owned(),
+                integration: None,
+            },
+            outcome,
+            score: 0,
+            coverage: 0,
+            items: vec![ItemLine {
+                id: yi_types::plan::contract::ItemId::new("check").expect("item id"),
+                verdict: match outcome {
+                    Outcome::Fail => ItemVerdict::Fail { detail: "red".to_owned() },
+                    Outcome::Escalate => ItemVerdict::Escalate { question: "ask".to_owned() },
+                    Outcome::Abstain => ItemVerdict::Abstain { reason: "unknown".to_owned() },
+                    Outcome::Pass => ItemVerdict::Pass,
+                },
+                jurors: Vec::new(),
+                evidence: Some("first\nchanged middle\nlast".to_owned()),
+            }],
+            reproducible: true,
+            elapsed_ms: 0,
+            at: 0,
+        };
+        let mut extra = Map::new();
+        extra.insert("refusal".to_owned(), serde_json::json!({}));
+        JournalRecord {
+            record: PlanOpRecord {
+                plan: id.clone(),
+                op: kind.to_owned(),
+                actor: "test".to_owned(),
+                at: 0,
+                todo: Some(label.clone()),
+                from: None,
+                to: None,
+                todos: 1,
+                extra,
+            },
+            seq: Seq::FIRST,
+            request_id: RequestId::new("red-count-test").expect("request id"),
+            expected_revision: 0,
+            attempt: Some(AttemptId::FIRST),
+            args: Value::Object(Map::new()),
+            args_hash: Digest::of(&[]),
+            program_hash: None,
+            verdict: Some(serde_json::to_value(verdict).expect("verdict")),
+            digest: Digest::of(&[]),
+        }
+    }
+
+    #[test]
+    fn only_failed_product_verdicts_advance_the_red_count() {
+        for (kind, outcome, expected) in [
+            (KIND_DONE_REFUSED, Outcome::Fail, 1),
+            (KIND_DONE_REFUSED, Outcome::Escalate, 0),
+            (KIND_DONE_REFUSED, Outcome::Abstain, 0),
+            (KIND_VERIFICATION_STALE, Outcome::Fail, 0),
+        ] {
+            let id = PlanId::new("red-count").expect("plan id");
+            let label = TodoLabel::new("task").expect("todo label");
+            let mut state = RootState::default();
+            state.plans.insert(
+                id.clone(),
+                Plan::opening(
+                    id.clone(),
+                    GoalText::new("test red counts").expect("goal"),
+                    PlanTier::Root,
+                    vec![Todo::pending(label.clone())],
+                ),
+            );
+            let record = refusal_record(&id, &label, kind, outcome);
+            assert!(apply(&mut state, &record).is_ok(), "{kind} {outcome:?}");
+            assert_eq!(state.plans[&id].todo(&label).unwrap().red_count, expected);
+        }
+    }
+
+    #[test]
+    fn failure_fingerprint_covers_every_normalized_nonempty_line() {
+        assert_eq!(
+            failure_fingerprint(" first   line \n\n middle\tline \n last "),
+            failure_fingerprint("first line\nmiddle line\nlast"),
+        );
+        assert_ne!(
+            failure_fingerprint("same first\nold middle\nsame last"),
+            failure_fingerprint("same first\nnew middle\nsame last"),
+        );
+    }
 }

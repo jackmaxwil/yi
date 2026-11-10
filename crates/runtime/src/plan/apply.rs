@@ -399,7 +399,7 @@ pub(super) fn init_on_open(
         tool.engine().apply(on(Op::View { full: false }))?
     } else {
         tool.engine()
-            .apply_with(on(Op::Append { todos: new }), blobs)?
+            .apply_with(on(Op::Append { todos: new, for_task: None }), blobs)?
     })
 }
 
