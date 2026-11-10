@@ -4,7 +4,7 @@ shares: #2123 | this branch moves tool-call execution into batch.rs and adds Age
 shares: #2121 | both add a line to docs/YI_DESIGN.md in different sections; this one amends 1.2 and 4.2
 shares: #2098 | this branch adds the /learn popup entry in input.rs and a docs/YI_DESIGN.md row; that PR sizes reasoning and tool-output windows, in other hunks
 cut: .forgejo/workflows/tbv4-weekly.yml | name: | replaced by evals-weekly.yml, which judges main against last Monday's under hard caps instead of posting an unjudged row
-cut: crates/loop/src/run.rs | struct ExtractedCall { | moved unchanged into crates/loop/src/batch.rs so the failed-write guard has one home
+cut: crates/loop/src/run.rs | struct Finalized { | moved unchanged, with execute_one, execute_tool_calls and join_all, into crates/loop/src/batch.rs so the failed-write guard has one home
 cut: docs/YI_DESIGN.md | automatic skill creation, | section 1.2 narrows its non-goal to unattended self-modification; refinement now lands only as owner-merged PRs
 cut: evals/improve/round.py | #!/usr/bin/env python3 | the module moved to evals/refine/round.py, which drains every variant source into one gated round
 cut: evals/levers.py | tokens = sum(value(row, k) for row in rows | the economy road now prices cost first in the unit the route bills, so the token-only sum is rewritten

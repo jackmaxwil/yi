@@ -1,4 +1,4 @@
-/// Invariant: the popup offers exactly what [`crate::input::handle_slash`] routes.
+/// Invariant: the popup offers what [`crate::input::handle_slash`] routes, plus `learn`, a prompt.
 #[rustfmt::skip]
 pub(crate) const SLASH_COMMANDS: [&str; 20] = [
     "new", "undo", "quit", "tree", "editor", "advisor", "plan", "plantree", "goal", "agents",
