@@ -78,7 +78,10 @@ def run_leg(leg, args, budget_left):
     pairs = min(len(runs["base"]), len(runs["head"]))
     verdict = None
     if pairs and not args.dry and tasks:
-        verdict = levers.judge(runs["base"][:pairs], runs["head"][:pairs], floors)
+        try:
+            verdict = levers.judge(runs["base"][:pairs], runs["head"][:pairs], floors)
+        except levers.Refused as refusal:
+            stopped = "; ".join(filter(None, (stopped, f"unjudged: {refusal}")))
     return {"leg": leg["name"], "tasks": len(tasks), "repetitions": pairs,
             "spentUsd": round(spent(rows), 6), "stopped": stopped, "verdict": verdict,
             "predictedUsd": round(len(tasks) * leg["trialUsd"] * 2 * leg["k"], 2)}
@@ -90,11 +93,14 @@ def run_trend(args, budget_left):
         return {"leg": TREND["name"], "stopped": f"capped: ${predicted:.2f} predicted", "spentUsd": 0.0}
     if args.dry:
         return {"leg": TREND["name"], "predictedUsd": predicted, "spentUsd": 0.0}
-    env = {**os.environ, "EVAL_BINARY": str(args.head), "TBV4_RUNS_DIR": str(args.out / "tbv4"),
+    # Harbor uploads the binary into each task's container, so the trend runs the static musl build.
+    musl = ROOT.parent / "target/x86_64-unknown-linux-musl/dist/yi"
+    env = {**os.environ, "EVAL_BINARY": str(musl), "TBV4_RUNS_DIR": str(args.out / "tbv4"),
            "TBV4_LIST": str(ROOT / "drivers/tbv4_slice.txt"), "TBV4_HARD_CAP": str(TREND["cap"])}
     done = subprocess.run(["sh", str(HARBOR)], env=env, capture_output=True, text=True, check=False)
+    # The sweep prints no rows outside runner mode, so the leg is charged the cap watch.py holds it to.
     return {"leg": TREND["name"], "exit": done.returncode, "predictedUsd": predicted,
-            "rowsDir": str(args.out / "tbv4")}
+            "spentUsd": TREND["cap"], "rowsDir": str(args.out / "tbv4")}
 
 
 def main(argv=None):

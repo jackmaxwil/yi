@@ -27,7 +27,7 @@ jobs:
       - name: last Monday's main beside today's
         run: |
           set -euo pipefail
-          base=$(git rev-list -1 --before="6 days ago" HEAD)
+          base=$(git rev-list -1 --before="7 days ago" HEAD)
           echo "BASE_SHA=$base" >> "$GITHUB_ENV"
           git worktree add --detach ../base "$base"
       - name: both binaries
@@ -46,12 +46,18 @@ jobs:
           set -euo pipefail
           if [ "$(date +%d)" -gt 7 ]; then echo "not the first week; no trend"; exit 0; fi
           test -n "${DOCKER_HOST:-}" || { echo "no DOCKER_HOST: the trend needs the bench runner"; exit 1; }
+          curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz -o /tmp/docker.tgz
+          tar -xzf /tmp/docker.tgz -C /usr/local/bin --strip-components=1 docker/docker
+          docker version --format '{{.Server.Version}}'
           uv tool install harbor
           apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends musl-tools >/dev/null
           rustup target add x86_64-unknown-linux-musl
           export CC_x86_64_unknown_linux_musl=musl-gcc
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
           scripts/build_dist.sh --target x86_64-unknown-linux-musl
+          python3 scripts/check_elf.py target/x86_64-unknown-linux-musl/dist/yi x86_64-unknown-linux-musl
+          # Every plugin rides into each task container (#1041), so trend rows compare with tbv4's.
+          target/x86_64-unknown-linux-musl/dist/yi plugin add --all
           echo "TREND=--trend" >> "$GITHUB_ENV"
       - name: the legs
         env:

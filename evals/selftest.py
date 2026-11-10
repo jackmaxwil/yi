@@ -886,6 +886,20 @@ def check_weekly():
         capped = weekly.run_leg(tight, Args, 9.5)
         assert capped["stopped"] and capped["stopped"].startswith("capped"), capped
         assert weekly.run_leg(weekly.LEGS[1], Args, 9.5)["stopped"] is None
+        # A live week whose runner returned no rows, with the trend: every leg is reported, never a crash.
+        swept = []
+        stub = lambda argv, env, **kw: swept.append(env["EVAL_BINARY"]) or subprocess.CompletedProcess(argv, 0, "", "")
+        saved = weekly.call, weekly.subprocess.run
+        weekly.call, weekly.subprocess.run = (lambda binary, arm, tasks, run_id: []), stub
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                weekly.main(["--base", "/bin/true", "--head", "/bin/true", "--out", str(out / "live"), "--trend"])
+        finally:
+            weekly.call, weekly.subprocess.run = saved
+        legs = json.loads((out / "live" / "verdicts.json").read_text())["legs"]
+        assert [leg.get("stopped") for leg in legs[:2]] == ["unjudged: no paired rows to compare"] * 2, legs
+        assert legs[2]["spentUsd"] == weekly.TREND["cap"], legs
+        assert swept and swept[0].endswith("x86_64-unknown-linux-musl/dist/yi"), swept
         legs = [{"leg": "economy", "spentUsd": 0.5, "tasks": 60, "verdict": {"verdict": "better", "by": "costUsd",
                  "unit": "costUsd", "intervals": {"graded": {"median": d, "low": d - 0.01, "high": d + 0.01}}}}
                 for d in (0.01, 0.02)]
