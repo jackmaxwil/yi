@@ -1,4 +1,6 @@
 ---
+version: 0.1026.0
+decisions: D584
 issue: Closes #2131
 cut: none scripts/fixer_guard.py
 cut: none scripts/guardrails/fixtures/fixer_guard/pr1829.log
