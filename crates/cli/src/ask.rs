@@ -479,7 +479,7 @@ async fn follow(
             let text = yi_types::message::has_text(content);
             said_anything |= text;
             due |= text;
-            last_stop = Some((*stop_reason, text));
+            last_stop = Some((stop_reason.clone(), text));
             said.push(std::mem::take(&mut answer));
         }
         if let AgentEvent::AgentEnd { messages, .. } = &event {
@@ -566,8 +566,11 @@ async fn follow(
         }
         exit = EXIT_DENIED;
     }
-    let how =
-        run_end.unwrap_or_else(|| last_stop.map_or(RunEnd::Stop, |(stop, _)| RunEnd::of(stop)));
+    let how = run_end.unwrap_or_else(|| {
+        last_stop
+            .as_ref()
+            .map_or(RunEnd::Stop, |(stop, _)| RunEnd::of(stop))
+    });
     let closed = !matches!(
         how,
         RunEnd::Error | RunEnd::Aborted | RunEnd::Length | RunEnd::Guard

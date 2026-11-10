@@ -1,8 +1,12 @@
 use serde_json::Value;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Content, StopReason, UserContent, shown_text as shown};
 
 pub(crate) fn text_of(content: &[Content]) -> String {
-    yi_types::message::join_text(content, "\n")
+    content
+        .iter()
+        .filter_map(shown)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// An assistant message's text blocks, one paragraph each.
@@ -14,15 +18,12 @@ pub(crate) fn prose_of(content: &[Content]) -> String {
 
 pub(crate) fn prose_into(content: &[Content], out: &mut String) {
     out.clear();
-    for c in content {
-        if let Content::Text { text, .. } = c
-            && !text.is_empty()
-        {
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            out.push_str(text);
-        }
+    for text in content
+        .iter()
+        .filter_map(shown)
+        .filter(|text| !text.is_empty())
+    {
+        out.extend([if out.is_empty() { "" } else { "\n\n" }, text]);
     }
 }
 

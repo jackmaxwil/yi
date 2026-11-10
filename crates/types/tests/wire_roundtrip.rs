@@ -271,6 +271,93 @@ fn every_wire_enum_decodes_an_unknown_tag_and_re_emits_it_verbatim()
     Ok(())
 }
 
+/// Dies with a session a newer build wrote refused whole: a content block or stop reason this
+/// build lacks decodes to `Other` and re-emits as written, while a known tag that is broken fails.
+#[test]
+fn an_unknown_content_block_and_stop_reason_decode_to_other_and_re_emit_verbatim()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::entry::Entry;
+    use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+    let path = fixtures()?.join("v4-unknown-content.jsonl");
+    let content = fs::read_to_string(path)?;
+    let (mut blocks, mut stops) = (Vec::new(), Vec::new());
+    for line in content.lines().skip(1) {
+        let mutation: Mutation = serde_json::from_str(line)?;
+        assert_eq!(serde_json::to_string(&mutation)?, line);
+        let Mutation::Entry {
+            entry: Entry::Message { message, .. },
+            ..
+        } = mutation
+        else {
+            return Err("not a message".into());
+        };
+        let (content, stop) = match message {
+            AgentMessage::User {
+                content: UserContent::Blocks(content),
+                ..
+            }
+            | AgentMessage::ToolResult { content, .. } => (content, None),
+            AgentMessage::Assistant {
+                content,
+                stop_reason,
+                ..
+            } => (content, Some(stop_reason)),
+            _ => (Vec::new(), None),
+        };
+        stops.extend(stop);
+        blocks.extend(content.iter().map(|block| match block {
+            Content::Other(raw) => serde_json::to_string(raw).unwrap_or_default(),
+            _ => "known".to_owned(),
+        }));
+    }
+    let unknown: Vec<&String> = blocks.iter().filter(|block| *block != "known").collect();
+    assert_eq!(unknown.len(), 4, "{blocks:?}");
+    assert!(unknown[0].starts_with(r#"{"mimeType":"audio/wav","type":"audio""#));
+    assert_eq!(
+        stops,
+        [
+            StopReason::ToolUse,
+            StopReason::Other("pauseTurn".to_owned())
+        ]
+    );
+    for broken in [
+        r#"{"type":"text"}"#,
+        r#"{"type":"image","data":"aGk="}"#,
+        r#"{"kind":"none"}"#,
+    ] {
+        assert!(serde_json::from_str::<Content>(broken).is_err(), "{broken}");
+    }
+    Ok(())
+}
+
+/// Dies with a corrupt session line that names no field: a broken known block or a non-string
+/// stop reason reports its own defect, as it did before unknown tags decoded.
+#[test]
+fn a_broken_known_block_names_the_field_it_lacks() -> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::message::{Content, StopReason};
+    for (broken, field) in [
+        (r#"{"type":"text"}"#, "missing field `text`"),
+        (r#"{"type":"text","text":5}"#, "invalid type: integer `5`"),
+        (
+            r#"{"type":"toolCall","id":"a","name":"b"}"#,
+            "missing field `arguments`",
+        ),
+        (r#"{"text":"hi"}"#, "missing field `type`"),
+    ] {
+        let error = serde_json::from_str::<Content>(broken)
+            .err()
+            .ok_or(broken)?
+            .to_string();
+        assert!(error.contains(field), "{broken}: {error}");
+    }
+    let error = serde_json::from_str::<StopReason>("5").err().ok_or("5")?;
+    assert!(
+        error.to_string().contains("invalid type: integer `5`"),
+        "{error}"
+    );
+    Ok(())
+}
+
 /// Dies with a Pi- or tool-written `type` rendered into a model's history view verbatim: an
 /// unknown entry's type name is a closed word, whatever text the line carried.
 #[test]

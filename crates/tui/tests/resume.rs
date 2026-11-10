@@ -141,6 +141,41 @@ fn a_replayed_turn_reads_as_the_live_one_did() -> TestResult {
     Ok(())
 }
 
+/// Dies with a block a newer build wrote replayed as nothing: an assistant turn whose only words
+/// sit in such a block drew no row, and the user could not tell a reply was there.
+#[test]
+fn a_replayed_block_this_build_cannot_read_draws_its_notice_not_its_type() -> TestResult {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../types/tests/fixtures/v4-unknown-content.jsonl"
+    );
+    let mut entries = Vec::new();
+    for line in std::fs::read_to_string(fixture)?.lines().skip(1) {
+        let mutation: yi_types::wire::Mutation = serde_json::from_str(line)?;
+        if let yi_types::wire::Mutation::Entry { entry, .. } = mutation {
+            entries.push(entry);
+        }
+    }
+    let mut app = app();
+    app.replay_entries(&entries);
+    let lines = flat(&app.take_commits());
+    let notices = lines
+        .iter()
+        .filter(|line| line.contains("[… 1 content block left out: its type is newer"))
+        .count();
+    assert_eq!(
+        notices, 4,
+        "one per block: user, two in the reply, tool: {lines:#?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains("webSearchToolResult") || line.contains("audio/wav")),
+        "a block's own type is file text, never drawn: {lines:#?}"
+    );
+    Ok(())
+}
+
 fn priced(text: &str, cost: f64, unknown: bool) -> Result<AgentMessage, Box<dyn Error>> {
     Ok(serde_json::from_value(json!({
         "role": "assistant", "content": [{"type": "text", "text": text}], "api": "faux",

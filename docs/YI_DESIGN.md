@@ -1506,7 +1506,8 @@ covers, and the attribute covers the one item after it, to its matching brace or
 - Owner: [`crates/types/src`](../crates/types/src),
   [`check_schemas_lock.py`](../scripts/guardrails/check_schemas_lock.py)
 
-Versions: the session file is §4.1 (`Entry` is internally tagged, no catch-all); permission state
+Versions: the session file is §4.1 (`Entry` and `Content` are internally tagged; an unknown entry
+type, content block type or stop reason decodes to `Other`, kept raw); permission state
 `SessionPermissionState.version`, default 2; the session todo list `format`, 2, where an absent
 format is 1 and migrates on read (D282); kernel venv `BOOTSTRAP_SCHEMA = 1` (§9.1); ACP
 `protocolVersion` at `initialize` (§17.2).

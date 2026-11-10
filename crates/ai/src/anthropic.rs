@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
+use yi_types::message::{AgentMessage, Content, StopReason, UNREAD_CONTENT, Usage, UserContent};
 use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, ToolDef};
 
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, Ttl, encode};
@@ -181,6 +181,7 @@ fn convert_messages(messages: &[Cow<'_, AgentMessage>]) -> (Vec<Value>, Vec<Opti
                             }));
                         }
                         Content::Image { .. } => {}
+                        Content::Other(_) => blocks.push(text_block(UNREAD_CONTENT)),
                     }
                 }
                 if !blocks.is_empty() {

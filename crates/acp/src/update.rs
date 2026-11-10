@@ -9,7 +9,7 @@ use yi_types::encoding::base64;
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::goal::Goal;
-use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent, shown_text};
 use yi_types::subagent::ChildId;
 
 pub fn extension<K: Into<String>>(
@@ -211,11 +211,13 @@ impl IdMap {
     }
 }
 
-fn stop_reason(reason: StopReason) -> AcpStopReason {
+fn stop_reason(reason: &StopReason) -> AcpStopReason {
     match reason {
-        StopReason::Stop | StopReason::ToolUse | StopReason::Pending | StopReason::Deferred => {
-            AcpStopReason::EndTurn
-        }
+        StopReason::Stop
+        | StopReason::ToolUse
+        | StopReason::Pending
+        | StopReason::Deferred
+        | StopReason::Other(_) => AcpStopReason::EndTurn,
         StopReason::Length => AcpStopReason::MaxTokens,
         StopReason::Aborted => AcpStopReason::Cancelled,
         StopReason::Error => AcpStopReason::Other("_yi/error".to_owned()),
@@ -233,7 +235,11 @@ fn tool_kind(tool_name: &str) -> AcpToolKind {
 }
 
 fn text_of(content: &[Content]) -> String {
-    yi_types::message::join_text(content, "")
+    content
+        .iter()
+        .filter_map(shown_text)
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 fn image_block(block: &Content) -> Option<AcpContentBlock> {
@@ -262,9 +268,9 @@ fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
         UserContent::Text(text) => vec![AcpContentBlock::Text { text: text.clone() }],
         UserContent::Blocks(blocks) => blocks
             .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(AcpContentBlock::Text { text: text.clone() }),
-                _ => None,
+            .filter_map(shown_text)
+            .map(|text| AcpContentBlock::Text {
+                text: text.to_owned(),
             })
             .collect(),
     }
@@ -404,7 +410,7 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             }
             AssistantMessageEvent::Done { reason, .. }
             | AssistantMessageEvent::Error { reason, .. } => {
-                ids.last_stop = Some(stop_reason(*reason));
+                ids.last_stop = Some(stop_reason(reason));
                 Vec::new()
             }
             _ => Vec::new(),

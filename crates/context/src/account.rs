@@ -33,6 +33,7 @@ fn content_chars(block: &Content) -> u64 {
         Content::Text { text, .. } => text.len() as u64,
         Content::Thinking { thinking, .. } => thinking.len() as u64,
         Content::Image { .. } => IMAGE_ESTIMATE_CHARS,
+        Content::Other(_) => yi_types::message::UNREAD_CONTENT.len() as u64,
         Content::ToolCall {
             name, arguments, ..
         } => {
