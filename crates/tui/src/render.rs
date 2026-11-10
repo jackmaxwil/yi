@@ -138,7 +138,7 @@ fn draw_frame<B>(
         .filter(|_| matches!(app.bottom, Some(Bottom::Question(_))));
 }
 
-fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Line<'static>> {
+fn live_lines(app: &mut App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Line<'static>> {
     let content_width = app.content_width();
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     // Invariant: a held run of reads ended before any live thought began, so it renders first.
@@ -146,7 +146,10 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
         let live = crate::cell::explored_cell(app.explored.clone());
         live_lines.extend(live.lines(content_width, theme, app.mode, spinner));
     }
-    if app.live_thought.len() > app.live_thought_cut {
+    let revealed = app.pacing.thought.shown() > app.live_thought_cut;
+    if revealed && app.mode != TranscriptMode::Verbose {
+        live_lines.extend(app.thought_window());
+    } else if app.live_thought.len() > app.live_thought_cut && app.mode == TranscriptMode::Verbose {
         // Reasoning-heavy models stream thought long before prose, so show its dim tail and
         // the screen is never silently blank mid-turn; prose does not displace it.
         let tail = app
@@ -155,7 +158,7 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             .unwrap_or_default();
         let tail = crate::transcript::fence_tail(tail, live_tail_rows(app.rows));
         let tail = crate::transcript::close_spans(&tail);
-        live_lines.extend(live_tail(app.thought_block(&tail), app.rows));
+        live_lines.extend(live_tail(app.thought_block(&tail, None), app.rows));
     }
     if !app.live_markdown.is_empty() {
         let tail = app
@@ -531,11 +534,12 @@ fn follow_step(
 fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: usize) -> Followed {
     let history = yi_types::trace::span("tui.history_rows");
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
+    let sized = app.pane_key();
     let held = app.pane_hold.take().is_some();
     let fresh = app.running && app.history.len() == 1 && !held;
     let follow = match app.pane_follow {
-        Some((w, m, _, _)) if (w, m) != (width, mode) => None,
-        None if fresh => Some((width, mode, 0, 0)),
+        Some((w, m, _, _)) if (w, m) != (sized, mode) => None,
+        None if fresh => Some((sized, mode, 0, 0)),
         pin => pin,
     };
     let want = above.saturating_sub(live.len()).saturating_add(1);
@@ -574,7 +578,7 @@ fn follow_column(app: &mut App, live: Vec<Line<'static>>, above: usize, height: 
     let pin = owners.get(start).or(owners.last()).copied();
     app.pane_follow = pin.and_then(|cell| {
         let at = owners.iter().position(|&owner| owner == cell)?;
-        Some((width, mode, cell, end.saturating_sub(at)))
+        Some((sized, mode, cell, end.saturating_sub(at)))
     });
     let mut more = if follow_mode == yi_types::config::FollowMode::Still {
         column.len().saturating_sub(end)
@@ -626,6 +630,7 @@ pub fn paint_pane(
     let floor = layout.floor.min(area.height);
     let above = usize::from(area.height.saturating_sub(floor));
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
+    let sized = app.pane_key();
     let mut follow_more = 0;
     let result = if *scroll == 0 {
         let followed = follow_column(app, live, above, usize::from(area.height));
@@ -636,7 +641,7 @@ pub fn paint_pane(
         // Incident: counting committed rows drifted a held view; now rows below a pinned cell.
         let hold = app
             .pane_hold
-            .filter(|&(w, m, _, _)| (w, m) == (width, mode));
+            .filter(|&(w, m, _, _)| (w, m) == (sized, mode));
         if let Some((_, _, pinned, extent)) = hold {
             let (at, now, _) = app
                 .history
@@ -660,7 +665,7 @@ pub fn paint_pane(
             .collect();
         join_live(&mut column, false, live);
         *scroll = (*scroll).min(column.len().saturating_sub(above));
-        app.pane_hold = Some((width, mode, from, column.len().saturating_sub(above)));
+        app.pane_hold = Some((sized, mode, from, column.len().saturating_sub(above)));
         let end = column.len().saturating_sub(*scroll);
         let start = end.saturating_sub(above);
         let shown = column.get(start..end).unwrap_or_default().to_vec();
@@ -787,6 +792,8 @@ fn run_reflow<B>(
     }
     // The mark went with the screen; the next tick has to place it again.
     app.mark_orb_stale();
+    // Invariant: the next append measures its separator from what scrollback now ends with.
+    (app.last_commit_rows, app.last_commit_blank) = app.history.last_rows(width, theme, app.mode());
     let _ = crate::term::commit_lines(terminal, lines);
     terminal.invalidate_viewport();
 }

@@ -113,12 +113,16 @@ fn a_thought_folds_to_a_dim_count_and_carries_no_glyph() -> TestResult {
     let theme = theme();
     let cell = Cell::Thought {
         markdown: "one line".to_owned(),
+        took: Some(24_000),
     };
     let lines = cell.lines(80, &theme, TranscriptMode::Normal, 0);
     let row = lines.first().ok_or("no row")?;
     assert!(row.spans[0].style.add_modifier.contains(Modifier::ITALIC));
-    assert_eq!(flat(&lines).join("\n"), "  thought · 1 line");
-    let open = flat(&cell.lines(80, &theme, TranscriptMode::Thinking, 0)).join("\n");
+    assert_eq!(
+        flat(&lines).join("\n"),
+        "  thought · 24s · 8 chars · ctrl+o"
+    );
+    let open = flat(&cell.lines(80, &theme, TranscriptMode::Verbose, 0)).join("\n");
     assert!(!open.contains('∴'), "{open}");
     assert!(open.contains("one line"), "{open}");
     Ok(())

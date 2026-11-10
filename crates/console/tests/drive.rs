@@ -6172,6 +6172,77 @@ fn resume_fenced(frame: &Value) -> Vec<Value> {
     ]
 }
 
+fn resume_thought(frame: &Value) -> Vec<Value> {
+    let mut reply = assistant("The crate is yi.");
+    if let AgentMessage::Assistant { content, .. } = &mut reply {
+        content.insert(
+            0,
+            Content::Thinking {
+                thinking: "The manifest names the crate, so the answer is its name.".to_owned(),
+                thinking_signature: None,
+                redacted: None,
+                reasoning_field: None,
+                reasoning_details: None,
+            },
+        );
+    }
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("which crate is this")),
+                entry("e2", Some("e1"), 2, &reply),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
+    ]
+}
+
+/// Dies when a settled thought's fold is all the console offers: the press on its row opens the
+/// whole thought in a pane beside the chat, where scrollback could never re-render it.
+#[test]
+fn pressing_a_folded_thought_opens_it_beside_the_chat() -> TestResult {
+    let script = |press: &str| {
+        format!("wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 thought · \n{press}quit\n")
+    };
+    let folded = run_frames(
+        "thought-fold",
+        replayed_session(resume_thought),
+        &script(""),
+    )?;
+    let rows: Vec<&str> = folded.lines().collect();
+    let y = (rows
+        .iter()
+        .position(|row| row.contains("thought · 56 chars")))
+    .ok_or_else(|| format!("no fold row: {folded}"))?;
+    let row = rows.get(y).copied().unwrap_or_default();
+    let at = row.find("thought · ").ok_or("no fold column")?;
+    let x = row
+        .get(..at)
+        .map_or(0, |lead| lead.chars().count())
+        .saturating_sub(1);
+    assert!(
+        !folded.contains("The manifest names"),
+        "the body is folded: {folded}"
+    );
+    let press =
+        format!("mouse down {x} {y}\nmouse up {x} {y}\nwait-frame 5000 The manifest names\n");
+    let opened = run_frames(
+        "thought-open",
+        replayed_session(resume_thought),
+        &script(&press),
+    )?;
+    assert!(
+        opened
+            .lines()
+            .any(|row| row.contains("The manifest names the crate")),
+        "no thought pane after the press: {opened}"
+    );
+    Ok(())
+}
+
 /// Dies with a chip nothing answers: the press on it must open a terminal beside the chat, and
 /// a press on the fence's own label, one cell left of the chip, must not.
 #[test]

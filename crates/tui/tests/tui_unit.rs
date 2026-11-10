@@ -1004,8 +1004,9 @@ fn thought_cells_are_labeled_and_dim_while_prose_stays_bright() -> TestResult {
     let theme = theme();
     let thought = yi_tui::cell::Cell::Thought {
         markdown: "weighing the options".to_owned(),
+        took: None,
     };
-    let lines = thought.lines(80, &theme, yi_tui::cell::TranscriptMode::Thinking, 0);
+    let lines = thought.lines(80, &theme, yi_tui::cell::TranscriptMode::Verbose, 0);
     let text: Vec<String> = lines.iter().map(flat).collect();
     assert!(
         text.iter().any(|l| l.contains("weighing the options"))
@@ -1688,7 +1689,12 @@ fn a_long_thought_reaches_scrollback_and_outlives_the_prose_that_follows() -> Te
     let thought = "First step of it.\n\nSecond step of it.\n\nThird step of it.\n";
     // Two paragraphs of prose so the answer's own stable prefix commits
     // mid-stream: a thought that waits for the end of the turn lands under it.
-    let mut app = streamed_thought(thought, "The answer.\n\nAnd the rest of it.\n", true);
+    let mut app = streamed_thought_in(
+        TranscriptMode::Verbose,
+        thought,
+        "The answer.\n\nAnd the rest of it.\n",
+        true,
+    );
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     for step in ["First step", "Second step", "Third step"] {
         assert!(
@@ -1729,7 +1735,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer() -> TestResult {
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let label = committed
         .iter()
-        .position(|line| line.contains("I should just say ok."))
+        .position(|line| line.contains("thought ·") && line.ends_with("· 21 chars · ctrl+o"))
         .ok_or("no thought row")?;
     let answer = committed
         .iter()
@@ -1742,7 +1748,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer() -> TestResult {
     assert_eq!(
         committed
             .iter()
-            .filter(|line| line.contains("I should just say ok."))
+            .filter(|line| line.contains("thought ·"))
             .count(),
         1,
         "the thought commits once: {committed:?}"
@@ -1763,7 +1769,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer_in_normal_mode() ->
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let label = committed
         .iter()
-        .position(|line| line.contains("thought · 1 line"))
+        .position(|line| line.contains("thought ·") && line.ends_with("· 21 chars · ctrl+o"))
         .ok_or_else(|| format!("no one-line count row: {committed:?}"))?;
     let answer = committed
         .iter()
@@ -1854,15 +1860,23 @@ fn one_unbroken_paragraph_still_reaches_scrollback() -> TestResult {
     Ok(())
 }
 
+/// Dies when the fold counts one slice: `verbose` commits a thought paragraph by paragraph, and
+/// `normal` folds the merged cell to one count of the whole thought, not of its last paragraph.
 #[test]
-fn normal_mode_still_collapses_a_thought_to_its_line_count() -> TestResult {
-    let mut app = streamed_thought("One.\n\nTwo.\n\nThree.\n", "The answer.\n", true);
-    app.cycle_mode();
+fn a_thought_sliced_in_verbose_folds_to_one_count_of_all_its_chars() -> TestResult {
+    let mut app = streamed_thought_in(
+        TranscriptMode::Verbose,
+        "One.\n\nTwo.\n\nThree.\n",
+        "The answer.\n",
+        true,
+    );
     app.cycle_mode();
     assert_eq!(app.mode(), TranscriptMode::Normal);
     let lines: Vec<String> = app.reflowed(200).iter().map(flat).collect();
     assert!(
-        lines.iter().any(|line| line.contains("thought · 5 lines")),
+        lines
+            .iter()
+            .any(|line| line.contains("thought ·") && line.ends_with("· 19 chars · ctrl+o")),
         "the count covers the whole thought, not its last slice: {lines:?}"
     );
     assert!(
@@ -2414,6 +2428,7 @@ fn blocks_meet_across_one_blank_row_on_replay() -> TestResult {
     });
     history.retain(Cell::Thought {
         markdown: "a thought".to_owned(),
+        took: None,
     });
     history.retain(Cell::Assistant {
         markdown: "# Heading\n\nMore.\n".to_owned(),
@@ -2496,7 +2511,7 @@ fn a_run_of_reads_commits_above_the_reasoning_that_follows_it() -> TestResult {
         .iter()
         .position(|line| line.starts_with("→"))
         .ok_or(format!("no run: {committed:?}"))?;
-    let thought = at("Pondering").ok_or(format!("no thought: {committed:?}"))?;
+    let thought = at("thought ·").ok_or(format!("no thought: {committed:?}"))?;
     assert!(explored < thought, "{committed:?}");
     Ok(())
 }

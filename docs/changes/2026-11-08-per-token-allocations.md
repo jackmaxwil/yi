@@ -1,4 +1,5 @@
 ---
+version: 0.1016.0
 issue: Closes #2111
 cut: none crates/ai/src/sse.rs
 cut: none crates/loop/src/run.rs

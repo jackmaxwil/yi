@@ -1,4 +1,5 @@
 ---
+version: 0.1015.0
 issue: Closes #2107
 cut: none Cargo.lock
 shares: #2108 both edit Cargo.toml and docs/size-ledger.md: this branch drops ureq's native-certs feature and appends its startup row, #2108 adds a dist opt-level line for regex-automata, appends its own row and fixes the header's D553 cite; conflicts on docs/size-ledger.md; whichever lands second merges main

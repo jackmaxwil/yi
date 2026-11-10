@@ -763,8 +763,8 @@ fn paint_chat_pane(
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
     let blank = chat.app.blank_above();
     pane.scroll_from_bottom = scroll;
-    let runs = chat.app.run_chips();
-    crate::hit::offer_runs(app, view.id, runs);
+    let (runs, thoughts) = (chat.app.run_chips(), chat.app.folded_thoughts());
+    crate::hit::offer_chat(app, view.id, runs, thoughts);
     crate::start::chat(app, buffer, inner, view.id, blank, theme);
     if dim {
         crate::chrome::soften(buffer, inner, theme);

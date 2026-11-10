@@ -251,6 +251,9 @@ impl App {
                 let Some(code) = code else { return };
                 return self.run_in_terminal(looking, pane, &code);
             }
+            Some((_, crate::render::Hit::Thought(pane, cell))) => {
+                return self.open_thought(pane, cell);
+            }
             Some((_, crate::render::Hit::Fold(root))) => {
                 self.state.fold_from_header(&root);
                 self.state.zone = Zone::Sidebar;
