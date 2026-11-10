@@ -407,24 +407,79 @@ fn an_image_past_a_provider_limit_is_refused_with_the_cell_that_resizes_it() -> 
     Ok(())
 }
 
-/// checker.bmp is checker.png re-encoded by macOS `sips -s format bmp`.
+const REMEDY_CELL: &str = "import tempfile; from PIL import Image; out = tempfile.NamedTemporaryFile(suffix='.png', delete=False).name; Image.open(path).convert('RGBA').save(out); print(await attach_image(out))";
+
+/// checker.bmp and .tiff are checker.png re-encoded by macOS `sips`, .ico by the kernel venv's
+/// Pillow 13.0.0 (sips writes an ICO Pillow cannot open); little.tiff has its byte-order mark flipped.
 #[test]
-fn a_bmp_is_refused_with_the_cell_that_re_encodes_it() -> TestResult {
-    let dir = scratch::Scratch::new("yi-read-bmp")?;
-    let output = read_image(
-        &dir,
-        "checker.bmp",
-        &std::fs::read(Path::new(FIXTURES).join("checker.bmp"))?,
-    )?;
-    assert!(output.is_error);
-    assert!(images(&output).is_empty());
-    assert_eq!(
-        text(&output),
-        format!(
-            "failed to read {0}: the BMP image is not png, jpeg, gif or webp; in ipython run `path = \"{0}\"; from PIL import Image; Image.open(path).convert('RGB').save(f'{{path}}.jpg'); print(await attach_image(f'{{path}}.jpg'))`",
-            dir.join("checker.bmp").display()
-        )
+fn an_image_type_the_model_cannot_take_is_refused_with_the_cell_that_re_encodes_it() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-types")?;
+    let tiff = std::fs::read(Path::new(FIXTURES).join("checker.tiff"))?;
+    let little = [b"II*\0".as_slice(), tiff.get(4..).ok_or("short tiff")?].concat();
+    for (name, kind, bytes) in [
+        (
+            "checker.bmp",
+            "BMP",
+            std::fs::read(Path::new(FIXTURES).join("checker.bmp"))?,
+        ),
+        ("checker.tiff", "TIFF", tiff),
+        ("little.tiff", "TIFF", little),
+        (
+            "checker.ico",
+            "ICO",
+            std::fs::read(Path::new(FIXTURES).join("checker.ico"))?,
+        ),
+    ] {
+        let output = read_image(&dir, name, &bytes)?;
+        assert!(output.is_error, "{name}");
+        assert!(images(&output).is_empty());
+        assert_eq!(
+            text(&output),
+            format!(
+                "failed to read {0}: the {kind} image is not png, jpeg, gif or webp; in ipython run `path = \"{0}\"; {REMEDY_CELL}`",
+                dir.join(name).display()
+            )
+        );
+    }
+    Ok(())
+}
+
+/// A NUL-led text-like file is no ICO unless its image count is nonzero.
+#[test]
+fn a_nul_file_with_no_ico_count_stays_binary() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-ico-count")?;
+    let output = read_image(&dir, "zero.dat", &[0, 0, 1, 0, 0, 0, 0, 0])?;
+    assert!(
+        text(&output).contains("a binary file (NUL bytes)"),
+        "{}",
+        text(&output)
     );
+    Ok(())
+}
+
+/// A window asked of an image is dropped, and the read says so.
+#[test]
+fn a_window_on_an_image_is_named_as_ignored() -> TestResult {
+    let dir = scratch::Scratch::new("yi-read-window")?;
+    std::fs::copy(Path::new(FIXTURES).join("checker.png"), dir.join("c.png"))?;
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    let output = call(
+        &read,
+        &dir,
+        json!({ "path": "c.png", "offset": 2, "limit": 3 }),
+    )?;
+    assert!(!output.is_error);
+    assert!(
+        text(&output).ends_with("\n[offset, limit ignored: an image is sent whole]"),
+        "{}",
+        text(&output)
+    );
+    assert_eq!(images(&output).len(), 1);
+    let plain = call(&read, &dir, json!({ "path": "c.png" }))?;
+    assert!(!text(&plain).contains("ignored"));
     Ok(())
 }
 
@@ -534,7 +589,7 @@ fn a_bmp_past_a_size_limit_gets_the_re_encode_cell() -> TestResult {
         assert_eq!(
             text(&output),
             format!(
-                "failed to read {0}: the BMP image is not png, jpeg, gif or webp; in ipython run `path = \"{0}\"; from PIL import Image; Image.open(path).convert('RGB').save(f'{{path}}.jpg'); print(await attach_image(f'{{path}}.jpg'))`",
+                "failed to read {0}: the BMP image is not png, jpeg, gif or webp; in ipython run `path = \"{0}\"; {REMEDY_CELL}`",
                 path.display()
             )
         );

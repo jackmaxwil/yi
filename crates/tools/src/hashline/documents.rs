@@ -103,7 +103,7 @@ impl HashlineReadTool {
             }
         }
         if let Some(kind) = crate::document::image_kind(&bytes) {
-            return image(display_path, path, kind, &bytes, stat.as_ref());
+            return image(display_path, path, kind, &bytes, stat.as_ref(), input);
         }
         if bytes.starts_with(b"\xff\xfe") || bytes.starts_with(b"\xfe\xff") {
             let (decoded, encoding) = crate::document::decode_text(&bytes);
@@ -381,6 +381,7 @@ fn image(
     (kind, mime): (&str, &str),
     bytes: &[u8],
     stat: Option<&std::fs::Metadata>,
+    input: &Map<String, Value>,
 ) -> ToolOutput {
     if let Some(refused) = size_refusal(path, (kind, mime), bytes.len()) {
         return refused;
@@ -400,8 +401,16 @@ fn image(
     let side = side.map_or_else(String::new, |(width, height)| {
         format!(", {width}x{height} px")
     });
+    let ignored = ["ranges", "offset", "limit"]
+        .into_iter()
+        .filter(|key| input.contains_key(*key))
+        .collect::<Vec<_>>();
+    let notice = match ignored.is_empty() {
+        true => String::new(),
+        false => format!("\n[{} ignored: an image is sent whole]", ignored.join(", ")),
+    };
     let mut output = text_output(format!(
-        "{display_path}: a {kind} image{side}, {} bytes",
+        "{display_path}: a {kind} image{side}, {} bytes{notice}",
         bytes.len()
     ));
     let row = stat
@@ -488,7 +497,14 @@ mod tests {
         let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xffchecker.png"));
         let bytes = std::fs::read(CHECKER)?;
         let stat = std::fs::metadata(CHECKER)?;
-        let sent = super::image("x.png", path, ("PNG", "image/png"), &bytes, Some(&stat));
+        let sent = super::image(
+            "x.png",
+            path,
+            ("PNG", "image/png"),
+            &bytes,
+            Some(&stat),
+            &serde_json::Map::new(),
+        );
         assert!(!sent.is_error);
         assert_eq!(sent.result.content.len(), 2);
         assert_eq!(sent.result.details.get("attachmentMedia"), None);
@@ -496,7 +512,14 @@ mod tests {
         wide.get_mut(16..20)
             .ok_or("short png")?
             .copy_from_slice(&8001_u32.to_be_bytes());
-        let refused = super::image("x.png", path, ("PNG", "image/png"), &wide, None);
+        let refused = super::image(
+            "x.png",
+            path,
+            ("PNG", "image/png"),
+            &wide,
+            None,
+            &serde_json::Map::new(),
+        );
         let text = yi_types::message::join_text(&refused.result.content, "");
         assert!(refused.is_error);
         assert!(

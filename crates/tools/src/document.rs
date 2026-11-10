@@ -117,7 +117,7 @@ fn is_rtf(bytes: &[u8]) -> bool {
 }
 
 /// An image's name and media type by its magic number. BMP's two-letter mark counts only with its
-/// zeroed reserved field, so a text file opening "BM" stays text.
+/// zeroed reserved field and an ICO's with a nonzero image count, so text stays text.
 pub(crate) fn image_kind(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     if bytes.starts_with(b"\x89PNG") {
         Some(("PNG", "image/png"))
@@ -129,6 +129,10 @@ pub(crate) fn image_kind(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
         Some(("WebP", "image/webp"))
     } else if bytes.starts_with(b"BM") && bytes.get(6..10) == Some(&[0; 4]) {
         Some(("BMP", "image/bmp"))
+    } else if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+        Some(("TIFF", "image/tiff"))
+    } else if bytes.starts_with(&[0, 0, 1, 0]) && bytes.get(4..6).is_some_and(|n| n != [0, 0]) {
+        Some(("ICO", "image/x-icon"))
     } else {
         None
     }

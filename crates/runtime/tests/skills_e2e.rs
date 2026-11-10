@@ -203,9 +203,11 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         .find(|tool| tool.name() == "read")
         .ok_or("no read tool")?;
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/documents");
-    for (fixture, name) in [
-        ("checker.bmp", "sch\"em\\atic.bmp"),
-        ("wide-8001.png", "wi`de\"8001.png"),
+    for (fixture, name, mime) in [
+        ("checker.bmp", "sch\"em\\atic.bmp", "image/png"),
+        ("checker.tiff", "sch\"em\\atic.tiff", "image/png"),
+        ("checker.ico", "sch\"em\\atic.ico", "image/png"),
+        ("wide-8001.png", "wi`de\"8001.png", "image/jpeg"),
     ] {
         let image = dir.join(name);
         std::fs::copy(std::path::Path::new(fixtures).join(fixture), &image)?;
@@ -228,7 +230,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         let [attachment] = attach_cell.result.attachments.as_slice() else {
             return Err(format!("{named}: the attachment must reach the host reducer").into());
         };
-        assert_eq!(attachment.mime_type, "image/jpeg", "{named}");
+        assert_eq!(attachment.mime_type, mime, "{named}");
         assert_eq!(
             yi_types::image::image_defect(&attachment.mime_type, &attachment.data),
             None

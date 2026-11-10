@@ -23,7 +23,7 @@ pub enum ImageDefect {
 /// The ipython statements that send an image at `path` again: `attach_image` resizes one to fit,
 /// and Pillow re-encodes one of a type `attach_image` does not take; each is run by a kernel test.
 pub const RESIZE_CELL: &str = "print(await attach_image(path))";
-pub const REENCODE_CELL: &str = "from PIL import Image; Image.open(path).convert('RGB').save(f'{path}.jpg'); print(await attach_image(f'{path}.jpg'))";
+pub const REENCODE_CELL: &str = "import tempfile; from PIL import Image; out = tempfile.NamedTemporaryFile(suffix='.png', delete=False).name; Image.open(path).convert('RGBA').save(out); print(await attach_image(out))";
 
 impl ImageDefect {
     /// The statement that sends the image again, `path` naming its source file.
