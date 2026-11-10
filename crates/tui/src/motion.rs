@@ -74,6 +74,16 @@ pub fn tab_title_pulse(elapsed: Duration) -> &'static str {
     }
 }
 
+/// `Yi > label` while idle, `Yi ! label` while waiting on you, `Yi ◌ label` while working.
+/// An empty label keeps the marker, so a session with no name still shows its state.
+pub fn tab_title(label: &str, marker: &str) -> String {
+    if label.is_empty() {
+        format!("Yi {marker}")
+    } else {
+        format!("Yi {marker} {label}")
+    }
+}
+
 /// The band's weight at `column` as an alpha in `0..=FULL`, 0 outside it — the
 /// one place a cosine becomes an integer.
 fn weight(column: f64, head: f64) -> u16 {
@@ -138,7 +148,7 @@ pub fn shimmer(text: &str, elapsed_ms: u128, theme: &Theme) -> Vec<Span<'static>
 
 #[cfg(test)]
 mod tests {
-    use super::tab_title_pulse;
+    use super::{tab_title, tab_title_pulse};
     use std::time::Duration;
 
     #[test]
@@ -154,5 +164,13 @@ mod tests {
         ] {
             assert_eq!(tab_title_pulse(Duration::from_millis(millis)), frame);
         }
+    }
+
+    #[test]
+    fn tab_title_keeps_the_marker_when_the_label_is_empty() {
+        assert_eq!(tab_title("", ">"), "Yi >");
+        assert_eq!(tab_title("Fix the gauge", ">"), "Yi > Fix the gauge");
+        assert_eq!(tab_title("Fix the gauge", "!"), "Yi ! Fix the gauge");
+        assert_eq!(tab_title("Fix the gauge", "◌"), "Yi ◌ Fix the gauge");
     }
 }

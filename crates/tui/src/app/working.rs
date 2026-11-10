@@ -143,9 +143,9 @@ impl App {
         }
         self.title_marker = Some(marker);
         self.pending_title = Some(match marker {
-            TitleMarker::Ready => self.base_title.clone(),
-            TitleMarker::Attention => format!("! {}", self.base_title),
-            TitleMarker::Pulse(frame) => format!("{frame} {}", self.base_title),
+            TitleMarker::Ready => crate::motion::tab_title(&self.base_title, ">"),
+            TitleMarker::Attention => crate::motion::tab_title(&self.base_title, "!"),
+            TitleMarker::Pulse(frame) => crate::motion::tab_title(&self.base_title, frame),
         });
     }
 
@@ -154,9 +154,8 @@ impl App {
     }
 
     pub(crate) fn update_prompt_title(&mut self, focus: &str) {
-        let title = format!("Yi — {focus}");
-        if self.base_title != title {
-            self.base_title = title;
+        if self.base_title != focus {
+            self.base_title = focus.to_owned();
             self.title_marker = None;
             self.refresh_title();
         }

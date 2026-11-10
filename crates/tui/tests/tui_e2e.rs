@@ -2392,12 +2392,12 @@ fn a_solo_window_title_tracks_orb_state_and_pulse_without_repeating() -> TestRes
     });
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let written = terminal.backend_mut().take_written();
-    assert!(written.contains("\x1b]2;Yi — hello\x07"), "{written:?}");
+    assert!(written.contains("\x1b]2;Yi > hello\x07"), "{written:?}");
 
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let written = terminal.backend_mut().take_written();
-    assert!(written.contains("\x1b]2;◌ Yi — hello\x07"), "{written:?}");
+    assert!(written.contains("\x1b]2;Yi ◌ hello\x07"), "{written:?}");
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let written = terminal.backend_mut().take_written();
     assert!(!written.contains("\x1b]2;"), "{written:?}");
@@ -2405,7 +2405,7 @@ fn a_solo_window_title_tracks_orb_state_and_pulse_without_repeating() -> TestRes
     app.advance_clock(Duration::from_millis(250));
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let written = terminal.backend_mut().take_written();
-    assert!(written.contains("\x1b]2;◍ Yi — hello\x07"), "{written:?}");
+    assert!(written.contains("\x1b]2;Yi ◍ hello\x07"), "{written:?}");
 
     let (reply, _answered) = std::sync::mpsc::channel();
     app.open_approval(yi_tui::AskRequest {
@@ -2417,7 +2417,7 @@ fn a_solo_window_title_tracks_orb_state_and_pulse_without_repeating() -> TestRes
     });
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let written = terminal.backend_mut().take_written();
-    assert!(written.contains("\x1b]2;! Yi — hello\x07"), "{written:?}");
+    assert!(written.contains("\x1b]2;Yi ! hello\x07"), "{written:?}");
     app.advance_clock(Duration::from_millis(250));
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let written = terminal.backend_mut().take_written();
@@ -2429,13 +2429,13 @@ fn a_solo_window_title_tracks_orb_state_and_pulse_without_repeating() -> TestRes
     });
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let written = terminal.backend_mut().take_written();
-    assert!(written.contains("\x1b]2;◉ Yi — hello\x07"), "{written:?}");
+    assert!(written.contains("\x1b]2;Yi ◉ hello\x07"), "{written:?}");
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
         messages: Vec::new(),
     });
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let written = terminal.backend_mut().take_written();
-    assert!(written.contains("\x1b]2;Yi — hello\x07"), "{written:?}");
+    assert!(written.contains("\x1b]2;Yi > hello\x07"), "{written:?}");
     Ok(())
 }
 
@@ -2454,7 +2454,7 @@ fn a_host_notice_titles_nothing_and_draws_no_prompt_rail() -> TestResult {
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let first = terminal.backend_mut().take_written();
     assert!(
-        first.contains("\x1b]2;Yi — hello\x07"),
+        first.contains("\x1b]2;Yi > hello\x07"),
         "the user's prompt titles the window: {first:?}"
     );
 
@@ -2741,7 +2741,7 @@ fn the_recorded_session_titles_nothing_on_a_host_notice() -> TestResult {
         let (mut app, rows) = replayed(mode)?;
         let title = app.take_title().unwrap_or_default();
         assert!(
-            title.ends_with(&format!("Yi — {last}")),
+            title.ends_with(&format!("Yi > {last}")),
             "{mode:?}: the notice changed the prompt-derived title: {title:?}"
         );
         let flag = rows

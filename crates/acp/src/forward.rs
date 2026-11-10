@@ -81,6 +81,30 @@ pub(crate) struct Parent {
     pub(crate) last_committed_id: Option<String>,
 }
 
+fn user_prompt(message: &AgentMessage) -> bool {
+    let AgentMessage::User {
+        content,
+        attribution,
+        ..
+    } = message
+    else {
+        return false;
+    };
+    if matches!(attribution, yi_types::message::Attribution::Host(_)) {
+        return false;
+    }
+    let text = match content {
+        yi_types::message::UserContent::Text(text) => text.as_str(),
+        yi_types::message::UserContent::Blocks(blocks) => {
+            return yi_types::message::join_text(blocks, " ")
+                .split_whitespace()
+                .next()
+                .is_some();
+        }
+    };
+    text.split_whitespace().next().is_some()
+}
+
 impl Parent {
     pub(crate) fn new(
         forward: Forward,
@@ -327,6 +351,12 @@ impl Parent {
                 }
                 if matches!(event, AgentEvent::AgentEnd { .. }) {
                     (self.last_active).store(crate::daemon::now_ms(), Ordering::Relaxed);
+                    self.title();
+                }
+                // omp names the session when the reply starts, not after the run ends.
+                if let AgentEvent::MessageEnd { message } = event
+                    && user_prompt(message)
+                {
                     self.title();
                 }
             }

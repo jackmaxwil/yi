@@ -309,9 +309,9 @@ impl App {
             card_at: None,
             orb_placement: None,
             orb_stale: false,
-            base_title: "Yi".to_owned(),
+            base_title: String::new(),
             title_marker: Some(working::TitleMarker::Ready),
-            pending_title: Some("Yi".to_owned()),
+            pending_title: Some(crate::motion::tab_title("", ">")),
             started_at: Instant::now(),
             clock: crate::motion::Clock::Real,
             quit: false,
@@ -462,7 +462,8 @@ impl App {
     }
 
     pub fn set_session_name(&mut self, name: String) {
-        self.options.session_name = name;
+        self.options.session_name = name.clone();
+        self.update_prompt_title(&name);
         self.scheduler.request();
     }
 

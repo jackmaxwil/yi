@@ -1322,9 +1322,10 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - The palette is fixed: tier from `COLORTERM`/`TERM`, light or dark from `COLORFGBG` (default
   dark). The orb is [`yi-orb`](../crates/orb/src/lib.rs) over kitty graphics: the `Yi` mark at rest and one
   exact loop per agent state, left only at its exit points by a least-travel morph.
-- The OSC 2 title keeps `Yi — <prompt>`; `◌ ◍ ◉ ◍` pulses every 250 ms while the foreground
-  run has an `OrbState`, `!` marks `Listening`, and no marker means ready. Background jobs and
-  child sessions may outlive the parent run without keeping its title pulsing.
+- The OSC 2 title is `Yi > <summary>` while ready, `Yi ! <summary>` while `Listening`, and
+  `Yi` plus `◌ ◍ ◉ ◍` every 250 ms while the foreground run has an `OrbState`. The summary is
+  the session name. Background jobs and child sessions may outlive the parent run without
+  keeping its title pulsing.
 - `yi tui --headless --keys <script> --frames <dir> [--record] [--snap]` drives the real loop on
   an in-memory screen (steps `key`, `type`, `type-ms`, `wait`, `wait-idle`, `wait-frame`, `quit`);
   it implies `--here` unless `--lanes`, and the drive flags are refused without `--headless`.
@@ -1365,11 +1366,14 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   a blank row between workspaces and no headers. A session's identicon and accent are the
   directory it was started in, so one workspace wears one creature; a child wears its parent's.
   A working or blocked session's avatar plays its state loop at 15 fps in place of its identicon.
-- A session is titled once by the summarizer after its first turn (`_yi/name`); the first
-  prompt stays its name until then, and the daemon's ledger keeps the title.
-- The focused session's OSC 2 title prefixes its label with the same 250 ms pulse while `Working`,
-  `!` while `Blocked`, and no marker otherwise; `DoneUnseen` is ready, not attention. Background
-  jobs and child sessions do not keep the parent title pulsing after its run ends.
+- A session is titled once by the summarizer after its first turn (`_yi/name`). The reply is
+  omp's card: the model picks an emoji and a 1-6 character code for that session, then a
+  three-to-six word title, stored as `🧪 FLAKY: Fix flaky park tests`. The first prompt stays
+  its name until then, and the daemon's ledger keeps the title.
+- The focused session's OSC 2 title is `Yi >` its label while ready, `Yi !` while `Blocked`, and
+  `Yi` plus the same 250 ms pulse while `Working`. `DoneUnseen` is ready, not attention. The
+  label is the summarizer's title. Background jobs and child sessions do not keep the parent
+  title pulsing after its run ends.
 - ⌘⇧R opens Review beside a session: its scope is the lane's branch against its merge base with
   main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
   session with no git base shows its own edits). Each file names the todo that was running when
