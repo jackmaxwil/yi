@@ -15,6 +15,8 @@ use yi_types::message::Content;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+const ANSWERED: &str = "tests/fixtures/sessions/01a1b9ef.jsonl";
+
 fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
 }
@@ -358,7 +360,7 @@ fn spacing_separates_blocks_but_not_one_line_rows() -> TestResult {
 
 /// A finished card showed one line of a forty-line result and no sign of the rest.
 #[test]
-fn a_collapsed_card_shows_three_rows_and_counts_the_rest() -> TestResult {
+fn a_collapsed_card_shows_its_budget_and_counts_the_rest() -> TestResult {
     let mut app = app();
     let text: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
     started(&mut app, "b0", "bash", "seq 40");
@@ -372,10 +374,10 @@ fn a_collapsed_card_shows_three_rows_and_counts_the_rest() -> TestResult {
     );
     let rows = flat(&app.take_commits());
     let joined = rows.join("\n");
-    for needle in ["line 1", "line 2", "line 3", "… 37 more lines"] {
+    for needle in ["line 1", "line 2", "line 3", "line 4", "… 36 more lines"] {
         assert!(joined.contains(needle), "{needle}: {joined}");
     }
-    assert!(!joined.contains("line 4"), "{joined}");
+    assert!(!joined.contains("line 5"), "{joined}");
     assert!(
         !joined.contains("exit"),
         "a zero exit says nothing: {joined}"
@@ -927,7 +929,204 @@ fn digests_come_from_the_typed_details_and_survive_rewording_the_text() -> TestR
     Ok(())
 }
 
-const ANSWERED: &str = "tests/fixtures/sessions/01a1b9ef.jsonl";
+/// Dies on the old three-row preview: a 30-row screen budgets five result rows, so a sixth
+/// shows whole (its cut would save nothing) and a seventh is cut to five and `… 2 more lines`;
+/// a 20-row screen holds the four-row floor and a 90-row one the twelve-row ceiling.
+#[test]
+fn a_card_one_row_past_its_budget_shows_whole_and_two_past_is_cut() -> TestResult {
+    for (screen, budget) in [(20, 4), (30, 5), (90, 12)] {
+        card_at_its_budget(screen, budget)?;
+    }
+    Ok(())
+}
+
+fn card_at_its_budget(screen: u16, budget: usize) -> TestResult {
+    for (total, kept, more) in [
+        (budget + 1, budget + 1, None),
+        (budget + 2, budget, Some(2)),
+    ] {
+        let mut app = app();
+        app.set_rows(usize::from(screen));
+        let text: Vec<String> = (1..=total).map(|n| format!("row {n}")).collect();
+        started(&mut app, "b0", "bash", "seq");
+        ended_with(
+            &mut app,
+            "b0",
+            "bash",
+            &text.join("\n"),
+            false,
+            json!({ "exitCode": 0 }),
+        );
+        let rows = common::rows_sized(&mut app, 80, screen)?;
+        let head = (rows.iter().position(|row| row.starts_with("│ $ seq")))
+            .ok_or_else(|| format!("no card: {rows:#?}"))?;
+        let body: Vec<&str> = (rows.iter().skip(head + 1))
+            .take_while(|row| row.starts_with('│'))
+            .map(|row| row.trim_start_matches('│').trim())
+            .collect();
+        let mut want: Vec<String> = text.iter().take(kept).cloned().collect();
+        want.extend(more.map(|n| format!("… {n} more lines")));
+        assert_eq!(
+            body, want,
+            "{total} result rows on a {budget}-row budget: {rows:#?}"
+        );
+    }
+    Ok(())
+}
+
+/// Dies on a cut that ran past the runtime's own elision row: a failed 40-line result keeps
+/// twelve head rows, that row and six tail rows, and a 48-row screen's failed budget is sixteen,
+/// so the card drew two counts, or hid the tail where a command's error is; it keeps both ends.
+#[test]
+fn a_failed_card_cut_past_the_runtime_elision_counts_once() -> TestResult {
+    let mut app = app();
+    app.set_rows(48);
+    let text: Vec<String> = (1..=40).map(|n| format!("row {n}")).collect();
+    started(&mut app, "b0", "bash", "seq");
+    ended_with(
+        &mut app,
+        "b0",
+        "bash",
+        &text.join("\n"),
+        true,
+        json!({ "exitCode": 1 }),
+    );
+    let rows = common::rows_sized(&mut app, 80, 48)?;
+    let counts: Vec<&String> = (rows.iter())
+        .filter(|row| row.contains("more lines"))
+        .collect();
+    assert_eq!(counts.len(), 1, "{rows:#?}");
+    let count = counts
+        .first()
+        .map_or("", |row| row.trim_start_matches('│').trim());
+    assert_eq!(count, "… 25 more lines", "{rows:#?}");
+    let shown: Vec<&str> = (rows.iter())
+        .map(|row| row.trim_start_matches('│').trim())
+        .filter(|row| row.starts_with("row "))
+        .collect();
+    let mut want: Vec<String> = (1..=12).map(|n| format!("row {n}")).collect();
+    want.extend((38..=40).map(|n| format!("row {n}")));
+    let body = shown.get(shown.len().saturating_sub(want.len())..);
+    assert_eq!(
+        body,
+        Some(&want.iter().map(String::as_str).collect::<Vec<_>>()[..]),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+/// Dies on a failed cut the runtime had not elided: a 16-line failure on a 24-row screen kept its
+/// first eight rows and hid the last ones, where a command's error is; it keeps both ends.
+#[test]
+fn a_failed_card_cut_short_of_the_runtime_elision_keeps_its_tail() -> TestResult {
+    let mut app = app();
+    app.set_rows(24);
+    let text: Vec<String> = (1..=16).map(|n| format!("row {n}")).collect();
+    started(&mut app, "b0", "bash", "seq");
+    ended_with(
+        &mut app,
+        "b0",
+        "bash",
+        &text.join("\n"),
+        true,
+        json!({ "exitCode": 1 }),
+    );
+    let rows = common::rows_sized(&mut app, 80, 24)?;
+    let body: Vec<&str> = (rows.iter())
+        .map(|row| row.trim_start_matches('│').trim())
+        .filter(|row| row.starts_with("row ") || row.ends_with("more lines"))
+        .collect();
+    let want = [
+        "row 1",
+        "row 1",
+        "row 2",
+        "row 3",
+        "… 9 more lines",
+        "row 13",
+        "row 14",
+        "row 15",
+        "row 16",
+    ];
+    assert_eq!(body, want, "{rows:#?}");
+    Ok(())
+}
+
+/// A recorded session's 47-line `wc` table and 28-line failed scan, replayed on a 36-row screen:
+/// the table keeps its budget of rows and counts the rest, the failure twice that with its tail.
+#[test]
+fn a_recorded_sessions_results_fill_their_budgets() -> TestResult {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sessions/01a0d6e4.jsonl"
+    );
+    let results: Vec<(String, bool)> =
+        common::session::session_entries(&std::fs::read_to_string(path)?)?
+            .into_iter()
+            .filter_map(|message| match message {
+                yi_types::message::AgentMessage::ToolResult {
+                    tool_name,
+                    content,
+                    is_error,
+                    ..
+                } if tool_name == "bash" => Some((text_of(&content), is_error)),
+                _ => None,
+            })
+            .collect();
+    let mut app = app();
+    app.set_rows(36);
+    common::replay_stream(&mut app, std::path::Path::new(path))?;
+    let rows = flat(&app.take_commits());
+    for (opens, failed) in [
+        ("crates/ai/ src=4905", false),
+        ("crates/ai/src/settle.rs:1", true),
+    ] {
+        let (text, _) = (results
+            .iter()
+            .find(|(text, error)| text.contains(opens) && *error == failed))
+        .ok_or_else(|| format!("no {opens} result in the session"))?;
+        let lines: Vec<&str> = text.lines().collect();
+        let budget = yi_tui::budget::card_rows(36, failed);
+        let second = (rows.iter().position(|row| row.contains(opens)))
+            .ok_or_else(|| format!("no card opening {opens}: {rows:#?}"))?;
+        let at = second.checked_sub(1).ok_or("the card has no first row")?;
+        let (head, tail) = if failed {
+            (budget - 1 - budget / 2, budget / 2)
+        } else {
+            (budget, 0)
+        };
+        let kept = (lines.iter().take(head).enumerate()).chain(
+            lines
+                .iter()
+                .skip(lines.len() - tail)
+                .enumerate()
+                .map(|(n, line)| (head + 1 + n, line)),
+        );
+        for (offset, line) in kept {
+            let row = rows.get(at + offset).map_or("", String::as_str);
+            assert!(
+                row.contains(line.trim()),
+                "row {offset} of {opens}: {row:?} for {line:?}"
+            );
+        }
+        let more = format!("… {} more lines", lines.len() - head - tail);
+        let elision = rows.get(at + head).map_or("", String::as_str);
+        assert!(
+            elision.contains(&more),
+            "{elision:?} after {head} rows of {opens}"
+        );
+    }
+    Ok(())
+}
+
+fn text_of(content: &[Content]) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
 
 fn rows_matching(app: &App, needle: &str) -> usize {
     flat(&app.reflowed(100_000))

@@ -89,4 +89,21 @@ impl App {
             _ => OrbState::Working,
         }
     }
+
+    pub(super) fn count_kind(&mut self, name: &str) {
+        let verb = match name {
+            "read" | "get_context" => "read",
+            "grep" | "web_search" => "searched",
+            "edit" | "write" => "edited",
+            "bash" => "ran",
+            "ipython" => "computed",
+            "todo" | "plan" | "ask_user" | "annotate" => return,
+            _ => "used",
+        };
+        self.turn_tools = self.turn_tools.saturating_add(1);
+        match self.turn_kinds.iter_mut().find(|(kind, _)| *kind == verb) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => self.turn_kinds.push((verb, 1)),
+        }
+    }
 }

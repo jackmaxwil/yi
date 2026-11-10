@@ -1734,11 +1734,11 @@ fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResul
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();
     assert!(
-        contents.contains("thought · 1 line"),
+        contents.contains("thought ·") && contents.contains("· 5 chars"),
         "the flushed thought's count row committed:\n{contents}"
     );
     assert!(
-        !contents.contains(" 0 lines"),
+        !contents.contains("thinking ·"),
         "an empty live tail draws nothing:\n{contents}"
     );
     Ok(())

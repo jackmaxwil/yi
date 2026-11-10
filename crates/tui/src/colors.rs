@@ -53,6 +53,8 @@ pub struct Theme {
     pub user_bg: Option<Color>,
     /// Set by a surface that can press a run chip, so only it draws one.
     pub run: bool,
+    /// The screen's height, which the [`crate::budget`] sizes thought windows and cards from.
+    pub rows: usize,
 }
 
 impl Theme {
@@ -83,6 +85,7 @@ impl Theme {
             blue5: pick(Color::LightBlue, 123),
             user_bg: None,
             run: false,
+            rows: 24,
         };
         if tier != ColorTier::TrueColor || !dark {
             return base;

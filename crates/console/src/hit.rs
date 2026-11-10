@@ -21,6 +21,8 @@ pub enum Hit {
     Session(usize),
     /// A chat pane's run chip: the answer cell and the ordinal of the shell block it stands for.
     Run(PaneId, usize, usize),
+    /// A chat pane's folded thought row, and its cell: a press opens the thought beside the chat.
+    Thought(PaneId, usize),
     /// An editor panel's tab, and its ✕: the panel and the tab's place in the strip.
     EditorTab(PaneId, usize),
     /// A scope chip or file row in a review pane's pinned header.
@@ -42,12 +44,19 @@ pub(crate) fn offer(app: &mut App, found: Vec<(Rect, Hit)>) {
     }
 }
 
-/// Each run chip a chat pane drew this frame is a control the press and the hover walk.
-pub(crate) fn offer_runs(app: &mut App, pane: PaneId, runs: Vec<(Rect, usize, usize)>) {
-    offer(
-        app,
-        runs.into_iter()
-            .map(|(rect, cell, ordinal)| (rect, Hit::Run(pane, cell, ordinal)))
-            .collect(),
-    );
+/// Each run chip and folded thought a chat pane drew this frame is a control the press and the
+/// hover walk.
+pub(crate) fn offer_chat(
+    app: &mut App,
+    pane: PaneId,
+    runs: Vec<(Rect, usize, usize)>,
+    thoughts: Vec<(Rect, usize)>,
+) {
+    let runs = runs
+        .into_iter()
+        .map(|(rect, cell, ordinal)| (rect, Hit::Run(pane, cell, ordinal)));
+    let thoughts = thoughts
+        .into_iter()
+        .map(|(rect, cell)| (rect, Hit::Thought(pane, cell)));
+    offer(app, runs.chain(thoughts).collect());
 }

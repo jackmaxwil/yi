@@ -325,22 +325,7 @@ impl App {
                 let json = serde_json::to_string_pretty(entry).unwrap_or_default();
                 self.copy_out(&json);
             }
-            (Verb::Inspect, _) => {
-                let source = inspect(entry);
-                let workdir = self.session_dir();
-                let opened = self.beside(
-                    pane,
-                    PaneContent::Markdown {
-                        path: format!("entry {id}"),
-                        source,
-                        workdir,
-                        drawn: None,
-                    },
-                );
-                if let Some(opened) = opened.and_then(|id| self.state.panes.get_mut(&id)) {
-                    opened.scroll_from_bottom = crate::panes::TOP;
-                }
-            }
+            (Verb::Inspect, _) => self.read_beside(pane, format!("entry {id}"), inspect(entry)),
             (Verb::Rewind { .. }, _) if self.pane_running(pane) => {
                 self.note("wait for the turn to end");
             }
@@ -385,6 +370,36 @@ impl App {
         self.state.panes.get(&pane).is_some_and(|pane| {
             matches!(&pane.content, PaneContent::Session { chat: Some(chat), .. } if chat.app.is_running())
         })
+    }
+
+    pub(super) fn open_thought(&mut self, pane: PaneId, cell: usize) {
+        self.pending_close = None;
+        let source = match self.state.panes.get(&pane).map(|pane| &pane.content) {
+            Some(PaneContent::Session {
+                chat: Some(chat), ..
+            }) => match chat.app.said(cell) {
+                Some((yi_tui::transcript::Said::Thought, source)) => Some(source.to_owned()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(source) = source {
+            self.read_beside(pane, "thought".to_owned(), source);
+        }
+    }
+
+    fn read_beside(&mut self, pane: PaneId, path: String, source: String) {
+        let workdir = self.session_dir();
+        let content = PaneContent::Markdown {
+            path,
+            source,
+            workdir,
+            drawn: None,
+        };
+        let opened = self.beside(pane, content);
+        if let Some(opened) = opened.and_then(|id| self.state.panes.get_mut(&id)) {
+            opened.scroll_from_bottom = crate::panes::TOP;
+        }
     }
 
     /// A pane opened to the right of `pane` and focused; `None` when the split made none.
