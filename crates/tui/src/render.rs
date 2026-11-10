@@ -212,7 +212,7 @@ pub struct ChatLayout {
     bottom: Option<Vec<Line<'static>>>,
     status: Option<Line<'static>>,
     composer_height: u16,
-    composer_too: bool,
+    pub(crate) composer_too: bool,
     show_working: bool,
     kitty: bool,
     pub floor: u16,
@@ -351,7 +351,11 @@ pub fn layout_chat(
     // The status is the composer's top border while that border is free; any title, search or
     // popup in its place sends it back to a row of its own.
     let reply = app.reply_title();
-    let on_rule = bottom_lines.is_none() && reply.is_none() && !app.composer.search_active();
+    let command_list = matches!(app.bottom, Some(Bottom::Command(_)));
+    // A command list sits above the box. The box keeps its border and the status on that border.
+    let on_rule = (bottom_lines.is_none() || command_list)
+        && reply.is_none()
+        && !app.composer.search_active();
     let status_row = if on_rule {
         crate::status::render_rule(&status_input, width.saturating_sub(4), &theme, border)
     } else {
@@ -372,7 +376,10 @@ pub fn layout_chat(
 
     let composer_too = app.tree.is_none()
         && app.plan_tree.is_none()
-        && matches!(app.bottom, Some(Bottom::Question(_)));
+        && matches!(
+            app.bottom,
+            Some(Bottom::Question(_)) | Some(Bottom::Command(_))
+        );
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
         let card = u16::try_from(lines.len()).unwrap_or(composer_height);
         card.saturating_add(if composer_too { composer_height } else { 0 })

@@ -26,6 +26,9 @@ pub fn handle_terminal_event(
                 tree.paste(&text);
             } else if let Some(view) = app.plan_tree.as_mut() {
                 view.paste(&text);
+            } else if matches!(app.bottom, Some(Bottom::Command(_))) {
+                app.composer.handle_paste(&text);
+                refresh_command_list(app);
             } else if let Some(bottom) = app.bottom.as_mut() {
                 paste_into(bottom, &text);
             } else if !app.composer.search_active() {
@@ -91,12 +94,17 @@ pub fn handle_terminal_event(
                         && !key.alt
                         && app.composer.is_empty()
                     {
-                        app.bottom = Some(Bottom::Command(ListPopup::new(
-                            '/',
-                            SLASH_COMMANDS.iter().map(|s| (*s).to_owned()).collect(),
-                        )));
+                        app.composer.textarea.insert_str("/");
+                        app.bottom = Some(Bottom::Command(command_list(String::new())));
                     } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
                         app.bottom = Some(Bottom::File(file_picker(&app.options.cwd)));
+                    } else if key.code == KeyCodeValue::Tab
+                        && !key.ctrl
+                        && !key.alt
+                        && !key.shift
+                        && tab_completes_slash(app)
+                    {
+                        // The command name is filled, or the list is open for a second Tab.
                     } else if key.code == KeyCodeValue::Backspace
                         && !key.ctrl
                         && !key.alt
@@ -172,6 +180,10 @@ pub(crate) fn handle_bottom_key(
         && !matches!(app.bottom, Some(Bottom::Approval(..)))
     {
         app.bottom = None;
+        return;
+    }
+    if matches!(app.bottom, Some(Bottom::Command(_))) {
+        handle_command_list(app, cmd_tx, key);
         return;
     }
     let Some(mut bottom) = app.bottom.take() else {
@@ -311,6 +323,133 @@ enum Slash {
     Prompt(String),
 }
 
+fn command_list(query: String) -> ListPopup {
+    let mut popup = ListPopup::new(
+        '/',
+        SLASH_COMMANDS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
+    );
+    popup.query = query;
+    popup.show_query = false;
+    popup
+}
+
+/// The text after `/` while it is still a command name. Arguments close the list.
+fn command_token(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('/')?;
+    if rest.chars().any(char::is_whitespace)
+        || !rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+    {
+        return None;
+    }
+    Some(rest)
+}
+
+/// The list follows the composer. A line that is no longer a command name closes it.
+fn refresh_command_list(app: &mut App) {
+    let text = app.composer.text();
+    let close = {
+        let Some(Bottom::Command(popup)) = app.bottom.as_mut() else {
+            return;
+        };
+        match command_token(&text) {
+            None => true,
+            Some(token) => {
+                if popup.query != token {
+                    popup.query = token.to_owned();
+                    popup.selected = 0;
+                }
+                popup.filtered().is_empty()
+            }
+        }
+    };
+    if close {
+        app.bottom = None;
+    }
+}
+
+/// Keys for the command list edit the bordered composer. Tab fills the highlighted name there.
+fn handle_command_list(
+    app: &mut App,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
+    key: &SingleKey,
+) {
+    let Some(mut bottom) = app.bottom.take() else {
+        return;
+    };
+    let Bottom::Command(popup) = &mut bottom else {
+        app.bottom = Some(bottom);
+        return;
+    };
+    match key.code {
+        KeyCodeValue::Esc => {}
+        KeyCodeValue::Up => {
+            popup.selected = popup.selected.saturating_sub(1);
+            app.bottom = Some(bottom);
+        }
+        KeyCodeValue::Down => {
+            if popup.selected + 1 < popup.filtered().len() {
+                popup.selected += 1;
+            }
+            app.bottom = Some(bottom);
+        }
+        KeyCodeValue::Tab => {
+            if popup.complete_tab() {
+                app.composer.set_text(&format!("/{}", popup.query));
+            }
+        }
+        KeyCodeValue::Enter => {
+            let text = app.composer.text();
+            let line = if text.trim().is_empty() {
+                format!("/{}", popup.query)
+            } else {
+                text
+            };
+            submit_line(app, cmd_tx, line);
+        }
+        KeyCodeValue::Backspace => {
+            app.composer.backspace();
+            app.bottom = Some(bottom);
+            refresh_command_list(app);
+        }
+        KeyCodeValue::Char(character) if !key.ctrl && !key.alt => {
+            app.composer.textarea.insert_str(character.to_string());
+            app.bottom = Some(bottom);
+            refresh_command_list(app);
+        }
+        KeyCodeValue::Space => {
+            app.composer.textarea.insert_str(" ");
+            app.bottom = Some(bottom);
+            refresh_command_list(app);
+        }
+        _ => app.bottom = Some(bottom),
+    }
+}
+
+/// Tab on a `/name` draft fills the one matching command and leaves a space for arguments.
+/// Several matches open the list above the composer and leave the draft where it is.
+fn tab_completes_slash(app: &mut App) -> bool {
+    let text = app.composer.text();
+    let Some(query) = command_token(&text) else {
+        return false;
+    };
+    let mut popup = command_list(query.to_owned());
+    let matches = popup.filtered().len();
+    if matches == 1 && popup.complete_tab() {
+        app.composer.set_text(&format!("/{}", popup.query));
+        return true;
+    }
+    if matches == 0 {
+        return false;
+    }
+    app.bottom = Some(Bottom::Command(popup));
+    true
+}
+
 /// Invariant: `/word` is a command, a typo'd one included, and `//word` sends `/word` as a
 /// prompt. A `/usr/...` path or a `/*` comment is no word, so it still prompts.
 fn slash_line(text: String) -> Slash {
@@ -347,7 +486,7 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
                 format!("{command} {args}")
             });
         }
-        "lanes" | "land" | "discard" | "pr" | "base" => {
+        "lanes" | "land" | "discard" | "pr" | "base" | "queue" => {
             app.pending_slash = Some(line.trim().to_owned());
         }
         _ => app.commit_cell(&Cell::Notice {
@@ -387,6 +526,78 @@ pub(crate) fn handle_escape(app: &mut App, cmd_tx: &tokio::sync::mpsc::Unbounded
             app.pending_open_tree = true;
         }
         _ => app.last_esc_at = Some(now),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use yi_types::model::{Model, ModelCost};
+
+    use super::handle_terminal_event;
+    use crate::app::{App, TuiOptions};
+    use crate::colors::{ColorTier, Theme};
+    use crate::keymap::default_keymap;
+    use crate::render::layout_chat;
+
+    fn app() -> App {
+        let options = TuiOptions {
+            model: Model {
+                id: "faux-1".to_owned(),
+                name: "faux".to_owned(),
+                api: "faux".to_owned(),
+                provider: "faux".to_owned(),
+                base_url: "http://localhost:0".to_owned(),
+                reasoning: false,
+                input: vec!["text".to_owned()],
+                cost: ModelCost::free(),
+                context_window: 128_000,
+                max_tokens: 16_384,
+                compat: None,
+                thinking_level_map: None,
+                headers: None,
+                read_timeout_secs: None,
+            },
+            session_name: "s".to_owned(),
+            cwd: "/tmp".to_owned(),
+            lane: None,
+            context_window: 128_000,
+            session_dir: String::new(),
+            keys: Vec::new(),
+            initial_prompt: None,
+            pace: 0,
+            follow: yi_types::config::FollowMode::default(),
+        };
+        App::new(
+            options,
+            Theme::new(ColorTier::TrueColor, true),
+            default_keymap(),
+            80,
+        )
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_terminal_event(
+            app,
+            &tx,
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+        );
+    }
+
+    #[test]
+    fn tab_fills_a_command_inside_the_bordered_box() {
+        let mut app = app();
+        app.set_rows(24);
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.composer_text(), "/");
+        let open = layout_chat(&mut app, None, None, 24);
+        assert!(open.composer_too, "the box stays under the command list");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.composer_text(), "/new ");
+        assert!(!app.bottom_open(), "arguments are typed in the box");
+        let filled = layout_chat(&mut app, None, None, 24);
+        assert!(!filled.composer_too);
     }
 }
 
