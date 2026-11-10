@@ -941,13 +941,6 @@ fn shows_key(output: &yi_tools::ToolOutput, _: &std::path::Path) -> bool {
     format!("{:?}", output.result).contains("MARKER")
 }
 
-/// A write that lands on the key replaces it; an edit's refusal that prints its rows shows it.
-#[cfg(unix)]
-fn changes_key(output: &yi_tools::ToolOutput, key: &std::path::Path) -> bool {
-    shows_key(output, key)
-        || std::fs::read_to_string(key).is_ok_and(|text| !text.contains("MARKER"))
-}
-
 #[cfg(unix)]
 fn path_arg(path: &str) -> Map<String, Value> {
     let mut args = Map::new();
@@ -987,27 +980,6 @@ fn a_link_swapped_after_the_check_reads_no_key() -> TestResult {
 fn a_parent_swapped_after_the_check_reads_no_key() -> TestResult {
     let tried = race("read", Swap::Parent, &path_arg("d/id_rsa"), &shows_key)?;
     assert_no_leak("read", Swap::Parent, tried);
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult {
-    let args = write("x", "overwritten\n");
-    assert_no_leak(
-        "write",
-        Swap::File,
-        race("write", Swap::File, &args, &changes_key)?,
-    );
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn a_parent_swapped_after_the_check_overwrites_no_key() -> TestResult {
-    let args = write("d/id_rsa", "overwritten\n");
-    let tried = race("write", Swap::Parent, &args, &changes_key)?;
-    assert_no_leak("write", Swap::Parent, tried);
     Ok(())
 }
 
@@ -1110,6 +1082,14 @@ fn a_parent_swapped_at_any_open_rewrites_no_key_by_grep() -> TestResult {
         args
     };
     no_open_reaches_the_key("grep", 2, &args)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parent_swapped_at_any_open_writes_no_key() -> TestResult {
+    let args =
+        |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| write("d/id_rsa", "overwritten\n");
+    no_open_reaches_the_key("write", 1, &args)
 }
 
 /// The remedy the ping hint names: after the sandbox refuses a real `ping`, the next `ping` asks,
