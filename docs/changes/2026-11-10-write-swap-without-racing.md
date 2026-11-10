@@ -11,3 +11,5 @@ The write tool's gate is now proven the way edit's and grep's are: one call per 
 parent swapped to a link to the key store at each open, in 0.06 s. A write that opens by path
 instead of through the gate fails it. What it does not catch, and the race tests did, is a write
 that reopens by path after the gated open; the read race tests still cover that shape for read.
+For write, a name swapped after the open is refused by the staged replace's own identity check,
+which a unit test in crates/tools/src/tool.rs covers for a link swapped in before the rename.

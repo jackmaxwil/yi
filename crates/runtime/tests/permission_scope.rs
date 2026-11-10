@@ -760,7 +760,7 @@ fn a_url_that_serves_a_host_file_meets_the_read_gate() -> TestResult {
 /// A link swapped between the check and the open (#890): the broker judges the name, then the
 /// real tool opens it while a thread flips `x` from an ordinary file to a link to a key
 /// (`Swap::File`), or `d` from a directory to a link to the key store (`Swap::Parent`), at an
-/// offset swept across the call so some round lands in each window; `reached` names a hit.
+/// offset swept across the call so some round lands in each window.
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 enum Swap {
@@ -849,9 +849,8 @@ fn race(
     tool: &str,
     swap: Swap,
     args: &Map<String, Value>,
-    reached: &dyn Fn(&yi_tools::ToolOutput, &std::path::Path) -> bool,
 ) -> Result<(usize, usize), Box<dyn Error>> {
-    let (_scratch, home, workspace, key) = key_store("yi-scope-swap")?;
+    let (_scratch, home, workspace, _) = key_store("yi-scope-swap")?;
     std::fs::write(workspace.join("x"), BENIGN)?;
     let broker = PermissionBroker::new(
         PermissionMode::Yolo,
@@ -926,19 +925,13 @@ fn race(
         if at.is_some_and(|at| at >= checked) && format!("{:?}", output.result) != calm {
             inside += 1;
         }
-        if reached(&output, &key) {
+        if format!("{:?}", output.result).contains("MARKER") {
             leaks += 1;
-            std::fs::write(&key, "FAKE KEY MARKER\n")?;
         }
     }
     drop(arm);
     swapper.join().map_err(|_| "the swapper panicked")?;
     Ok((inside, leaks))
-}
-
-#[cfg(unix)]
-fn shows_key(output: &yi_tools::ToolOutput, _: &std::path::Path) -> bool {
-    format!("{:?}", output.result).contains("MARKER")
 }
 
 #[cfg(unix)]
@@ -970,7 +963,7 @@ fn a_link_swapped_after_the_check_reads_no_key() -> TestResult {
     assert_no_leak(
         "read",
         Swap::File,
-        race("read", Swap::File, &path_arg("x"), &shows_key)?,
+        race("read", Swap::File, &path_arg("x"))?,
     );
     Ok(())
 }
@@ -978,7 +971,7 @@ fn a_link_swapped_after_the_check_reads_no_key() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn a_parent_swapped_after_the_check_reads_no_key() -> TestResult {
-    let tried = race("read", Swap::Parent, &path_arg("d/id_rsa"), &shows_key)?;
+    let tried = race("read", Swap::Parent, &path_arg("d/id_rsa"))?;
     assert_no_leak("read", Swap::Parent, tried);
     Ok(())
 }
