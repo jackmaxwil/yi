@@ -249,6 +249,42 @@ class TaskLevel(unittest.TestCase):
         got = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5), unpriced))
         self.assertEqual((got["verdict"], got["reason"]), ("inconclusive", "unmeasured"))
 
+    def test_fewer_tokens_at_the_same_price_is_no_economy_gain(self):
+        # The owner's objective is dollars per graded point; tokens are a diagnostic on a priced route.
+        got = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5), lambda t, r: trial(t, 0.5, tokens=800)))
+        self.assertEqual((got["verdict"], got["unit"]), ("inconclusive", "costUsd"))
+
+    def test_a_route_that_bills_nothing_is_judged_by_its_tokens(self):
+        got = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5, cost=0.0),
+                                lambda t, r: trial(t, 0.5, cost=0.0, tokens=800)))
+        self.assertEqual((got["verdict"], got["road"], got["by"], got["unit"]),
+                         ("better", "economy", "tokens", "tokens"))
+        self.assertIsNone(got["breakEvenTasks"], "no price, no break-even")
+
+    def test_a_verdict_states_its_spend_and_break_even(self):
+        got = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5), lambda t, r: trial(t, 0.5, cost=0.8)))
+        self.assertEqual((got["verdict"], got["by"]), ("better", "costUsd"))
+        self.assertAlmostEqual(got["devSpendUsd"], 12 * 2 * 1.8)
+        # 0.2 saved per task and repetition; 43.2 spent judging it.
+        self.assertEqual(got["breakEvenTasks"], 216)
+
+    def test_a_stored_verdict_is_refused_again_by_the_round(self):
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "refine"))
+        import round as rnd
+        base, cand = arms(SLICE, 2, lambda t, r: trial(t, 0.5), lambda t, r: trial(t, 0.4))
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            for name, run in (("base", base), ("cand", cand)):
+                (tmp / f"{name}.jsonl").write_text("\n".join(json.dumps(row) for rows in run for row in rows))
+            (tmp / "floors.json").write_text(json.dumps(TASK_FLOORS))
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = levers.main(["judge", "--base", str(tmp / "base.jsonl"), "--candidate", str(tmp / "cand.jsonl"),
+                                    "--floors", str(tmp / "floors.json"), "--store", "r1", "--variant", "v1",
+                                    "--base-sha", "b1", "--store-dir", str(tmp)])
+            self.assertEqual(code, 3)
+            self.assertIsNotNone(rnd.rejected("v1", "b1", store=tmp))
+            self.assertIsNone(rnd.rejected("v1", "other-base", store=tmp))
+
     def test_the_dev_screen_reads_the_median_task(self):
         base = lambda t, r: trial(t, 0.5)
         self.assertIsNone(levers.screen(*arms(SLICE[:6], 3, base, lambda t, r: trial(t, 0.5 if t < "t03" else 0.6)),

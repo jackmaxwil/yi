@@ -57,7 +57,8 @@ fn every_kind() -> Vec<ToolErrorKind> {
         NoopLoop => Some(Stale),
         Stale => Some(Verdict),
         Verdict => Some(ToolError),
-        ToolError => None,
+        ToolError => Some(NotRun),
+        NotRun => None,
     };
     std::iter::successors(Some(Denied), |kind| after(*kind)).collect()
 }

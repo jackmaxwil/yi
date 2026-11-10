@@ -2,18 +2,19 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_types::event::{AgentEvent, AssistantMessageEvent, RunEnd, ToolResult};
+use yi_types::event::{AgentEvent, AssistantMessageEvent, RunEnd};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 use yi_types::subagent::LoopSignal;
 
-use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
+use crate::batch::{emit_tool_batch_events, execute_tool_calls, fail_calls};
+use crate::config::{LoopConfig, TurnSnapshot};
 use crate::end::{end, side_work};
 use crate::interrupt::InterruptSignal;
 use crate::reasoning::ReasoningBudget;
 pub use crate::stream::StreamFn;
 use crate::stream_retry::{STREAM_RETRY_AT, answered, nothing_delivered, stream_retry};
-use crate::tool::{AgentTool, ToolOutcome, error_tool_result};
+use crate::tool::AgentTool;
 
 pub struct LoopContext {
     pub system_prompt: String,
@@ -66,10 +67,10 @@ fn stop_reason_of(message: &AgentMessage) -> StopReason {
     }
 }
 
-struct ExtractedCall {
-    id: String,
-    name: String,
-    arguments: Map<String, Value>,
+pub(crate) struct ExtractedCall {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) arguments: Map<String, Value>,
 }
 
 pub const UNPARSED_MARKUP: &str = "model emitted tool-call markup that could not be parsed";
@@ -122,249 +123,8 @@ fn extract_tool_calls(message: &AgentMessage) -> Vec<ExtractedCall> {
         .collect()
 }
 
-struct Finalized {
-    call: ExtractedCall,
-    result: ToolResult,
-    is_error: bool,
-}
-
-fn tool_result_message(finalized: &Finalized) -> AgentMessage {
-    AgentMessage::ToolResult {
-        tool_call_id: finalized.call.id.clone(),
-        tool_name: finalized.call.name.clone(),
-        content: finalized.result.content.clone(),
-        details: Some(finalized.result.details.clone()),
-        usage: finalized.result.usage.clone(),
-        added_tool_names: None,
-        is_error: finalized.is_error,
-        timestamp: 0,
-    }
-}
-
-fn emit_tool_batch_events(
-    finalized: &[Finalized],
-    emit: &mut (dyn FnMut(AgentEvent) + Send),
-) -> Vec<AgentMessage> {
-    let mut messages = Vec::new();
-    for item in finalized {
-        let message = tool_result_message(item);
-        emit(AgentEvent::MessageStart {
-            message: message.clone(),
-        });
-        emit(AgentEvent::MessageEnd {
-            message: message.clone(),
-        });
-        messages.push(message);
-    }
-    messages
-}
-
-fn should_terminate(finalized: &[Finalized]) -> bool {
-    !finalized.is_empty()
-        && finalized
-            .iter()
-            .all(|item| item.result.terminate == Some(true))
-}
-
-async fn execute_one(
-    tools: &[Arc<dyn AgentTool>],
-    call: ExtractedCall,
-    signal: &InterruptSignal,
-) -> Finalized {
-    let names: Vec<_> = tools.iter().map(|tool| tool.name()).collect();
-    let borrowed: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
-    // One deterministic repair, then the call fails with the real error.
-    let resolved = crate::repair::repair_tool_name(&call.name, &borrowed)
-        .map(str::to_owned)
-        .unwrap_or_else(|| call.name.clone());
-    let Some(tool) = tools.iter().find(|tool| tool.name() == resolved.as_str()) else {
-        let text = format!("Tool {} not found", call.name);
-        return Finalized {
-            call,
-            result: crate::tool::error_tool_result_kind(
-                &text,
-                yi_types::event::ToolErrorKind::NotFound,
-            ),
-            is_error: true,
-        };
-    };
-    if let Err(reason) = tool.validate(&call.arguments) {
-        return Finalized {
-            call,
-            result: crate::tool::error_tool_result_kind(
-                &reason,
-                yi_types::event::ToolErrorKind::InvalidArgs,
-            ),
-            is_error: true,
-        };
-    }
-    if signal.is_fired() {
-        return Finalized {
-            call,
-            result: crate::tool::error_tool_result_kind(
-                "Operation aborted",
-                yi_types::event::ToolErrorKind::Aborted,
-            ),
-            is_error: true,
-        };
-    }
-    let ToolOutcome { result, is_error } =
-        tool.execute(&call.id, call.arguments.clone(), signal).await;
-    Finalized {
-        call,
-        result,
-        is_error,
-    }
-}
-
-/// Timing and size are stamped where every tool result funnels through, so
-/// the session JSONL can answer per-tool latency without an events pipeline.
-fn stamp_details(item: &mut Finalized, duration_ms: u64) {
-    let out_bytes: usize = item
-        .result
-        .content
-        .iter()
-        .map(|block| match block {
-            yi_types::message::Content::Text { text, .. } => text.len(),
-            _ => 0,
-        })
-        .sum();
-    if let Value::Object(details) = &mut item.result.details {
-        details.insert("durationMs".to_owned(), Value::from(duration_ms));
-        details
-            .entry("outBytes".to_owned())
-            .or_insert(Value::from(out_bytes));
-    }
-}
-
-async fn execute_timed(
-    tools: &[Arc<dyn AgentTool>],
-    call: ExtractedCall,
-    signal: &InterruptSignal,
-) -> Finalized {
-    let started = std::time::Instant::now();
-    let _span = yi_types::trace::span("tool.call").arg("tool", call.name.as_str());
-    let mut item = execute_one(tools, call, signal).await;
-    let duration = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    stamp_details(&mut item, duration);
-    item
-}
-
-/// Completed slots are never polled again, and the blocking work underneath
-/// runs on tokio's blocking pool, so read-kind batches genuinely overlap.
-async fn join_all<F: std::future::Future<Output = Finalized>>(
-    mut futures: Vec<std::pin::Pin<Box<F>>>,
-) -> Vec<Finalized> {
-    use std::task::Poll;
-    let mut results: Vec<Option<Finalized>> = futures.iter().map(|_| None).collect();
-    let mut filled = 0_usize;
-    std::future::poll_fn(|waker_context| {
-        for (index, future) in futures.iter_mut().enumerate() {
-            if results.get(index).is_some_and(std::option::Option::is_none)
-                && let Poll::Ready(value) = future.as_mut().poll(waker_context)
-                && let Some(slot) = results.get_mut(index)
-            {
-                *slot = Some(value);
-                filled = filled.saturating_add(1);
-            }
-        }
-        // Invariant: every slot filled is the exit condition, which is what
-        // makes the flatten below total rather than a silent drop.
-        if filled == futures.len() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    })
-    .await;
-    results.into_iter().flatten().collect()
-}
-
-async fn execute_tool_calls(
-    context: &LoopContext,
-    calls: Vec<ExtractedCall>,
-    mode: ExecutionMode,
-    signal: &InterruptSignal,
-    emit: &mut (dyn FnMut(AgentEvent) + Send),
-) -> (Vec<Finalized>, bool) {
-    let parallel_ok = |call: &ExtractedCall| {
-        mode == ExecutionMode::Parallel
-            && context.tools.iter().any(|tool| {
-                tool.name() == call.name.as_str()
-                    && tool.execution_mode(&call.arguments) == ExecutionMode::Parallel
-            })
-    };
-    let mut finalized = Vec::new();
-    let mut queue = calls.into_iter().peekable();
-    while queue.peek().is_some() {
-        // A maximal run of parallel-safe calls overlaps; the first mutating
-        // call closes the run, so writes keep today's strict ordering.
-        let mut batch: Vec<ExtractedCall> = queue.next().into_iter().collect();
-        if batch.first().is_some_and(&parallel_ok) {
-            while queue.peek().is_some_and(&parallel_ok) {
-                batch.extend(queue.next());
-            }
-        }
-        for call in &batch {
-            emit(AgentEvent::ToolExecutionStart {
-                tool_call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                args: Value::Object(call.arguments.clone()),
-            });
-        }
-        let items = join_all(
-            batch
-                .into_iter()
-                .map(|call| Box::pin(execute_timed(&context.tools, call, signal)))
-                .collect(),
-        )
-        .await;
-        for item in items {
-            emit(AgentEvent::ToolExecutionEnd {
-                tool_call_id: item.call.id.clone(),
-                tool_name: item.call.name.clone(),
-                result: item.result.clone(),
-                is_error: item.is_error,
-            });
-            finalized.push(item);
-        }
-    }
-    let terminate = should_terminate(&finalized);
-    (finalized, terminate)
-}
-
 const TRUNCATED: &str = "the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.";
 const AFTER_LAST_WORD: &str = "time is up and the run has ended.";
-
-fn fail_calls(
-    calls: Vec<ExtractedCall>,
-    why: &str,
-    emit: &mut (dyn FnMut(AgentEvent) + Send),
-) -> Vec<Finalized> {
-    calls
-        .into_iter()
-        .map(|call| {
-            emit(AgentEvent::ToolExecutionStart {
-                tool_call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                args: Value::Object(call.arguments.clone()),
-            });
-            let text = format!("Tool call \"{}\" was not executed: {why}", call.name);
-            let item = Finalized {
-                call,
-                result: error_tool_result(&text),
-                is_error: true,
-            };
-            emit(AgentEvent::ToolExecutionEnd {
-                tool_call_id: item.call.id.clone(),
-                tool_name: item.call.name.clone(),
-                result: item.result.clone(),
-                is_error: item.is_error,
-            });
-            item
-        })
-        .collect()
-}
 
 pub const LENGTH_REDRIVE_CUSTOM_TYPE: &str = "length_redrive";
 pub const LENGTH_REDRIVE_TEXT: &str = "The reply hit the output limit before any tool call. Pick the most boring viable option and act on it now: make the tool call, then explain.";
@@ -899,9 +659,9 @@ pub async fn run_loop<S: StreamFn>(
             if !calls.is_empty() {
                 let (finalized, terminate) = if reason == StopReason::Length {
                     length_stops = length_stops.saturating_add(1);
-                    (fail_calls(calls, TRUNCATED, emit), false)
+                    (fail_calls(calls, TRUNCATED, None, emit), false)
                 } else if last_word_said {
-                    (fail_calls(calls, AFTER_LAST_WORD, emit), true)
+                    (fail_calls(calls, AFTER_LAST_WORD, None, emit), true)
                 } else {
                     length_stops = 0;
                     side_work(config).await;

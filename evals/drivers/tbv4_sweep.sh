@@ -10,7 +10,9 @@
 # rows on stdout; harbor's own output goes to stderr. `{}` overrides run the defaults.
 set -u
 
-DATASET=$(grep '^DATASET=' evals/drivers/tbv4_baseline.sh | cut -d'"' -f2)
+# harbor.sh names a registry suite's dataset and task prefix; bare, this is the tbv4 slice.
+DATASET="${TBV4_DATASET:-$(grep '^DATASET=' evals/drivers/tbv4_baseline.sh | cut -d'"' -f2)}"
+PREFIX="${TBV4_PREFIX:-terminal-bench/}"
 LIST="${TBV4_LIST:-evals/drivers/tbv4_sweep_tasks.txt}"
 ATTEMPTS="${TBV4_ATTEMPTS:-1}"
 CONCURRENCY="${TBV4_CONCURRENCY:-3}"
@@ -60,7 +62,7 @@ if [ -n "$RUNNER" ]; then
 fi
 
 set --
-for task in $(cat "$LIST"); do set -- "$@" -i "terminal-bench/$task"; done
+for task in $(cat "$LIST"); do set -- "$@" -i "$PREFIX$task"; done
 export EVAL_BINARY="$BINARY"
 export EVAL_SUITE_REV="${DATASET#*@}"
 export EVAL_TIMEOUT_MULT="$MULT"
@@ -85,7 +87,7 @@ AGAIN=$(python3 evals/drivers/trials.py unstarted "$RUNS_DIR")
 if [ "$code" = 0 ] && [ -n "$AGAIN" ]; then
   echo "rerunning tasks whose environment never started: $AGAIN" >&2
   set --
-  for task in $AGAIN; do set -- "$@" -i "terminal-bench/$task"; done
+  for task in $AGAIN; do set -- "$@" -i "$PREFIX$task"; done
   python3 evals/drivers/watch.py --runs "$RUNS_DIR-again" --hard "$HARD_CAP" --wall "$WALL" -- \
       harbor run --agent yi_harbor.agent:Yi -d "$DATASET" "$@" \
       --model "$MODEL" -k 1 -n "$CONCURRENCY" \

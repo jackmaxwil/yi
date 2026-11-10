@@ -2715,3 +2715,236 @@ async fn every_end_carries_its_own_reason() {
     ]);
     assert_eq!(ended_with(&quiet, &config).await, Some(RunEnd::Drained));
 }
+
+/// A sequential tool whose arguments name its outcome: `fail` is an error, `exit` a non-zero exit
+/// with no error flag (a bash run that ran and fell short). `gates` false is a read or ledger
+/// call, whose failure leaves the rest of its message running.
+struct Step {
+    name: &'static str,
+    gates: bool,
+    ran: Arc<Mutex<Vec<String>>>,
+}
+
+impl AgentTool for Step {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: self.name.to_owned(),
+            description: "a step".to_owned(),
+            parameters: json!({"type": "object"}),
+            freeform: None,
+        }
+    }
+
+    fn execution_mode(&self, _args: &Map<String, Value>) -> ExecutionMode {
+        ExecutionMode::Sequential
+    }
+
+    fn gates_message(&self, _args: &Map<String, Value>) -> bool {
+        self.gates
+    }
+
+    fn execute<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        args: Map<String, Value>,
+        _signal: &'a InterruptSignal,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            if let Ok(mut ran) = self.ran.lock() {
+                ran.push(tool_call_id.to_owned());
+            }
+            let mut result = error_tool_result("step ran");
+            if let Some(code) = args.get("exit")
+                && let Value::Object(details) = &mut result.details
+            {
+                details.insert("exitCode".to_owned(), code.clone());
+            }
+            ToolOutcome {
+                result,
+                is_error: args.get("fail") == Some(&json!(true)),
+            }
+        })
+    }
+}
+
+type Outcomes = Vec<(String, bool, Option<String>, String)>;
+
+/// One assistant message carrying `calls`, then a closing text; every result as (id, is_error,
+/// errorKind, text) in order.
+async fn one_message(
+    calls: Vec<(&str, &str, Value)>,
+    tools: Vec<Arc<dyn AgentTool>>,
+) -> Result<Outcomes, Box<dyn std::error::Error>> {
+    let blocks = calls
+        .into_iter()
+        .map(|(id, name, args)| {
+            let Value::Object(args) = args else {
+                return Err("arguments must be an object");
+            };
+            Ok(faux_tool_call(id, name, args))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let stream = Scripted::new(vec![
+        faux_assistant_message(blocks, StopReason::ToolUse),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools,
+    };
+    let config = LoopConfig::new(faux_model());
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &InterruptSignal::default(),
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let outcomes = collected
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult {
+                tool_call_id,
+                is_error,
+                details,
+                content,
+                ..
+            } => Some((
+                tool_call_id.clone(),
+                *is_error,
+                details
+                    .as_ref()
+                    .and_then(|d| d.get("errorKind"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                content
+                    .iter()
+                    .filter_map(|block| match block {
+                        yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            )),
+            _ => None,
+        })
+        .collect();
+    Ok(outcomes)
+}
+
+/// The guard, exhaustively over three writes or commands that each pass or fail: exactly the
+/// calls up to and including the first failure run, and every later one is answered `not_run`
+/// naming the call that stopped it, so a test queued behind a refused edit never reports.
+#[tokio::test]
+async fn a_message_stops_at_its_first_failed_write_or_command()
+-> Result<(), Box<dyn std::error::Error>> {
+    for mask in 0_u8..8 {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let tool = Arc::new(Step {
+            name: "edit",
+            gates: true,
+            ran: Arc::clone(&ran),
+        });
+        let ids = ["c0", "c1", "c2"];
+        let calls = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (*id, "edit", json!({"fail": mask & (1 << i) != 0})))
+            .collect();
+        let outcomes = one_message(calls, vec![tool]).await?;
+        let first = (0..3).find(|i| mask & (1 << i) != 0);
+        let expected_ran: Vec<String> = ids
+            .iter()
+            .take(first.map_or(3, |i| i + 1))
+            .map(|id| (*id).to_owned())
+            .collect();
+        let ran = ran.lock().map_err(|_| "poisoned")?.clone();
+        assert_eq!(ran, expected_ran, "pattern {mask:03b}");
+        assert_eq!(outcomes.len(), 3, "every call is answered once");
+        for (id, is_error, kind, text) in outcomes.iter().skip(expected_ran.len()) {
+            let failed = first
+                .and_then(|i| ids.get(i))
+                .ok_or("a skip needs a failure")?;
+            assert!(*is_error, "{id}");
+            assert_eq!(kind.as_deref(), Some("not_run"), "{id}");
+            assert!(
+                text.contains(&format!("({failed}) failed earlier in this message")),
+                "{text}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A command that ran and exited non-zero stops its message though `is_error` is false; a failed
+/// read or ledger call does not.
+#[tokio::test]
+async fn a_nonzero_exit_stops_the_message_and_a_failed_read_does_not()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    let bash = Arc::new(Step {
+        name: "bash",
+        gates: true,
+        ran: Arc::clone(&ran),
+    });
+    let outcomes = one_message(
+        vec![
+            ("b0", "bash", json!({"exit": 101})),
+            ("b1", "bash", json!({})),
+        ],
+        vec![bash],
+    )
+    .await?;
+    assert_eq!(ran.lock().map_err(|_| "poisoned")?.as_slice(), ["b0"]);
+    assert_eq!(
+        outcomes.get(1).and_then(|o| o.2.as_deref()),
+        Some("not_run")
+    );
+
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    let todo = Arc::new(Step {
+        name: "todo",
+        gates: false,
+        ran: Arc::clone(&ran),
+    });
+    let edit = Arc::new(Step {
+        name: "edit",
+        gates: true,
+        ran: Arc::clone(&ran),
+    });
+    one_message(
+        vec![
+            ("t0", "todo", json!({"fail": true})),
+            ("e0", "edit", json!({})),
+        ],
+        vec![todo, edit],
+    )
+    .await?;
+    assert_eq!(ran.lock().map_err(|_| "poisoned")?.as_slice(), ["t0", "e0"]);
+    Ok(())
+}
+
+/// After an interrupt every unrun call is still answered `aborted` (D245), never `not_run`.
+#[tokio::test]
+async fn an_interrupt_still_answers_aborted() -> Result<(), Box<dyn std::error::Error>> {
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    let edit = Arc::new(Step {
+        name: "edit",
+        gates: true,
+        ran: Arc::clone(&ran),
+    });
+    let outcomes = one_message(
+        vec![("s0", "stopper", json!({})), ("e0", "edit", json!({}))],
+        vec![Arc::new(Stopper), edit],
+    )
+    .await?;
+    assert!(ran.lock().map_err(|_| "poisoned")?.is_empty());
+    assert_eq!(
+        outcomes.get(1).and_then(|o| o.2.as_deref()),
+        Some("aborted")
+    );
+    Ok(())
+}

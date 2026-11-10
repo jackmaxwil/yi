@@ -25,10 +25,10 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 A top-level feature enters only when one leaves, and this list changes in the same commit.
 `isolation=` as the kernel's noun for a child's files left when `Tree` entered: it stays an alias plan
 documents carry, cut at `HEAD` and merged by commit (§14) ·
-A resident MCP client or MCP as a registered tool · ACP v1 · automatic skill creation,
-refinement or self-extension · embeddings and semantic search · resident LSP or DAP servers · a
-JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
-converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
+A resident MCP client or MCP as a registered tool · ACP v1 · unattended skill creation or
+self-modification (a `just refine` variant lands only as a PR the owner merges) · embeddings and
+semantic search · resident LSP or DAP servers · a JavaScript runtime or Node sidecar · embedding
+`yi-runtime` through N-API or WASM · document converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
 §17.1) · a GUI · a model tool for the console's browser pane, which shows the user a page and gives
 the model nothing (driving the desktop is the `agent-desktop` plugin's, and a web page the
@@ -162,6 +162,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   once the interrupt has fired neither `maybe_compact` nor `StreamFn::stream` runs (§4.5).
   Steering is taken after each turn; follow-ups only when the loop would end.
 - A maximal run of `Parallel` calls executes concurrently; the first `Sequential` call closes it.
+  The first failed write or command (`AgentTool::gates_message`, judged by `shown_failed`, so a
+  non-zero exit counts) ends the message: every later call is answered `not_run`, naming it, unless
+  an interrupt answers it `aborted` first. A failed read or ledger call ends nothing.
   `StopReason::Length` fails every tool call in the message unrun.
 - An unknown tool name is repaired only by a unique normalized match (case, separators,
   namespace prefix, `tool` affix). Text opening `<tool_call>` with no call is `UNPARSED_MARKUP`.
@@ -308,10 +311,14 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   CC BY 4.0 citation, the snapshot's age and what was left out, and applies nothing.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
-- State: `models { primary, summarizer, advisor, autoReview, classifier, webSearch }` and
+- State: `models { primary, summarizer, advisor, autoReview, classifier, selector, webSearch }` and
   `webSearch { engine }` in `~/.yi/config.json`
   ([`config.rs`](../crates/types/src/config.rs)); advisor, autoReview and classifier off until named;
   [`RetryPolicy`](../crates/ai/src/retry.rs). Shapes: [`model.rs`](../crates/types/src/model.rs).
+- A side model lands with the main-model request it deletes or the capability it buys, judged on
+  complete-task cost with its `side:*` usage counted, and it answers an id, a range or an
+  abstention, never tool arguments: a fast stage that fires often and deletes nothing only adds
+  cost (HarnessMM's Substitution Paradox).
 - Settled by: D34, D57, D128, D191, D197, D231
 
 ## 6. Prompt

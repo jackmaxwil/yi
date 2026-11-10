@@ -1,0 +1,9 @@
+---
+issue: Refs #2129
+raise: crate loop +58, crate cli +61, crate runtime +7, crate types +3, crate acp +1, comments +5, tests +334
+decision: A message stops at its first failed write or command, judged by shown_failed so a non-zero exit counts, and every later call in it is answered not_run naming that call; an interrupt still answers aborted (amends YI_DESIGN §4.2, which ran every call) | an edit refused on a stale tag still ran its test, and the next request read a result for code that never changed, so batching an edit with its check was unsafe | stop consulting AgentTool::gates_message in crates/loop/src/batch.rs
+ledger+: pure loop + event enum | a message stops at its first failed write or command, every later call answered `not_run` naming it, an interrupt still answering `aborted`
+---
+A message's tool calls now run from their own module, `crates/loop/src/batch.rs`, and stop at the first write or command that fails: an edit the tool refused, a write or command the permission wall or a `--scope` glob denied, a write that errored, or a command that exited non-zero. Every call after it in the same message is answered "not executed", naming the call that failed and saying to send it again once that one succeeds, so a test queued behind a refused edit never reports on code that did not change. A failed read, search or todo call stops nothing, and after an interrupt the unrun calls still read as aborted.
+
+The new error kind is `not_run`; ACP shows such a call as cancelled and the eval surface does not count it as a tool failure. `yi stats` prints actions per request: tool results plus the nested calls a kernel cell made, over the session's assistant requests.

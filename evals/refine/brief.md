@@ -12,7 +12,7 @@ What you may change (anything else is refused before it runs):
 
 How to work:
 1. Read rows.jsonl and find where trials lose partial credit, run out of turns, or spend the most. Open the sessions behind those rows and find one concrete, repeated failure: the same wasted step, refusal, spiral or misunderstanding in more than one trial.
-2. Find the text or lever that causes or could prevent it.
+2. Find the text or lever that causes or could prevent it. Count turns as well as bytes: a turn whose only call the turn before had already decided (an edit followed by a turn that only runs the tests) pays for the whole prompt again, so a change that removes such turns beats one that shortens every turn.
 3. Make exactly one small change that addresses it. Prefer deleting or tightening text over adding it: every byte of the prompt is paid on every turn.
 4. Write /work/.candidate.json: {"target": "<the failure, in one sentence, with the trials you saw it in>", "rationale": "<why this change should fix it>", "levers": {<name>: <integer>, ...} or {}}.
 

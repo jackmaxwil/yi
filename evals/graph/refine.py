@@ -29,7 +29,7 @@ KINDS = ("tool", "op", "request")
 RELATIONS = ("then", "after_error")
 PREDICATES = {
     "always": "", "result_ok": "",
-    "result_error": "denied not_found invalid_args aborted stale_tag noop_loop stale verdict tool_error",
+    "result_error": "denied not_found invalid_args aborted stale_tag noop_loop stale verdict tool_error not_run",
     "todo_state": "running pending blocked",
     "child_state": "queued running finished failed needs_you stuck repossession_pending",
     "blocked_on": "user child external", "done_refused": "",

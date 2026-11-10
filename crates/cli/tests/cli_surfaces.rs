@@ -3400,20 +3400,19 @@ fn scope_refuses_a_write_outside_its_glob_and_lets_one_inside_through() -> TestR
     for dir in ["crates", "evals"] {
         std::fs::create_dir_all(project.join(dir))?;
     }
-    let script = tool_script(
-        &workspace,
-        &[
-            (
-                "write",
-                json!({"path": "crates/lock.rs", "content": "locked"}),
-            ),
-            (
-                "write",
-                json!({"path": "evals/probe.py", "content": "probe"}),
-            ),
-        ],
-        Some("done"),
-    )?;
+    use yi_runtime::faux::{faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+    let write = |id: &str, path: &str| {
+        let args = json!({"path": path, "content": "x"});
+        let call = faux_tool_call(id, "write", args.as_object().cloned().unwrap_or_default());
+        (vec![call], StopReason::ToolUse)
+    };
+    let turns = [
+        write("c0", "crates/lock.rs"),
+        write("c1", "evals/probe.py"),
+        (vec![faux_text("done")], StopReason::Stop),
+    ];
+    let script = turns_script(&workspace, "scope", &turns)?;
     let flags = ["--yolo", "--json", "--faux", &script];
     let free = ask(&workspace, "go", &flags)?;
     assert_eq!(free.status.code(), Some(0), "{}", stdout(&free));
