@@ -8,7 +8,7 @@ pub const ENVIRONMENT_TAG: &str = "<environment>";
 pub const RAW_STOP_IN_BAND_ERROR: &str = "error";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(remote = "Self", tag = "type", rename_all = "camelCase")]
 pub enum Content {
     #[serde(rename_all = "camelCase")]
     Text {
@@ -41,7 +41,7 @@ pub enum Content {
         namespace: Option<String>,
     },
     /// A block `type` this build does not know, written by a newer build or by Pi; kept as written.
-    #[serde(untagged)]
+    #[serde(skip)]
     Other(UnknownContent),
 }
 
@@ -49,16 +49,31 @@ const CONTENT_TYPES: [&str; 4] = ["text", "thinking", "image", "toolCall"];
 
 /// What a reader is shown in place of an [`Content::Other`] block; never the block's own `type`,
 /// which is file text a forged session could fill with anything.
-pub const UNREAD_CONTENT: &str = "[… 1 content block left out: its type is newer than this build; the session keeps it as written, and fetch history://<agent>/<entry-id> returns its whole entry]";
+pub const UNREAD_CONTENT: &str = "[… 1 content block left out: its type is newer than this build, which cannot read it; the session file keeps it as written, and no call here returns it]";
 
 /// The block's object as read; it re-emits as serde_json writes it, and nothing reads inside it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct UnknownContent(Map<String, Value>);
 
-impl<'de> Deserialize<'de> for UnknownContent {
+impl Serialize for Content {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Other(raw) => raw.serialize(serializer),
+            known => Self::serialize(known, serializer),
+        }
+    }
+}
+
+/// Invariant: only a `type` outside [`CONTENT_TYPES`] is kept raw; a known one that does not
+/// decode reports its own missing or mistyped field.
+impl<'de> Deserialize<'de> for Content {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        crate::wire::unknown_tag(deserializer, "type", &CONTENT_TYPES).map(Self)
+        let raw = Map::deserialize(deserializer)?;
+        match raw.get("type").and_then(Value::as_str) {
+            Some(tag) if !CONTENT_TYPES.contains(&tag) => Ok(Self::Other(UnknownContent(raw))),
+            _ => Self::deserialize(Value::Object(raw)).map_err(serde::de::Error::custom),
+        }
     }
 }
 
@@ -135,7 +150,7 @@ pub enum UserContent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(remote = "Self", rename_all = "camelCase")]
 pub enum StopReason {
     Pending,
     Stop,
@@ -145,8 +160,28 @@ pub enum StopReason {
     Aborted,
     Deferred,
     /// A reason a newer build or Pi wrote; kept as written, and read as a turn that ended.
-    #[serde(untagged)]
+    #[serde(skip)]
     Other(String),
+}
+
+impl Serialize for StopReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Other(raw) => raw.serialize(serializer),
+            known => Self::serialize(known, serializer),
+        }
+    }
+}
+
+/// Invariant: a string that names no variant is kept raw; anything but a string is refused.
+impl<'de> Deserialize<'de> for StopReason {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::IntoDeserializer;
+        let raw = String::deserialize(deserializer)?;
+        let known: Result<Self, serde::de::value::Error> =
+            Self::deserialize(raw.as_str().into_deserializer());
+        Ok(known.unwrap_or(Self::Other(raw)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

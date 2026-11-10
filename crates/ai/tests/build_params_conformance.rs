@@ -156,14 +156,19 @@ fn a_block_this_build_cannot_read_reaches_every_wire_as_its_notice() -> Result<(
         tools: None,
         tool_choice: None,
     };
-    for api in [
+    for (api, vision) in [
         "anthropic-messages",
         "openai-completions",
         "openai-responses",
         "cursor-agent",
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|api| [(api, true), (api, false)])
+    {
         let mut model = crate::common::model("m", api, "p", "http://h", None);
-        model.input = vec!["text".to_owned(), "image".to_owned()];
+        if vision {
+            model.input = vec!["text".to_owned(), "image".to_owned()];
+        }
         let body = match api {
             "cursor-agent" => yi_ai::cursor::prompt_of(&context),
             "anthropic-messages" => {
@@ -177,14 +182,17 @@ fn a_block_this_build_cannot_read_reaches_every_wire_as_its_notice() -> Result<(
         };
         let blocks = if api == "cursor-agent" { 3 } else { 4 };
         let notices = body.matches(yi_types::message::UNREAD_CONTENT).count();
-        assert_eq!(notices, blocks, "{api}: {body}");
+        assert_eq!(notices, blocks, "{api}, vision {vision}: {body}");
         for raw in [
             "webSearchToolResult",
             "serverToolUse",
             "UklGRg==",
             "file:///tmp",
         ] {
-            assert!(!body.contains(raw), "{api} sent {raw}: {body}");
+            assert!(
+                !body.contains(raw),
+                "{api}, vision {vision}, sent {raw}: {body}"
+            );
         }
     }
     Ok(())

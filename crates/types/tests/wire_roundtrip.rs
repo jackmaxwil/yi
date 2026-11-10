@@ -330,6 +330,34 @@ fn an_unknown_content_block_and_stop_reason_decode_to_other_and_re_emit_verbatim
     Ok(())
 }
 
+/// Dies with a corrupt session line that names no field: a broken known block or a non-string
+/// stop reason reports its own defect, as it did before unknown tags decoded.
+#[test]
+fn a_broken_known_block_names_the_field_it_lacks() -> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::message::{Content, StopReason};
+    for (broken, field) in [
+        (r#"{"type":"text"}"#, "missing field `text`"),
+        (r#"{"type":"text","text":5}"#, "invalid type: integer `5`"),
+        (
+            r#"{"type":"toolCall","id":"a","name":"b"}"#,
+            "missing field `arguments`",
+        ),
+        (r#"{"text":"hi"}"#, "missing field `type`"),
+    ] {
+        let error = serde_json::from_str::<Content>(broken)
+            .err()
+            .ok_or(broken)?
+            .to_string();
+        assert!(error.contains(field), "{broken}: {error}");
+    }
+    let error = serde_json::from_str::<StopReason>("5").err().ok_or("5")?;
+    assert!(
+        error.to_string().contains("invalid type: integer `5`"),
+        "{error}"
+    );
+    Ok(())
+}
+
 /// Dies with a Pi- or tool-written `type` rendered into a model's history view verbatim: an
 /// unknown entry's type name is a closed word, whatever text the line carried.
 #[test]
