@@ -82,6 +82,18 @@ RUST_MIRRORS = (
 # cannot zero `module_missing`.
 MODULE_MISSING = "is not installed in the kernel."
 
+# These three are hand-copied out of Rust, so --selfcheck reads the Rust back
+# and compares. An asserted invariant nobody runs is how a mirror drifts.
+RUST_MIRRORS = (
+    ("crates/tools/src/builtins.rs", "READ_ONLY_VERBS", READ_ONLY_VERBS),
+    ("crates/tools/src/builtins.rs", "READ_ONLY_GIT", READ_ONLY_GIT),
+    (
+        "crates/permission/src/catastrophic.rs",
+        "PROTECTED_CREDENTIAL_SUBPATHS",
+        frozenset(CREDENTIAL_SUBPATHS),
+    ),
+)
+
 CRED_PATH_RE = re.compile(
     r"[/~]\.(?:" + "|".join(s[1:] for s in CREDENTIAL_SUBPATHS) + r")(?:[/\s\"':]|$)"
 )
@@ -250,7 +262,6 @@ def shown_failed(message):
     details = message.get("details") if isinstance(message.get("details"), dict) else {}
     return (bool(message.get("isError")) or details.get("exitCode") not in (None, 0)
             or details.get("errorKind") == "verdict")
-
 
 def read_only_segment(segment):
     tokens = [
@@ -1160,6 +1171,7 @@ def mark(out_dir, fp, state, ref):
     with (out_dir / "marks.jsonl").open("a") as handle:
         handle.write(json.dumps(row) + "\n")
     return row
+
 
 
 def main(argv=None):

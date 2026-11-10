@@ -14,7 +14,7 @@ use yi_types::plan::doc::{
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, PlanOpRecord, RequestId};
 use yi_types::url::Url;
 
-pub use yi_types::plan::op::{Op, Reconciliation, Resolution, Resolve, SetRow, TodoSpec};
+pub use yi_types::plan::op::{Op, Reconciliation, Resolution, Resolve, SetRow, SplitSpec, TodoSpec};
 
 pub use super::output::OutputResolve;
 use super::output::check_output;
@@ -219,6 +219,10 @@ pub enum PlanOpError {
     },
     #[error("no verified completion for {:?}", label.as_str())]
     NoVerifiedCompletion { label: TodoLabel },
+    #[error("done claim for {label:?} refused without running its check: red through {count} attempts; {demand}")]
+    EscalationRequired { label: TodoLabel, count: u8, demand: String },
+    #[error("split refused: {detail}")]
+    SplitInvalid { detail: String },
     #[error(
         "done for {label:?} names unserved product {url}: resolved, but its bytes are not here to adjudicate"
     )]

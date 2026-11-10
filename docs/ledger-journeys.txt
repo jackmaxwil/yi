@@ -199,6 +199,7 @@ plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_jud
 plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_pending_covered_contract_from_an_old_journal_still_starts` (T1)
 plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_covered_write_gets_no_preview_line` (T1)
 plan: git-tracked document + step table + dispatch | `plan_walkthrough::every_fixture_replays_identically_through_plan_op` (T1)
+plan: git-tracked document + step table + dispatch | `plan_e2e::a_plan_op_journey_splits_and_readmits_after_escalation` (T1)
 plan: git-tracked document + step table + dispatch | `journeys::a_hand_written_plan_lints_resolves_and_answers_why` (T2)
 intent record + two-way traceability | `plan_trace::a_plan_that_misses_a_message_and_invents_a_todo_is_flagged_both_ways` (T1)
 intent record + two-way traceability | `compaction_faux::a_summarys_user_addresses_resolve_to_the_users_own_words` (T1)

@@ -141,7 +141,7 @@ pub enum ArgError {
 pub(super) fn known_keys(kind: OpKind) -> &'static [&'static str] {
     match kind {
         OpKind::Init => &["op", "plan", "goal", "todos"],
-        OpKind::Append => &["op", "plan", "todos"],
+        OpKind::Append => &["op", "plan", "todos", "for_task"],
         OpKind::Unblock | OpKind::Start => &["op", "plan", "label", "todo"],
         OpKind::Drop => &["op", "plan", "label", "todo", "disposition"],
         OpKind::Block => &["op", "plan", "label", "todo", "on", "note", "options"],
@@ -151,6 +151,7 @@ pub(super) fn known_keys(kind: OpKind) -> &'static [&'static str] {
         OpKind::Fail => &["op", "plan", "label", "todo", "cause", "disposition"],
         OpKind::Retry => &["op", "plan", "label", "todo", "delegation"],
         OpKind::Decompose => &["op", "plan", "label", "todo", "todos"],
+        OpKind::Split => &["op", "plan", "label", "todo", "subtasks"],
         OpKind::Supersede => &["op", "plan", "reason", "todos"],
         OpKind::Set => &["op", "plan", "goal", "list", "todos"],
         OpKind::View => &["op", "plan", "full"],
@@ -359,6 +360,7 @@ from_arg!(
     Resolve,
     yi_types::plan::op::Choice,
     yi_types::plan::op::CellId,
+    Vec<yi_types::plan::op::SplitSpec>,
     yi_types::plan::canonical::ArtifactRef,
 );
 
@@ -451,6 +453,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         OpKind::Append => Op::Append {
             todos: todo_specs(args, kind)?,
+            for_task: opt(args, kind, "for_task")?,
         },
         OpKind::Drop => Op::Drop {
             label: label(args, kind)?,
@@ -487,6 +490,10 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         OpKind::Decompose => Op::Decompose {
             label: label(args, kind)?,
             todos: todo_specs(args, kind)?,
+        },
+        OpKind::Split => Op::Split {
+            label: label(args, kind)?,
+            subtasks: need(args, kind, "subtasks")?,
         },
         OpKind::Supersede => Op::Supersede {
             reason: need(args, kind, "reason")?,
@@ -710,7 +717,7 @@ impl PlanTool {
                 let first = match &request.op {
                     Op::Set { goal, rows, .. } => (goal.as_ref().map(|g| g.as_str().to_owned()))
                         .or_else(|| rows.first().map(|row| row.spec.label.to_string())),
-                    Op::Append { todos } | Op::Supersede { todos, .. } => {
+                    Op::Append { todos, for_task: None } | Op::Supersede { todos, .. } => {
                         todos.first().map(|todo| todo.label.to_string())
                     }
                     _ => None,
@@ -729,7 +736,7 @@ impl PlanTool {
                             keep_rest: false,
                         }
                     }
-                    Op::Append { todos } | Op::Supersede { todos, .. } => Op::Init { goal, todos },
+                    Op::Append { todos, for_task: None } | Op::Supersede { todos, .. } => Op::Init { goal, todos },
                     other => other,
                 };
                 said.push(if matches!(request.op, Op::Set { goal: Some(_), .. }) {

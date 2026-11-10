@@ -1,0 +1,8 @@
+---
+decision: red 1 permits one more claim; red 2 requires structural change; Split adds one-level children with typed Contracts and targeted Append readmits only a red-2 `for_task` target for one claim; red 3 requires a current user answer, and neither Split nor Append can bypass that gate | session-fact `PlanService`/`TaskState` tests do not cover the supported `.yi/plans` journal or route | restore the old path only if Yi deliberately returns to session-fact plans
+ledger~: plan: git-tracked document + step table + dispatch | labels address, edges order, ready is derived | labels address, edges order, ready is derived; Split adds one-level flat children with typed Contracts; a red-2 targeted Append readmits only its target for one claim; red 3 requires a current user answer, and neither Split nor Append can bypass it
+---
+
+The canonical plan is the `.yi/plans` journal and flat Todo graph. Red 1 permits one more verification. After red 2, another `done` call stops before the check until the owner changes the structure. Split adds one-level children with typed Contracts; targeted Append uses `for_task` and readmits only its red-2 target for one claim. If that attempt is red, red 3 requires a current user answer. Split and Append cannot buy another claim at red 3.
+
+Python callers build Contracts with `yi.Plan` and route lower-level operations through `rlm.plan_op` to the registered `plan.op` handler. Split and targeted Append have no `Plan` wrapper method, and a todo has no direct shell-check field. The read-only summary names up to four Done todos without a Contract; when more remain, its cut row names the kept count, `UNCHECKED 4`, and the full-view call.
