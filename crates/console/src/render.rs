@@ -496,7 +496,7 @@ fn pane_view_content(
             drawn,
             ..
         } => {
-            let all = cached(drawn, width, || {
+            let all = cached(drawn, width, theme.palette(), || {
                 yi_tui::markdown::render(source, width, theme)
             });
             let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
@@ -508,7 +508,7 @@ fn pane_view_content(
             drawn,
             ..
         } => {
-            let all = cached(drawn, width, || {
+            let all = cached(drawn, width, theme.palette(), || {
                 diffview::render(source, width, theme, DiffBudget::FULL)
             });
             let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
@@ -543,7 +543,7 @@ fn pane_view_content(
             let room = visible / 3;
             let rev = diff.map_or(0, |diff| diff.rev);
             let key = (width, room, *scope, note.to_owned(), rev);
-            let review = cached(drawn, key, || {
+            let review = cached(drawn, key, theme.palette(), || {
                 crate::panes::review_parts(diff, *scope, note, (width, room), theme)
             });
             if let Some(row) = ui.jump.take().and_then(|file| review.heads.get(file)) {
@@ -565,7 +565,7 @@ fn pane_view_content(
                 || "▤ notebook".to_owned(),
                 |id| format!("▤ {}", label_of(sessions, id, width)),
             );
-            let all = cached(drawn, width, || {
+            let all = cached(drawn, width, theme.palette(), || {
                 let cells = session.as_ref().map_or(&[][..], |id| {
                     crate::model::notebook_cells(view.notebooks, id)
                 });

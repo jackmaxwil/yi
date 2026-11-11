@@ -306,16 +306,24 @@ impl App {
     fn install_theme(&mut self, theme: Theme) {
         self.theme = theme;
         for pane in self.state.panes.values_mut() {
-            if let crate::model::PaneContent::Session {
-                chat: Some(chat), ..
-            } = &mut pane.content
-            {
-                chat.app.set_theme(theme);
+            match &mut pane.content {
+                crate::model::PaneContent::Session {
+                    chat: Some(chat), ..
+                } => chat.app.set_theme(theme),
+                crate::model::PaneContent::Markdown { drawn, .. }
+                | crate::model::PaneContent::Diff { drawn, .. } => *drawn = None,
+                crate::model::PaneContent::Notebook { drawn, .. } => *drawn = None,
+                crate::model::PaneContent::SessionDiff { drawn, .. } => *drawn = None,
+                _ => {}
             }
         }
         for chat in self.state.parked.values_mut() {
             chat.app.set_theme(theme);
         }
+        // A resize throws away the frame and the images. A theme change has to do the same,
+        // or rows and pictures painted at startup stay on that palette until the next launch.
+        self.avatars.forget();
+        self.pending_clear = true;
         self.dirty = true;
     }
 }

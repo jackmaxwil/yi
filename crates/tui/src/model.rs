@@ -425,6 +425,13 @@ impl App {
         theme.run = self.theme.run;
         theme.rows = self.theme.rows;
         self.theme = theme;
+        self.history.forget_render();
+        // The new palette redraws the mark's cells, which clears the picture.
+        self.mark_orb_stale();
+        // Solo keeps the transcript in scrollback. A preview has to replay it, or the
+        // rows above the composer stay on the palette that first committed them.
+        self.pending_clear = true;
+        self.reflow.schedule_immediate(std::time::Instant::now());
         self.scheduler.request();
     }
 

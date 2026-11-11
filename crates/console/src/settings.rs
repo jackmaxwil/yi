@@ -441,6 +441,13 @@ fn shown(row: &SettingRow) -> String {
         (Value::Number(count), _) if entries => format!("{count} entries"),
         (Value::Null, Value::Bool(true)) => "on (default)".to_owned(),
         (Value::Null, Value::Bool(false)) => "off (default)".to_owned(),
+        (Value::Null, default) if matches!(row.id.as_str(), "theme.dark" | "theme.light") => {
+            default
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .unwrap_or(yi_tui::theme_file::BUILT_IN)
+                .to_owned()
+        }
         (value, _) => shown_value(value),
     }
 }
@@ -697,6 +704,12 @@ pub fn view(
             Span::styled(clip(&shown, value), Style::default().fg(theme.teal)),
             Span::styled(clip(applies, tail), theme.dim_style()),
         ]));
+        if chosen
+            && theme_list_open(settings)
+            && let Some(Edit::Pick { options, cursor }) = &settings.edit
+        {
+            lines.extend(theme_choices(options, *cursor, theme));
+        }
     }
     if rows.len() > room {
         lines.push(Line::styled(
@@ -727,6 +740,9 @@ pub fn view(
     }
     let hint = match (&settings.edit, settings.tab) {
         (Some(Edit::Type(_)), _) => " type · enter save · empty unsets · esc cancel",
+        (Some(Edit::Pick { .. }), _) if theme_list_open(settings) => {
+            " ↑↓ preview · enter save · esc restore"
+        }
         (Some(Edit::Pick { .. }), _) => " ↑↓ choose · enter save · esc cancel",
         (None, SESSION) => " ↑↓ move · ←→ tab · enter change · d make default",
         (None, KEYS) => " ↑↓ move · ←→ tab",
@@ -737,6 +753,34 @@ pub fn view(
 }
 
 /// The row window `view` draws and a press resolves against: the first row and how many fit.
+fn theme_choices(options: &[String], cursor: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let start = cursor.saturating_sub(7);
+    let mut lines = Vec::new();
+    for (index, name) in options.iter().enumerate().skip(start).take(8) {
+        let marked = index == cursor;
+        let style = if marked {
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            theme.muted_style()
+        };
+        let mark = if marked { "▸" } else { " " };
+        lines.push(Line::from(Span::styled(
+            format!("      {mark} {name}"),
+            style,
+        )));
+    }
+    let shown = start.saturating_add(8).min(options.len());
+    if shown < options.len() {
+        lines.push(Line::styled(
+            format!("        … {} more", options.len() - shown),
+            theme.dim_style(),
+        ));
+    }
+    lines
+}
+
 fn window(settings: &Settings, visible: usize) -> (usize, usize) {
     let room = visible.saturating_sub(8).max(1);
     (crate::panes::first_row(settings.cursor, room), room)
@@ -871,6 +915,15 @@ mod tests {
         not_edited("lanes.land", Value::Null)
     }
 
+    /// An unset theme row names the palette already on screen.
+    #[test]
+    fn an_unset_theme_row_shows_built_in() {
+        let rows = yi_types::settings::rows();
+        let row = rows.iter().find(|row| row.id == "theme.dark").unwrap();
+        assert!(row.value.is_null());
+        assert_eq!(shown(row), "built-in");
+    }
+
     /// Dark theme opens the file list. Down previews the next name, Enter saves it, Esc restores.
     #[test]
     fn a_theme_row_previews_on_move_and_saves_or_restores() {
@@ -892,6 +945,13 @@ mod tests {
             Intent::None
         ));
         assert!(theme_list_open(&settings));
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let drawn: String = view(&settings, &[], false, 80, 24, &theme)
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(drawn.contains("built-in"), "{drawn}");
+        assert!(drawn.contains("acid"), "{drawn}");
         assert!(matches!(
             key(&mut settings, press(KeyCode::Down), &[]),
             Intent::PreviewTheme(name) if name == "acid"

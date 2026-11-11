@@ -814,7 +814,7 @@ pub fn tick_with(
     };
     // Incident: the loop ticks on every idle wake, so the layout runs only when its inputs change.
     let mut hasher = std::hash::DefaultHasher::new();
-    (view, app.width, cell, app.theme.dark).hash(&mut hasher);
+    (view, app.width, cell, app.theme.dark, app.theme.palette()).hash(&mut hasher);
     let key = hasher.finish();
     let [first, second] = state.ids;
     let (front_id, back_id) = match state.front {
@@ -835,7 +835,7 @@ pub fn tick_with(
         return hide(out, state);
     };
     let mut hasher = std::hash::DefaultHasher::new();
-    (cols, rows, cell, app.theme.dark).hash(&mut hasher);
+    (cols, rows, cell, app.theme.dark, app.theme.palette()).hash(&mut hasher);
     let base_key = hasher.finish();
     let (panel, rest) = pieces.split_at(pieces.len().min(1));
     let canvas = match (state.base.take(), state.last.take()) {

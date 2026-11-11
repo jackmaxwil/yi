@@ -6,7 +6,7 @@ use std::path::Path;
 use ratatui::style::Color;
 use serde_json::{Map, Value};
 
-use crate::colors::{ColorTier, Theme};
+use crate::colors::{ColorTier, Over, Theme};
 
 pub struct Loaded {
     pub theme: Theme,
@@ -26,10 +26,14 @@ pub fn theme_name_ok(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// `built-in`, then every `*.json` stem in `dir` whose name can be a theme file.
+#[path = "bundled_themes.rs"]
+mod bundled_themes;
+use bundled_themes::BUNDLED;
+
+/// `built-in`, then the themes Yi ships, then every `*.json` stem in `dir`.
 pub fn list(dir: &Path) -> Vec<String> {
-    let mut names = vec![BUILT_IN.to_owned()];
-    let mut found = Vec::new();
+    let mut names = std::collections::BTreeSet::from([BUILT_IN.to_owned()]);
+    names.extend(BUNDLED.iter().map(|(name, _)| (*name).to_owned()));
     if let Ok(read) = std::fs::read_dir(dir) {
         for entry in read.flatten() {
             let Some(file) = entry.file_name().to_str().map(str::to_owned) else {
@@ -39,19 +43,37 @@ pub fn list(dir: &Path) -> Vec<String> {
                 continue;
             };
             if theme_name_ok(stem) {
-                found.push(stem.to_owned());
+                names.insert(stem.to_owned());
             }
         }
     }
-    found.sort();
-    names.extend(found);
+    let mut names: Vec<String> = names.into_iter().collect();
+    if let Some(at) = names.iter().position(|name| name == BUILT_IN) {
+        names.swap(0, at);
+    }
     names
 }
 
-/// `built-in` is the palette with no file. Any other name loads `dir/<name>.json`.
+fn bundled(name: &str) -> Option<&'static str> {
+    BUNDLED
+        .iter()
+        .find(|(bundled, _)| *bundled == name)
+        .map(|(_, text)| *text)
+}
+
+/// `built-in` is the palette with no file. A file in `dir` wins; otherwise a shipped theme.
 pub fn preview(tier: ColorTier, dark: bool, dir: &Path, name: &str) -> Loaded {
-    let file = (name != BUILT_IN && theme_name_ok(name)).then(|| dir.join(format!("{name}.json")));
-    load(tier, dark, file.as_deref())
+    if name == BUILT_IN || !theme_name_ok(name) {
+        return load(tier, dark, None);
+    }
+    let file = dir.join(format!("{name}.json"));
+    if file.is_file() {
+        return load(tier, dark, Some(&file));
+    }
+    if let Some(text) = bundled(name) {
+        return paint_text(tier, dark, name, text);
+    }
+    load(tier, dark, Some(&file))
 }
 
 /// `file` is `~/.yi/themes/<name>.json`. Absent, the built-in palette is the whole answer.
@@ -66,6 +88,12 @@ pub fn load(tier: ColorTier, dark: bool, file: Option<&Path>) -> Loaded {
     let text = match std::fs::read_to_string(file) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(name) = file.file_stem().and_then(|stem| stem.to_str())
+                && theme_name_ok(name)
+                && let Some(text) = bundled(name)
+            {
+                return paint_text(tier, dark, name, text);
+            }
             return kept(theme, format!("theme file {} is missing", file.display()));
         }
         Err(_) => {
@@ -75,22 +103,24 @@ pub fn load(tier: ColorTier, dark: bool, file: Option<&Path>) -> Loaded {
             );
         }
     };
+    paint_text(tier, dark, &file.display().to_string(), &text)
+}
+
+fn paint_text(tier: ColorTier, dark: bool, label: &str, text: &str) -> Loaded {
+    let theme = Theme::new(tier, dark);
     if tier == ColorTier::Ansi16 {
         return kept(
             theme,
-            format!(
-                "theme file {}: a 16-color terminal keeps the built-in palette",
-                file.display()
-            ),
+            format!("theme file {label}: a 16-color terminal keeps the built-in palette"),
         );
     }
     let mut painted = Theme::new(tier, dark);
-    match overlay(&mut painted, &text) {
+    match overlay(&mut painted, text) {
         Ok(()) => Loaded {
             theme: painted,
             warning: None,
         },
-        Err(reason) => kept(theme, format!("theme file {}: {reason}", file.display())),
+        Err(reason) => kept(theme, format!("theme file {label}: {reason}")),
     }
 }
 
@@ -118,32 +148,62 @@ fn overlay(theme: &mut Theme, text: &str) -> Result<(), String> {
         }
         let color =
             resolve(raw, vars, &mut Vec::new()).map_err(|_| format!("{key} is not a color"))?;
+        if let Some(slot) = over_slot(key) {
+            theme.over[slot as usize] = Some(color);
+            continue;
+        }
         paint(theme, key, color);
     }
     Ok(())
 }
 
 fn known(key: &str) -> bool {
-    matches!(
-        key,
-        "accent"
-            | "text"
-            | "muted"
-            | "dim"
-            | "error"
-            | "warning"
-            | "success"
-            | "userMessageBg"
-            | "selectedBg"
-            | "syntaxKeyword"
-            | "syntaxString"
-            | "syntaxNumber"
-            | "syntaxType"
-            | "syntaxFunction"
-            | "syntaxVariable"
-            | "toolDiffAdded"
-            | "toolDiffRemoved"
-    )
+    over_slot(key).is_some()
+        || matches!(
+            key,
+            "accent"
+                | "text"
+                | "muted"
+                | "dim"
+                | "error"
+                | "warning"
+                | "success"
+                | "userMessageBg"
+                | "selectedBg"
+                | "syntaxKeyword"
+                | "syntaxString"
+                | "syntaxNumber"
+                | "syntaxType"
+                | "syntaxFunction"
+                | "syntaxVariable"
+                | "toolDiffAdded"
+                | "toolDiffRemoved"
+        )
+}
+
+fn over_slot(key: &str) -> Option<Over> {
+    Some(match key {
+        "mdHeading" => Over::MdHeading,
+        "mdLink" => Over::MdLink,
+        "mdLinkUrl" => Over::MdLinkUrl,
+        "mdCode" => Over::MdCode,
+        "mdCodeBlock" | "mdCodeBlockBorder" => Over::MdCodeBorder,
+        "mdListBullet" => Over::MdBullet,
+        "mdQuote" | "mdQuoteBorder" => Over::MdQuote,
+        "mdHr" => Over::MdHr,
+        "userMessageText" => Over::UserText,
+        "thinkingText" => Over::Thinking,
+        "statusLineModel" => Over::StatusModel,
+        "statusLinePath" => Over::StatusPath,
+        "statusLineGitClean" => Over::StatusGitClean,
+        "statusLineGitDirty" => Over::StatusGitDirty,
+        "statusLineSep" => Over::StatusSep,
+        "statusLineSpend" | "statusLineCost" => Over::StatusSpend,
+        "statusLineContext" => Over::StatusContext,
+        "statusLineSubagents" => Over::StatusSubagents,
+        "syntaxComment" => Over::SyntaxComment,
+        _ => return None,
+    })
 }
 
 fn paint(theme: &mut Theme, key: &str, color: Color) {
@@ -192,7 +252,8 @@ fn resolve(value: &Value, vars: &Map<String, Value>, stack: &mut Vec<String>) ->
 }
 
 fn parse_hex(hex: &str) -> Result<Color, ()> {
-    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    // `#RRGGBBAA` is the same red, green, and blue. A terminal has no alpha, so the last pair is dropped.
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(());
     }
     let mut rgb = [0u8; 3];
@@ -295,7 +356,59 @@ mod tests {
         std::fs::write(dir.join("..sneak.json"), "{}").unwrap();
         let names = list(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(names, vec!["built-in".to_owned(), "acid".to_owned()]);
+        assert_eq!(names.first().map(String::as_str), Some("built-in"));
+        assert!(names.iter().any(|name| name == "acid"));
+        assert!(names.iter().any(|name| name == "ember"));
+        assert!(names.iter().any(|name| name == "dark"));
+        assert!(names.iter().any(|name| name == "titanium"));
+        assert!(names.iter().all(|name| !name.contains("sneak")));
+    }
+
+    #[test]
+    fn a_theme_file_paints_a_heading_the_next_frame_can_read() {
+        let path = file(
+            "roles",
+            r##"{"name":"roles","colors":{"mdHeading":"#010203","statusLinePath":"#040506"}}"##,
+        );
+        let loaded = load(ColorTier::TrueColor, true, Some(&path));
+        let _ = std::fs::remove_file(&path);
+        assert!(loaded.warning.is_none(), "{:?}", loaded.warning);
+        assert_eq!(
+            loaded.theme.pick(Over::MdHeading, Color::Reset),
+            Color::Rgb(1, 2, 3)
+        );
+        assert_eq!(
+            loaded.theme.pick(Over::StatusPath, Color::Reset),
+            Color::Rgb(4, 5, 6)
+        );
+        let lines = crate::markdown::render("# Title", 40, &loaded.theme);
+        let heading = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.contains("Title"));
+        assert_eq!(
+            heading.and_then(|span| span.style.fg),
+            Some(Color::Rgb(1, 2, 3))
+        );
+    }
+
+    #[test]
+    fn an_eight_digit_hex_keeps_the_red_green_and_blue() {
+        let dir = std::env::temp_dir().join(format!("yi-theme-alpha-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let loaded = preview(ColorTier::TrueColor, false, &dir, "light-poimandres");
+        assert!(loaded.warning.is_none(), "{:?}", loaded.warning);
+        assert_eq!(loaded.theme.accent, Color::Rgb(0x00, 0xce, 0xd1));
+        assert_eq!(loaded.theme.selected, Some(Color::Rgb(0x71, 0x7c, 0xb4)));
+    }
+
+    #[test]
+    fn a_shipped_omp_theme_paints_its_accent() {
+        let dir = std::env::temp_dir().join(format!("yi-theme-omp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let loaded = preview(ColorTier::TrueColor, true, &dir, "dark");
+        assert_eq!(loaded.theme.accent, Color::Rgb(0xfe, 0xbc, 0x38));
+        assert!(loaded.warning.is_none());
     }
 
     #[test]

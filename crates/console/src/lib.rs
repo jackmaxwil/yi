@@ -338,7 +338,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let stop_input = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let input = client::spawn_input(event_tx, std::sync::Arc::clone(&stop_input));
     drop(setup);
-    let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme, control);
+    let code = run_interactive(&mut app, &mut terminal, &events, &outbound, control);
     stop_input.store(true, std::sync::atomic::Ordering::SeqCst);
     restore_terminal();
     let _ = input.join();
@@ -351,7 +351,6 @@ fn run_interactive(
     terminal: &mut Terminal<ControlPictures<CrosstermBackend<Stdout>>>,
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     outbound: &Outbound,
-    theme: &Theme,
     mut control: Option<Control>,
 ) -> i32 {
     let mut orb_owners = std::collections::HashMap::new();
@@ -392,16 +391,7 @@ fn run_interactive(
         }
         let mut out = std::io::stdout();
         app.flush_osc(&mut out);
-        if step_frame(
-            app,
-            terminal,
-            theme,
-            &mut scheduler,
-            &mut orb_owners,
-            &mut out,
-        )
-        .is_err()
-        {
+        if step_frame(app, terminal, &mut scheduler, &mut orb_owners, &mut out).is_err() {
             return 1;
         }
     }
@@ -413,14 +403,16 @@ fn run_interactive(
 fn step_frame<B: Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
-    theme: &Theme,
     scheduler: &mut yi_tui::frame::FrameScheduler,
     orb_owners: &mut crate::app::ids::Owners,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
     if scheduler.should_draw(Instant::now()) {
         let start = Instant::now();
-        present(app, terminal, theme, orb_owners, out)?;
+        // A preview replaces `app.theme` between frames. The draw has to read that,
+        // or the sidebar and the settings pane stay on the palette from startup.
+        let theme = app.theme;
+        present(app, terminal, &theme, orb_owners, out)?;
         set_window_title(app);
         app.flush_osc(out);
         scheduler.mark_drawn(start, Instant::now());

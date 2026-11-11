@@ -202,7 +202,10 @@ impl Theme {
     pub fn syntax_style(&self, token: Token) -> Style {
         match token {
             Token::Plain => Style::default().fg(self.text),
-            Token::Comment => self.dim_style(),
+            Token::Comment => match self.over[crate::colors::Over::SyntaxComment as usize] {
+                Some(color) => Style::default().fg(color),
+                None => self.dim_style(),
+            },
             Token::Str => Style::default().fg(self.syntax_string.unwrap_or(self.success)),
             Token::Number => Style::default().fg(self.syntax_number.unwrap_or(self.orange)),
             Token::Keyword => Style::default()
