@@ -1,7 +1,10 @@
 ---
 ledger+: TUI | the theme list includes the themes shipped with Yi, scrolling previews the colors that file sets, and borders, the orb, identicons, and the settings value column keep their own colors until a restart
 growth: +708 weighed dropping the copied theme list and the extra cache keys; the list stays because the picker is empty without ~/.yi/themes, and the cache keys stay because transcript, markdown, diff, notebook, and kitty images otherwise keep the previous palette until restart
-raise: crate cli +34, crate console +286, crate tui +1134, crate types +10, comments +38, tests +350
+raise: crate cli +34, crate console +286, crate tui +1134, crate types +10, comments +38, tests +277
+cut: none crates/tui/src/highlight.rs
+cut: none crates/tui/src/markdown.rs
+cut: none crates/tui/src/status.rs
 ---
 
 The theme list offers the omp themes and the four Yi themes shipped in the binary, and a file of the same name in `~/.yi/themes` still wins. Eight-digit hex keeps its red, green, and blue. The file can set the markdown, status, thinking, and comment colors Yi already paints.
