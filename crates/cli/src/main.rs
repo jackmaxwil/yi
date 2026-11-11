@@ -15,6 +15,7 @@ mod memory;
 mod models;
 mod plan;
 mod plugin;
+mod predict;
 mod roles;
 mod rpc;
 mod sessions;

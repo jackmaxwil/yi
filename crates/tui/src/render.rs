@@ -301,12 +301,10 @@ pub fn layout_chat(
         match &app.bottom {
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),
             Some(Bottom::Question(view)) => Some(view.lines(width, &theme)),
-            Some(Bottom::Command(popup) | Bottom::File(popup) | Bottom::Theme(popup)) => {
-                Some(popup.lines(width, &theme))
-            }
+            Some(Bottom::Theme(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Agents(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Model(popup)) => Some(popup.lines(width, &theme)),
-            None => None,
+            None => app.composer.assist_lines(width),
         }
     };
     let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
@@ -366,6 +364,8 @@ pub fn layout_chat(
         .or_else(|| on_rule.then(|| status_row.clone()));
     app.composer
         .set_frame(border, theme.dim_style(), cursor, title);
+    app.composer
+        .set_typo_style(crate::assist::spell_style(theme.error));
     let composer_height = app.composer.layout(
         u16::try_from(width).unwrap_or(u16::MAX),
         u16::try_from(app.rows).unwrap_or(u16::MAX),
@@ -373,7 +373,8 @@ pub fn layout_chat(
 
     let composer_too = app.tree.is_none()
         && app.plan_tree.is_none()
-        && matches!(app.bottom, Some(Bottom::Question(_) | Bottom::Theme(_)));
+        && (matches!(app.bottom, Some(Bottom::Question(_) | Bottom::Theme(_)))
+            || (app.bottom.is_none() && app.composer.assist_open()));
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
         let card = u16::try_from(lines.len()).unwrap_or(composer_height);
         card.saturating_add(if composer_too { composer_height } else { 0 })

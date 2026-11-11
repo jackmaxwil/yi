@@ -46,7 +46,7 @@ use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
 use yi_tui::drive::{
     Control, Deadline, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
 };
-use yi_tui::term::ControlPictures;
+use yi_tui::term::{ControlPictures, Squiggle};
 
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
@@ -325,7 +325,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
                 | ratatui::crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     );
-    let backend = ControlPictures(CrosstermBackend::new(stdout));
+    let backend = ControlPictures(CrosstermBackend::new(Squiggle::new(stdout)));
     let mut terminal = match Terminal::new(backend) {
         Ok(terminal) => terminal,
         Err(error) => {
@@ -348,7 +348,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
 
 fn run_interactive(
     app: &mut App,
-    terminal: &mut Terminal<ControlPictures<CrosstermBackend<Stdout>>>,
+    terminal: &mut Terminal<ControlPictures<CrosstermBackend<Squiggle<Stdout>>>>,
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     outbound: &Outbound,
     mut control: Option<Control>,

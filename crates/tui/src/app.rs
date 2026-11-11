@@ -53,8 +53,6 @@ pub enum Command {
 pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
     Question(crate::question::QuestionView),
-    Command(ListPopup),
-    File(ListPopup),
     Agents(crate::agents::AgentsPopup),
     Model(Box<crate::model::ModelPopup>),
     Theme(ListPopup),
@@ -460,7 +458,7 @@ impl App {
     }
 
     pub fn bottom_open(&self) -> bool {
-        self.bottom.is_some()
+        self.bottom.is_some() || self.composer.assist_open()
     }
 
     pub fn set_session_name(&mut self, name: String) {

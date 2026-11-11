@@ -76,7 +76,7 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub type Backend = ControlPictures<CrosstermBackend<Box<dyn Write + Send>>>;
+pub type Backend = ControlPictures<CrosstermBackend<Squiggle<Box<dyn Write + Send>>>>;
 
 /// OSC 2 with every control character dropped. Incident: a session named from its first prompt
 /// held `BEL ESC]52;…`, which ended the title early and had the terminal write the clipboard.
@@ -185,7 +185,10 @@ pub fn build_terminal(
     writer: Box<dyn Write + Send>,
     height: u16,
 ) -> std::io::Result<Terminal<Backend>> {
-    Terminal::new(ControlPictures(CrosstermBackend::new(writer)), height)
+    Terminal::new(
+        ControlPictures(CrosstermBackend::new(Squiggle::new(writer))),
+        height,
+    )
 }
 
 /// The synchronized bracket lives on the whole frame ([`sync_frame`]), not here: bracketing
@@ -233,4 +236,91 @@ pub fn framed(out: &mut impl Write, write: impl FnOnce(&mut Vec<u8>)) -> std::io
     out.write_all(&bytes)?;
     out.write_all(b"\x1b[?2026l")?;
     out.flush()
+}
+
+/// Incident: SGR 4 in the error color painted the whole word red. A `58` underline
+/// color is preceded by SGR 4:3, so the letters stay and the mark is a curl.
+pub struct Squiggle<W> {
+    inner: W,
+    pending: Vec<u8>,
+}
+
+impl<W> Squiggle<W> {
+    pub fn new(inner: W) -> Self {
+        Self {
+            inner,
+            pending: Vec::new(),
+        }
+    }
+}
+
+pub fn spell_marks(input: &[u8]) -> Vec<u8> {
+    let mut pending = input.to_vec();
+    let mut out = take_ready(&mut pending);
+    out.append(&mut pending);
+    out
+}
+
+fn take_ready(buf: &mut Vec<u8>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < buf.len() {
+        if buf.get(i) != Some(&0x1b) {
+            let start = i;
+            while buf.get(i).is_some_and(|byte| *byte != 0x1b) {
+                i = i.saturating_add(1);
+            }
+            if let Some(chunk) = buf.get(start..i) {
+                out.extend_from_slice(chunk);
+            }
+            continue;
+        }
+        let Some(end) = csi_end(buf, i) else {
+            break;
+        };
+        if buf.get(i..end).is_some_and(is_underline_color) {
+            out.extend_from_slice(b"\x1b[4:3m");
+        }
+        if let Some(seq) = buf.get(i..end) {
+            out.extend_from_slice(seq);
+        }
+        i = end;
+    }
+    buf.drain(..i);
+    out
+}
+
+fn csi_end(data: &[u8], start: usize) -> Option<usize> {
+    if data.get(start.saturating_add(1))? != &b'[' {
+        return Some(start.saturating_add(1));
+    }
+    let mut j = start.saturating_add(2);
+    while data.get(j).is_some_and(|byte| *byte < 0x40) {
+        j = j.saturating_add(1);
+    }
+    data.get(j)?;
+    Some(j.saturating_add(1))
+}
+
+fn is_underline_color(seq: &[u8]) -> bool {
+    seq.last() == Some(&b'm')
+        && seq.get(2..4) == Some(b"58".as_slice())
+        && (seq.len() == 5 || seq.get(4) == Some(&b';'))
+}
+
+impl<W: Write> Write for Squiggle<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.pending.extend_from_slice(buf);
+        let ready = take_ready(&mut self.pending);
+        self.inner.write_all(&ready)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.inner.write_all(&rest)?;
+        }
+        self.inner.flush()
+    }
 }

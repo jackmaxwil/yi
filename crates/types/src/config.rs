@@ -430,7 +430,59 @@ pub enum FollowMode {
 pub struct TuiConfig {
     pub pace: Option<u16>,
     pub follow: Option<FollowMode>,
+    pub typos: Option<bool>,
+    pub complete: Option<CompleteEngine>,
+    pub autocorrect: Option<bool>,
+    pub assist_rows: Option<u8>,
 }
+
+/// `tui.complete`: which word engine fills the ghost suffix. `auto` blends whichever are loaded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompleteEngine {
+    Off,
+    #[default]
+    Auto,
+    Ngram,
+    Apple,
+    Smol,
+}
+
+/// Resolved `tui` assistance. Unset keys keep typo marks on, word completion on `auto`, and
+/// autocorrect off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssistSettings {
+    pub typos: bool,
+    pub complete: CompleteEngine,
+    pub autocorrect: bool,
+    pub rows: usize,
+}
+
+impl AssistSettings {
+    pub const DEFAULT: Self = Self {
+        typos: true,
+        complete: CompleteEngine::Auto,
+        autocorrect: false,
+        rows: 10,
+    };
+
+    pub fn from_tui(tui: Option<&TuiConfig>) -> Self {
+        let Some(tui) = tui else {
+            return Self::DEFAULT;
+        };
+        Self {
+            typos: tui.typos.unwrap_or(true),
+            complete: tui.complete.unwrap_or(CompleteEngine::Auto),
+            autocorrect: tui.autocorrect.unwrap_or(false),
+            rows: usize::from(tui.assist_rows.unwrap_or(10).clamp(1, 10)),
+        }
+    }
+}
+
+/// The small model `yi predict download` stores, relative to the home directory.
+pub const SMOL_REL: &str = ".yi/models/smollm2-135m-instruct-q8_0.gguf";
+
+pub const SMOL_URL: &str = "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF/resolve/main/smollm2-135m-instruct-q8_0.gguf";
 
 /// `theme.dark` / `theme.light`: the omp theme file `~/.yi/themes/<name>.json` for that ground.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

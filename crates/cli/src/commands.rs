@@ -1,3 +1,4 @@
+use crate::predict::run as run_predict;
 use crate::{
     Args, catalog, debug, doctor, fetch, lanes, memory, models, run_acp, run_ask,
     run_console_command, run_gate, run_gc, run_plan, run_rpc, run_serve_command, run_sessions,
@@ -48,6 +49,7 @@ const VERBS: &[Verb] = &[
     Verb { name: "debug", route: Run(debug::run), words: Any, summary: "info, paths, config, profile, trace, select" },
     Verb { name: "why", route: Run(run_why), words: Any, summary: "trace a line or a todo back to its goal" },
     Verb { name: "plan", route: Run(run_plan), words: Any, summary: "plan ops as the owner" },
+    Verb { name: "predict", route: Run(run_predict), words: Any, summary: "compare word engines, or download the small model" },
     Verb { name: "todo", route: Run(todo::run), words: Any, summary: "print the newest todo list" },
     Verb { name: "memory", route: Run(memory::run), words: Any, summary: "list, search, import or forget memories" },
     Verb { name: "sessions", route: Run(run_sessions), words: Any, summary: "list, show, or remove stored sessions" },

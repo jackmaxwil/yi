@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod app;
 pub mod approval;
+pub mod assist;
 pub mod budget;
 pub mod capture;
 pub mod card;
