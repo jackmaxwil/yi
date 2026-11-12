@@ -1433,7 +1433,7 @@ fn the_slash_list_sits_over_the_draft_and_tab_fills_the_highlight() -> TestResul
         .collect();
     let list = (rows
         .iter()
-        .position(|row| *row == "> /plan         open a plan"))
+        .position(|row| *row == " › /plan         open a plan"))
     .ok_or(format!("{rows:#?}"))?;
     let draft = rows
         .iter()

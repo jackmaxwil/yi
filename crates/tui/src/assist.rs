@@ -238,9 +238,9 @@ impl Assist {
             .unwrap_or(0);
         for (index, row) in shown.enumerate() {
             let (mark, style) = if index == pick.selected {
-                ("> ", Style::default().add_modifier(Modifier::REVERSED))
+                (" › ", Style::default().add_modifier(Modifier::REVERSED))
             } else {
-                ("  ", Style::default())
+                ("   ", Style::default())
             };
             let label = clip(&format!("{mark}{:<pad$}", row.label), width);
             let room = width.saturating_sub(label.chars().count());
@@ -252,10 +252,19 @@ impl Assist {
             lines.push(Line::from(spans));
         }
         if let Some(more) = pick.rows.len().checked_sub(room).filter(|more| *more > 0) {
-            let note = format!("  … {more} more · tui.assistRows {room} · type to narrow");
+            let note = format!("   … {more} more · tui.assistRows {room} · type to narrow");
             lines.push(Line::styled(clip(&note, width), self.dim));
         }
         Some(lines)
+    }
+
+    /// The highlighted row's index among the lines [`Assist::lines`] draws.
+    pub(crate) fn selected_line(&self) -> usize {
+        let pick = self.pick.as_ref();
+        pick.map_or(0, |pick| {
+            pick.selected
+                .saturating_add(usize::from(pick.note.is_some()))
+        })
     }
 
     pub(crate) fn dismiss(&mut self) -> bool {

@@ -193,7 +193,7 @@ fn ctrl_dot_lists_guesses_and_enter_takes_one() -> TestResult {
     type_text(&mut app, &tx, "a helllo");
     press(&mut app, &tx, KeyCode::Char('.'), KeyModifiers::CONTROL);
     let rows = common::live_rows(&mut app)?;
-    assert!(rows.iter().any(|row| row.trim() == "> hello"), "{rows:#?}");
+    assert!(rows.iter().any(|row| row.trim() == "› hello"), "{rows:#?}");
     key(&mut app, &tx, KeyCode::Enter);
     assert_eq!(app.composer_text(), "a hello");
     Ok(())

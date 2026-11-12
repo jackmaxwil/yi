@@ -133,6 +133,10 @@ impl Composer {
         self.assist.lines(width)
     }
 
+    pub(crate) fn assist_selected_line(&self) -> usize {
+        self.assist.selected_line()
+    }
+
     pub(crate) fn dismiss_assist(&mut self) -> bool {
         self.assist.dismiss()
     }

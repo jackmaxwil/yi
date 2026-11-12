@@ -375,22 +375,32 @@ pub fn layout_chat(
         u16::try_from(app.rows).unwrap_or(u16::MAX),
     );
 
+    let rows = |lines: &[Line<'static>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let fixed = rows(&hud_lines)
+        .saturating_add(if show_working || app.kitty {
+            rows(&working)
+        } else {
+            0
+        })
+        .saturating_add(u16::from(!on_rule));
     let mut bottom_lines = bottom_lines;
     if command_list && let Some(lines) = bottom_lines.as_mut() {
-        let room = usize::from(
-            total
-                .saturating_sub(u16::try_from(hud_lines.len()).unwrap_or(u16::MAX))
-                .saturating_sub(composer_height),
-        );
+        // The pane painter passes an unbounded `total` so the live tail is not clipped; the
+        // screen the list must fit is `app.rows`.
+        let screen = u16::try_from(app.rows).unwrap_or(u16::MAX);
+        let room = usize::from(screen.saturating_sub(fixed).saturating_sub(composer_height)).max(1);
         let existed = lines.len();
         if existed > room {
-            lines.truncate(room.saturating_sub(1));
-            if room > 0 {
-                lines.push(Line::from(format!(
-                    "[… {} of {existed} list rows · screen cap {room} rows · type to narrow]",
-                    lines.len()
-                )));
-            }
+            let keep = room - 1;
+            let from = (app.composer.assist_selected_line() + 1)
+                .saturating_sub(keep)
+                .min(existed);
+            lines.drain(..from);
+            lines.truncate(keep);
+            lines.push(Line::from(format!(
+                "[… {} of {existed} list rows · screen cap {room} rows · type to narrow]",
+                lines.len()
+            )));
         }
     }
     let composer_too = app.tree.is_none()
@@ -400,20 +410,12 @@ pub fn layout_chat(
         let card = u16::try_from(lines.len()).unwrap_or(composer_height);
         card.saturating_add(if composer_too { composer_height } else { 0 })
     });
-    let rows = |lines: &[Line<'static>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
     // Incident: `resize_viewport` clamps to the screen and `put` drops what no longer fits,
     // so an unbudgeted live tail cost an 8-row screen its status line to a floor of 6.
 
     // ponytail: one elastic member. If the floor alone outgrows the screen a
     // tall approval still clips; budget the HUD before building a priority order.
-    let floor = rows(&hud_lines)
-        .saturating_add(if show_working || app.kitty {
-            rows(&working)
-        } else {
-            0
-        })
-        .saturating_add(bottom_height)
-        .saturating_add(u16::from(!on_rule));
+    let floor = fixed.saturating_add(bottom_height);
     let budget = total.saturating_sub(floor);
     if rows(&live_lines) > budget {
         live_lines = keep_last(live_lines, usize::from(budget));

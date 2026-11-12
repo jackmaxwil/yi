@@ -484,6 +484,12 @@ fn enter_in_the_command_list_runs_the_highlighted_match() -> TestResult {
     let mut app = app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     type_text(&mut app, &tx, "/mo");
+    assert_eq!(
+        app.composer_text(),
+        "/mo",
+        "the typed name lives in the box"
+    );
+    assert!(app.bottom_open());
     enter(&mut app, &tx);
     assert!(app.bottom_open(), "/model opens the model picker");
     assert_eq!(app.composer_text(), "");
@@ -499,6 +505,12 @@ fn escape_closes_the_command_list_and_keeps_the_draft() -> TestResult {
     let mut app = app();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     type_text(&mut app, &tx, "/pl");
+    assert_eq!(
+        app.composer_text(),
+        "/pl",
+        "the typed name lives in the box"
+    );
+    assert!(app.bottom_open());
     press(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
     assert!(!app.bottom_open());
     assert_eq!(app.composer_text(), "/pl");
@@ -603,6 +615,7 @@ fn an_approval_replacing_the_command_list_closes_it_and_keeps_the_draft() -> Tes
     let mut app = app();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     type_text(&mut app, &tx, "/mo");
+    assert_eq!(app.composer_text(), "/mo");
     let (reply, _answer) = std::sync::mpsc::channel();
     app.open_approval(yi_tui::AskRequest {
         title: "run it".to_owned(),
@@ -617,24 +630,71 @@ fn an_approval_replacing_the_command_list_closes_it_and_keeps_the_draft() -> Tes
     Ok(())
 }
 
-/// Dies with the list taller than the screen: at 60x9 the box that holds the typed text was
-/// pushed off, so the text was invisible.
+/// Dies with the list taller than the screen: the box that holds the typed text was pushed off,
+/// so the text was invisible. On kitty the orb's five rows sit above the list too.
 #[test]
-fn the_command_list_leaves_the_box_on_a_nine_row_screen() -> TestResult {
-    let mut app = app();
-    app.set_width(60);
-    app.set_rows(9);
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    type_text(&mut app, &tx, "/");
-    let rows = common::rows_sized(&mut app, 60, 9)?;
-    assert!(
-        rows.iter().any(|row| row.starts_with(" │/")),
-        "the box with the typed `/` is on screen: {rows:#?}"
-    );
-    assert!(
-        rows.iter()
-            .any(|row| row.contains("[… ") && row.contains("screen cap")),
-        "the cut is named: {rows:#?}"
-    );
+fn the_command_list_leaves_the_box_on_a_short_screen() -> TestResult {
+    for (kitty, height, kept) in [(false, 9, true), (true, 15, true), (true, 9, false)] {
+        let mut app = app();
+        app.set_width(60);
+        app.set_rows(height);
+        app.set_kitty(kitty);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        type_text(&mut app, &tx, "/");
+        for _ in 0..7 {
+            press(&mut app, &tx, KeyCode::Down, KeyModifiers::NONE);
+        }
+        let rows = common::rows_sized(&mut app, 60, u16::try_from(height)?)?;
+        assert!(
+            !kept || rows.iter().any(|row| row.starts_with(" › ")),
+            "kitty {kitty}: the highlighted row is kept: {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with(" │/")),
+            "kitty {kitty}: the box with the typed `/` is on screen: {rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("[… ") && row.contains("screen cap")),
+            "kitty {kitty}: the cut is named: {rows:#?}"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with the console's pane painter handing the layout an unbounded height: the list never
+/// trimmed there and the box vanished on a short pane.
+#[test]
+fn the_command_list_leaves_the_box_in_a_short_pane() -> TestResult {
+    use ratatui::layout::Rect;
+    for (kitty, height) in [(false, 9u16), (true, 15), (true, 9)] {
+        let mut app = app();
+        app.set_kitty(kitty);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        type_text(&mut app, &tx, "/");
+        let backend = common::VT100Backend::with_scrollback(80, 40, 200);
+        let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+        terminal.set_viewport_area(Rect::new(0, 0, 80, 40));
+        let area = Rect::new(7, 5, 60, height);
+        let mut scroll = 0;
+        terminal.draw(|frame| {
+            let _ =
+                yi_tui::render::paint_pane(&mut app, None, frame.buffer_mut(), area, &mut scroll);
+        })?;
+        let rows: Vec<String> = (0..40)
+            .map(|row| terminal.backend().row_text(row))
+            .collect();
+        let inside = &rows[usize::from(area.top())..usize::from(area.bottom())];
+        assert!(
+            inside.iter().any(|row| row.contains("│/")),
+            "kitty {kitty} height {height}: the box is in the pane: {inside:#?}"
+        );
+        assert!(
+            inside
+                .iter()
+                .any(|row| row.contains("[… ") && row.contains("screen cap")),
+            "kitty {kitty} height {height}: the cut is named: {inside:#?}"
+        );
+    }
     Ok(())
 }
