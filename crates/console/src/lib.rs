@@ -1154,7 +1154,7 @@ mod tests {
             .and_then(|rest| rest.strip_suffix('\u{7}'));
         assert_eq!(
             inner,
-            Some("yi · Fix bug]52;c;ZWNobyBwd25lZA== now"),
+            Some("Yi > Fix bug]52;c;ZWNobyBwd25lZA== now"),
             "{osc:?}"
         );
         Ok(())

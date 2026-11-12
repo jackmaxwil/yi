@@ -22,6 +22,10 @@ fn a_title_is_one_short_plain_line() {
         Some("Fix the console context gauge".to_owned())
     );
     assert_eq!(clean("# Orb states\n"), Some("Orb states".to_owned()));
+    assert_eq!(
+        clean("🟢 READ: Read project agents."),
+        Some("🟢 READ: Read project agents".to_owned())
+    );
     assert_eq!(clean("   \n  "), None);
     let long = clean(&"word ".repeat(30)).unwrap_or_default();
     assert!(long.chars().count() <= 48, "{long}");

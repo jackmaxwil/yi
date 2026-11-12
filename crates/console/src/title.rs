@@ -1,5 +1,6 @@
 use crate::App;
-use crate::model::SessionStatus::{DoneUnseen, Idle, Unknown};
+use crate::model::SessionStatus::{self, DoneUnseen, Idle, Unknown, Working};
+use yi_tui::motion::TabMark;
 
 /// The scenes the title may draw, by weight, and the seed that picks one.
 pub struct TitleOptions {
@@ -52,83 +53,53 @@ fn focused_status(app: &App) -> Option<crate::model::SessionStatus> {
 }
 
 fn format_window_title(
-    label: Option<&str>,
-    status: Option<crate::model::SessionStatus>,
+    label: &str,
+    status: Option<SessionStatus>,
     elapsed: std::time::Duration,
 ) -> String {
-    let Some(label) = label else {
-        return "yi".to_owned();
-    };
     let mark = match status {
-        Some(crate::model::SessionStatus::Working) => {
-            Some(yi_tui::motion::tab_title_pulse(elapsed))
-        }
-        Some(crate::model::SessionStatus::Blocked) => Some("!"),
-        Some(
-            crate::model::SessionStatus::DoneUnseen
-            | crate::model::SessionStatus::Idle
-            | crate::model::SessionStatus::Unknown,
-        )
-        | None => None,
+        Some(SessionStatus::Working) => TabMark::Working,
+        Some(SessionStatus::Blocked) => TabMark::Attention,
+        Some(DoneUnseen | Idle | Unknown) | None => TabMark::Ready,
     };
-    match mark {
-        Some(mark) => format!("{mark} yi · {label}"),
-        None => format!("yi · {label}"),
-    }
+    yi_tui::motion::tab_title(label, mark, elapsed)
 }
 
 pub(crate) fn window_title(app: &App) -> String {
-    let Some(id) = app.state.focused_session() else {
-        return "yi".to_owned();
-    };
-    let Some(row) = app.state.sessions.get(&id) else {
-        return "yi".to_owned();
-    };
+    let row = app
+        .state
+        .focused_session()
+        .and_then(|id| app.state.sessions.get(&id));
     let elapsed = app
         .state
         .window_title_pulse_start
         .map_or(std::time::Duration::ZERO, |start| app.clock.since(start));
-    format_window_title(Some(&row.label()), Some(row.status), elapsed)
+    format_window_title(
+        row.map_or_else(String::new, |row| row.label()).as_str(),
+        row.map(|row| row.status),
+        elapsed,
+    )
 }
 
+/// How long until the working pulse next changes frame; `None` when the title is not pulsing.
 pub(crate) fn title_wake(app: &App) -> Option<std::time::Duration> {
-    (focused_status(app) == Some(crate::model::SessionStatus::Working))
-        .then_some(app.state.window_title_pulse_start?)
-        .map(|start| {
-            let period = std::time::Duration::from_millis(yi_tui::motion::PULSE_PERIOD_MS as u64);
-            let elapsed = app.clock.since(start);
-            period
-                - std::time::Duration::from_nanos((elapsed.as_nanos() % period.as_nanos()) as u64)
-        })
+    let start = app.state.window_title_pulse_start?;
+    (focused_status(app) == Some(Working)).then_some(())?;
+    let period = yi_tui::motion::PULSE_PERIOD_MS.checked_mul(1_000_000)?;
+    let into = app.clock.since(start).as_nanos().checked_rem(period)?;
+    let left = period.saturating_sub(into);
+    Some(std::time::Duration::from_nanos(u64::try_from(left).ok()?))
 }
 
 /// Invariant: only the focused pane's session status drives the terminal title.
 pub(crate) fn title_status_tick(app: &mut App) {
     let now = app.clock.now();
-    let status = focused_status(app);
-    if status == Some(crate::model::SessionStatus::Working) {
+    if focused_status(app) == Some(Working) {
         app.state.window_title_pulse_start.get_or_insert(now);
     } else {
         app.state.window_title_pulse_start = None;
     }
-    let title_matches = match status {
-        Some(crate::model::SessionStatus::Working) => {
-            let elapsed = app
-                .state
-                .window_title_pulse_start
-                .map_or(std::time::Duration::ZERO, |start| app.clock.since(start));
-            app.window_title
-                .strip_prefix(yi_tui::motion::tab_title_pulse(elapsed))
-                .is_some_and(|suffix| suffix.starts_with(" yi · "))
-        }
-        Some(crate::model::SessionStatus::Blocked) => app
-            .window_title
-            .strip_prefix("!")
-            .is_some_and(|suffix| suffix.starts_with(" yi · ")),
-        Some(DoneUnseen | Idle | Unknown) => app.window_title.starts_with("yi · "),
-        None => app.window_title == "yi",
-    };
-    if !app.window_title.is_empty() && !title_matches {
+    if !app.window_title.is_empty() && window_title(app) != app.window_title {
         app.dirty = true;
     }
 }
@@ -212,23 +183,15 @@ mod tests {
     #[test]
     fn title_format_uses_focused_status_without_changing_session_label() {
         use crate::model::SessionStatus;
-        let plain = "yi · focused";
-        assert_eq!(format_window_title(None, None, Duration::ZERO), "yi");
+        let plain = "Yi > focused";
+        assert_eq!(format_window_title("", None, Duration::ZERO), "Yi >");
         assert_eq!(
-            format_window_title(
-                Some("focused"),
-                Some(SessionStatus::Working),
-                Duration::ZERO
-            ),
-            "◌ yi · focused"
+            format_window_title("focused", Some(SessionStatus::Working), Duration::ZERO),
+            "Yi ◌ focused"
         );
         assert_eq!(
-            format_window_title(
-                Some("focused"),
-                Some(SessionStatus::Blocked),
-                Duration::ZERO
-            ),
-            "! yi · focused"
+            format_window_title("focused", Some(SessionStatus::Blocked), Duration::ZERO),
+            "Yi ! focused"
         );
         for status in [
             SessionStatus::Idle,
@@ -236,7 +199,7 @@ mod tests {
             SessionStatus::DoneUnseen,
         ] {
             assert_eq!(
-                format_window_title(Some("focused"), Some(status), Duration::ZERO),
+                format_window_title("focused", Some(status), Duration::ZERO),
                 plain
             );
         }
@@ -255,11 +218,11 @@ mod tests {
         for (elapsed, expected) in markers {
             assert_eq!(
                 format_window_title(
-                    Some("focused"),
+                    "focused",
                     Some(crate::model::SessionStatus::Working),
                     Duration::from_millis(elapsed),
                 ),
-                format!("{expected} yi · focused")
+                format!("Yi {expected} focused")
             );
         }
     }
@@ -287,11 +250,11 @@ mod tests {
         title_tick(&mut app);
         assert_eq!(title_wake(&app), Some(Duration::from_millis(250)));
         assert!(app.dirty, "the changed marker redraws the title");
-        assert_eq!(window_title(&app), "◍ yi · focused");
+        assert_eq!(window_title(&app), "Yi ◍ focused");
         crate::set_window_title(&mut app);
         assert_eq!(
             app.osc_out.last().map(String::as_str),
-            Some("\x1b]2;◍ yi · focused\x07")
+            Some("\x1b]2;Yi ◍ focused\x07")
         );
         let written = app.osc_out.len();
         crate::set_window_title(&mut app);
@@ -303,11 +266,11 @@ mod tests {
             crate::model::SessionStatus::Blocked;
         title_tick(&mut app);
         assert!(app.dirty, "a focused status transition redraws the title");
-        assert_eq!(window_title(&app), "! yi · focused");
+        assert_eq!(window_title(&app), "Yi ! focused");
         crate::set_window_title(&mut app);
         assert_eq!(
             app.osc_out.last().map(String::as_str),
-            Some("\x1b]2;! yi · focused\x07")
+            Some("\x1b]2;Yi ! focused\x07")
         );
         assert_eq!(title_wake(&app), None, "blocked sessions do not pulse");
         Ok(())
