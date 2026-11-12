@@ -44,7 +44,6 @@ fn avatar_at(
     col: u16,
     rows: u16,
     key: &str,
-    seed: &str,
     hue: usize,
     state: Option<OrbState>,
 ) -> Option<Placement> {
@@ -54,7 +53,7 @@ fn avatar_at(
         cols: rows * 2,
         rows,
         key: key.to_owned(),
-        seed: seed.to_owned(),
+        seed: key.to_owned(),
         accent: accent_rgb(hue),
         state,
         art: crate::avatar::Art::Identicon,
@@ -495,7 +494,7 @@ fn session_rows(
     };
     let (state, news) = detail(app, id, row, now);
     let state_rows = if is_focused || news { 2 } else { 1 };
-    let hue = app.accent_of(&id.0, row.icon_seed());
+    let hue = app.accent_of(&id.0, crate::avatar::hue_seed(row));
     if rail {
         rows.push(SidebarRow {
             index: Some(index),
@@ -508,7 +507,7 @@ fn session_rows(
                     on_row(status_style(theme, row.status)),
                 ),
             ]),
-            avatar: avatar_at(2, 2, &id.0, row.icon_seed(), hue, motion_of(app, id, row)),
+            avatar: avatar_at(2, 2, &id.0, hue, motion_of(app, id, row)),
             control: None,
         });
         rows.push(SidebarRow::plain(
@@ -543,14 +542,7 @@ fn session_rows(
     rows.push(SidebarRow {
         index: Some(index),
         line: Line::from(spans),
-        avatar: avatar_at(
-            2,
-            state_rows,
-            &id.0,
-            row.icon_seed(),
-            hue,
-            motion_of(app, id, row),
-        ),
+        avatar: avatar_at(2, state_rows, &id.0, hue, motion_of(app, id, row)),
         control: None,
     });
     if state_rows == 2 {
@@ -660,13 +652,7 @@ fn child_rows(
         } else {
             "  ├"
         };
-        let seed = app
-            .state
-            .sessions
-            .get(id)
-            .map(SessionRow::icon_seed)
-            .unwrap_or(child.id.as_str());
-        let hue = app.accent_of(child.id.as_str(), seed);
+        let hue = app.accent_of(&id.0, &id.0);
         let mut spans = vec![
             Span::styled(connector.to_owned(), theme.dim_style()),
             tile_span(app, name_tile(&child.name), hue),
@@ -686,7 +672,7 @@ fn child_rows(
         rows.push(SidebarRow {
             index: None,
             line: Line::from(spans),
-            avatar: avatar_at(3, 1, child.id.as_str(), seed, hue, None),
+            avatar: avatar_at(3, 1, child.id.as_str(), hue, None),
             control: None,
         });
     }

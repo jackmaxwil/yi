@@ -104,16 +104,6 @@ impl SessionRow {
         self.name.as_deref().unwrap_or(&self.id.0)
     }
 
-    /// The identicon follows the directory the session was started in. A row
-    /// with no directory keeps its own id, so it does not share a blank seed.
-    pub fn icon_seed(&self) -> &str {
-        if self.root.is_empty() {
-            &self.id.0
-        } else {
-            &self.root
-        }
-    }
-
     pub fn recency(&self) -> u64 {
         self.last_ms.max(self.created_ms)
     }

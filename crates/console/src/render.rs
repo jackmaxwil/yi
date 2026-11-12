@@ -197,7 +197,7 @@ fn pane_hue(app: &App, id: PaneId, theme: &Theme) -> Color {
         .and_then(|pane| pane.session())
         .and_then(|session| app.state.sessions.get(session));
     row.map_or(theme.muted, |row| {
-        yi_tui::colors::accent(app.accent_of(&row.id.0, row.seed()))
+        yi_tui::colors::accent(app.accent_of(&row.id.0, crate::avatar::hue_seed(row)))
     })
 }
 
@@ -716,17 +716,16 @@ fn paint_chat_pane(
                     (
                         row.id.0.clone(),
                         row.seed().to_owned(),
-                        row.icon_seed().to_owned(),
                         row.status,
                         row.label(),
-                        app.accent_of(&row.id.0, row.icon_seed()),
+                        app.accent_of(&row.id.0, crate::avatar::hue_seed(row)),
                     )
                 })
         })
         .flatten();
     let tile = title
         .as_ref()
-        .map(|(id, name, icon, _, _, hue)| title_tile(app, id, name, icon, *hue, inner.x, inner.y));
+        .map(|(id, seed, _, _, hue)| title_tile(app, id, seed, *hue, inner.x, inner.y));
     let Some(pane) = app.state.panes.get_mut(&view.id) else {
         return;
     };
@@ -739,7 +738,7 @@ fn paint_chat_pane(
     chat.app.set_kitty(kitty && chat.slot.is_some());
     chat.app.set_title_cover(covered);
     let mut inner = inner;
-    if let (Some((_, _, _, status, label, _)), Some(tile)) = (title, tile) {
+    if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![
             tile,
             Span::styled(
@@ -805,16 +804,8 @@ fn render_banner(app: &mut App, frame: &mut Frame<'_>, area: Rect, theme: &Theme
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn title_tile(
-    app: &mut App,
-    id: &str,
-    name: &str,
-    icon: &str,
-    hue: usize,
-    x: u16,
-    y: u16,
-) -> Span<'static> {
-    let text = name_tile(name);
+fn title_tile(app: &mut App, id: &str, seed: &str, hue: usize, x: u16, y: u16) -> Span<'static> {
+    let text = name_tile(seed);
     if !app.kitty {
         return Span::styled(text, tile_style_at(hue));
     }
@@ -825,7 +816,7 @@ fn title_tile(
             cols: 2,
             rows: 1,
             key: format!("{id}#{x},{y}"),
-            seed: icon.to_owned(),
+            seed: id.to_owned(),
             accent: yi_tui::colors::accent_rgb(hue),
             state: None,
             art: crate::avatar::Art::Identicon,
