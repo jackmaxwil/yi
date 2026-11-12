@@ -261,12 +261,15 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 
 ## 5. Provider
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
-- Dispatch by `model.api`: `anthropic-messages` (`anthropic`), `openai-responses` (`openai`,
-  `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
-  `kimi` models take any of the first three by their listed `protocol`, Moonshot's wire rules
-  derived from the route. Any other api is faux. Catalog:
+- Dispatch by `model.api`: `anthropic-messages` (`anthropic`, `openrelay`), `openai-responses`
+  (`openai`, `openai-codex`, `openrelay`), `openai-completions` (`openrouter`, `google`),
+  `cursor-agent` (`cursor`); `kimi` models take any of the first three by their listed `protocol`,
+  Moonshot's wire rules derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`, then the `providers` the config
   declares. Model: `--model`, else `models.primary`, else `model`; none is built in.
+  OpenRelay has no bundled model entries; `~/.yi/catalog/openrelay.json` supplies its models.
+  Its Anthropic route sends the stored OpenRelay key as Bearer and keeps `anthropic-version`;
+  ordinary Anthropic uses `x-api-key`.
 - Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
   `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
   default. This default does not select a primary model.
