@@ -240,6 +240,7 @@ fn a_shell_import_is_adopted_by_the_session_that_ran_it() -> TestResult {
     }
     mine.apply(owner(Op::Append {
         todos: spec("adopted")?,
+        for_task: None,
     }))?;
     match session("other")?.apply(owner(Op::View { full: false })) {
         Err(PlanOpError::NoPlan) => Ok(()),

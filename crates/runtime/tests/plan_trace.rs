@@ -528,6 +528,7 @@ fn a_plan_op_reads_the_owners_messages_at_most_once() -> TestResult {
         },
         Op::Append {
             todos: vec![spec("polish the docs")?],
+            for_task: None,
         },
     ];
     let mut seen = Vec::new();

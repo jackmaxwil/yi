@@ -217,7 +217,10 @@ fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
     let (_session, todos, engine) = mirrored(&dir)?;
     let (first, gate) = (TodoLabel::new("first")?, TodoLabel::new("gate")?);
     let wide: Result<Vec<_>, _> = (0..250).map(|at| spec(&format!("s{at}"), false)).collect();
-    engine.apply(owner(Op::Append { todos: wide? }))?;
+    engine.apply(owner(Op::Append {
+        todos: wide?,
+        for_task: None,
+    }))?;
     let stop = std::sync::atomic::AtomicBool::new(false);
     let state_of = |todos: &TodoStore| {
         let list = todos.list();
@@ -577,6 +580,7 @@ fn a_child_label_under_two_parents_keeps_two_ids() -> TestResult {
     };
     engine.apply(owner(Op::Append {
         todos: vec![parent("api")?, parent("cli")?],
+        for_task: None,
     }))?;
     let first = ids(&todos);
     engine.apply(owner(Op::Start {
@@ -998,6 +1002,7 @@ fn a_wait_under_constant_plan_churn_never_unblocks_after_the_budget() -> TestRes
             let row = TodoLabel::new(format!("churn-{round}"))?;
             engine.apply(owner(Op::Append {
                 todos: vec![spec(&format!("churn-{round}"), false)?],
+                for_task: None,
             }))?;
             Ok::<_, Box<dyn Error>>(churn(engine, row, Arc::clone(&stop), wrote.clone()))
         })
@@ -1055,6 +1060,7 @@ fn a_wait_unblocks_once_the_plan_churn_stops() -> TestResult {
     let (gate, address) = blocked_gate(&engine)?;
     engine.apply(owner(Op::Append {
         todos: vec![spec("churn", false)?],
+        for_task: None,
     }))?;
     let plan = engine.store().read(&engine.store().roots()?[0])?;
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));

@@ -199,9 +199,10 @@ fn custom_providers(site: &Site) -> Finding {
             }
         };
         rows.push(format!(
-            "{id} {} model(s) at {}, {from}",
+            "{id} {} model(s) at {} over {}, {from}",
             provider.models.len(),
-            provider.base_url
+            provider.base_url,
+            provider.api.unwrap_or_default().wire()
         ));
     }
     if missing {

@@ -126,5 +126,17 @@ fn a_provider_typo_refuses_at_load_naming_the_key() -> TestResult {
         let refused = parse(&raw).err().ok_or_else(|| format!("loaded: {raw}"))?;
         assert!(refused.to_string().contains(named), "{raw}: {refused}");
     }
+    let raw = format!(
+        r#"{{"providers":{{"gw.local":{{"baseUrl":"http://h","api":"anthropic","models":[{model}]}}}}}}"#
+    );
+    let refused = parse(&raw)
+        .err()
+        .ok_or("an api typo loaded as completions")?;
+    assert!(
+        refused
+            .to_string()
+            .contains("expected one of `openai-completions`"),
+        "{refused}"
+    );
     Ok(())
 }

@@ -65,6 +65,7 @@ impl PlanOpError {
             Self::PhaseMissing { .. } => ("phase_missing", Verdict, true),
             Self::MergeFailed { .. } => ("merge_failed", ToolError, false),
             Self::NoVerifiedCompletion { .. } => ("no_verified_completion", Verdict, true),
+            Self::Ladder(_) => ("ladder", Verdict, false),
             Self::UnservedOutput { .. } => ("unserved_output", ToolError, false),
             Self::UnservedSchema { .. } => ("unserved_schema", ToolError, false),
             Self::OutputRequired { .. } => ("output_required", Verdict, true),

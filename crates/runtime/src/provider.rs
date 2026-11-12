@@ -87,12 +87,12 @@ enum ProviderApi {
 }
 
 fn provider_api(api: &str) -> Option<ProviderApi> {
-    match api {
-        "anthropic-messages" => Some(ProviderApi::AnthropicMessages),
-        "openai-completions" => Some(ProviderApi::OpenAiCompletions),
-        "openai-responses" => Some(ProviderApi::OpenAiResponses),
-        "cursor-agent" => Some(ProviderApi::CursorAgent),
-        _ => None,
+    use yi_types::config::CustomApi;
+    match CustomApi::ALL.into_iter().find(|wire| wire.wire() == api) {
+        Some(CustomApi::AnthropicMessages) => Some(ProviderApi::AnthropicMessages),
+        Some(CustomApi::OpenAiCompletions) => Some(ProviderApi::OpenAiCompletions),
+        Some(CustomApi::OpenAiResponses) => Some(ProviderApi::OpenAiResponses),
+        None => (api == yi_types::message::CURSOR_API).then_some(ProviderApi::CursorAgent),
     }
 }
 

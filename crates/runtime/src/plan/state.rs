@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 use yi_types::plan::canonical::Digest;
 use yi_types::plan::contract::{self, Outcome, Verdict, VerificationToken};
 use yi_types::plan::doc::{
@@ -12,8 +12,9 @@ use yi_types::plan::doc::{
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, Seq};
 use yi_types::url::Url;
 
-use yi_types::plan::op::{Op, Reaped, Reconciliation, Resolution, Resolve, SetRow, TodoSpec};
+use yi_types::plan::op::{Op, Reconciliation, Resolution, Resolve, SetRow, TodoSpec};
 
+pub use super::decided::Decided;
 use super::ops::{OWNER_AGENT, PlanOpError};
 use super::table::{
     OpKind, add_edge, append_todos, charge_retry, check_contracted, check_plan_state,
@@ -172,68 +173,6 @@ pub enum ReduceError {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Decided {
-    pub reaped: Vec<Reaped>,
-    pub subplan: Option<PlanId>,
-    /// How a `done` resolves; the engine decides it beside the committed verdict.
-    pub resolution: Option<contract::Resolution>,
-    /// The contract digest a `start` froze.
-    pub contract_hash: Option<Digest>,
-}
-
-impl Decided {
-    pub fn into_extra(self) -> Result<Map<String, Value>, serde_json::Error> {
-        let mut extra = Map::new();
-        if !self.reaped.is_empty() {
-            extra.insert("reaped".to_owned(), serde_json::to_value(&self.reaped)?);
-        }
-        if let Some(subplan) = self.subplan {
-            extra.insert(
-                "subplan".to_owned(),
-                Value::String(subplan.as_str().to_owned()),
-            );
-        }
-        if let Some(resolution) = self.resolution {
-            extra.insert("resolution".to_owned(), serde_json::to_value(resolution)?);
-        }
-        if let Some(digest) = self.contract_hash {
-            extra.insert(
-                "contract_hash".to_owned(),
-                Value::String(digest.to_string()),
-            );
-        }
-        Ok(extra)
-    }
-
-    fn from_extra(extra: &Map<String, Value>) -> Result<Self, String> {
-        let reaped = match extra.get("reaped") {
-            None => Vec::new(),
-            Some(value) => serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
-        };
-        let subplan = match extra.get("subplan") {
-            None => None,
-            Some(Value::String(id)) => Some(PlanId::new(id).map_err(|e| e.to_string())?),
-            Some(other) => return Err(format!("subplan is not a string: {other}")),
-        };
-        let resolution = match extra.get("resolution") {
-            None => None,
-            Some(value) => serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
-        };
-        let contract_hash = match extra.get("contract_hash") {
-            None => None,
-            Some(Value::String(text)) => Some(Digest::parse(text).map_err(|e| e.to_string())?),
-            Some(other) => return Err(format!("contract_hash is not a string: {other}")),
-        };
-        Ok(Self {
-            reaped,
-            subplan,
-            resolution,
-            contract_hash,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Applied {
     pub from: Option<TodoStateName>,
     pub subplan: Option<PlanId>,
@@ -313,6 +252,7 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
                 None => None,
                 Some(value) => Some(Claim::parse(value).map_err(bad_args)?),
             };
+            super::ladder::spend(state.plan_mut(&id).map_err(failed)?, &label);
             state.verifications.insert(
                 effect,
                 Verification {
@@ -567,6 +507,7 @@ pub fn leaving_running(
         | Op::Start { .. }
         | Op::Retry { .. }
         | Op::Decompose { .. }
+        | Op::Split { .. }
         | Op::View { .. }
         | Op::FuseReset
         | Op::Repair { .. }
@@ -649,7 +590,7 @@ pub fn apply_op(
             return Err(PlanOpError::NotJournaled { op: kind });
         }
         Op::Program { .. } => {}
-        Op::Append { todos } => append_todos(state.plan_mut(id)?, todos.clone())?,
+        Op::Append { todos, .. } => append_todos(state.plan_mut(id)?, todos.clone())?,
         Op::Drop { label, .. } => {
             step_todo(state.plan_mut(id)?, label, OpKind::Drop, decided, |_| {
                 TodoState::Abandoned
@@ -678,7 +619,7 @@ pub fn apply_op(
         Op::Done { label, output } => {
             let output = output.clone();
             check_terminal(label, output.as_ref())?;
-            let resolution = completion(state.plan(id)?, label, decided.resolution)?;
+            let resolution = completion(state.plan(id)?, label, decided.resolution, OpKind::Done)?;
             step_todo(
                 state.plan_mut(id)?,
                 label,
@@ -699,6 +640,9 @@ pub fn apply_op(
         }
         Op::Retry { label, delegation } => {
             apply_retry(state.plan_mut(id)?, label, delegation.as_deref())?;
+        }
+        Op::Split { label, subtasks } => {
+            super::ladder::split(state.plan_mut(id)?, label, subtasks)?
         }
         Op::Decompose { label, todos } => {
             applied.subplan = Some(apply_decompose(state, id, label, todos, decided)?);
@@ -744,7 +688,7 @@ pub fn apply_op(
             let accepted = decided
                 .resolution
                 .or(Some(contract::Resolution::AcceptedByUser));
-            let resolution = completion(state.plan(id)?, label, accepted)?;
+            let resolution = completion(state.plan(id)?, label, accepted, OpKind::Accept)?;
             step_todo(
                 state.plan_mut(id)?,
                 label,
@@ -754,7 +698,7 @@ pub fn apply_op(
             )?;
         }
     }
-    let plan = super::ask::record(state.plan_mut(id)?, op);
+    let plan = super::ladder::grant(super::ask::record(state.plan_mut(id)?, op), op, decided);
     plan.touched = plan.touched.bump();
     if matches!(plan.state, PlanState::Active | PlanState::Done) {
         plan.state = if plan.finished() {
@@ -797,20 +741,24 @@ fn completion(
     plan: &Plan,
     label: &TodoLabel,
     resolution: Option<contract::Resolution>,
+    op: OpKind,
 ) -> Result<Option<contract::Resolution>, PlanOpError> {
     let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
         plan: plan.id.clone(),
         label: label.clone(),
     })?;
-    completion_of(todo, resolution)
+    completion_of(plan, todo, resolution, op)
 }
 
 /// The validator itself: a worktree todo completes only by acceptance or the user's word, a
 /// todo that needs a resolution only beside one, any other on the caller's word (D194).
 fn completion_of(
+    plan: &Plan,
     todo: &Todo,
     resolution: Option<contract::Resolution>,
+    op: OpKind,
 ) -> Result<Option<contract::Resolution>, PlanOpError> {
+    super::ladder::split_pending(plan, &todo.label, op)?;
     if super::acceptance::is_worktree(todo)
         && !matches!(
             resolution,
@@ -1058,7 +1006,7 @@ fn apply_set(plan: &mut Plan, rows: &[SetRow], keep_rest: bool) -> Result<(), Pl
                 // authors a resolution (plan section 6.5).
                 TodoStateName::Done => TodoState::Done {
                     output: None,
-                    resolution: completion_of(&todo, None)?,
+                    resolution: completion_of(plan, &todo, None, OpKind::Set)?,
                 },
                 TodoStateName::Blocked => TodoState::Blocked {
                     on: BlockedOn::User,
@@ -1173,6 +1121,12 @@ fn apply_reconcile(
         });
     }
     drop_intents(state, id, label);
+    let reused = match outcome {
+        Reconciliation::Reused { .. } => {
+            completion(state.plan(id)?, label, None, OpKind::Reconcile)?
+        }
+        Reconciliation::Reattached { .. } => None,
+    };
     let plan = state.plan_mut(id)?;
     let todo = plan
         .todos
@@ -1189,7 +1143,7 @@ fn apply_reconcile(
             check_terminal(label, Some(output))?;
             todo.state = TodoState::Done {
                 output: Some(output.clone()),
-                resolution: completion_of(todo, None)?,
+                resolution: reused,
             };
         }
     }

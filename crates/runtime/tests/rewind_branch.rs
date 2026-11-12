@@ -4,7 +4,6 @@
 
 use crate::scratch;
 use scratch::Scratch;
-
 use std::error::Error;
 use std::sync::Arc;
 
@@ -154,6 +153,7 @@ async fn a_rewind_writes_a_branch_summary_the_projection_replays() -> TestResult
             .any(|message| matches!(message, AgentMessage::BranchSummary { .. })),
         "an idle session must also see it without a reload"
     );
+
     Ok(())
 }
 
@@ -184,6 +184,7 @@ async fn a_failed_summarizer_never_fails_the_rewind() -> TestResult {
         Some(target),
         "the rewind itself stands"
     );
+
     Ok(())
 }
 

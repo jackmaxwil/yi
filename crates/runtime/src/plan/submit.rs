@@ -228,7 +228,8 @@ impl PlanEngine {
             });
         };
         let by = by.clone();
-        super::done::admit(&txn, current, op, &mut Decided::default())?;
+        let cap = self.verifier.refusal_cap();
+        super::done::admit(&txn, current, op, &mut Decided::default(), cap)?;
         // The lane read first: the output is resolved in the candidate's checkout, and nothing
         // is marked on the host by a submit (the disposition is `done` or `fail`'s to journal).
         let held = self

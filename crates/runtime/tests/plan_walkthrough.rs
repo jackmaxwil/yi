@@ -206,6 +206,7 @@ fn parse_op(name: &str, args: &Map<String, Value>) -> Fallible<(Op, bool)> {
             reject_unknown(args, &["todos"], &what)?;
             Op::Append {
                 todos: parse_specs(require(args, "todos", &what)?, &what)?,
+                for_task: None,
             }
         }
         "drop" => {

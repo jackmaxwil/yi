@@ -1,4 +1,5 @@
 ---
+version: 0.1032.0
 issue: Closes #2142
 growth: +279 the /queue verb and its three tests are 110 runtime lines; the command list that edits the box, Tab and Enter are 169 TUI lines. Weighed for deletion: Max's duplicate popup Tab arm, its complete_tab and two popup tests, and a private-layout test were cut, and the verb reuses follow_up_message rather than a queue of its own.
 raise: comments +18, tests +358, crate runtime +110, crate tui +169
