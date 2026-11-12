@@ -15,6 +15,10 @@ cut: none crates/tui/src/input.rs
 cut: none crates/tui/src/markdown.rs
 cut: none crates/tui/src/render.rs
 cut: none crates/tui/src/status.rs
+shares: #2150 the terminal-tab lane touches the same console chat and TUI render files; neither depends on the other
+shares: #2154 custom providers add config keys and settings rows beside this branch's `tui` keys
+shares: #2155 a separate YI_DESIGN section
+shares: #2153 a separate YI_DESIGN section
 shares: #2149 the queue branch, merged here; its command-list popup is replaced by the composer's list
 shares: #2138 the theme branch this one stacks on
 ---
