@@ -1958,7 +1958,7 @@ mod refusals {
         let args = serde_json::json!({"op": "split", "label": "task", "subtasks": [subtask]});
         let text = refusal(&tool, args);
         assert!(
-            text.contains(r#"split subtasks[0] does not take "contarct""#),
+            text.contains(r#"split todos[0] does not take "contarct""#),
             "{text}"
         );
         Ok(())
@@ -2221,6 +2221,15 @@ mod contracts {
         hook: Option<yi_runtime::plan::ops::VerifyHook>,
         verifier: Verifier,
     ) -> Result<Rig, Box<dyn Error>> {
+        rig_with(name, hook, verifier, None)
+    }
+
+    fn rig_with(
+        name: &str,
+        hook: Option<yi_runtime::plan::ops::VerifyHook>,
+        verifier: Verifier,
+        words: Option<yi_session::SharedSession>,
+    ) -> Result<Rig, Box<dyn Error>> {
         let temp = Scratch::new(name)?;
         let store = PlanStore::open(temp.join("plans"))?;
         let ws = temp.join("ws");
@@ -2233,6 +2242,9 @@ mod contracts {
             .with_verifier(verifier);
         if let Some(hook) = hook {
             engine = engine.with_verify_hook(hook);
+        }
+        if let Some(words) = words {
+            engine = engine.with_owner_words(Arc::new(move || Some(Arc::clone(&words))));
         }
         Ok(Rig {
             _temp: temp,
@@ -2316,20 +2328,7 @@ mod contracts {
     }
 
     /// A contract built here, not from a fixture: one critical cmd item over a manifest.
-    fn cmd_contract(
-        store: &PlanStore,
-        plan: &PlanId,
-        command: &str,
-        class: &str,
-    ) -> Result<Contract, Box<dyn Error>> {
-        let put = put_checker(store, plan, command)?;
-        Ok(serde_json::from_value(json!({
-            "class": class,
-            "items": [{"id": "check", "critical": true, "weight": 100,
-                       "decider": {"cmd": {"checker": put, "timeout_ms": 10_000}}}],
-            "threshold": 1000, "min_coverage": 1000
-        }))?)
-    }
+    use crate::checker::cmd_contract;
 
     /// The id `init` allocates for the shared goal, so artifacts can be staged before it.
     fn planned() -> Result<PlanId, Box<dyn Error>> {
@@ -4916,26 +4915,8 @@ mod contracts {
 
     /// The rig with the owner's transcript wired, so an ask is answered by what the user types.
     fn rig_heard(name: &str) -> Result<(Rig, yi_session::SharedSession), Box<dyn Error>> {
-        let temp = Scratch::new(name)?;
-        let store = PlanStore::open(temp.join("plans"))?;
-        let ws = temp.join("ws");
-        std::fs::create_dir_all(&ws)?;
-        let serve = Arc::new(Serve::default());
         let words = crate::todo_mirror::memory_store();
-        let said = Arc::clone(&words);
-        let engine = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
-            .with_width(width(4)?)
-            .with_output_resolve(serve.clone())
-            .with_cwd(ws.clone())
-            .with_verifier(Verifier::new(20_000))
-            .with_owner_words(Arc::new(move || Some(Arc::clone(&said))));
-        let rig = Rig {
-            _temp: temp,
-            store,
-            serve,
-            engine: Arc::new(engine),
-            ws,
-        };
+        let rig = rig_with(name, None, Verifier::new(20_000), Some(Arc::clone(&words)))?;
         Ok((rig, words))
     }
 
@@ -5126,6 +5107,82 @@ mod contracts {
             yi_tools::Tool::execute(&tool, args, &yi_tools::ToolContext::new(rig.ws.clone()));
         assert!(!output.is_error, "{output:?}");
         assert!(todo_of(&rig.store, &plan, "land it-split-1").is_ok());
+        Ok(())
+    }
+
+    // Dies with the split hold back at its call sites instead of the shared completion
+    // validator: `accepted_by_user` lands a split parent done over an open child.
+    #[test]
+    fn accepting_a_split_parent_waits_for_its_children_too() -> TestResult {
+        let rig = rig("yi-ladder-accept", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        start(&rig.engine, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        rig.engine
+            .apply(at(&plan, split_into("land it", &["part"])?))?;
+        let accept = Op::Accept {
+            label: label("land it")?,
+            note: "good enough".to_owned(),
+            output: None,
+        };
+        let user = Actor::User("user://2".parse::<Url>()?);
+        let accepted = rig.engine.apply(OpRequest {
+            actor: user,
+            ..at(&plan, accept)
+        });
+        assert!(
+            matches!(&accepted, Err(PlanOpError::Ladder(text)) if text.contains("\"land it-split-1\" is not finished")),
+            "{accepted:?}"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "land it")?.state,
+            TodoState::Running { .. }
+        ));
+        Ok(())
+    }
+
+    // Dies with `offers` gone from the gate or from `admit`: a red split child is told to split,
+    // and the split it sends is refused only once it applies.
+    #[test]
+    fn a_red_split_child_is_offered_the_targeted_append_alone() -> TestResult {
+        let rig = rig("yi-ladder-child", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract.clone())?])?;
+        start(&rig.engine, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        let subtask = SplitSpec {
+            title: "part".to_owned(),
+            acceptance: "it holds".to_owned(),
+            contract: Some(contract),
+        };
+        let split = Op::Split {
+            label: label("land it")?,
+            subtasks: vec![subtask],
+        };
+        rig.engine.apply(at(&plan, split))?;
+        let child = "land it-split-1";
+        start(&rig.engine, &plan, child)?;
+        red_claim(&rig, &plan, child)?;
+        red_claim(&rig, &plan, child)?;
+        let demand = gated(done(&rig.engine, &plan, child, Some("local://out.txt")))?;
+        assert!(
+            demand.contains(r#""op": "append""#) && !demand.contains(r#""op": "split""#),
+            "{demand}"
+        );
+        let again =
+            split_into(child, &["smaller"]).and_then(|op| Ok(rig.engine.apply(at(&plan, op))?));
+        let refused = ladder_refused(again)?;
+        assert!(
+            refused.contains("buys no claim at red 2 of 3")
+                && !refused.contains(r#""op": "split""#),
+            "{refused}"
+        );
+        assert!(!readmitted(&todo_of(&rig.store, &plan, child)?));
         Ok(())
     }
 

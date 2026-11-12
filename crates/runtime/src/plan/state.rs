@@ -617,7 +617,6 @@ pub fn apply_op(
         }
         Op::Start { label } => apply_start(state, id, label, decided.contract_hash)?,
         Op::Done { label, output } => {
-            super::ladder::split_pending(state.plan(id)?, label)?;
             let output = output.clone();
             check_terminal(label, output.as_ref())?;
             let resolution = completion(state.plan(id)?, label, decided.resolution)?;
@@ -747,15 +746,17 @@ fn completion(
         plan: plan.id.clone(),
         label: label.clone(),
     })?;
-    completion_of(todo, resolution)
+    completion_of(plan, todo, resolution)
 }
 
 /// The validator itself: a worktree todo completes only by acceptance or the user's word, a
 /// todo that needs a resolution only beside one, any other on the caller's word (D194).
 fn completion_of(
+    plan: &Plan,
     todo: &Todo,
     resolution: Option<contract::Resolution>,
 ) -> Result<Option<contract::Resolution>, PlanOpError> {
+    super::ladder::split_pending(plan, &todo.label)?;
     if super::acceptance::is_worktree(todo)
         && !matches!(
             resolution,
@@ -995,9 +996,6 @@ fn apply_set(plan: &mut Plan, rows: &[SetRow], keep_rest: bool) -> Result<(), Pl
             todo.cites = row.spec.cites.clone();
         }
         if TodoStateName::of(&todo.state) != row.state {
-            if row.state == TodoStateName::Done {
-                super::ladder::split_pending(plan, &todo.label)?;
-            }
             todo.state = match row.state {
                 TodoStateName::Running => TodoState::Running {
                     by: AgentId::new(OWNER_AGENT)?,
@@ -1006,7 +1004,7 @@ fn apply_set(plan: &mut Plan, rows: &[SetRow], keep_rest: bool) -> Result<(), Pl
                 // authors a resolution (plan section 6.5).
                 TodoStateName::Done => TodoState::Done {
                     output: None,
-                    resolution: completion_of(&todo, None)?,
+                    resolution: completion_of(plan, &todo, None)?,
                 },
                 TodoStateName::Blocked => TodoState::Blocked {
                     on: BlockedOn::User,
@@ -1121,6 +1119,10 @@ fn apply_reconcile(
         });
     }
     drop_intents(state, id, label);
+    let reused = match outcome {
+        Reconciliation::Reused { .. } => completion(state.plan(id)?, label, None)?,
+        Reconciliation::Reattached { .. } => None,
+    };
     let plan = state.plan_mut(id)?;
     let todo = plan
         .todos
@@ -1137,7 +1139,7 @@ fn apply_reconcile(
             check_terminal(label, Some(output))?;
             todo.state = TodoState::Done {
                 output: Some(output.clone()),
-                resolution: completion_of(todo, None)?,
+                resolution: reused,
             };
         }
     }

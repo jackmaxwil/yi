@@ -394,13 +394,13 @@ fn subtasks(args: &Map<String, Value>) -> Result<Vec<yi_types::plan::op::SplitSp
         .into_iter()
         .flatten();
     for (at, row) in rows.enumerate() {
-        let mut keys = row.as_object().into_iter().flat_map(Map::keys);
-        if let Some(key) =
-            keys.find(|key| !["title", "acceptance", "contract"].contains(&key.as_str()))
-        {
-            return Err(ArgError::Declared(format!(
-                "split subtasks[{at}] does not take {key:?}; a subtask is {{title, acceptance, contract?}}"
-            )));
+        if let Some(row) = row.as_object() {
+            refuse_unknown(
+                row,
+                OpKind::Split,
+                Some(at),
+                &["title", "acceptance", "contract"],
+            )?;
         }
     }
     need(args, OpKind::Split, "subtasks")

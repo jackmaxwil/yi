@@ -322,25 +322,6 @@ async fn plan_op(
         .await
 }
 
-fn command_contract(
-    store: &PlanStore,
-    plan: &PlanId,
-    command: &str,
-) -> Result<serde_json::Value, Box<dyn Error>> {
-    let checker = crate::checker::put_checker(
-        &store.artifacts(plan),
-        &crate::checker::checker_manifest(command, 10_000, &[], false),
-        &store.nonce(),
-    )?;
-    Ok(serde_json::json!({
-        "class": "inline",
-        "items": [{"id": "check", "critical": true, "weight": 100,
-                   "decider": {"cmd": {"checker": checker, "timeout_ms": 10_000}}}],
-        "threshold": 1000,
-        "min_coverage": 1000
-    }))
-}
-
 // Dies with the gate in `prepare` or `split_pending` gone, or with a streak reset in the split:
 // each turns one of the refusals below into a check that ran, or the last red into no block.
 #[tokio::test]
@@ -351,8 +332,12 @@ async fn a_plan_op_caller_climbs_the_red_ladder_through_a_split() -> TestResult 
     let store = PlanStore::open(dir.join("plans"))?;
     let goal = "climb the red ladder";
     let plan = PlanId::slug(goal)?;
-    let red = command_contract(&store, &plan, "exit 1")?;
-    let green = command_contract(&store, &plan, "true")?;
+    let red = serde_json::to_value(crate::checker::cmd_contract(
+        &store, &plan, "exit 1", "inline",
+    )?)?;
+    let green = serde_json::to_value(crate::checker::cmd_contract(
+        &store, &plan, "true", "inline",
+    )?)?;
     let engine =
         Arc::new(PlanEngine::new(store.clone(), Arc::new(NoChildren)).with_cwd(workspace.clone()));
     let mut registry = HostRegistry::default();

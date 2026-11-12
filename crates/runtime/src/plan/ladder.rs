@@ -23,34 +23,69 @@ pub(super) enum By {
 }
 
 #[derive(Debug)]
+pub(super) struct Exit {
+    pub(super) op: OpKind,
+    pub(super) by: By,
+    /// The move as the refusal names it, `LABEL` standing for the todo's quoted label.
+    call: &'static str,
+}
+
+#[derive(Debug)]
 pub(super) struct Rung {
-    pub(super) demand: Option<&'static str>,
-    pub(super) exits: &'static [(OpKind, By)],
+    pub(super) prefix: Option<&'static str>,
+    pub(super) exits: &'static [Exit],
     pub(super) blocks: bool,
 }
 
-/// Invariant: a rung that refuses a claim names an exit, or its todo deadlocks there.
+/// Invariant: a rung that refuses a claim offers every todo an exit, or the todo deadlocks there.
 pub(super) const LADDER: [Rung; 3] = [
     Rung {
-        demand: None,
+        prefix: None,
         exits: &[],
         blocks: false,
     },
     Rung {
-        demand: Some(
-            "make a structural change first: `{\"op\": \"split\", \"label\": LABEL, \"subtasks\": [{\"title\": \"one part\", \"acceptance\": \"how you know it holds\"}]}` (1 to 4 subtasks, each may carry a `contract`), or `{\"op\": \"append\", \"for_task\": LABEL, \"todos\": [...]}`",
-        ),
-        exits: &[(OpKind::Split, By::Anyone), (OpKind::Append, By::Anyone)],
+        prefix: Some("make a structural change first: "),
+        exits: &[
+            Exit {
+                op: OpKind::Split,
+                by: By::Anyone,
+                call: "`{\"op\": \"split\", \"label\": LABEL, \"subtasks\": [{\"title\": \"one part\", \"acceptance\": \"how you know it holds\"}]}` (1 to 4 subtasks, each may carry a `contract`)",
+            },
+            Exit {
+                op: OpKind::Append,
+                by: By::Anyone,
+                call: "`{\"op\": \"append\", \"for_task\": LABEL, \"todos\": [...]}`",
+            },
+        ],
         blocks: false,
     },
     Rung {
-        demand: Some(
-            "only the user's reply to a question buys another claim: when it is blocked on one, `unblock` it after they answer; otherwise `block` it on the user with `options` first",
-        ),
-        exits: &[(OpKind::Unblock, By::User)],
+        prefix: Some("only the user's reply to a question buys another claim: "),
+        exits: &[Exit {
+            op: OpKind::Unblock,
+            by: By::User,
+            call: "when it is blocked on one, `unblock` it after they answer; otherwise `block` it on the user with `options` first; where nobody can reply, as in `yi plan`, `drop` it, or accept it from a session with `accepted_by_user`",
+        }],
         blocks: true,
     },
 ];
+
+/// A split child is never split again, so its structural rung offers the targeted append alone.
+pub(super) fn offers(todo: &Todo, exit: &Exit) -> bool {
+    !(exit.op == OpKind::Split && split_from(todo).is_some())
+}
+
+/// What a refusal at `rung` tells the caller to do with `todo`; `None` lets the check run.
+pub(super) fn demand(rung: &Rung, todo: &Todo) -> Option<String> {
+    let quoted = serde_json::to_string(todo.label.as_str()).unwrap_or_default();
+    let calls = rung.exits.iter().filter(|exit| offers(todo, exit));
+    let calls: Vec<String> = calls
+        .map(|exit| exit.call.replace("LABEL", &quoted))
+        .collect();
+    rung.prefix
+        .map(|prefix| format!("{prefix}{}", calls.join(", or ")))
+}
 
 pub(super) fn rung(red: u32, cap: u32) -> &'static Rung {
     let [free, structural, user] = &LADDER;
@@ -127,11 +162,6 @@ pub(super) fn cap_ask() -> Result<Ask, PlanOpError> {
     Ask::new(options).map_err(|error| PlanOpError::Ladder(error.to_string()))
 }
 
-fn with_label(demand: &str, label: &TodoLabel) -> String {
-    let quoted = serde_json::to_string(label.as_str()).unwrap_or_default();
-    demand.replace("LABEL", &quoted)
-}
-
 fn refused(op: OpKind, label: &TodoLabel, detail: impl std::fmt::Display) -> PlanOpError {
     PlanOpError::Ladder(format!("{} for {label:?} refused: {detail}", op_name(op)))
 }
@@ -141,9 +171,8 @@ fn split_from(todo: &Todo) -> Option<&str> {
 }
 
 pub(super) fn gate(todo: &Todo, red: u32, cap: u32) -> Result<(), PlanOpError> {
-    match rung(red, cap).demand {
+    match demand(rung(red, cap), todo) {
         Some(demand) if todo.extra.get(READMIT_KEY) != Some(&Value::Bool(true)) => {
-            let demand = with_label(demand, &todo.label);
             let detail = format!("before its check at red {red} of {cap}: {demand}");
             Err(refused(OpKind::Done, &todo.label, detail))
         }
@@ -151,8 +180,8 @@ pub(super) fn gate(todo: &Todo, red: u32, cap: u32) -> Result<(), PlanOpError> {
     }
 }
 
-/// Whether `op` takes the exit of its todo's rung; a `split` or targeted `append` that would buy
-/// nothing is refused, an `unblock` still unblocks.
+/// Whether `op` takes an exit its todo's rung offers it; a `split` or targeted `append` that
+/// would buy nothing is refused before it applies, an `unblock` still unblocks.
 pub(super) fn admit(
     records: &[JournalRecord],
     plan: &Plan,
@@ -174,14 +203,14 @@ pub(super) fn admit(
     })?;
     let red = red(records, &plan.id, label, todo.attempt, cap);
     let rung = rung(red, cap);
-    let opens =
-        (rung.exits.iter()).any(|(kind, by)| *kind == op.kind() && (*by == By::Anyone || by_user));
+    let opens = (rung.exits.iter()).any(|exit| {
+        exit.op == op.kind() && offers(todo, exit) && (exit.by == By::Anyone || by_user)
+    });
     if opens || matches!(op, Op::Unblock { .. }) {
         return Ok(opens);
     }
-    let needs = rung
-        .demand
-        .unwrap_or("its next `done` runs its check already");
+    let needs =
+        demand(rung, todo).unwrap_or_else(|| "its next `done` runs its check already".to_owned());
     let detail = format!("it buys no claim at red {red} of {cap}: {needs}");
     Err(refused(op.kind(), label, detail))
 }
@@ -204,10 +233,10 @@ pub(super) fn spend(plan: &mut Plan, label: &TodoLabel) {
 
 /// Invariant: a split parent completes only once each of its children is done or dropped.
 pub(super) fn split_pending(plan: &Plan, label: &TodoLabel) -> Result<(), PlanOpError> {
-    let open = plan.todos.iter().find(|todo| {
-        split_from(todo) == Some(label.as_str())
-            && !matches!(todo.state, TodoState::Done { .. } | TodoState::Abandoned)
-    });
+    let open = plan
+        .todos
+        .iter()
+        .find(|todo| split_from(todo) == Some(label.as_str()) && !todo.state.clears_edge());
     match open {
         Some(child) => {
             let detail = format!("its split child {:?} is not finished", child.label);
@@ -283,38 +312,119 @@ pub(super) fn split(
 
 #[cfg(test)]
 mod tests {
-    use super::{LADDER, rung};
+    use super::{LADDER, SPLIT_PARENT_KEY, offers, red, rung};
+    use crate::plan::state::KIND_DONE_REFUSED;
     use crate::plan::table::step;
-    use yi_types::plan::doc::{BlockedOn, TodoState, TodoStateName};
+    use serde_json::{Map, Value, json};
+    use yi_types::plan::canonical::Digest;
+    use yi_types::plan::doc::{BlockedOn, PlanId, Todo, TodoLabel, TodoState, TodoStateName};
+    use yi_types::plan::ledger::{AttemptId, JournalRecord, PlanOpRecord, RequestId, Seq};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn every_rung_that_refuses_a_claim_has_an_exit_its_state_admits() {
+    fn every_rung_that_refuses_a_claim_offers_each_todo_an_exit_its_state_admits() -> TestResult {
         let blocked = TodoState::Blocked {
             on: BlockedOn::User,
             note: String::new(),
         };
-        for rung in &LADDER {
-            assert_eq!(rung.demand.is_some(), !rung.exits.is_empty(), "{rung:?}");
-            for (kind, _) in rung.exits.iter().filter(|_| rung.blocks) {
+        let mut child = Todo::pending(TodoLabel::new("part")?);
+        child.extra.insert(
+            SPLIT_PARENT_KEY.to_owned(),
+            Value::String("whole".to_owned()),
+        );
+        for todo in [Todo::pending(TodoLabel::new("whole")?), child] {
+            for rung in &LADDER {
+                let offered: Vec<_> = rung
+                    .exits
+                    .iter()
+                    .filter(|exit| offers(&todo, exit))
+                    .collect();
                 assert_eq!(
-                    step(&blocked, *kind),
-                    Some(TodoStateName::Pending),
-                    "{rung:?}"
+                    rung.prefix.is_some(),
+                    !offered.is_empty(),
+                    "{rung:?} for {todo:?}"
                 );
+                for exit in offered.iter().filter(|_| rung.blocks) {
+                    assert_eq!(
+                        step(&blocked, exit.op),
+                        Some(TodoStateName::Pending),
+                        "{rung:?}"
+                    );
+                }
             }
         }
+        Ok(())
     }
 
     #[test]
     fn the_cap_lever_moves_both_gated_rungs() {
-        let demands = |cap| {
+        let gated = |cap| {
             (0..5)
-                .map(|red| rung(red, cap).demand.is_some())
+                .map(|red| rung(red, cap).prefix.is_some())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(demands(3), [false, false, true, true, true]);
-        assert_eq!(demands(5), [false, false, false, false, true]);
-        assert_eq!(demands(1), [false, true, true, true, true]);
+        assert_eq!(gated(3), [false, false, true, true, true]);
+        assert_eq!(gated(5), [false, false, false, false, true]);
+        assert_eq!(gated(1), [false, true, true, true, true]);
         assert!(rung(1, 2).exits.len() == 2 && !rung(1, 2).blocks && rung(2, 2).blocks);
+    }
+
+    fn refusal(
+        plan: &PlanId,
+        label: &TodoLabel,
+        attempt: u32,
+    ) -> Result<JournalRecord, Box<dyn std::error::Error>> {
+        Ok(JournalRecord {
+            record: PlanOpRecord {
+                plan: plan.clone(),
+                op: KIND_DONE_REFUSED.to_owned(),
+                actor: "owner".to_owned(),
+                at: 0,
+                todo: Some(label.clone()),
+                from: None,
+                to: None,
+                todos: 1,
+                extra: Map::new(),
+            },
+            seq: Seq::FIRST,
+            request_id: RequestId::new("ladder")?,
+            expected_revision: 0,
+            attempt: Some(AttemptId::new(attempt)?),
+            args: Value::Null,
+            args_hash: Digest::of(b""),
+            program_hash: None,
+            verdict: Some(json!({"outcome": "fail"})),
+            digest: Digest::of(b""),
+        })
+    }
+
+    // Dies with the plan filter gone from `red`: a sub-plan todo sharing a root todo's label and
+    // attempt in the root's journal starts at the root's cap, its first check never run.
+    #[test]
+    fn a_count_belongs_to_one_plan_and_carries_past_a_retry_only_from_the_cap() -> TestResult {
+        let (root, sub) = (PlanId::new("root")?, PlanId::new("outer")?);
+        let label = TodoLabel::new("land it")?;
+        let records = (0..3)
+            .map(|_| refusal(&root, &label, 1))
+            .collect::<Result<Vec<_>, _>>()?;
+        let first = AttemptId::FIRST;
+        assert_eq!(red(&records, &root, &label, first, 3), 3);
+        assert_eq!(
+            red(&records, &sub, &label, first, 3),
+            0,
+            "another plan's count"
+        );
+        assert_eq!(
+            red(&records, &root, &label, first.next()?, 3),
+            3,
+            "carried from the cap"
+        );
+        assert_eq!(
+            red(&records, &root, &label, first.next()?, 4),
+            0,
+            "below the cap: fresh"
+        );
+        Ok(())
     }
 }

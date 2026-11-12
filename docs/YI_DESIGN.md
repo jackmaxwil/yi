@@ -996,8 +996,9 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
   drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view,
   accepted_by_user`, and every kind parses as `{"op": …}`. `split` adds one to four children
   (`<label>-split-<n>`, its parent in `extra.split_parent`, after the parent's prerequisites and before the
-  parent) and moves no state; a parent splits once, a child never, and the parent's `done` waits
-  for each child to be done or dropped.
+  parent) and moves no state; a parent splits once, a child never (its structural rung offers
+  the targeted `append` alone), and the completion validator holds the parent, on `done`,
+  `accepted_by_user`, `set` and `reconcile` alike, until each child is done or dropped.
 - `Actor { Owner, Child, User, Host, Engine }`. User may apply every op; Owner every op but
   `fuse_reset`, `resolve`, `accepted_by_user` and a resolving `repair`; Host `unblock, reconcile`;
   Child `view, submit`; Engine `start, submit, done, fail, retry`.
