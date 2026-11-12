@@ -991,6 +991,23 @@ mod theme_rows {
     }
 
     #[test]
+    fn an_open_theme_list_keeps_the_footer_and_hint_inside_a_short_pane() -> TestResult {
+        let mut settings = on_dark_theme()?;
+        press(&mut settings, KeyCode::Enter);
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = view(&settings, &[], false, 80, 20, &theme);
+        let texts: Vec<String> = lines.iter().map(text).collect();
+        assert!(
+            lines.len() <= 20,
+            "{} lines in a 20-row pane: {texts:#?}",
+            lines.len()
+        );
+        let last = texts.last().map(String::as_str);
+        assert_eq!(last, Some(" ↑↓ preview · enter save · esc restore"));
+        Ok(())
+    }
+
+    #[test]
     fn a_theme_row_previews_on_move_and_saves_or_restores() -> TestResult {
         let mut settings = on_dark_theme()?;
         press(&mut settings, KeyCode::Enter);
