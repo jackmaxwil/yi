@@ -382,14 +382,6 @@ impl App {
         self.awaited.push(text.to_owned());
     }
 
-    pub fn open_approval(&mut self, ask: AskRequest) {
-        let mut view = ApprovalView::new(ask.title, ask.description, ask.grants);
-        view.tool_call_id = ask.tool_call_id;
-        self.leave_theme_list();
-        self.bottom = Some(Bottom::Approval(view, ask.reply));
-        self.scheduler.request();
-    }
-
     pub(crate) fn handle_event(
         &mut self,
         cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,

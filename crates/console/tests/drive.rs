@@ -5388,7 +5388,7 @@ fn a_pasted_control_character_is_dropped_behind_a_console_slash_command() -> Tes
          type /model\ntype x\u{7f}y\nquit\n",
     )?;
     let row = row_holding(&frame, "/model")?;
-    assert_eq!(row.rsplit("  ").next(), Some("/modelxy█"), "{row}");
+    assert_eq!(row.rsplit("  ").next(), Some("/modelxy"), "{row}");
     Ok(())
 }
 

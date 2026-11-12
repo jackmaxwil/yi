@@ -350,7 +350,11 @@ pub fn layout_chat(
     // The status is the composer's top border while that border is free; any title, search or
     // popup in its place sends it back to a row of its own.
     let reply = app.reply_title();
-    let on_rule = bottom_lines.is_none() && reply.is_none() && !app.composer.search_active();
+    let command_list = app.bottom.is_none() && app.composer.assist_open();
+    // A command list sits above the box. The box keeps its border and the status on that border.
+    let on_rule = (bottom_lines.is_none() || command_list)
+        && reply.is_none()
+        && !app.composer.search_active();
     let status_row = if on_rule {
         crate::status::render_rule(&status_input, width.saturating_sub(4), &theme, border)
     } else {
@@ -371,10 +375,27 @@ pub fn layout_chat(
         u16::try_from(app.rows).unwrap_or(u16::MAX),
     );
 
+    let mut bottom_lines = bottom_lines;
+    if command_list && let Some(lines) = bottom_lines.as_mut() {
+        let room = usize::from(
+            total
+                .saturating_sub(u16::try_from(hud_lines.len()).unwrap_or(u16::MAX))
+                .saturating_sub(composer_height),
+        );
+        let existed = lines.len();
+        if existed > room {
+            lines.truncate(room.saturating_sub(1));
+            if room > 0 {
+                lines.push(Line::from(format!(
+                    "[… {} of {existed} list rows · screen cap {room} rows · type to narrow]",
+                    lines.len()
+                )));
+            }
+        }
+    }
     let composer_too = app.tree.is_none()
         && app.plan_tree.is_none()
-        && (matches!(app.bottom, Some(Bottom::Question(_) | Bottom::Theme(_)))
-            || (app.bottom.is_none() && app.composer.assist_open()));
+        && (matches!(app.bottom, Some(Bottom::Question(_) | Bottom::Theme(_))) || command_list);
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
         let card = u16::try_from(lines.len()).unwrap_or(composer_height);
         card.saturating_add(if composer_too { composer_height } else { 0 })
