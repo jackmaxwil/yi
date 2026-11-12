@@ -5,7 +5,6 @@ use serde_json::{Map, Value};
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::tool::{ToolFuture, error_tool_result};
 use yi_loop::{AgentTool, ToolOutcome};
-use yi_permission::CD_DIRS_MAX;
 use yi_tools::{CancelFlag, Tool, ToolContext};
 use yi_types::model::ToolDef;
 
@@ -195,46 +194,22 @@ fn walled_root_refusal(
     spared: &[PathBuf],
     cwd: &std::path::Path,
 ) -> Option<String> {
-    let text = command.replace(['"', '\'', '\\'], "");
-    let text = text.replace("${HOME}", "~").replace("$HOME", "~");
-    let words = text.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
-    // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
-    let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
-    for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
-        let cd_target = yi_permission::cd_target(word, &mut after_cd);
-        let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
-        for spelled in std::iter::once(word).chain(glued) {
-            let head: String = (spelled.split_inclusive('/'))
-                .take_while(|part| !part.contains(['*', '?', '[']))
-                .collect();
-            let paths: Vec<PathBuf> = (dirs.iter())
-                .map(|dir| yi_permission::resolve_target(&head, dir))
-                .collect();
-            let hit = roots.iter().find(|root| {
-                paths.iter().any(|path| {
-                    yi_tools::walled(std::slice::from_ref(path), root)
-                        || yi_tools::walled(std::slice::from_ref(*root), path)
-                            && !yi_tools::walled(spared, path)
-                })
-            });
-            if let Some(root) = hit {
-                return Some(crate::gate::outside_sandbox_refusal(root));
-            }
-            for path in paths.into_iter().filter(|_| cd_target) {
-                if !dirs.contains(&path) {
-                    dirs.push(path);
-                }
-            }
-            if dirs.len() > CD_DIRS_MAX {
-                let why = format!(
-                    "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX}; run the cds as separate calls",
-                    dirs.len()
-                );
-                return Some(crate::gate::walled_host_refusal(&why));
-            }
-        }
+    if roots.is_empty() {
+        return None;
     }
-    None
+    let judged = yi_permission::judge_command_paths(command, cwd, |paths| {
+        roots.iter().find(|root| {
+            paths.iter().any(|path| {
+                yi_tools::walled(std::slice::from_ref(path), root)
+                    || yi_tools::walled(std::slice::from_ref(*root), path)
+                        && !yi_tools::walled(spared, path)
+            })
+        })
+    });
+    match judged {
+        Ok(hit) => hit.map(|root| crate::gate::outside_sandbox_refusal(root)),
+        Err(why) => Some(crate::gate::walled_host_refusal(&why)),
+    }
 }
 
 fn bash(command: &str) -> Map<String, Value> {

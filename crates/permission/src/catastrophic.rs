@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 mod alias;
 use alias::Aliases;
-pub use alias::{CD_DIRS_MAX, Links, command_reads_alias, links};
+pub use alias::{Links, command_reads_alias, links};
 
 /// Credential stores, protected recursively: destroying one private key inside
 /// ~/.ssh is as damaging as destroying the directory. yi's own provider logins, OAuth profiles
@@ -202,6 +202,48 @@ pub fn cd_target(word: &str, after_cd: &mut bool) -> bool {
     let target = *after_cd && !word.starts_with('-');
     *after_cd = matches!(word, "cd" | "pushd") || *after_cd && word.starts_with('-');
     target
+}
+
+/// Incident: each relative `cd` resolved against every dir so far, doubling them, so a chain of
+/// k cds cost 2^k resolves per word; past this a check refuses rather than skip a target.
+const CD_DIRS_MAX: usize = 64;
+
+/// Hands `judge` each path a word can name, from the cwd and every `cd` target before it, scoped
+/// or not, so it fails closed. Text only: a variable or a built path passes it.
+pub fn judge_command_paths<T>(
+    command: &str,
+    cwd: &Path,
+    mut judge: impl FnMut(&[PathBuf]) -> Option<T>,
+) -> Result<Option<T>, String> {
+    let text = command.replace(['"', '\'', '\\'], "");
+    let text = text.replace("${HOME}", "~").replace("$HOME", "~");
+    let words = text.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
+    let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
+    for word in words.filter(|word| !word.is_empty()) {
+        let cd = cd_target(word, &mut after_cd);
+        let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
+        for spelled in std::iter::once(word).chain(glued) {
+            let head: String = (spelled.split_inclusive('/'))
+                .take_while(|part| !part.contains(['*', '?', '[']))
+                .collect();
+            let paths: Vec<PathBuf> = dirs.iter().map(|dir| resolve_target(&head, dir)).collect();
+            if let Some(hit) = judge(&paths) {
+                return Ok(Some(hit));
+            }
+            for path in paths.into_iter().filter(|_| cd) {
+                if !dirs.contains(&path) {
+                    dirs.push(path);
+                }
+            }
+            if dirs.len() > CD_DIRS_MAX {
+                return Err(format!(
+                    "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX} (CD_DIRS_MAX); run the cds as separate calls",
+                    dirs.len()
+                ));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The next shell word, quotes dropped; none when it is empty or built by expansion.

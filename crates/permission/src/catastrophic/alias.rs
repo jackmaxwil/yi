@@ -1,8 +1,8 @@
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use super::{CatastrophicContext, FileId, cd_target, expand, file_id, stores};
+use super::{CatastrophicContext, FileId, file_id, judge_command_paths, stores};
 
 /// How many directory entries name one file.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -24,10 +24,6 @@ pub fn links(meta: &fs::Metadata) -> Links {
 pub fn links(_meta: &fs::Metadata) -> Links {
     Links(1)
 }
-
-/// Incident: each relative `cd` resolved against every dir so far, doubling them, so a chain of
-/// k cds cost 2^k resolves per word; past this a check refuses rather than skip a target.
-pub const CD_DIRS_MAX: usize = 64;
 
 /// Store entries one scan reads before it stops and every hard-linked read asks; the stores on
 /// a working Mac held 616 (2026-11-11).
@@ -170,31 +166,15 @@ impl Aliases {
 /// sandbox matches the name opened; a cut scan leaves only a named two-name path asking.
 pub fn command_reads_alias(command: &str, context: &CatastrophicContext) -> Option<String> {
     let (stores, aliases) = (stores(context), Aliases::default());
-    // Every `cd` target joins the dirs a later word resolves from, as the wall's check does.
-    let (mut dirs, mut after_cd) = (Vec::<PathBuf>::new(), false);
-    for word in crate::safety::command_segments(command)
-        .into_iter()
-        .flatten()
-    {
-        let at = expand(&word, context);
-        if cd_target(&word, &mut after_cd) && !dirs.contains(&at) {
-            dirs.push(at.clone());
-            if dirs.len() > CD_DIRS_MAX {
-                return Some(format!(
-                    "the command has more than {CD_DIRS_MAX} cd targets (CD_DIRS_MAX), past which no path in it is judged; run the cds as separate calls"
-                ));
-            }
-        }
-        let relative = Path::new(&word).is_relative() && !word.starts_with('~');
-        let elsewhere = (dirs.iter().filter(|_| relative)).map(|dir| dir.join(&word));
-        for path in std::iter::once(at)
-            .chain(elsewhere)
-            .filter(|_| !word.starts_with('-'))
-        {
-            if let Some(why) = aliases.names(&stores, fs::metadata(&path).ok().as_ref()) {
-                return Some(format!("{} is {why}", path.display()));
-            }
-        }
+    let cwd = context.working_dir.clone().unwrap_or_default();
+    let named = judge_command_paths(command, &cwd, |paths| {
+        paths.iter().find_map(|path| {
+            let why = aliases.names(&stores, fs::metadata(path).ok().as_ref())?;
+            Some(format!("{} is {why}", path.display()))
+        })
+    });
+    match named {
+        Ok(None) => aliases.outside(&stores),
+        Ok(Some(why)) | Err(why) => Some(why),
     }
-    aliases.outside(&stores)
 }

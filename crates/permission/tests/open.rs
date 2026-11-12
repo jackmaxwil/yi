@@ -281,8 +281,26 @@ fn an_unreadable_store_is_named_and_asks_only_for_a_two_name_path() -> TestResul
     let opened = opened.map(|error| error.to_string()).unwrap_or_default();
 
     let unread = format!("{} could not be read", scratch.join("home/.aws").display());
-    for why in [judged("cat twin"), judged("cd nested && cat inner"), opened] {
-        assert!(why.contains(&unread), "{why}");
+    let spellings = [
+        "cat twin",
+        "cd nested && cat inner",
+        "cat <twin",
+        "cat < twin",
+        "head -c 1 <twin",
+        "cat <>twin",
+        "cat twin>/tmp/k",
+        "cat x>twin",
+        "echo $(cat twin)",
+        "echo `cat twin`",
+        "{ cat twin; }",
+        "cat \"twin\" 2>/dev/null",
+    ];
+    for (spelled, why) in spellings
+        .iter()
+        .map(|c| (*c, judged(c)))
+        .chain([("open", opened)])
+    {
+        assert!(why.contains(&unread), "{spelled}: {why}");
     }
     assert_eq!([judged("rg token"), judged("jq '.[]' single")], ["", ""]);
     let single = ReadGate::new(&context).open(&scratch.join("workspace/single"), &[]);

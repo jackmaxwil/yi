@@ -629,14 +629,14 @@ fn a_redirect_is_no_destruction_target() -> TestResult {
 #[test]
 fn cd_targets_are_capped_loudly_and_counted_once() -> TestResult {
     let (_scratch, context) = crate::open::keyed("yi-belt-cd-cap")?;
-    let cds = |n: usize| (0..n).map(|i| format!("cd d{i}; ")).collect::<String>() + "ls";
-    assert_eq!(command_reads_alias(&cds(64), &context), None);
-    let past = command_reads_alias(&cds(65), &context).unwrap_or_default();
+    let cds = |n: usize| (0..n).map(|i| format!("cd /d{i}; ")).collect::<String>() + "ls";
+    assert_eq!(command_reads_alias(&cds(63), &context), None);
+    let past = command_reads_alias(&cds(64), &context).unwrap_or_default();
     assert!(
-        past.contains("more than 64 cd targets (CD_DIRS_MAX)"),
+        past.contains("past the check's cap of 64 (CD_DIRS_MAX)"),
         "{past}"
     );
-    let same = "cd d0; ".repeat(100) + "ls";
+    let same = "cd /d0; ".repeat(100) + "ls";
     assert_eq!(command_reads_alias(&same, &context), None);
     Ok(())
 }
