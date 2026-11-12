@@ -1,4 +1,6 @@
 ---
+version: 0.1036.0
+decisions: D590
 issue: Closes #2046
 decision: Keep a text-only OSC 2 title for the focused foreground run | the terminal tab should distinguish working, attention and ready without sending the Kitty orb image through the title | keep the full orb in terminal content and background work from pulsing the parent title
 growth: +358 title mark table, the 250 ms pulse scheduler, and the console and solo title wiring; weighed deleting the wake scheduler, but without it a working tab freezes between events
