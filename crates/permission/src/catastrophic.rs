@@ -3,8 +3,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-mod credential;
-pub use credential::command_reads_credentials;
+mod alias;
+pub use alias::links;
+use alias::{Aliases, reads_alias};
 
 /// Credential stores, protected recursively: destroying one private key inside
 /// ~/.ssh is as damaging as destroying the directory. yi's own provider logins, OAuth profiles
@@ -359,25 +360,22 @@ const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 /// What a read may not touch (D180, D323): a key, the workspace `.git` or a device, which never
 /// ends (`/dev/zero`) or waits (`/dev/tty`), and a directory a walk would carry into a key
 /// store; judged by file identity too, so letter case, a link, `/private` or a firmlink names no
-/// way in; [`ReadGate::open`] judges the file it opened, so no swapped link either (#890). Store
-/// roots are judged per gate; hard-link membership is snapshotted lazily per gate, while ancestor
-/// identities load only for directory targets.
+/// way in; [`ReadGate::open`] judges the file it opened, so no swapped link either (#890), and a
+/// hard link to a store file is refused by identity. Built once per call or walk.
 pub struct ReadGate {
     context: CatastrophicContext,
     stores: Vec<PathBuf>,
     /// Guarded with all under them: the key stores, `/dev` and the workspace `.git`.
     trees: Vec<PathBuf>,
     tree_ids: Vec<FileId>,
-    /// The directory ancestors of stores, compared only for directory targets.
-    exact: Vec<PathBuf>,
-    /// Lazily initialized per gate; not cached on `ToolContext`.
-    exact_ids: std::sync::OnceLock<Vec<FileId>>,
-    /// Lazily scanned once per gate, never retained between tool calls.
-    hardlink_ids: std::sync::OnceLock<Option<std::collections::HashSet<FileId>>>,
+    /// The trees, the roots other users' homes sit under, and every directory above a store,
+    /// each guarded as itself.
+    ids: Vec<FileId>,
     /// Paths no wall covers, with all under them: a session's family spills and own transcript
     /// under the roots its wall holds (#971).
     spared: Vec<PathBuf>,
     hold: Option<OpenHold>,
+    aliases: Aliases,
 }
 
 pub type OpenHold = std::sync::Arc<dyn Fn() + Send + Sync>;
@@ -393,22 +391,20 @@ impl ReadGate {
         let tree_ids = [identities(&trees), identities(git)].concat();
         trees.extend(git.iter().map(|dir| lexical_normalize(dir)));
         let above = stores.iter().flat_map(|store| store.ancestors().skip(1));
-        let mut exact: Vec<PathBuf> = (HOME_ROOTS.iter().map(Path::new))
+        let exact: Vec<PathBuf> = (HOME_ROOTS.iter().map(Path::new))
             .chain(above)
             .map(Path::to_path_buf)
             .collect();
-        exact.sort_unstable();
-        exact.dedup();
+        let ids = [tree_ids.clone(), identities(&exact)].concat();
         Self {
             context: context.clone(),
             stores,
             trees,
             tree_ids,
-            exact,
-            exact_ids: std::sync::OnceLock::new(),
-            hardlink_ids: std::sync::OnceLock::new(),
+            ids,
             spared: Vec::new(),
             hold: None,
+            aliases: Aliases::default(),
         }
     }
 
@@ -434,43 +430,27 @@ impl ReadGate {
     /// A named path: refused when it or an ancestor is guarded by spelling or by identity, a
     /// missing tail judged by its existing head and a dangling link by where it points.
     pub fn denies(&self, path: &Path) -> bool {
-        if self.denies_spelling(path) {
-            return true;
-        }
-        let metadata = fs::metadata(path).ok();
-        beneath_via(&self.trees, &self.tree_ids, path, LINK_HOPS)
-            || denied_file(&self.tree_ids, metadata.as_ref())
-            || (metadata.as_ref().is_some_and(|meta| meta.is_dir())
-                && denied_file(self.exact_ids(), metadata.as_ref()))
-            || self.hard_linked_file(metadata.as_ref())
-    }
-
-    fn exact_ids(&self) -> &[FileId] {
-        self.exact_ids.get_or_init(|| identities(&self.exact))
-    }
-
-    fn hard_linked_file(&self, metadata: Option<&fs::Metadata>) -> bool {
-        credential::gate_hard_linked_file_in_stores(&self.stores, metadata, &self.hardlink_ids)
+        let meta = fs::metadata(path).ok();
+        self.denies_spelling(path)
+            || beneath_via(&self.trees, &self.tree_ids, path, LINK_HOPS)
+            || denied_file(&self.ids, meta.as_ref())
+            || self.aliases.names(&self.stores, meta.as_ref()).is_some()
     }
 
     /// [`Self::denies`] for a path [`fs::canonicalize`] just returned, which has no link left to
     /// resolve a second time.
     fn denies_canonical(&self, real: &Path) -> bool {
-        let metadata = fs::metadata(real).ok();
         self.denies_spelling(real)
             || lexically_under(&self.trees, real)
             || (real.ancestors())
                 .any(|dir| denied_file(&self.tree_ids, fs::metadata(dir).ok().as_ref()))
-            || denied_file(&self.tree_ids, metadata.as_ref())
-            || self.hard_linked_file(metadata.as_ref())
+            || denied_file(&self.ids, fs::metadata(real).ok().as_ref())
     }
 
     /// A walk's entry, whose ancestors the walk judged on its way in: the identity `meta` read
     /// without following it. Its spelling adds nothing, since every guarded directory has one.
     pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
-        denied_file(&self.tree_ids, meta)
-            || (meta.is_some_and(fs::Metadata::is_dir) && denied_file(self.exact_ids(), meta))
-            || self.hard_linked_file(meta)
+        denied_file(&self.ids, meta) || self.aliases.names(&self.stores, meta).is_some()
     }
 
     /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
@@ -574,11 +554,13 @@ impl ReadGate {
         if !opened_at(&file, real) {
             return Err(refused(real));
         }
-        let metadata = file.metadata()?;
-        if self.hard_linked_file(Some(&metadata)) {
-            return Err(refused(real));
+        match self.aliases.names(&self.stores, Some(&file.metadata()?)) {
+            Some(why) => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{} is {why}; no call opens it", real.display()),
+            )),
+            None => Ok(file),
         }
-        Ok(file)
     }
 
     fn denies_spelling(&self, path: &Path) -> bool {
@@ -759,6 +741,52 @@ pub fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
     None
 }
 
+const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
+
+/// A key read into the transcript has already left the machine, so credential stores are
+/// read-gated too. Path-shaped arguments only: this reads a command, it does not run one. A path
+/// is judged as the read gate judges it, by identity, and a directory in home above a store counts,
+/// since a recursive read walks into it, as do the roots homes sit under; a glob counts when it
+/// can name a store, a directory above one, or a path inside one (D324). Quotes and backslashes
+/// are removed as the shell removes them; a path hidden in a variable or a substitution is not.
+pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -> Option<String> {
+    let stores = stores(context);
+    let home = context.home_dir.as_deref().map(lexical_normalize);
+    let above: Vec<PathBuf> = (stores.iter())
+        .flat_map(|store| store.ancestors().skip(1))
+        .filter(|dir| home.as_ref().is_some_and(|home| dir.starts_with(home)))
+        .chain(HOME_ROOTS.iter().map(Path::new))
+        .map(Path::to_path_buf)
+        .collect();
+    let (store_ids, above_ids) = (identities(&stores), identities(&above));
+    let real_stores: Vec<PathBuf> = stores.iter().map(|store| resolve_links(store)).collect();
+    command
+        .split_whitespace()
+        .skip(1)
+        .map(|token| token.replace(['\'', '"', '\\'], ""))
+        .filter(|token| !token.starts_with('-'))
+        .map(|token| {
+            let path = expand(&token, context);
+            (token, path)
+        })
+        .find(|(token, path)| match token.contains(['*', '?', '[', '{']) {
+            true => [path.clone(), resolve_links(path)].iter().any(|pattern| {
+                (stores.iter().chain(&real_stores)).any(|store| glob_reaches(pattern, store))
+            }),
+            false => {
+                // `link/../.netrc` is opened with `..` taken after the link, not popped before it.
+                let opened =
+                    resolve_links(&absolute(Path::new(&with_home(token, context)), context));
+                beneath_via(&stores, &store_ids, path, LINK_HOPS)
+                    || beneath_via(&stores, &store_ids, &opened, LINK_HOPS)
+                    || above.contains(path)
+                    || denied_file(&above_ids, fs::metadata(path).ok().as_ref())
+            }
+        })
+        .map(|(_, path)| path.to_string_lossy().into_owned())
+        .or_else(|| reads_alias(command, context, &stores))
+}
+
 /// A path as the kernel resolves an open: every link and `..` taken, a missing tail as spelled.
 pub fn resolve_links(path: &Path) -> PathBuf {
     let Some((head, real)) =
@@ -769,6 +797,55 @@ pub fn resolve_links(path: &Path) -> PathBuf {
     match path.strip_prefix(head) {
         Ok(tail) if !tail.as_os_str().is_empty() => lexical_normalize(&real.join(tail)),
         _ => real,
+    }
+}
+
+/// Whether a shell glob can match `store`, a directory above it, or a path inside it: compared
+/// component by component over the shorter of the two, ignoring letter case, a leading dot
+/// matched only by what can open with a dot, as the shell matches it. A resolved pattern keeps its glob text.
+fn glob_reaches(pattern: &Path, store: &Path) -> bool {
+    let words = |path: &Path| -> Vec<Vec<char>> {
+        (path.components())
+            .map(|part| {
+                part.as_os_str()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .chars()
+                    .collect()
+            })
+            .collect()
+    };
+    (words(pattern).iter().zip(&words(store))).all(|(glob, name)| {
+        // A `{…}` group or a `[…]` class may open with the dot a plain glob never matches.
+        let dotted = matches!(glob.first(), Some('.' | '{' | '['));
+        let hidden = name.first() == Some(&'.') && !dotted;
+        !hidden && wildcard(glob, name)
+    })
+}
+
+/// `*` any run, `?` and a `[…]` class one character, a `{…}` group any run: a glob that can
+/// match more than the shell would only asks more.
+fn wildcard(glob: &[char], name: &[char]) -> bool {
+    let rest = |after: usize| glob.get(after..).unwrap_or_default();
+    let any_run = |after: usize| {
+        (0..=name.len()).any(|at| wildcard(rest(after), name.get(at..).unwrap_or_default()))
+    };
+    match glob.first() {
+        None => name.is_empty(),
+        Some('*') => any_run(1),
+        Some('{') => glob
+            .iter()
+            .position(|c| *c == '}')
+            .is_some_and(|end| any_run(end + 1)),
+        Some(first) => {
+            let width = match first {
+                '?' => 1,
+                '[' => glob.iter().position(|c| *c == ']').map_or(1, |end| end + 1),
+                _ => 1,
+            };
+            let same = matches!(first, '?' | '[') || name.first() == Some(first);
+            same && !name.is_empty() && wildcard(rest(width), name.get(1..).unwrap_or_default())
+        }
     }
 }
 
@@ -789,8 +866,6 @@ pub fn wraps(word: &str) -> bool {
         || word.contains('=')
         || word.chars().all(|character| character.is_ascii_digit())
 }
-
-const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
 
 fn runs_destructive(segment: &str) -> bool {
     segment
