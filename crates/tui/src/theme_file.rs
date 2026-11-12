@@ -484,6 +484,11 @@ mod tests {
         assert_eq!(loaded.warning, None);
         // #88c0d0: 136 -> level 2, 192 -> 3, 208 -> 4, so 16 + 72 + 18 + 4.
         assert_eq!(loaded.theme.accent, Color::Indexed(110));
+        // toolDiffAdded is nord14, #a3be8c: levels 3, 3 and 2, so 16 + 108 + 18 + 2.
+        assert_eq!(
+            loaded.theme.diff_row(DiffRowKind::Added).fill,
+            Some(Color::Indexed(144))
+        );
         assert_eq!(
             (cube(0, 0, 0), cube(255, 255, 255), cube(47, 48, 114)),
             (16, 231, 23)
