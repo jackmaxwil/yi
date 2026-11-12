@@ -3,6 +3,13 @@ use yi_orb::OrbState;
 use super::{App, Bottom};
 use crate::cell::{TaskStatus, ToolStatus};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TitleMarker {
+    Ready,
+    Attention,
+    Pulse(&'static str),
+}
+
 impl App {
     pub fn working_label(&self) -> Option<String> {
         let state = self.orb_state()?;
@@ -104,6 +111,54 @@ impl App {
         match self.turn_kinds.iter_mut().find(|(kind, _)| *kind == verb) {
             Some((_, count)) => *count = count.saturating_add(1),
             None => self.turn_kinds.push((verb, 1)),
+        }
+    }
+
+    pub(crate) fn refresh_title(&mut self) {
+        let marker = match self.orb_state() {
+            None => TitleMarker::Ready,
+            Some(yi_orb::OrbState::Listening) => TitleMarker::Attention,
+            Some(
+                yi_orb::OrbState::Awaiting
+                | yi_orb::OrbState::Thinking
+                | yi_orb::OrbState::Composing
+                | yi_orb::OrbState::Working
+                | yi_orb::OrbState::Reading
+                | yi_orb::OrbState::Searching
+                | yi_orb::OrbState::Browsing
+                | yi_orb::OrbState::Editing
+                | yi_orb::OrbState::Executing
+                | yi_orb::OrbState::Computing
+                | yi_orb::OrbState::Planning { .. }
+                | yi_orb::OrbState::Delegating { .. }
+                | yi_orb::OrbState::Stalled
+                | yi_orb::OrbState::Condensing
+                | yi_orb::OrbState::KernelBoot,
+            ) => TitleMarker::Pulse(crate::motion::tab_title_pulse(
+                self.clock.since(self.turn_started),
+            )),
+        };
+        if self.title_marker == Some(marker) {
+            return;
+        }
+        self.title_marker = Some(marker);
+        self.pending_title = Some(match marker {
+            TitleMarker::Ready => self.base_title.clone(),
+            TitleMarker::Attention => format!("! {}", self.base_title),
+            TitleMarker::Pulse(frame) => format!("{frame} {}", self.base_title),
+        });
+    }
+
+    pub fn take_title(&mut self) -> Option<String> {
+        self.pending_title.take()
+    }
+
+    pub(crate) fn update_prompt_title(&mut self, focus: &str) {
+        let title = format!("Yi — {focus}");
+        if self.base_title != title {
+            self.base_title = title;
+            self.title_marker = None;
+            self.refresh_title();
         }
     }
 }

@@ -746,3 +746,8 @@ pure loop + event enum | `loop_events::a_message_stops_at_its_first_failed_write
 pure loop + event enum | `journeys::a_failed_edit_leaves_its_test_unrun` (T2)
 host-written memory (one file per fact, hook index) | `session_faux::learn_starts_a_turn_that_opens_its_skill_with_the_users_focus` (T1)
 host-written memory (one file per fact, hook index) | `input::learn_is_sent_as_a_prompt_that_opens_its_skill` (T0)
+terminal tab run state | `motion::tests::tab_title_pulse_changes_at_250ms_boundaries` (T0)
+terminal tab run state | `tui_e2e::a_solo_window_title_tracks_orb_state_and_pulse_without_repeating` (T0)
+terminal tab run state | `title::tests::title_format_uses_focused_status_without_changing_session_label` (T0)
+terminal tab run state | `title::tests::working_title_pulse_changes_at_shared_period_boundaries` (T0)
+terminal tab run state | `title::tests::focused_status_transitions_dirty_only_when_title_changes` (T0)
