@@ -835,10 +835,6 @@ pub fn merge_headers(
     merged
 }
 
-pub(crate) fn bearer_header(api_key: &str) -> (&'static str, String) {
-    ("authorization", format!("Bearer {api_key}"))
-}
-
 pub fn openai_bearer_post(
     url: &str,
     model: &Model,
@@ -847,7 +843,10 @@ pub fn openai_bearer_post(
     retry: &Retry<'_>,
     stripped: &Stripped,
 ) -> Result<ureq::Response, String> {
-    let headers = headers_for(model, vec![bearer_header(wire.api_key)]);
+    let headers = headers_for(
+        model,
+        vec![("authorization", format!("Bearer {}", wire.api_key))],
+    );
     send_stripping_cache(
         url,
         &merge_headers(headers, wire.extra.to_vec()),

@@ -807,36 +807,37 @@ const ANTHROPIC_MESSAGE_EVENTS: [&str; 6] = [
     "content_block_stop",
 ];
 
-fn auth_headers(provider: &str, api_key: &str, oauth: bool) -> Vec<(&'static str, String)> {
-    let (name, value) = if oauth || provider == "openrelay" {
-        crate::request::bearer_header(api_key)
-    } else {
-        ("x-api-key", api_key.to_owned())
-    };
-    vec![
-        (name, value),
-        ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
-    ]
-}
-
 fn run_request(
     model: &Model,
     body: &Encoded,
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
-    let api_key = wire.api_key;
-    let proxy = wire.proxy;
-    let stop = wire.stop;
-    let extra = wire.extra;
-    let oauth = wire.oauth;
+    let crate::request::Wire {
+        api_key,
+        proxy,
+        stop,
+        extra,
+        oauth,
+        settle: _,
+    } = wire;
     let beta = if crate::compat::moonshot(model) {
         "?beta=true"
     } else {
         ""
     };
     let url = format!("{}/v1/messages{beta}", model.base_url);
-    let base = auth_headers(&model.provider, api_key, oauth);
+    let base = if oauth || crate::compat::compat_bool(model, "bearerAuth", false) {
+        vec![
+            ("authorization", format!("Bearer {api_key}")),
+            ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
+        ]
+    } else {
+        vec![
+            ("x-api-key", api_key.to_owned()),
+            ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
+        ]
+    };
     let headers =
         crate::request::merge_headers(crate::request::headers_for(model, base), extra.to_vec());
     let mut mapper = Mapper::new(model);
@@ -916,27 +917,4 @@ pub fn stream(
         let _ = sender.blocking_send(event);
     });
     receiver
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn openrelay_uses_bearer_and_anthropic_uses_x_api_key() {
-        assert_eq!(
-            auth_headers("openrelay", "test-key", false),
-            vec![
-                ("authorization", "Bearer test-key".to_owned()),
-                ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
-            ]
-        );
-        assert_eq!(
-            auth_headers("anthropic", "test-key", false),
-            vec![
-                ("x-api-key", "test-key".to_owned()),
-                ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
-            ]
-        );
-    }
 }

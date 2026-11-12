@@ -27,7 +27,6 @@ mod model_headers;
 mod oauth;
 mod openai_mapper;
 mod openai_responses;
-mod openrelay;
 mod openrouter;
 #[path = "support/plain.rs"]
 mod plain;

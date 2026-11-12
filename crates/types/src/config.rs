@@ -131,11 +131,13 @@ impl Providers {
     }
 }
 
-/// Speaks OpenAI chat completions; the key is `apiKeyEnv`'s variable, else the literal `apiKey`.
+/// Speaks `api`, OpenAI chat completions when unset; the key is `apiKeyEnv`'s variable, else the
+/// literal `apiKey`, sent as a bearer token on every wire, Anthropic messages included.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomProvider {
     pub base_url: String,
+    pub api: Option<CustomApi>,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
     pub models: Vec<CustomModel>,
@@ -151,6 +153,18 @@ pub struct CustomModel {
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
     pub cost: Option<CustomCost>,
+}
+
+/// The wire names `Model::api` carries; config is strict, so any other value refuses at load.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum CustomApi {
+    #[default]
+    #[serde(rename = "openai-completions")]
+    OpenAiCompletions,
+    #[serde(rename = "openai-responses")]
+    OpenAiResponses,
+    #[serde(rename = "anthropic-messages")]
+    AnthropicMessages,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -175,6 +189,17 @@ impl CustomProvider {
     pub fn catalog(&self, id: &str) -> Vec<crate::model::Model> {
         let rate = |set: Option<&serde_json::Number>| set.cloned().unwrap_or_else(|| 0u64.into());
         let base_url = self.base_url.trim_end_matches('/').to_owned();
+        let (api, compat) = match self.api.unwrap_or_default() {
+            CustomApi::OpenAiCompletions => (
+                "openai-completions",
+                Some(serde_json::json!({"plainMaxTokens": true})),
+            ),
+            CustomApi::OpenAiResponses => ("openai-responses", None),
+            CustomApi::AnthropicMessages => (
+                "anthropic-messages",
+                Some(serde_json::json!({"bearerAuth": true})),
+            ),
+        };
         (self.models.iter())
             .map(|model| {
                 let cost = model.cost.clone().unwrap_or_default();
@@ -182,7 +207,7 @@ impl CustomProvider {
                 crate::model::Model {
                     id: model.id.clone(),
                     name: model.name.clone().unwrap_or_else(|| model.id.clone()),
-                    api: "openai-completions".to_owned(),
+                    api: api.to_owned(),
                     provider: id.to_owned(),
                     base_url: base_url.clone(),
                     reasoning: model.reasoning.unwrap_or(false),
@@ -201,7 +226,7 @@ impl CustomProvider {
                     },
                     context_window: model.context_window.unwrap_or(128_000),
                     max_tokens: model.max_tokens.unwrap_or(16_384),
-                    compat: Some(serde_json::json!({"plainMaxTokens": true})),
+                    compat: compat.clone(),
                     thinking_level_map: None,
                     headers: None,
                     read_timeout_secs: None,
