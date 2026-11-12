@@ -423,9 +423,12 @@ mod tests {
         assert_eq!(theme.selection_bg(), Color::Rgb(0x44, 0x44, 0x44));
         let keyword = theme.syntax_style(Token::Keyword).fg;
         assert_eq!(keyword, Some(Color::Rgb(0x55, 0x55, 0x55)));
+        let added = theme.diff_row(DiffRowKind::Added);
+        assert_eq!(added.sign.fg, Some(Color::Rgb(0, 0xaa, 0)));
         assert_eq!(
-            theme.diff_row(DiffRowKind::Added).fill,
-            Some(Color::Rgb(0, 0xaa, 0))
+            added.fill,
+            Some(Color::Rgb(0x21, 0x3A, 0x2B)),
+            "the fill stays built in"
         );
         let lines = crate::markdown::render("# Title", 40, &theme);
         let span = lines
@@ -485,14 +488,54 @@ mod tests {
         // #88c0d0: 136 -> level 2, 192 -> 3, 208 -> 4, so 16 + 72 + 18 + 4.
         assert_eq!(loaded.theme.accent, Color::Indexed(110));
         // toolDiffAdded is nord14, #a3be8c: levels 3, 3 and 2, so 16 + 108 + 18 + 2.
+        let added = loaded.theme.diff_row(DiffRowKind::Added);
         assert_eq!(
-            loaded.theme.diff_row(DiffRowKind::Added).fill,
-            Some(Color::Indexed(144))
+            (added.content.fg, added.fill),
+            (Some(Color::Indexed(144)), Some(Color::Indexed(22)))
         );
+        // Light ground: light-github's #1f883d is cube 29 at 4.1:1 on tint 194; light-prism's
+        // #22c55e is cube 41 at 1.8:1, so its sign takes the built-in green.
+        let sign = |name| {
+            preview(ColorTier::Ansi256, false, None, name)
+                .theme
+                .diff_row(DiffRowKind::Added)
+        };
+        let (github, prism) = (sign("light-github"), sign("light-prism"));
+        assert_eq!(
+            (github.sign.fg, github.fill),
+            (Some(Color::Indexed(29)), Some(Color::Indexed(194)))
+        );
+        assert_eq!(prism.sign.fg, Some(Color::Green));
         assert_eq!(
             (cube(0, 0, 0), cube(255, 255, 255), cube(47, 48, 114)),
             (16, 231, 23)
         );
+    }
+
+    #[test]
+    fn every_shipped_theme_keeps_its_diff_rows_readable_on_their_fill() {
+        let tiers = [ColorTier::TrueColor, ColorTier::Ansi256];
+        let kinds = [DiffRowKind::Added, DiffRowKind::Removed];
+        for name in list(None) {
+            for (tier, dark, kind) in tiers.iter().flat_map(|tier| {
+                [true, false]
+                    .into_iter()
+                    .flat_map(move |dark| kinds.map(|kind| (*tier, dark, kind)))
+            }) {
+                let row = preview(tier, dark, None, &name).theme.diff_row(kind);
+                for ink in [row.sign.fg, row.content.fg].into_iter().flatten() {
+                    let ratio = row.fill.and_then(|fill| crate::colors::contrast(ink, fill));
+                    let shown = format!(
+                        "{name} {tier:?} dark={dark} {kind:?}: {ink:?} on {:?}",
+                        row.fill
+                    );
+                    assert!(
+                        ratio.is_none_or(|ratio| ratio >= 3.0),
+                        "{shown} is {ratio:?}:1"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
