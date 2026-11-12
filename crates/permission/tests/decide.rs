@@ -475,10 +475,22 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
         );
     }
 
+    let wait = "i=0; until [ -e /tmp/go ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done";
+    assert!(
+        command_reads_credentials(wait, &lexical).is_none(),
+        "{wait}"
+    );
+
     let root = Scratch::new("yi-belt-identity")?;
     let home = root.join("home");
     std::fs::create_dir_all(home.join(".config/gh"))?;
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    let ssh_key = home.join(".ssh/id_rsa");
+    let ssh_alias = root.join("ssh-key-copy");
+    std::fs::write(&ssh_key, "FAKE SSH KEY")?;
+    std::fs::hard_link(&ssh_key, &ssh_alias)?;
     std::fs::write(home.join(".netrc"), "machine x password y")?;
+    std::fs::hard_link(home.join(".netrc"), root.join("netrc-copy"))?;
     std::os::unix::fs::symlink(home.join(".config"), root.join("cfg"))?;
     let real = CatastrophicContext {
         home_dir: Some(home.clone()),
@@ -492,6 +504,9 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
         "cat cfg/gh/hosts.yml".to_owned(),
         "grep -r token cfg".to_owned(),
         "cat cfg/*/hosts.yml".to_owned(),
+        "cat netrc-copy".to_owned(),
+        format!("cat {}", ssh_alias.display()),
+        "cat ssh-key-*".to_owned(),
     ];
     // Another letter case names the same file only where the filesystem folds case (macOS).
     if home.join(".NETRC").exists() {
@@ -503,6 +518,78 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
             "{command}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn recursive_search_cannot_walk_to_a_hard_linked_credential() -> TestResult {
+    let scratch = Scratch::new("yi-grep-hardlink")?;
+    let home = scratch.join("home");
+    let workspace = scratch.join("workspace");
+    let (nested, deep_nested) = (workspace.join("nested"), workspace.join("deep/sub/nested"));
+    let key = home.join(".ssh/id_rsa");
+    let (alias, deep_alias) = (nested.join("key-copy"), deep_nested.join("key-copy"));
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(&nested)?;
+    std::fs::create_dir_all(&deep_nested)?;
+    std::fs::write(&key, "FAKE SSH KEY")?;
+    std::fs::hard_link(&key, &alias)?;
+    std::fs::hard_link(&key, &deep_alias)?;
+    let context = CatastrophicContext {
+        home_dir: Some(home),
+        working_dir: Some(workspace.clone()),
+        workspace_git: Vec::new(),
+        host_owned: Vec::new(),
+    };
+
+    let commands = [
+        format!("grep -R token {}", workspace.display()),
+        format!("grep -R token {}/*", workspace.display()),
+        format!("grep -R token {}/**/nested/key-copy", workspace.display()),
+        format!("cat {}/@(nested|other)/key-copy", workspace.display()),
+        "rg token".to_owned(),
+    ];
+    let missing = commands
+        .iter()
+        .filter_map(|command| {
+            command_reads_credentials(command, &context)
+                .is_none()
+                .then_some(command.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "unprotected hard-link reads: {missing:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn recursive_grep_cannot_reach_a_hard_link_through_a_store_descendant_symlink() -> TestResult {
+    let scratch = Scratch::new("yi-grep-symlink-hardlink")?;
+    let home = scratch.join("home");
+    let workspace = scratch.join("workspace");
+    let external_keys = scratch.join("external/keys");
+    let key = external_keys.join("id_rsa");
+    let alias = workspace.join("key-copy");
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(&external_keys)?;
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(&key, "FAKE SSH KEY")?;
+    std::os::unix::fs::symlink(&external_keys, home.join(".ssh/keys"))?;
+    std::fs::hard_link(&key, &alias)?;
+    let context = CatastrophicContext {
+        home_dir: Some(home),
+        working_dir: Some(workspace.clone()),
+        workspace_git: Vec::new(),
+        host_owned: Vec::new(),
+    };
+
+    let command = format!("grep -R token {}", workspace.display());
+    assert!(
+        command_reads_credentials(&command, &context).is_some(),
+        "{command} can reach a key under ~/.ssh/keys"
+    );
     Ok(())
 }
 

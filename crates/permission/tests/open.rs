@@ -181,6 +181,81 @@ fn a_cwd_spelled_through_a_link_and_dotdot_keeps_its_git_dir_walled() -> TestRes
 }
 
 #[test]
+fn a_hard_link_to_a_key_file_is_refused() -> TestResult {
+    let scratch = Scratch::new("yi-gate-hardlink")?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    let key = home.join(".ssh/id_rsa");
+    let alias = workspace.join("key-copy");
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(&key, KEY)?;
+    std::fs::hard_link(&key, &alias)?;
+    let gate = ReadGate::new(&CatastrophicContext {
+        home_dir: Some(home),
+        working_dir: Some(workspace),
+        workspace_git: Vec::new(),
+        host_owned: Vec::new(),
+    });
+
+    let denied = gate.denies(&alias);
+    let opened = gate.open(&alias, &[]).and_then(io::read_to_string);
+    let entry_metadata = std::fs::symlink_metadata(&alias)?;
+    let entry_denied = gate.denies_entry(Some(&entry_metadata));
+    let write_denied = match gate.open_write(&alias, &[]) {
+        Ok(mut file) => {
+            std::io::Write::write_all(&mut file, b"OVERWRITTEN\n")?;
+            false
+        }
+        Err(_) => true,
+    };
+    let key_unchanged = std::fs::read_to_string(&key)? == KEY;
+
+    assert!(denied, "ReadGate::denies allowed the hard-link alias");
+    assert!(opened.is_err(), "ReadGate::open opened the hard-link alias");
+    assert!(
+        write_denied,
+        "ReadGate::open_write opened the hard-link alias"
+    );
+    assert!(
+        entry_denied,
+        "ReadGate::denies_entry allowed the hard-link alias"
+    );
+    assert!(key_unchanged, "the hard-link alias changed the key");
+    Ok(())
+}
+
+#[test]
+fn a_hard_link_swapped_in_after_the_judgement_writes_no_key() -> TestResult {
+    let scratch = Scratch::new("yi-gate-hardlink-swap")?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    let (key, target) = (home.join(".ssh/id_rsa"), workspace.join("copy"));
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(&key, KEY)?;
+    std::fs::write(&target, "ordinary\n")?;
+    let gate = ReadGate::new(&CatastrophicContext {
+        home_dir: Some(home),
+        working_dir: Some(workspace),
+        workspace_git: Vec::new(),
+        host_owned: Vec::new(),
+    });
+    let mut swapped = None;
+    let opened = gate.open_write_after(&target, &[], &mut || {
+        swapped =
+            Some(std::fs::remove_file(&target).and_then(|()| std::fs::hard_link(&key, &target)));
+    });
+    swapped.ok_or("the write never reached its open")??;
+    let wrote = opened.and_then(|mut file| std::io::Write::write_all(&mut file, b"OVERWRITTEN\n"));
+    assert!(wrote.is_err(), "the open wrote through a swapped hard link");
+    assert_eq!(
+        std::fs::read_to_string(&key)?,
+        KEY,
+        "the hard link changed the key"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_relative_cwd_keeps_its_git_dir_walled() -> TestResult {
     let scratch = Scratch::new("yi-open-relative")?;
     let (_, config) = linked_repo(&scratch)?;
@@ -193,6 +268,40 @@ fn a_relative_cwd_keeps_its_git_dir_walled() -> TestResult {
         !opens(&cwd, &config),
         "read {} through the wall",
         config.display()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_hard_link_to_a_key_beneath_a_store_descendant_symlink_is_refused() -> TestResult {
+    let scratch = Scratch::new("yi-gate-symlink-hardlink")?;
+    let (home, workspace, external_keys) = (
+        scratch.join("home"),
+        scratch.join("workspace"),
+        scratch.join("external/keys"),
+    );
+    let key = external_keys.join("id_rsa");
+    let alias = workspace.join("key-copy");
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(&external_keys)?;
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(&key, KEY)?;
+    std::os::unix::fs::symlink(&external_keys, home.join(".ssh/keys"))?;
+    std::fs::hard_link(&key, &alias)?;
+    let gate = ReadGate::new(&CatastrophicContext {
+        home_dir: Some(home),
+        working_dir: Some(workspace),
+        workspace_git: Vec::new(),
+        host_owned: Vec::new(),
+    });
+
+    assert!(
+        gate.denies(&alias),
+        "ReadGate::denies allowed the hard-link alias"
+    );
+    assert!(
+        gate.open(&alias, &[]).and_then(io::read_to_string).is_err(),
+        "ReadGate::open opened the hard-link alias"
     );
     Ok(())
 }
