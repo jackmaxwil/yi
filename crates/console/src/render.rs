@@ -197,7 +197,7 @@ fn pane_hue(app: &App, id: PaneId, theme: &Theme) -> Color {
         .and_then(|pane| pane.session())
         .and_then(|session| app.state.sessions.get(session));
     row.map_or(theme.muted, |row| {
-        yi_tui::colors::accent(app.accent_of(&row.id.0, row.seed()))
+        yi_tui::colors::accent(app.accent_of(&row.id.0, crate::avatar::hue_seed(row)))
     })
 }
 
@@ -718,7 +718,7 @@ fn paint_chat_pane(
                         row.seed().to_owned(),
                         row.status,
                         row.label(),
-                        app.accent_of(&row.id.0, row.seed()),
+                        app.accent_of(&row.id.0, crate::avatar::hue_seed(row)),
                     )
                 })
         })

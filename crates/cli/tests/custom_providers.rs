@@ -25,7 +25,22 @@ const ANSWER: &str = concat!(
     "data: [DONE]\n\n",
 );
 
-/// Answers every request with [`ANSWER`] and keeps each request whole.
+const MESSAGES: &str = concat!(
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m1\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n",
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"pong\"}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+);
+
+const RESPONSES: &str = concat!(
+    "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+    "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n",
+    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n",
+);
+
+/// Answers each request in the shape of the wire its path names and keeps each request whole.
 fn fake_gateway() -> std::io::Result<(u16, Seen)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -35,7 +50,15 @@ fn fake_gateway() -> std::io::Result<(u16, Seen)> {
         for stream in listener.incoming().flatten() {
             let mut reader = BufReader::new(stream);
             let request = read_request(&mut reader);
-            let answer = reply("200 OK", "text/event-stream", ANSWER);
+            let line = request.lines().next().unwrap_or_default();
+            let body = if line.contains("/messages ") {
+                MESSAGES
+            } else if line.contains("/responses ") {
+                RESPONSES
+            } else {
+                ANSWER
+            };
+            let answer = reply("200 OK", "text/event-stream", body);
             let _ = reader.get_mut().write_all(answer.as_bytes());
             if let Ok(mut all) = kept.lock() {
                 all.push(request);
@@ -141,6 +164,43 @@ fn a_declared_provider_streams_through_its_own_base_url_and_key() -> TestResult 
     Ok(())
 }
 
+/// Dies with the request sent to `/chat/completions` whatever `api` says, or a bearer-only Messages
+/// gateway answering 401 because the key went as `x-api-key`.
+#[test]
+fn a_declared_api_picks_the_wire_and_its_key_is_the_bearer() -> TestResult {
+    for (api, base, path) in [
+        ("anthropic-messages", "", "POST /v1/messages "),
+        ("openai-responses", "/v1", "POST /v1/responses "),
+    ] {
+        let (port, seen) = fake_gateway()?;
+        let providers = json!({"localgw": {
+            "baseUrl": format!("http://127.0.0.1:{port}{base}"), "api": api,
+            "apiKey": "sk-placeholder", "models": [{"id": "m1"}]}});
+        let home = Home::new(&format!("api-{api}"), &providers)?;
+        let ask = home.yi(&["ask", "--here", "--model", "localgw/m1", "ping"], &[])?;
+        assert_eq!(ask.status.code(), Some(0), "{api}: {}", text(&ask));
+        let stdout = String::from_utf8_lossy(&ask.stdout);
+        assert!(stdout.contains("pong"), "{api}: {}", text(&ask));
+        let requests = seen.lock().map_err(|_| "fake lock")?.clone();
+        let first = requests.first().ok_or("the server saw no request")?;
+        assert!(first.starts_with(path), "{api}: {first}");
+        let header = |name: &str| {
+            first
+                .lines()
+                .any(|line| line.to_ascii_lowercase().starts_with(name))
+        };
+        assert!(
+            first
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Bearer sk-placeholder")),
+            "{api}: {first}"
+        );
+        assert!(!header("x-api-key:"), "{api}: {first}");
+        assert_eq!(header("anthropic-version:"), api == "anthropic-messages");
+    }
+    Ok(())
+}
+
 /// A literal `apiKey` is the bearer when no variable names one.
 #[test]
 fn a_literal_api_key_is_the_bearer() -> TestResult {
@@ -163,6 +223,7 @@ fn a_literal_api_key_is_the_bearer() -> TestResult {
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().unwrap_or_default();
     assert!(detail.starts_with("localgw 1 model(s)"), "{row}");
+    assert!(detail.contains(" over openai-completions, "), "{row}");
     assert!(detail.ends_with("key from apiKey"), "{row}");
     Ok(())
 }

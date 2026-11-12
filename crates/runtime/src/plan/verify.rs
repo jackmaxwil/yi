@@ -120,6 +120,7 @@ pub struct Verifier {
     /// The session's own clock (D177): a verification never outlives the run it belongs to.
     deadline: Option<Instant>,
     checker: crate::goal::Checker,
+    refusal_cap: u32,
 }
 
 fn deadline_after(from: Instant, millis: u64) -> Instant {
@@ -169,7 +170,19 @@ impl Verifier {
             timeout_ms,
             deadline: None,
             checker: crate::goal::Checker::default(),
+            refusal_cap: crate::levers::get().plan_done_refusal_cap,
         }
+    }
+
+    pub fn with_refusal_cap(self, refusal_cap: u32) -> Self {
+        Self {
+            refusal_cap,
+            ..self
+        }
+    }
+
+    pub fn refusal_cap(&self) -> u32 {
+        self.refusal_cap
     }
 
     pub fn with_deadline(self, at: Instant) -> Self {

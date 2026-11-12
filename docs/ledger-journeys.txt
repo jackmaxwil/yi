@@ -195,6 +195,7 @@ plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_jud
 plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_pending_covered_contract_from_an_old_journal_still_starts` (T1)
 plan: git-tracked document + step table + dispatch | `plan_ops::contracts::a_covered_write_gets_no_preview_line` (T1)
 plan: git-tracked document + step table + dispatch | `plan_walkthrough::every_fixture_replays_identically_through_plan_op` (T1)
+plan: git-tracked document + step table + dispatch | `plan_e2e::a_plan_op_caller_climbs_the_red_ladder_through_a_split` (T1)
 plan: git-tracked document + step table + dispatch | `journeys::a_hand_written_plan_lints_resolves_and_answers_why` (T2)
 intent record + two-way traceability | `plan_trace::a_plan_that_misses_a_message_and_invents_a_todo_is_flagged_both_ways` (T1)
 intent record + two-way traceability | `compaction_faux::a_summarys_user_addresses_resolve_to_the_users_own_words` (T1)
@@ -663,11 +664,11 @@ permission modes/rules/holds, deterministic auto | `cli_surfaces::a_headless_den
 skill classifier | `session_faux::three_approval_failures_deliver_one_breaker_notice`
 kernel + ipython + rlm() subagents | `kernel_bootstrap::tests::the_note_points_at_help_on_one_name`
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::every_skill_file_the_binary_ships_is_under_a_skill_root`
-custom OpenAI-compatible providers | `custom_providers::a_declared_provider_streams_through_its_own_base_url_and_key` (T2)
-custom OpenAI-compatible providers | `custom_providers::a_declared_provider_with_no_key_is_refused_before_any_request` (T2)
-custom OpenAI-compatible providers | `custom_providers::a_custom_provider_named_like_a_built_in_one_is_refused_at_load` (T2)
-custom OpenAI-compatible providers | `custom_providers::a_catalog_cache_leaves_the_declared_models_in_place` (T2)
-custom OpenAI-compatible providers | `custom_providers::a_literal_api_key_is_the_bearer` (T2)
+custom providers | `custom_providers::a_declared_provider_streams_through_its_own_base_url_and_key` (T2)
+custom providers | `custom_providers::a_declared_provider_with_no_key_is_refused_before_any_request` (T2)
+custom providers | `custom_providers::a_custom_provider_named_like_a_built_in_one_is_refused_at_load` (T2)
+custom providers | `custom_providers::a_catalog_cache_leaves_the_declared_models_in_place` (T2)
+custom providers | `custom_providers::a_literal_api_key_is_the_bearer` (T2)
 cache marks and TTL from the session ledger | `cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes` (T0)
 cache marks and TTL from the session ledger | `cache_miss::an_upstream_pin_needs_two_switch_misses_inside_half_an_hour` (T0)
 cache marks and TTL from the session ledger | `cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour` (T0)
@@ -757,3 +758,6 @@ terminal tab title | `title::tests::the_title_body_loses_bidi_overrides_and_the_
 terminal tab title | `title::tests::the_card_filter_reads_either_attribute_order_and_upcases_the_code` (T0)
 terminal tab title | `title::tests::only_an_emoji_icon_makes_a_card_and_no_invisible_character_rides_along` (T0)
 terminal tab title | `motion::tests::tab_title_keeps_the_marker_when_the_label_is_empty` (T0)
+tool results left without their call | `build_params_conformance::a_result_whose_reply_failed_reaches_every_wire_as_a_notice` (T0)
+custom providers | `custom_providers::a_declared_api_picks_the_wire_and_its_key_is_the_bearer` (T2)
+TUI | `tui_drive::queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highlighted_command` (T2)

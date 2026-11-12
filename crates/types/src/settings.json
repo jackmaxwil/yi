@@ -60,5 +60,5 @@
 {"id": "tui.follow", "label": "Text follow", "tab": "Interface", "help": "slide one row, jump half a page, or hold still as text arrives; unset uses Reduce Motion, then page", "kind": {"type": "choice", "options": ["slide", "page", "still"]}, "applies": "live", "default": "page"},
 {"id": "keys", "label": "Solo keymap", "tab": "Interface", "help": "the solo TUI's key bindings; edit in config.json", "kind": {"type": "json"}, "applies": "soloTui"},
 {"id": "open", "label": "Open in apps", "tab": "Interface", "help": "a name and a command per app, `{path}` standing for the message saved as markdown; edit in config.json", "kind": {"type": "json"}, "applies": "consoleRestart"},
-{"id": "providers", "label": "Custom providers", "tab": "Models", "help": "OpenAI-compatible endpoints, each addressed provider/id, read once per process; edit in config.json", "kind": {"type": "json"}, "applies": "daemonRestart"}
+{"id": "providers", "label": "Custom providers", "tab": "Models", "help": "endpoints you declare, each speaking one API, addressed provider/id, read once per process; edit in config.json", "kind": {"type": "json"}, "applies": "daemonRestart"}
 ]

@@ -107,7 +107,13 @@ pub(crate) fn render_navigator(
                     .sessions
                     .get(id)
                     .map_or_else(|| id.0.clone(), |row| row.seed().to_owned());
-                let hue = app.accent_of(&id.0, &seed);
+                let hue = app.accent_of(
+                    &id.0,
+                    app.state
+                        .sessions
+                        .get(id)
+                        .map_or(&id.0, crate::avatar::hue_seed),
+                );
                 (
                     "sessions",
                     vec![

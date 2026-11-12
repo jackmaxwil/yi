@@ -469,7 +469,10 @@ fn pair_in(direction: Direction) -> Result<(App, PaneId, PaneId), Box<dyn Error>
     let mut app = App::new("/repo".to_owned(), theme());
     app.state.link = Link::Connected;
     app.state.upsert_row(row_of("s-alpha", "alpha"));
-    app.state.upsert_row(row_of("s-beta", "beta"));
+    app.state.upsert_row(SessionRow {
+        root: "/other".to_owned(),
+        ..row_of("s-beta", "beta")
+    });
     let left = app.state.focused_pane_id().ok_or("no home pane")?;
     let right = app.state.split_focused(direction).ok_or("no split")?;
     for (pane, id) in [(left, "s-alpha"), (right, "s-beta")] {

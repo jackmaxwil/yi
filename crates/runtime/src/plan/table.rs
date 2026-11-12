@@ -436,7 +436,7 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    const OPS: [OpKind; 23] = ALL_OPS;
+    const OPS: [OpKind; 24] = ALL_OPS;
 
     fn named_states() -> Result<Vec<(TodoStateName, TodoState)>, Box<dyn std::error::Error>> {
         Ok(vec![
@@ -568,6 +568,7 @@ mod tests {
                             | OpKind::Submit
                             | OpKind::Resolve
                             | OpKind::Accept
+                            | OpKind::Split
                             | OpKind::Program => None,
                         };
                         assert_eq!(step(&state, op), expected, "{name} x {op:?}");

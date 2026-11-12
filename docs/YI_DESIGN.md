@@ -12,7 +12,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Language | Rust workspace of 17 crates (§2); every dependency declared once in `[workspace.dependencies]` (§18) | D31 |
 | Session file | Pi's v4 session JSONL format: a header, then one `Mutation` per line; any other version is rejected (§4.1) | D32 |
 | Pi RPC | `yi rpc` serves Pi's RPC JSONL command names plus Yi's own (§17.1) | |
-| Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog, plus OpenAI-compatible providers `config.json` declares (§5) | |
+| Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog, plus providers `config.json` declares on any of the first three (§5) | |
 | Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor` | D191 |
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
@@ -270,16 +270,22 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - Web search is a separate non-streaming completion: `models.webSearch`, else the built-in
   `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
   default. This default does not select a primary model.
-- Custom providers: `providers.<id>{baseUrl,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
+- Custom providers: `providers.<id>{baseUrl,api,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
   contextWindow,maxTokens,cost}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
-  OpenAI chat completions; an id a built-in provider, `laya` or `faux` holds refuses at load. They
+  `api`: `openai-completions` (unset), `openai-responses` or `anthropic-messages`, any other value
+  refused at load; an id a built-in provider, `laya` or `faux` holds refuses at load. They
   merge after the cache, so no refresh rewrites or drops them, and no refresh ever fetches one.
-  Requests go through the OpenAI completions adapter at `baseUrl` with plain `max_tokens`
-  (`compat.plainMaxTokens`) and none of OpenAI's own fields. Key: `apiKeyEnv`'s variable, else
-  `apiKey` (a literal placeholder that is not a secret), else a token in the yi-oauth store under
+  Requests go through that api's adapter at `baseUrl`, which each appends its own path to:
+  `/chat/completions` and `/responses` (so a base ends in `/v1`), `/v1/messages` (so it does not);
+  completions with plain `max_tokens` (`compat.plainMaxTokens`) and none of OpenAI's own fields,
+  Messages with the key as a bearer token (`compat.bearerAuth`) instead of `x-api-key`, as the
+  OpenAI wires send it. Key:
+  `apiKeyEnv`'s variable, else `apiKey` (a literal placeholder that is not a secret), else a token
+  in the yi-oauth store under
   `~/.yi/providers/tokens`; none is a missing-credential refusal naming the variable. A
   real key belongs in the variable, never in `config.json`. The block is read once per process: an
-  edit takes hold on restart. `yi doctor` has a `providers` row naming each and where its key resolved.
+  edit takes hold on restart. `yi doctor` has a `providers` row naming each, its api and where
+  its key resolved.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
@@ -991,9 +997,14 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - `TodoState { Pending, Running{by}, Blocked{on, note}, Done{output, resolution},
   Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Channel{address, filter?}, Other }`,
   `PlanState { Active, Done, Superseded{by}, Abandoned, Other }`.
-- `OpKind`, 23 kinds; the `plan` tool schema shows the first 16 (`MODEL_OPS`): `set, init, append,
+- `OpKind`, 24 kinds; the `plan` tool schema shows three (`SHOWN_OPS`: `set, view,
+  accepted_by_user`), a call's key may name the first 16 (`MODEL_OPS`): `set, init, append,
   drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view,
-  accepted_by_user`.
+  accepted_by_user`, and every kind parses as `{"op": …}`. `split` adds one to four children
+  (`<label>-split-<n>`, its parent in `extra.split_parent`, after the parent's prerequisites and before the
+  parent) and moves no state; a parent splits once, a child never (its structural rung offers
+  the targeted `append` alone), and the completion validator holds the parent, on `done`,
+  `accepted_by_user`, `set` and `reconcile` alike, until each child is done or dropped.
 - `Actor { Owner, Child, User, Host, Engine }`. User may apply every op; Owner every op but
   `fuse_reset`, `resolve`, `accepted_by_user` and a resolving `repair`; Host `unblock, reconcile`;
   Child `view, submit`; Engine `start, submit, done, fail, retry`.
@@ -1022,15 +1033,23 @@ field still decodes so an old contract keeps its frozen digest.
   `verification_requested`, releases the lease, runs the verifier (own deadline, emptied env, a
   copy of the tree), re-acquires, compares the whole token, and commits the verdict with
   `Done{VerifiedDone}`, `done_refused`, or `verification_stale` for a moved token.
-- `Outcome { Pass, Fail, Abstain, Escalate }`. Staleness and abstention charge nothing; the
-  `plan.done_refusal_cap`-th refusal (default 3) derives `block{on: User}`.
+- `Outcome { Pass, Fail, Abstain, Escalate }`. Staleness and abstention charge nothing. The
+  refused verdicts on the attempt pick a rung of the red ladder (`plan/ladder.rs::LADDER`) under
+  `plan.done_refusal_cap` (default 3): below cap − 1 a `done` runs its check; at cap − 1 it is
+  refused before the check until a `split` of the todo or an `append` whose `for_task` names it;
+  the cap-th derives `block{on: User}` with a stock three-option ask, and only an `unblock`
+  carrying the user's reply to an ask readmits. A readmission buys one claim, spent by the next
+  `verification_requested`; a `split` or targeted `append` that would buy none is refused. A
+  `retry` opens a fresh count unless the attempt it ends reached the cap, whose count carries
+  over. A split child without a contract completes on the caller's word, so a split buys its
+  parent one cheap claim, once.
 - `start` refuses a `judge` item and names the deciders that run (`cmd`, `schema`, `example`);
   the variant decodes so old journals replay, and a started one abstains `no judge`.
 - A legacy contract's retired `covers` globs are inert; its cmd items run at done.
 - `Resolution { VerifiedDone, AcceptedByUser, LegacyUnverified }`. A todo with a contract or a
   stated acceptance completes only beside one, on every path (`set`, `import`, `repair`,
   `supersede` share the validator); any other on the caller's word.
-- Owner: [`plan/done.rs`](../crates/runtime/src/plan/done.rs). Settled by: D194, D216.
+- Owner: [`plan/done.rs`](../crates/runtime/src/plan/done.rs), [`plan/ladder.rs`](../crates/runtime/src/plan/ladder.rs). Settled by: D194, D216.
 
 ### 13.2 Worktree acceptance
 A worktree todo needs a contract; it is Done only via acceptance or as `AcceptedByUser`.
@@ -1222,7 +1241,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace,follow}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode,allowWrite,allow}`,
-  `mail{hopLimit}`, `open[{name,command}]`, `providers{<id>:{baseUrl,apiKeyEnv,apiKey,models}}`.
+  `mail{hopLimit}`, `open[{name,command}]`, `providers{<id>:{baseUrl,api,apiKeyEnv,apiKey,models}}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
@@ -1359,8 +1378,9 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   a row (name; what it needs or is doing, its list, its age). A click on a header folds the group
   for this console only; a folded header still shows a session that needs you. A done session
   stays loud until focused; a poll never clears it. The rail keeps the same order, pinned first,
-  a blank row between workspaces and no headers. A working or blocked session's avatar plays its
-  state loop at 15 fps in place of its identicon.
+  a blank row between workspaces and no headers. Sessions started in one directory share an
+  accent and each keeps its own identicon, seeded by its id; a child wears its parent's accent.
+  A working or blocked session's avatar plays its state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`). The reply is
   omp's card: the model picks an emoji and a 1-6 character code for that session, then a
   three-to-six word title, stored as `🧪 FLAKY: Fix flaky park tests`. The first prompt stays

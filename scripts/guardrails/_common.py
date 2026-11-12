@@ -5,6 +5,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 # because check_pr_metadata prices the same band on a PR's own diff, and two
 # copies of a budget is two budgets.
 FREE_BAND = 150
+def is_public_mirror(root=ROOT):
+    return not (root / "scripts/mirror").is_dir()
+# Incident: a skip keyed on a missing directory alone passes a source checkout that lost it, so no
+# CI job (the forge's included) may skip; only a contributor's local run does.
+def may_skip(root=ROOT):
+    return is_public_mirror(root) and not os.environ.get("CI")
 BLOB_CAP, BLOB_ALLOW = 512_000, "scripts/guardrails/baselines/blob_allowlist.txt"
 BASE = ROOT / "scripts/guardrails/baselines"
 # Cargo builds under CARGO_TARGET_DIR when it is set; a fixed target/ path measured a stale binary.
