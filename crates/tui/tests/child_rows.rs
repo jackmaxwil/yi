@@ -31,6 +31,7 @@ fn app() -> App {
             initial_prompt: None,
             pace: 0,
             follow: yi_types::config::FollowMode::default(),
+            assist: None,
         },
         Theme::new(ColorTier::TrueColor, true),
         default_keymap(),

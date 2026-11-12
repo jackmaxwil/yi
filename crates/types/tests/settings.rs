@@ -105,7 +105,16 @@ fn leaves() -> Vec<String> {
             }),
         ),
         ("browser", fields!(BrowserConfig { path })),
-        ("tui", fields!(TuiConfig { pace, follow })),
+        (
+            "tui",
+            fields!(TuiConfig {
+                pace,
+                follow,
+                typos,
+                complete,
+                autocorrect
+            }),
+        ),
         ("theme", fields!(ThemeConfig { dark, light })),
         (
             "lanes",

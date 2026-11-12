@@ -228,7 +228,7 @@ pub(crate) struct Picker {
     warned: bool,
 }
 
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 

@@ -515,22 +515,32 @@ fn a_wide_card_keeps_a_long_preview_inside_its_side_pane() -> TestResult {
     Ok(())
 }
 
+/// Dies with the questions held behind a completion list that only some keys close: the
+/// model waits on a card the person never sees. The card takes the place of the list at once.
+#[test]
+fn a_list_open_at_the_turns_end_gives_way_to_the_card_and_keeps_the_draft() -> TestResult {
+    for draft in ["/", "@", "/pl"] {
+        let mut app = app();
+        press(&mut app, &keys(draft));
+        asked(&mut app, &[layout()]);
+        let rows = common::live_rows(&mut app)?;
+        assert!(
+            row_with(&rows, "Tree with a progress bar").is_some(),
+            "{draft}: {rows:#?}"
+        );
+        assert_eq!(app.composer_text(), draft);
+    }
+    Ok(())
+}
+
 /// Dies with the questions dropped when a popup was up at the turn's end: the model waits on
 /// an answer the person was never shown. The card opens once the popup closes.
 #[test]
 fn a_popup_up_at_the_turns_end_holds_the_card_until_it_closes() -> TestResult {
     let mut app = app();
-    app.reduce_agent(AgentEvent::AgentStart);
-    press(&mut app, &keys("/"));
-    app.reduce_agent(AgentEvent::ToolExecutionStart {
-        tool_call_id: "ask-0".to_owned(),
-        tool_name: "ask_user".to_owned(),
-        args: layout(),
-    });
-    app.reduce_agent(AgentEvent::AgentEnd {
-        messages: Vec::new(),
-        reason: None,
-    });
+    press(&mut app, &keys("/theme"));
+    press(&mut app, &[KeyCode::Enter]);
+    asked(&mut app, &[layout()]);
     let rows = common::live_rows(&mut app)?;
     assert!(row_with(&rows, "Recommended").is_none(), "{rows:#?}");
     press(&mut app, &[KeyCode::Esc]);

@@ -20,7 +20,6 @@ use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
 use crate::motion::elapsed_ms;
 use crate::orb;
-use crate::popup::ListPopup;
 use crate::port::SessionPort;
 use crate::term;
 use crate::transcript::{arg_summary, result_preview, text_of, user_text};
@@ -53,8 +52,6 @@ pub enum Command {
 pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
     Question(crate::question::QuestionView),
-    Command(ListPopup),
-    File(ListPopup),
     Agents(crate::agents::AgentsPopup),
     Model(Box<crate::model::ModelPopup>),
     Theme(Box<crate::theme_file::Picker>),
@@ -342,6 +339,7 @@ impl App {
             follow,
             pane_rows: PaneRows::default(),
         };
+        app.set_assist(crate::assist::Assist::native(app.options.assist.clone()));
         app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
         app
@@ -450,7 +448,7 @@ impl App {
     }
 
     pub fn bottom_open(&self) -> bool {
-        self.bottom.is_some()
+        self.bottom.is_some() || self.composer.assist_open()
     }
 
     pub fn set_session_name(&mut self, name: String) {
@@ -905,7 +903,8 @@ pub fn run_tui(
     }));
     let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let height = MIN_VIEWPORT_ROWS.min(rows.saturating_sub(1)).max(1);
-    let mut terminal = match term::build_terminal(writer, height) {
+    let theme = crate::theme_file::startup(theme);
+    let mut terminal = match term::build_terminal(writer, height, theme.tier) {
         Ok(terminal) => terminal,
         Err(error) => {
             eprintln!("error: failed to build terminal: {error}");
@@ -923,7 +922,6 @@ pub fn run_tui(
         eprintln!("warning: keys config: {error}");
     }
 
-    let theme = crate::theme_file::startup(theme);
     let mut app = App::new(options, theme, keymap, usize::from(cols));
     app.set_rows(usize::from(rows));
     app.kitty = yi_orb::kitty::supported();
@@ -941,7 +939,7 @@ pub fn run_tui(
         let timeout = app
             .scheduler
             .poll_timeout(Instant::now())
-            .min(app.reveal_wake())
+            .min(app.reveal_wake().min(app.assist_wake()))
             .min(app.todo_clock.wake(Instant::now()))
             .min(
                 control

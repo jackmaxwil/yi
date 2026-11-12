@@ -221,9 +221,33 @@ fn text_of(message: &AgentMessage) -> Option<(&'static str, String)> {
 }
 
 pub fn units_of(file: &Path) -> Vec<Unit> {
-    let Ok(text) = fs::read_to_string(file) else {
-        return Vec::new();
-    };
+    fs::read_to_string(file).map_or_else(|_| Vec::new(), |text| units_in(&text))
+}
+
+/// What the user typed in the newest `files` sessions under `sessions_dir`, reading at most
+/// `bytes` of each; a line the cut ends is dropped, as an unparsable one is.
+pub fn recent_user_texts(sessions_dir: &Path, files: usize, bytes: u64) -> Vec<String> {
+    use std::io::Read;
+    let mut all: Vec<PathBuf> = (session_dirs(sessions_dir).iter())
+        .flat_map(|dir| jsonl_files(dir))
+        .collect();
+    all.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    let mut texts = Vec::new();
+    for file in all.into_iter().take(files) {
+        let mut head = Vec::new();
+        let read = fs::File::open(&file).and_then(|f| f.take(bytes).read_to_end(&mut head));
+        if read.is_ok() {
+            let head = String::from_utf8_lossy(&head);
+            let units = units_in(&head)
+                .into_iter()
+                .filter(|unit| unit.kind == "user");
+            texts.extend(units.map(|unit| unit.text));
+        }
+    }
+    texts
+}
+
+fn units_in(text: &str) -> Vec<Unit> {
     let mut lines = text.lines();
     let Some(header) = lines
         .next()

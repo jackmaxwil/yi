@@ -16,6 +16,8 @@ use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Size};
 use unicode_width::UnicodeWidthStr;
 
+use crate::term::Squiggle;
+
 /// Crossterm strips colour when its writer is not a terminal, which would
 /// leave every recording monochrome.
 fn force_color() {
@@ -129,18 +131,24 @@ impl Write for CastWriter {
 /// mirrored into a cast file.
 pub struct RecordingBackend {
     inner: TestBackend,
-    cast: Option<CrosstermBackend<CastWriter>>,
+    cast: Option<CrosstermBackend<Squiggle<CastWriter>>>,
     cursor_hidden: bool,
     first_control: Option<(u16, u16, String)>,
 }
 
 impl RecordingBackend {
-    pub fn new(width: u16, height: u16, record: Option<&Path>) -> io::Result<Self> {
+    pub fn new(
+        width: u16,
+        height: u16,
+        record: Option<&Path>,
+        tier: crate::colors::ColorTier,
+    ) -> io::Result<Self> {
         force_color();
         let cast = match record {
-            Some(path) => Some(CrosstermBackend::new(CastWriter::create(
-                path, width, height,
-            )?)),
+            Some(path) => Some(CrosstermBackend::new(Squiggle::new(
+                CastWriter::create(path, width, height)?,
+                tier,
+            ))),
             None => None,
         };
         Ok(Self {

@@ -77,6 +77,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         initial_prompt,
         pace: reveal_pace(args),
         follow: configured_follow(),
+        assist: native_assist(args),
     };
     let control = match control(args) {
         Ok(control) => control,
@@ -441,6 +442,12 @@ fn chrome_pin() -> Option<yi_console::browser::Pinned> {
     })
 }
 
+#[cfg(feature = "tui")]
+fn native_assist(args: &Args) -> Option<(yi_tui::assist::AssistSettings, std::path::PathBuf)> {
+    let settings = yi_tui::assist::AssistSettings::from_tui(config().tui.as_ref());
+    (!args.headless).then(|| (settings, default_session_dir(args)))
+}
+
 /// `yi console` — the workspace shell, an ACP client over the serve daemon.
 #[cfg(feature = "tui")]
 pub fn run_console_command(args: &Args) -> i32 {
@@ -484,6 +491,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         project_order: console.project_order.unwrap_or_default(),
         pace: reveal_pace(args),
         follow: configured_follow(),
+        assist: native_assist(args),
         browser: config()
             .browser
             .as_ref()

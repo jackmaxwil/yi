@@ -27,6 +27,18 @@ pub struct Composer {
     search: Option<HistorySearch>,
     wrap_width: usize,
     top: usize,
+    assist: crate::assist::Assist,
+    recalled: bool,
+    group: Option<Group>,
+}
+
+/// A replacement's textarea steps, whether undo or redo takes them next, the lines they left
+/// and the cursor to put back: one step while the box still holds those lines.
+struct Group {
+    steps: usize,
+    undo: bool,
+    lines: Vec<String>,
+    cursor: (usize, usize),
 }
 
 impl Default for Composer {
@@ -43,6 +55,9 @@ impl Default for Composer {
             search: None,
             wrap_width: 80,
             top: 0,
+            assist: crate::assist::Assist::default(),
+            recalled: false,
+            group: None,
         }
     }
 }
@@ -71,6 +86,7 @@ impl Composer {
             .set_cursor_line_style(ratatui::style::Style::default());
         self.textarea.move_cursor(tui_textarea::CursorMove::Bottom);
         self.textarea.move_cursor(tui_textarea::CursorMove::End);
+        self.recalled = true;
     }
 
     /// Re-styled per draw so theme and running state stay current; a reverse-i-search title
@@ -85,6 +101,8 @@ impl Composer {
         use ratatui::widgets::{Block, BorderType, Borders};
         self.textarea.set_placeholder_style(placeholder);
         self.textarea.set_cursor_style(cursor);
+        self.assist
+            .set_styles(self.assist.typo_style(), placeholder);
         let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -93,6 +111,149 @@ impl Composer {
             block = block.title(title);
         }
         self.textarea.set_block(block);
+    }
+
+    pub fn set_typo_style(&mut self, style: ratatui::style::Style) {
+        self.assist.set_styles(style, self.assist.dim_style());
+    }
+
+    pub fn set_assist(&mut self, assist: crate::assist::Assist) {
+        self.assist = assist;
+    }
+
+    pub fn sync_assist(&mut self, cwd: &str) {
+        let (row, col) = self.textarea.cursor();
+        let text = self.text();
+        let typed = !std::mem::take(&mut self.recalled);
+        let at = crate::assist::At {
+            text: &text,
+            row,
+            col,
+            cwd,
+            typed,
+        };
+        self.assist.sync(&at);
+    }
+
+    pub(crate) fn assist_open(&self) -> bool {
+        self.assist.open()
+    }
+
+    pub(crate) fn assist_lines(&self, width: usize) -> Option<Vec<ratatui::text::Line<'static>>> {
+        self.assist.lines(width)
+    }
+
+    pub(crate) fn assist_selected_line(&self) -> usize {
+        self.assist.selected_line()
+    }
+
+    pub(crate) fn dismiss_assist(&mut self) -> bool {
+        self.assist.dismiss()
+    }
+
+    pub(crate) fn move_assist(&mut self, down: bool) -> bool {
+        self.assist.move_sel(down)
+    }
+
+    pub(crate) fn enter_assist(&mut self) -> Option<bool> {
+        let (row, _) = self.textarea.cursor();
+        let line = self.line_at(row);
+        let (act, submit) = self.assist.enter(&line);
+        self.apply(act, row).then_some(submit)
+    }
+
+    pub(crate) fn autocorrect_after_space(&mut self) {
+        let (row, col) = self.textarea.cursor();
+        let word_end = col.saturating_sub(1);
+        if let Some((start, end, fixed)) = self.assist.correction(&self.line_at(row), word_end) {
+            self.splice(row, start, end, &fixed);
+        }
+    }
+
+    pub(crate) fn close_shortcode(&mut self) {
+        let (row, col) = self.textarea.cursor();
+        if let Some((start, end, emoji)) = crate::assist::shortcode_before(&self.text(), row, col) {
+            self.splice(row, start, end, emoji);
+        }
+    }
+
+    fn apply(&mut self, act: crate::assist::Act, row: usize) -> bool {
+        match act {
+            crate::assist::Act::Nope => false,
+            crate::assist::Act::Shown => true,
+            crate::assist::Act::Insert(text) => self.textarea.insert_str(text),
+            crate::assist::Act::Splice { start, end, text } => {
+                self.splice(row, start, end, &text);
+                true
+            }
+        }
+    }
+
+    fn line_at(&self, row: usize) -> String {
+        self.textarea.lines().get(row).cloned().unwrap_or_default()
+    }
+
+    /// Invariant: the textarea takes a replacement as a delete and an insert; [`Composer::group`]
+    /// makes them one undo step that puts back the typed text and the cursor.
+    fn splice(&mut self, row: usize, start: usize, end: usize, text: &str) {
+        let before = self.textarea.cursor();
+        let inserted = start.saturating_add(text.chars().count());
+        let after = match before.1 {
+            col if col >= end => inserted.saturating_add(col.saturating_sub(end)),
+            col if col >= start => inserted,
+            col => col,
+        };
+        let (Ok(at), Ok(col), Ok(back)) = (
+            u16::try_from(row),
+            u16::try_from(start),
+            u16::try_from(after),
+        ) else {
+            return;
+        };
+        self.textarea.move_cursor(CursorMove::Jump(at, col));
+        let steps = usize::from(self.textarea.delete_str(end.saturating_sub(start)))
+            + usize::from(self.textarea.insert_str(text));
+        self.textarea.move_cursor(CursorMove::Jump(at, back));
+        self.group = Some(Group {
+            steps,
+            undo: true,
+            lines: self.textarea.lines().to_vec(),
+            cursor: before,
+        });
+    }
+
+    /// One undo or redo over a whole replacement, or `false` when the last edit was not one.
+    fn step_group(&mut self, undo: bool) -> bool {
+        let Some(Group {
+            steps,
+            undo: next,
+            lines,
+            cursor,
+        }) = self.group.take()
+        else {
+            return false;
+        };
+        if next != undo || lines != self.textarea.lines() {
+            return false;
+        }
+        let back = self.textarea.cursor();
+        for _ in 0..steps {
+            if undo {
+                self.textarea.undo();
+            } else {
+                self.textarea.redo();
+            }
+        }
+        if let (Ok(row), Ok(col)) = (u16::try_from(cursor.0), u16::try_from(cursor.1)) {
+            self.textarea.move_cursor(CursorMove::Jump(row, col));
+        }
+        self.group = Some(Group {
+            steps,
+            undo: !undo,
+            lines: self.textarea.lines().to_vec(),
+            cursor: back,
+        });
+        true
     }
 
     pub fn search_active(&self) -> bool {
@@ -246,6 +407,11 @@ impl Composer {
 
     pub fn input(&mut self, event: KeyEvent) {
         self.history_index = None;
+        match history_key(&event) {
+            Some(undo) if self.step_group(undo) => return,
+            Some(_) => {}
+            None => self.group = None,
+        }
         let up = match event.code {
             KeyCode::Up => true,
             KeyCode::Down => false,
@@ -313,6 +479,7 @@ impl Composer {
     }
 
     pub fn handle_paste(&mut self, raw: &str) {
+        self.recalled = true;
         let text = normalize_newlines(raw);
         let lines = text.split('\n').count();
         if lines > MARKER_LINES || text.chars().count() > MARKER_CHARS {
@@ -369,6 +536,7 @@ impl Composer {
     /// Backspace deletes a whole paste marker when the cursor sits at its
     /// end (the atom rule: a marker never decays into stray text).
     pub fn backspace(&mut self) {
+        self.group = None;
         let (row, col) = self.textarea.cursor();
         let line = self.textarea.lines().get(row).cloned().unwrap_or_default();
         let prefix: String = line.chars().take(col).collect();
@@ -484,6 +652,11 @@ impl Composer {
                 if selection.is_some_and(|(from, to)| from <= (line, col) && (line, col) < to) {
                     cell_style = cell_style.add_modifier(Modifier::REVERSED);
                 }
+                if self.assist.typo_at(line, col)
+                    && !(index == cursor && crate::assist::in_typing_word(text, cursor_col, col))
+                {
+                    cell_style = cell_style.patch(self.assist.typo_style());
+                }
                 if index == cursor && col == cursor_col {
                     cell_style = cell_style.patch(cursor_style);
                 }
@@ -509,6 +682,17 @@ impl Composer {
                 && let Some(cell) = buffer.cell_mut((x, y))
             {
                 cell.set_symbol(" ").set_style(style.patch(cursor_style));
+            }
+            if index == cursor && cursor_col == end && !self.assist.ghost().is_empty() {
+                let ghost_at = x.saturating_add(1);
+                let room = usize::from(inner.right().saturating_sub(ghost_at));
+                buffer.set_stringn(
+                    ghost_at,
+                    y,
+                    self.assist.ghost(),
+                    room,
+                    self.assist.dim_style(),
+                );
             }
         }
     }
@@ -569,13 +753,26 @@ fn width_of(text: Option<&String>, from: usize, to: usize) -> usize {
     })
 }
 
+/// `Some(true)` for an undo chord, `Some(false)` for a redo one.
+fn history_key(key: &KeyEvent) -> Option<bool> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let cmd = key.modifiers.contains(KeyModifiers::SUPER);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Char('Z') if ctrl => Some(false),
+        KeyCode::Char('U') if cmd => Some(false),
+        KeyCode::Char('z') if ctrl => Some(!shift),
+        KeyCode::Char('u') if cmd => Some(!shift),
+        _ => None,
+    }
+}
+
 /// Incident: Ghostty sends Cmd+Delete as ctrl+u, which the textarea took for undo. Shell and
 /// macOS editing keys are bound here before the textarea's own emacs table; true when handled.
 pub fn edit_key(textarea: &mut TextArea<'_>, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let cmd = key.modifiers.contains(KeyModifiers::SUPER);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let jump = |textarea: &mut TextArea<'_>, to| {
         textarea.move_cursor(to);
         true
@@ -585,14 +782,8 @@ pub fn edit_key(textarea: &mut TextArea<'_>, key: KeyEvent) -> bool {
         KeyCode::Backspace if cmd => clear_line(textarea),
         KeyCode::Backspace if ctrl => textarea.delete_word(),
         KeyCode::Delete if ctrl => textarea.delete_next_word(),
-        KeyCode::Char('z' | 'Z') if ctrl && (shift || key.code == KeyCode::Char('Z')) => {
-            textarea.redo()
-        }
-        KeyCode::Char('u' | 'U') if cmd && (shift || key.code == KeyCode::Char('U')) => {
-            textarea.redo()
-        }
-        KeyCode::Char('z') if ctrl => textarea.undo(),
-        KeyCode::Char('u') if cmd => textarea.undo(),
+        _ if history_key(&key) == Some(false) => textarea.redo(),
+        _ if history_key(&key) == Some(true) => textarea.undo(),
         KeyCode::Char('j') if ctrl => {
             textarea.insert_newline();
             true
@@ -636,5 +827,67 @@ impl crate::app::App {
             self.composer.textarea.insert_newline();
         }
         self.composer.textarea.insert_str(quoted);
+    }
+
+    pub fn ghost_showing(&self) -> bool {
+        !self.composer.assist.ghost().is_empty()
+    }
+
+    pub fn set_assist(&mut self, assist: crate::assist::Assist) {
+        self.composer.set_assist(assist);
+    }
+
+    pub fn assist_wake(&self) -> std::time::Duration {
+        self.composer.assist.wake()
+    }
+
+    /// Answers that arrived since the last key: marks and the ghost redraw without one.
+    pub(crate) fn poll_assist(&mut self) {
+        if self.composer.assist.poll() {
+            self.composer.recalled = true;
+            self.sync_assist();
+            self.scheduler.request();
+        }
+    }
+
+    pub(crate) fn sync_assist(&mut self) {
+        let cwd = self.options.cwd.clone();
+        self.composer.sync_assist(&cwd);
+        if self.composer.assist.lost() {
+            let deadline = yi_runtime::spell::DEADLINE.as_secs();
+            self.commit_cell(&crate::cell::Cell::Notice {
+                text: format!(
+                    "spelling marks off for this session: the spell checker failed or took over {deadline} s"
+                ),
+            });
+        }
+    }
+
+    /// Tab takes a drawn suggestion; ctrl+. lists guesses for the word before the cursor.
+    pub(crate) fn assist_key(&mut self, key: &crate::keymap::SingleKey) -> bool {
+        use crate::keymap::KeyCodeValue;
+        let (row, col) = self.composer.textarea.cursor();
+        if key.ctrl && key.code == KeyCodeValue::Char('.') {
+            let line = self.composer.line_at(row);
+            self.composer.assist.toggle_guesses(&line, col);
+            return true;
+        }
+        let plain = !key.ctrl && !key.alt && !key.shift;
+        if plain && matches!(key.code, KeyCodeValue::Up | KeyCodeValue::Down) {
+            return self.composer.move_assist(key.code == KeyCodeValue::Down);
+        }
+        if key.code != KeyCodeValue::Tab || !plain {
+            return false;
+        }
+        let text = self.composer.text();
+        let at = crate::assist::At {
+            text: &text,
+            row,
+            col,
+            cwd: &self.options.cwd,
+            typed: true,
+        };
+        let act = self.composer.assist.tab(&at);
+        self.composer.apply(act, row)
     }
 }

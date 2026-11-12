@@ -149,15 +149,26 @@ fn ctrl_c_closes_an_open_popup_before_it_clears_the_draft() -> TestResult {
     type_text(&mut app, &tx, "/");
     assert!(app.bottom_open());
     ctrl_c(&mut app, &tx);
-    assert!(!app.bottom_open(), "the slash popup stays after ctrl-c");
-
-    type_text(&mut app, &tx, "mail bob@");
-    assert!(app.bottom_open());
-    ctrl_c(&mut app, &tx);
-    assert!(!app.bottom_open(), "the file popup stays after ctrl-c");
-    assert_eq!(app.composer_text(), "mail bob", "closing keeps the draft");
+    assert!(!app.bottom_open(), "the slash list stays after ctrl-c");
+    assert_eq!(app.composer_text(), "/");
     ctrl_c(&mut app, &tx);
     assert_eq!(app.composer_text(), "");
+
+    let dir = Scratch::new("yi-ctrl-c-files")?;
+    std::fs::write(dir.join("notes.md"), "")?;
+    let mut files = app_in(&dir.display().to_string());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut files, &tx, "mail bob@");
+    assert!(files.bottom_open());
+    ctrl_c(&mut files, &tx);
+    assert!(!files.bottom_open(), "the file list stays after ctrl-c");
+    assert_eq!(
+        files.composer_text(),
+        "mail bob@",
+        "closing keeps the draft"
+    );
+    ctrl_c(&mut files, &tx);
+    assert_eq!(files.composer_text(), "");
     assert!(sent(&mut rx).is_empty());
     Ok(())
 }
@@ -487,11 +498,12 @@ fn enter_in_the_command_list_runs_the_highlighted_match() -> TestResult {
     Ok(())
 }
 
-/// Dies with Esc leaving the `/` the list opened with in the box, so the next word was a command.
+/// Dies with Esc throwing the typed `/pl` away, or leaving the list up over it: every list sits
+/// over the user's own draft, so closing one keeps the draft and the next key edits it.
 #[test]
-fn escape_closes_the_command_list_and_empties_the_box() -> TestResult {
+fn escape_closes_the_command_list_and_keeps_the_draft() -> TestResult {
     let mut app = app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     type_text(&mut app, &tx, "/pl");
     assert_eq!(
         app.composer_text(),
@@ -501,10 +513,9 @@ fn escape_closes_the_command_list_and_empties_the_box() -> TestResult {
     assert!(app.bottom_open());
     press(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
     assert!(!app.bottom_open());
-    assert_eq!(app.composer_text(), "");
-    type_text(&mut app, &tx, "hello");
-    enter(&mut app, &tx);
-    assert_eq!(sent(&mut rx), ["prompt hello"]);
+    assert_eq!(app.composer_text(), "/pl");
+    type_text(&mut app, &tx, "x");
+    assert_eq!(app.composer_text(), "/plx");
     Ok(())
 }
 
@@ -598,9 +609,9 @@ fn a_modified_tab_in_the_command_list_does_not_fill() -> TestResult {
     Ok(())
 }
 
-/// Dies with the list's `/` text left in the box when an approval card replaces the list.
+/// Dies with the list reappearing over the draft once an approval card that replaced it closes.
 #[test]
-fn an_approval_replacing_the_command_list_leaves_no_stray_text() -> TestResult {
+fn an_approval_replacing_the_command_list_closes_it_and_keeps_the_draft() -> TestResult {
     let mut app = app();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     type_text(&mut app, &tx, "/mo");
@@ -613,7 +624,9 @@ fn an_approval_replacing_the_command_list_leaves_no_stray_text() -> TestResult {
         tool_call_id: None,
         reply,
     });
-    assert_eq!(app.composer_text(), "");
+    press(&mut app, &tx, KeyCode::Char('n'), KeyModifiers::NONE);
+    assert!(!app.bottom_open(), "the list is gone with the card");
+    assert_eq!(app.composer_text(), "/mo");
     Ok(())
 }
 

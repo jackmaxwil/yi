@@ -76,7 +76,7 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub type Backend = ControlPictures<CrosstermBackend<Box<dyn Write + Send>>>;
+pub type Backend = ControlPictures<CrosstermBackend<Squiggle<Box<dyn Write + Send>>>>;
 
 /// OSC 2 with every control character dropped. Incident: a session named from its first prompt
 /// held `BEL ESC]52;…`, which ended the title early and had the terminal write the clipboard.
@@ -184,8 +184,12 @@ impl<B: Write> Write for ControlPictures<B> {
 pub fn build_terminal(
     writer: Box<dyn Write + Send>,
     height: u16,
+    tier: crate::colors::ColorTier,
 ) -> std::io::Result<Terminal<Backend>> {
-    Terminal::new(ControlPictures(CrosstermBackend::new(writer)), height)
+    Terminal::new(
+        ControlPictures(CrosstermBackend::new(Squiggle::new(writer, tier))),
+        height,
+    )
 }
 
 /// The synchronized bracket lives on the whole frame ([`sync_frame`]), not here: bracketing
@@ -233,4 +237,90 @@ pub fn framed(out: &mut impl Write, write: impl FnOnce(&mut Vec<u8>)) -> std::io
     out.write_all(&bytes)?;
     out.write_all(b"\x1b[?2026l")?;
     out.flush()
+}
+
+/// Incident: SGR 4 in the error color painted the whole word red. A `58` underline color is
+/// preceded by SGR 4:3 here, so the letters keep their color and the mark is a curl.
+pub struct Squiggle<W> {
+    inner: W,
+    held: Vec<u8>,
+    curly: bool,
+}
+
+impl<W> Squiggle<W> {
+    /// Below the true-color tier, which carries SGR 58, the `58`/`59` underline colors are
+    /// dropped and the mark is a plain underline: such a terminal can read `58;5;1` as blink.
+    pub fn new(inner: W, tier: crate::colors::ColorTier) -> Self {
+        Self {
+            inner,
+            held: Vec::new(),
+            curly: tier == crate::colors::ColorTier::TrueColor,
+        }
+    }
+}
+
+/// Writes every complete sequence of `data` and returns how much it consumed; a sequence cut at
+/// the end waits for the next write.
+fn curl(inner: &mut impl Write, data: &[u8], curly: bool) -> std::io::Result<usize> {
+    let mut at = 0;
+    while let Some(offset) = data
+        .get(at..)
+        .and_then(|rest| rest.iter().position(|b| *b == 0x1b))
+    {
+        let start = at.saturating_add(offset);
+        inner.write_all(data.get(at..start).unwrap_or_default())?;
+        let Some(end) = csi_end(data, start) else {
+            return Ok(start);
+        };
+        let seq = data.get(start..end).unwrap_or_default();
+        let colored = is_underline_color(seq) || seq == b"\x1b[59m";
+        if curly && is_underline_color(seq) {
+            inner.write_all(b"\x1b[4:3m")?;
+        }
+        if curly || !colored {
+            inner.write_all(seq)?;
+        }
+        at = end;
+    }
+    inner.write_all(data.get(at..).unwrap_or_default())?;
+    Ok(data.len())
+}
+
+fn csi_end(data: &[u8], start: usize) -> Option<usize> {
+    if data.get(start.saturating_add(1))? != &b'[' {
+        return Some(start.saturating_add(1));
+    }
+    let mut j = start.saturating_add(2);
+    while data.get(j).is_some_and(|byte| *byte < 0x40) {
+        j = j.saturating_add(1);
+    }
+    data.get(j)?;
+    Some(j.saturating_add(1))
+}
+
+fn is_underline_color(seq: &[u8]) -> bool {
+    seq.last() == Some(&b'm')
+        && seq.get(2..4) == Some(b"58".as_slice())
+        && (seq.len() == 5 || seq.get(4) == Some(&b';'))
+}
+
+impl<W: Write> Write for Squiggle<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.held.is_empty() {
+            let used = curl(&mut self.inner, buf, self.curly)?;
+            self.held
+                .extend_from_slice(buf.get(used..).unwrap_or_default());
+        } else {
+            self.held.extend_from_slice(buf);
+            let used = curl(&mut self.inner, &self.held, self.curly)?;
+            self.held.drain(..used);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.write_all(&self.held)?;
+        self.held.clear();
+        self.inner.flush()
+    }
 }

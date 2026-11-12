@@ -301,11 +301,10 @@ pub fn layout_chat(
         match &app.bottom {
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),
             Some(Bottom::Question(view)) => Some(view.lines(width, &theme)),
-            Some(Bottom::Command(popup) | Bottom::File(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Agents(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Model(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Theme(picker)) => Some(picker.list.lines(width, &theme)),
-            None => None,
+            None => app.composer.assist_lines(width),
         }
     };
     let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
@@ -351,7 +350,7 @@ pub fn layout_chat(
     // The status is the composer's top border while that border is free; any title, search or
     // popup in its place sends it back to a row of its own.
     let reply = app.reply_title();
-    let command_list = matches!(app.bottom, Some(Bottom::Command(_)));
+    let command_list = app.bottom.is_none() && app.composer.assist_open();
     // A command list sits above the box. The box keeps its border and the status on that border.
     let on_rule = (bottom_lines.is_none() || command_list)
         && reply.is_none()
@@ -369,6 +368,8 @@ pub fn layout_chat(
         .or_else(|| on_rule.then(|| status_row.clone()));
     app.composer
         .set_frame(border, theme.dim_style(), cursor, title);
+    app.composer
+        .set_typo_style(crate::assist::spell_style(theme.error));
     let composer_height = app.composer.layout(
         u16::try_from(width).unwrap_or(u16::MAX),
         u16::try_from(app.rows).unwrap_or(u16::MAX),
@@ -383,7 +384,7 @@ pub fn layout_chat(
         })
         .saturating_add(u16::from(!on_rule));
     let mut bottom_lines = bottom_lines;
-    if let (Some(Bottom::Command(popup)), Some(lines)) = (&app.bottom, bottom_lines.as_mut()) {
+    if command_list && let Some(lines) = bottom_lines.as_mut() {
         // The pane painter passes an unbounded `total` so the live tail is not clipped; the
         // screen the list must fit is `app.rows`.
         let screen = u16::try_from(app.rows).unwrap_or(u16::MAX);
@@ -391,7 +392,9 @@ pub fn layout_chat(
         let existed = lines.len();
         if existed > room {
             let keep = room - 1;
-            let from = (popup.selected_row() + 1).saturating_sub(keep).min(existed);
+            let from = (app.composer.assist_selected_line() + 1)
+                .saturating_sub(keep)
+                .min(existed);
             lines.drain(..from);
             lines.truncate(keep);
             lines.push(Line::from(format!(
@@ -402,10 +405,7 @@ pub fn layout_chat(
     }
     let composer_too = app.tree.is_none()
         && app.plan_tree.is_none()
-        && matches!(
-            app.bottom,
-            Some(Bottom::Question(_) | Bottom::Command(_) | Bottom::Theme(_))
-        );
+        && (matches!(app.bottom, Some(Bottom::Question(_) | Bottom::Theme(_))) || command_list);
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
         let card = u16::try_from(lines.len()).unwrap_or(composer_height);
         card.saturating_add(if composer_too { composer_height } else { 0 })

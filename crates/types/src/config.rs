@@ -465,6 +465,20 @@ pub enum FollowMode {
 pub struct TuiConfig {
     pub pace: Option<u16>,
     pub follow: Option<FollowMode>,
+    pub typos: Option<bool>,
+    pub complete: Option<CompleteEngine>,
+    pub autocorrect: Option<bool>,
+}
+
+/// `tui.complete`: which word source fills the ghost suffix; `auto` blends both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompleteEngine {
+    Off,
+    #[default]
+    Auto,
+    Ngram,
+    Apple,
 }
 
 /// `theme.dark` / `theme.light`: a shipped theme or `~/.yi/themes/<name>.json` for that ground;

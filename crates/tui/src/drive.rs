@@ -552,7 +552,7 @@ pub fn run_headless(
     }
     let width = drive.width.max(20);
     let height = drive.height.max(8);
-    let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {
+    let backend = match RecordingBackend::new(width, height, drive.record.as_deref(), theme.tier) {
         Ok(backend) => backend,
         Err(error) => {
             eprintln!("error: recording: {error}");

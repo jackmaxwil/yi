@@ -75,6 +75,7 @@ impl App {
             initial_prompt: None,
             pace: self.state.chat_pace,
             follow: self.state.chat_follow,
+            assist: self.state.chat_assist.clone(),
         };
         let theme = yi_tui::colors::Theme {
             run: true,
@@ -112,8 +113,8 @@ impl App {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Session { chat: Some(_), .. }))
     }
 
-    /// The chord goes to the pane exactly when the screen says so: a popup owns Tab, a lone chat
-    /// owns the arrows (solo's child focus), and a draft owns alt+b, Ghostty's Option+Left.
+    /// The chord goes to the pane exactly when the screen says so: a popup or a gray suggestion
+    /// owns Tab, a lone chat owns the arrows, and a draft owns alt+b, Ghostty's Option+Left.
     pub(super) fn chord_to_pane(
         &mut self,
         action: Action,
@@ -122,7 +123,7 @@ impl App {
         multi: bool,
     ) -> bool {
         match action {
-            Action::ToggleZone => on_chat && self.popup_open(),
+            Action::ToggleZone => on_chat && self.tab_stays_in_chat(),
             Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
                 on_chat && !multi
             }
@@ -147,13 +148,13 @@ impl App {
             .is_some_and(|chat| chat.app.takes_ctrl_c())
     }
 
-    pub(super) fn popup_open(&self) -> bool {
+    pub(super) fn tab_stays_in_chat(&self) -> bool {
         self.state
             .focused_pane()
             .is_some_and(|pane| match &pane.content {
                 PaneContent::Session {
                     chat: Some(chat), ..
-                } => chat.app.bottom_open(),
+                } => chat.app.bottom_open() || chat.app.ghost_showing(),
                 _ => false,
             })
     }
@@ -835,7 +836,59 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Zone;
     use yi_types::subagent::{ChildActivity, ChildId};
+
+    /// Dies with Tab leaving a drawn gray ending in place and moving focus out of the chat, or
+    /// with Tab held in the chat by a ghost nobody sees once the draft ends in a space.
+    #[test]
+    fn tab_fills_a_drawn_gray_suggestion_and_otherwise_switches_zones() {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.state.title = None;
+        app.state.zone = Zone::Panes;
+        let session = SessionId("s-a".to_owned());
+        let mut chat = app.make_chat(&session);
+        let mut words = yi_tui::assist::Words::default();
+        words.learn("zzqhello");
+        let settings = yi_tui::assist::AssistSettings::DEFAULT;
+        let words = std::sync::Arc::new(std::sync::OnceLock::from(words));
+        chat.app
+            .set_assist(yi_tui::assist::Assist::new(settings, None, words));
+        if let Some(pane) = app.state.focused_pane_mut() {
+            pane.content = PaneContent::Session {
+                session: Some(session),
+                chat: Some(chat),
+            };
+        }
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-tab-ghost.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        let press = |app: &mut App, code| {
+            app.handle_event(
+                &outbound,
+                CtEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+            );
+        };
+        let text = |app: &mut App| {
+            app.focused_chat()
+                .map(|chat| chat.app.composer_text())
+                .unwrap_or_default()
+        };
+        for ch in ['z', 'z', 'q', 'h'] {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.state.zone, Zone::Panes);
+        assert_eq!(text(&mut app), "zzqhello ");
+        press(&mut app, KeyCode::Tab);
+        assert_ne!(
+            app.state.zone,
+            Zone::Panes,
+            "nothing is drawn, so Tab leaves the chat"
+        );
+        assert_eq!(text(&mut app), "zzqhello ");
+    }
 
     /// Dies with `w` doing nothing after ↓ ran past the last file or a scope switch shortened
     /// the list, while the `▸` still sat on a file; then with every blame error read as uncommitted.

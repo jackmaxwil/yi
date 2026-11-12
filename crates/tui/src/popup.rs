@@ -34,10 +34,6 @@ pub struct ListPopup {
     pub items: Vec<String>,
     pub selected: usize,
     pub note: Option<String>,
-    /// The composer draws the text. A command list then shows only the matches.
-    pub show_query: bool,
-    /// Esc and Ctrl-C leave the composer as it is: the list opened over a draft, not an empty box.
-    pub keep_draft: bool,
 }
 
 const MAX_VISIBLE: usize = 8;
@@ -56,14 +52,7 @@ impl ListPopup {
             items,
             selected: 0,
             note: None,
-            show_query: true,
-            keep_draft: false,
         }
-    }
-
-    /// The row of the highlighted item among the rows [`BottomView::lines`] draws for items.
-    pub fn selected_row(&self) -> usize {
-        self.selected - self.selected.saturating_sub(MAX_VISIBLE - 1)
     }
 
     /// Invariant: a query that is exactly one item's name selects that item, not a longer one
@@ -86,16 +75,13 @@ impl ListPopup {
 impl BottomView for ListPopup {
     fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let filtered = self.filtered();
-        let mut out = Vec::new();
-        if self.show_query {
-            out.push(Line::from(vec![
-                Span::styled(
-                    format!(" {}{}", self.prefix, self.query),
-                    Style::default().fg(theme.text),
-                ),
-                Span::styled("█", Style::default().fg(theme.accent)),
-            ]));
-        }
+        let mut out = vec![Line::from(vec![
+            Span::styled(
+                format!(" {}{}", self.prefix, self.query),
+                Style::default().fg(theme.text),
+            ),
+            Span::styled("█", Style::default().fg(theme.accent)),
+        ])];
         let (start, shown) = window(self.selected, filtered.len());
         for (i, item) in filtered.iter().enumerate().skip(start).take(shown) {
             let selected = i == self.selected;

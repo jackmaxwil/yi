@@ -2244,7 +2244,12 @@ fn an_unchanged_frame_records_nothing() -> TestResult {
 
     let dir = Scratch::new("yi-cast-idle")?;
     let path = dir.join("run.cast");
-    let mut backend = yi_tui::capture::RecordingBackend::new(80, 24, Some(&path))?;
+    let mut backend = yi_tui::capture::RecordingBackend::new(
+        80,
+        24,
+        Some(&path),
+        yi_tui::colors::ColorTier::Ansi16,
+    )?;
     // Exactly what `render::draw` does on a tick that changed nothing.
     let idle_tick = |backend: &mut yi_tui::capture::RecordingBackend| -> TestResult {
         backend.write_all(b"\x1b[?2026h")?;
@@ -2290,7 +2295,8 @@ fn an_unchanged_frame_records_nothing() -> TestResult {
 /// rather than Yi's. Recording off, it must still be a drop-in there.
 #[test]
 fn the_recording_backend_drops_into_a_plain_ratatui_terminal() -> TestResult {
-    let backend = yi_tui::capture::RecordingBackend::new(80, 24, None)?;
+    let backend =
+        yi_tui::capture::RecordingBackend::new(80, 24, None, yi_tui::colors::ColorTier::Ansi16)?;
     let mut terminal = ratatui::Terminal::new(backend)?;
     terminal.draw(|frame| {
         frame.render_widget(ratatui::widgets::Paragraph::new("console"), frame.area());

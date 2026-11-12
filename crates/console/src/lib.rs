@@ -46,7 +46,7 @@ use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::drive::{
     Control, Deadline, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
 };
-use yi_tui::term::ControlPictures;
+use yi_tui::term::{ControlPictures, Squiggle};
 
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
@@ -71,6 +71,7 @@ pub struct ConsoleOptions {
     pub chrome_pin: Option<crate::browser::Pinned>,
     pub home: Option<String>,
     pub theme: Option<yi_types::config::ThemeConfig>,
+    pub assist: Option<(yi_tui::assist::AssistSettings, PathBuf)>,
 }
 
 pub struct DriveOptions {
@@ -314,7 +315,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
                 | ratatui::crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     );
-    let backend = ControlPictures(CrosstermBackend::new(stdout));
+    let backend = ControlPictures(CrosstermBackend::new(Squiggle::new(stdout, theme.tier)));
     let mut terminal = match Terminal::new(backend) {
         Ok(terminal) => terminal,
         Err(error) => {
@@ -337,7 +338,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
 
 fn run_interactive(
     app: &mut App,
-    terminal: &mut Terminal<ControlPictures<CrosstermBackend<Stdout>>>,
+    terminal: &mut Terminal<ControlPictures<CrosstermBackend<Squiggle<Stdout>>>>,
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     outbound: &Outbound,
     mut control: Option<Control>,
@@ -472,7 +473,8 @@ fn chat_wake(app: &App) -> Duration {
             } => {
                 let orb =
                     (Some(*id) == focused && chat.app.orb_animating()).then(|| chat.orb.wake());
-                Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
+                let wake = chat.app.reveal_wake().min(chat.app.assist_wake());
+                Some(wake.min(orb.unwrap_or(Duration::MAX)))
             }
             _ => None,
         })
@@ -640,7 +642,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     configure(&mut app, options);
     let width = drive.width.max(20);
     let height = drive.height.max(8);
-    let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {
+    let backend = match RecordingBackend::new(width, height, drive.record.as_deref(), theme.tier) {
         Ok(backend) => backend,
         Err(error) => {
             eprintln!("error: headless backend: {error}");
@@ -782,6 +784,7 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.side.order = options.project_order.clone();
     app.state.chat_pace = options.pace;
     app.state.chat_follow = options.follow;
+    app.state.chat_assist = options.assist.clone();
     app.state.follow_fallback = options.follow;
     app.state.home.clone_from(&options.home);
     app.state.chrome =

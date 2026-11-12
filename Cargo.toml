@@ -65,7 +65,7 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 h2 = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false, features = ["std"] }
 bytes = { version = "1", default-features = false }
-ratatui = { version = "0.29", default-features = false, features = ["crossterm", "scrolling-regions"] }
+ratatui = { version = "0.29", default-features = false, features = ["crossterm", "scrolling-regions", "underline-color"] }
 tui-textarea = { version = "0.7", default-features = false, features = ["crossterm"] }
 pulldown-cmark = { version = "0.12", default-features = false }
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }

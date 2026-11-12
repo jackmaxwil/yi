@@ -732,6 +732,7 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
         initial_prompt: None,
         pace: 0,
         follow: yi_types::config::FollowMode::default(),
+        assist: None,
     };
     let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
     let mut app = yi_tui::app::App::new(options, theme, yi_tui::keymap::default_keymap(), 80);

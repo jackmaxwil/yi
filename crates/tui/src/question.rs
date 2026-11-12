@@ -592,6 +592,7 @@ impl App {
     /// Another view up keeps the questions until it closes.
     pub(crate) fn open_questions(&mut self) {
         if self.bottom.is_none() && !self.asked.is_empty() {
+            self.composer.dismiss_assist();
             let asked = std::mem::take(&mut self.asked);
             self.bottom = Some(Bottom::Question(QuestionView::new(asked, self.kitty)));
             self.scheduler.request();
