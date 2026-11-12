@@ -15,6 +15,8 @@ import unittest.mock
 import bridge
 
 ROOT = bridge.ROOT
+sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+from _common import may_skip
 FIXTURES = ROOT / "scripts/intake/fixtures"
 H = "16991ef417f2f1f5ab7ae4029ab3a4c373360907"
 M = "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
@@ -676,6 +678,9 @@ EXPECTED = {
 
 
 def selfcheck() -> int:
+    if may_skip():
+        print("skip intake selfcheck (public mirror omits intake allowlists and mirror files; run in unfiltered source checkout)")
+        return 0
     trouble = keygen_trouble()
     assert len(bridge.CHECKS) == 25
     check_real_fixture()
