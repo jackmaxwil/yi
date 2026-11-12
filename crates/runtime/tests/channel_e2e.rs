@@ -1107,11 +1107,21 @@ fn runs(dir: &Path) -> usize {
     std::fs::read_to_string(dir.join("runs")).map_or(0, |text| text.lines().count())
 }
 
+struct AdapterCleanup;
+
+impl Drop for AdapterCleanup {
+    fn drop(&mut self) {
+        adapter::halt(true);
+        adapter::halt(false);
+    }
+}
+
 /// Dies with an exec source running every cadence forever: a probe nobody satisfies ran each
 /// minute for as long as it blocked, where the retired ladder backed off to half an hour.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wait_whose_source_stays_unchanged_backs_off_and_a_change_resets_it() -> TestResult {
     let dir = Scratch::new("yi-channel-backoff")?;
+    let _adapters = AdapterCleanup;
     let steady = "echo run >> runs; exit 1";
     let flapping = "n=$(cat runs 2>/dev/null | wc -l); echo run >> runs; [ $((n % 2)) -eq 0 ]";
     let cases = [
@@ -1133,8 +1143,6 @@ async fn a_wait_whose_source_stays_unchanged_backs_off_and_a_change_resets_it() 
         .iter()
         .map(|(name, ..)| runs(&dir.join(name)))
         .collect();
-    adapter::halt(true);
-    adapter::halt(false);
     let [waited, created, flapping] = counted.as_slice() else {
         return Err("three cases".into());
     };
