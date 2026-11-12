@@ -36,8 +36,8 @@ pub struct Settings {
     pub rows: Option<Vec<SettingRow>>,
     pub edit: Option<Edit>,
     pub status: Option<String>,
-    /// `built-in`, the shipped themes and `~/.yi/themes`, filled before a key or a press.
-    pub theme_choices: Vec<String>,
+    /// `~/.yi/themes`, listed beside the shipped themes each time a theme row opens.
+    pub themes: Option<std::path::PathBuf>,
 }
 
 impl Settings {
@@ -49,7 +49,7 @@ impl Settings {
             rows: None,
             edit: None,
             status: None,
-            theme_choices: Vec::new(),
+            themes: None,
         }
     }
 
@@ -153,14 +153,6 @@ fn theme_row(settings: &Settings) -> Option<String> {
 
 pub(crate) fn theme_list_open(settings: &Settings) -> Option<String> {
     theme_row(settings).filter(|_| matches!(settings.edit, Some(Edit::Pick { .. })))
-}
-
-/// A key on the cursor's row (`row` None) or a press on `row` would open a theme list from closed.
-pub(crate) fn opens_theme_list(settings: &Settings, row: Option<usize>) -> bool {
-    let closed = settings.edit.is_none() || row.is_some_and(|row| row != settings.cursor);
-    let rows = settings.tab_rows();
-    let at = rows.get(row.unwrap_or(settings.cursor));
-    closed && at.is_some_and(|at| is_theme_row(&at.id))
 }
 
 /// The value a press moves a choice to: the one after the current, wrapping.
@@ -326,9 +318,9 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
     else {
         return Intent::None;
     };
-    if is_theme_row(&row.id) {
+    if theme_row(settings).is_some() {
         let current = row.value.as_str().unwrap_or(BUILT_IN);
-        let picks = settings.theme_choices.clone();
+        let picks = yi_tui::theme_file::list(settings.themes.as_deref());
         let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
         settings.edit = Some(Edit::Pick {
             options: picks,
@@ -954,7 +946,6 @@ mod theme_rows {
             + 1;
         let mut settings = Settings::new(None, tab);
         settings.rows = Some(rows);
-        settings.theme_choices = yi_tui::theme_file::list(None);
         let at = settings
             .tab_rows()
             .iter()

@@ -44,9 +44,10 @@ impl App {
                 let Some(pane) = self.state.focused_pane_id().filter(|id| Some(*id) != home) else {
                     return;
                 };
+                let mut settings = Settings::new(session.clone(), tab);
+                settings.themes = themes_dir(self.state.home.as_deref().map(std::path::Path::new));
                 if let Some(slot) = self.state.panes.get_mut(&pane) {
-                    slot.content =
-                        PaneContent::Settings(Box::new(Settings::new(session.clone(), tab)));
+                    slot.content = PaneContent::Settings(Box::new(settings));
                 }
                 pane
             }
@@ -88,7 +89,6 @@ impl App {
             return;
         };
         let (session, options) = self.settings_options(pane);
-        self.fill_theme_choices(pane, None);
         let Some(settings) = self.settings_pane(pane) else {
             return;
         };
@@ -111,7 +111,6 @@ impl App {
             }
             Target::Row(row) => {
                 let (session, options) = self.settings_options(pane);
-                self.fill_theme_choices(pane, Some(row));
                 let Some(settings) = self.settings_pane(pane) else {
                     return;
                 };
@@ -253,19 +252,6 @@ impl App {
 }
 
 impl App {
-    fn fill_theme_choices(&mut self, pane: PaneId, row: Option<usize>) {
-        let opens = self
-            .settings_pane(pane)
-            .is_some_and(|settings| crate::settings::opens_theme_list(settings, row));
-        if opens {
-            let home = self.state.home.as_deref().map(std::path::Path::new);
-            let choices = yi_tui::theme_file::list(themes_dir(home).as_deref());
-            if let Some(settings) = self.settings_pane(pane) {
-                settings.theme_choices = choices;
-            }
-        }
-    }
-
     /// Paints `name` when row `id` names this terminal's ground; the other row only saves.
     fn preview_theme(&mut self, pane: PaneId, id: &str, name: &str) {
         if id != ground_id(self.theme.dark) {
@@ -413,9 +399,8 @@ mod tests {
             .iter()
             .position(|tab| *tab == "Interface");
         settings.tab = tab.ok_or("no Interface tab")? + 1;
-        settings.cursor = cursor.ok_or("no theme.dark row")?;
-        let enter = KeyEvent::from(ratatui::crossterm::event::KeyCode::Enter);
-        app.settings_key(&outbound, enter);
+        let row = crate::settings::Target::Row(cursor.ok_or("no theme.dark row")?);
+        app.settings_press(&outbound, pane, row);
         Ok((app, chat, pane, outbound))
     }
 
