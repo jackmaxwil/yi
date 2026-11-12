@@ -373,6 +373,24 @@ pub fn layout_chat(
         u16::try_from(app.rows).unwrap_or(u16::MAX),
     );
 
+    let mut bottom_lines = bottom_lines;
+    if command_list && let Some(lines) = bottom_lines.as_mut() {
+        let room = usize::from(
+            total
+                .saturating_sub(u16::try_from(hud_lines.len()).unwrap_or(u16::MAX))
+                .saturating_sub(composer_height),
+        );
+        let existed = lines.len();
+        if existed > room {
+            lines.truncate(room.saturating_sub(1));
+            if room > 0 {
+                lines.push(Line::from(format!(
+                    "[… {} of {existed} list rows · screen cap {room} rows · type to narrow]",
+                    lines.len()
+                )));
+            }
+        }
+    }
     let composer_too = app.tree.is_none()
         && app.plan_tree.is_none()
         && matches!(

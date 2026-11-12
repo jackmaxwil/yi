@@ -85,6 +85,11 @@ pub fn handle_terminal_event(
             match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
                 Some(action) => handle_action(app, cmd_tx, action),
                 None => {
+                    let filled = key.code == KeyCodeValue::Tab
+                        && !key.ctrl
+                        && !key.alt
+                        && !key.shift
+                        && tab_completes_slash(app);
                     if key.code == KeyCodeValue::PageDown
                         && app.follow() != yi_types::config::FollowMode::Slide
                     {
@@ -98,20 +103,13 @@ pub fn handle_terminal_event(
                         app.bottom = Some(Bottom::Command(command_list(String::new())));
                     } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
                         app.bottom = Some(Bottom::File(file_picker(&app.options.cwd)));
-                    } else if key.code == KeyCodeValue::Tab
-                        && !key.ctrl
-                        && !key.alt
-                        && !key.shift
-                        && tab_completes_slash(app)
-                    {
-                        // The command name is filled, or the list is open for a second Tab.
                     } else if key.code == KeyCodeValue::Backspace
                         && !key.ctrl
                         && !key.alt
                         && !key_event.modifiers.contains(KeyModifiers::SUPER)
                     {
                         app.composer.backspace();
-                    } else {
+                    } else if !filled {
                         app.composer.input(key_event);
                     }
                 }
@@ -350,9 +348,10 @@ fn command_token(text: &str) -> Option<&str> {
     Some(rest)
 }
 
-/// Invariant: the list opens only on an empty box, so closing it empties the box again.
-fn close_command_list(app: &mut App) {
-    if matches!(app.bottom, Some(Bottom::Command(_))) {
+/// Invariant: a list opened by typing `/` starts from an empty box, so closing it empties the
+/// box again; a list Tab opened sits over a draft and leaves it.
+pub(crate) fn close_command_list(app: &mut App) {
+    if matches!(&app.bottom, Some(Bottom::Command(popup)) if !popup.keep_draft) {
         app.composer.set_text("");
     }
 }
@@ -394,7 +393,11 @@ fn handle_command_list(
         return;
     };
     match key.code {
-        KeyCodeValue::Esc => app.composer.set_text(""),
+        KeyCodeValue::Esc => {
+            if !popup.keep_draft {
+                app.composer.set_text("");
+            }
+        }
         KeyCodeValue::Up => {
             popup.selected = popup.selected.saturating_sub(1);
             app.bottom = Some(bottom);
@@ -405,7 +408,7 @@ fn handle_command_list(
             }
             app.bottom = Some(bottom);
         }
-        KeyCodeValue::Tab => {
+        KeyCodeValue::Tab if !key.ctrl && !key.alt && !key.shift => {
             if let Some(name) = popup.filtered().get(popup.selected) {
                 app.composer.set_text(&format!("/{name} "));
             }
@@ -446,7 +449,8 @@ fn tab_completes_slash(app: &mut App) -> bool {
     let Some(token) = command_token(&text) else {
         return false;
     };
-    let popup = command_list(token.to_owned());
+    let mut popup = command_list(token.to_owned());
+    popup.keep_draft = true;
     let matches = popup.filtered();
     match matches.as_slice() {
         [] => return false,

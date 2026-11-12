@@ -36,6 +36,8 @@ pub struct ListPopup {
     pub note: Option<String>,
     /// The composer draws the text. A command list then shows only the matches.
     pub show_query: bool,
+    /// Esc and Ctrl-C leave the composer as it is: the list opened over a draft, not an empty box.
+    pub keep_draft: bool,
 }
 
 const MAX_VISIBLE: usize = 8;
@@ -49,6 +51,7 @@ impl ListPopup {
             selected: 0,
             note: None,
             show_query: true,
+            keep_draft: false,
         }
     }
 

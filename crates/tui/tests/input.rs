@@ -320,21 +320,22 @@ fn a_pasted_tab_and_escape_are_drawn_as_cells_not_sent_to_the_terminal() -> Test
 /// composer, which stays on screen above the matches.
 #[test]
 fn a_paste_with_a_command_list_open_fills_the_composer() -> TestResult {
-    for pasted in ["mod\nel", "mod\r\nel\n"] {
+    for (pasted, text, tail) in [("mod\nel", "/mod\nel", 0), ("mod\r\nel\n", "/mod\nel\n", 1)] {
         let mut app = app();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         type_text(&mut app, &tx, "/");
         paste(&mut app, &tx, pasted);
-        assert!(
-            app.composer_text().starts_with("/mod"),
-            "{pasted:?}: {}",
-            app.composer_text()
-        );
+        assert_eq!(app.composer_text(), text, "{pasted:?}");
         let rows = common::live_rows(&mut app)?;
-        assert!(
-            rows.iter().any(|row| row.contains("mod")),
-            "{pasted:?}: {rows:#?}"
-        );
+        let first = rows
+            .iter()
+            .position(|row| *row == format!(" │{:<76}│", "/mod"))
+            .ok_or_else(|| format!("{pasted:?}: no /mod row: {rows:#?}"))?;
+        let want = [format!(" │{:<76}│", "el"), format!(" │{:<76}│", "")];
+        assert_eq!(rows.get(first + 1), want.first(), "{pasted:?}: {rows:#?}");
+        if tail == 1 {
+            assert_eq!(rows.get(first + 2), want.get(1), "{pasted:?}: {rows:#?}");
+        }
     }
     Ok(())
 }
@@ -547,5 +548,77 @@ fn the_command_list_sits_above_the_box_at_a_nonzero_offset() -> TestResult {
     let draft = at("│/mo").ok_or_else(|| format!("no draft row: {rows:#?}"))?;
     assert!(list < draft, "matches above the box: {rows:#?}");
     assert!(rows.get(list).is_some_and(|row| row.starts_with("       ")));
+    Ok(())
+}
+
+/// Dies with Esc and Ctrl-C throwing away a draft the list was opened over: Tab on a pasted `/p`
+/// opens the list, and closing it must leave the draft.
+#[test]
+fn closing_a_tab_opened_list_keeps_the_draft() -> TestResult {
+    for close in [
+        (KeyCode::Esc, KeyModifiers::NONE),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL),
+    ] {
+        let mut app = app();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        paste(&mut app, &tx, "/p");
+        press(&mut app, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        assert!(app.bottom_open());
+        press(&mut app, &tx, close.0, close.1);
+        assert!(!app.bottom_open());
+        assert_eq!(app.composer_text(), "/p", "{close:?}");
+    }
+    Ok(())
+}
+
+/// Dies with Shift-Tab filling the highlighted command like a plain Tab.
+#[test]
+fn a_modified_tab_in_the_command_list_does_not_fill() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/p");
+    press(&mut app, &tx, KeyCode::Tab, KeyModifiers::SHIFT);
+    assert_eq!(app.composer_text(), "/p");
+    assert!(app.bottom_open());
+    Ok(())
+}
+
+/// Dies with the list's `/` text left in the box when an approval card replaces the list.
+#[test]
+fn an_approval_replacing_the_command_list_leaves_no_stray_text() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/mo");
+    let (reply, _answer) = std::sync::mpsc::channel();
+    app.open_approval(yi_tui::AskRequest {
+        title: "run it".to_owned(),
+        description: String::new(),
+        grants: Vec::new(),
+        tool_call_id: None,
+        reply,
+    });
+    assert_eq!(app.composer_text(), "");
+    Ok(())
+}
+
+/// Dies with the list taller than the screen: at 60x9 the box that holds the typed text was
+/// pushed off, so the text was invisible.
+#[test]
+fn the_command_list_leaves_the_box_on_a_nine_row_screen() -> TestResult {
+    let mut app = app();
+    app.set_width(60);
+    app.set_rows(9);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/");
+    let rows = common::rows_sized(&mut app, 60, 9)?;
+    assert!(
+        rows.iter().any(|row| row.starts_with(" │/")),
+        "the box with the typed `/` is on screen: {rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("[… ") && row.contains("screen cap")),
+        "the cut is named: {rows:#?}"
+    );
     Ok(())
 }
