@@ -42,6 +42,12 @@ pub struct ListPopup {
 
 const MAX_VISIBLE: usize = 8;
 
+/// The rows of a `total`-long list shown with `cursor` the last of at most eight: first, count.
+pub fn window(cursor: usize, total: usize) -> (usize, usize) {
+    let start = cursor.saturating_sub(MAX_VISIBLE - 1);
+    (start, total.saturating_sub(start).min(MAX_VISIBLE))
+}
+
 impl ListPopup {
     pub fn new(prefix: char, items: Vec<String>) -> Self {
         Self {
@@ -90,8 +96,8 @@ impl BottomView for ListPopup {
                 Span::styled("█", Style::default().fg(theme.accent)),
             ]));
         }
-        let start = self.selected.saturating_sub(MAX_VISIBLE - 1);
-        for (i, item) in filtered.iter().enumerate().skip(start).take(MAX_VISIBLE) {
+        let (start, shown) = window(self.selected, filtered.len());
+        for (i, item) in filtered.iter().enumerate().skip(start).take(shown) {
             let selected = i == self.selected;
             let style = if selected {
                 Style::default()

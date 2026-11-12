@@ -6,7 +6,9 @@ use super::{App, RequestKind};
 use crate::client::Outbound;
 use crate::layout::PaneId;
 use crate::model::{PaneContent, SessionId};
-use crate::settings::{Intent, Settings, Target};
+use crate::settings::{Intent, Settings, Target, ThemePreview};
+use yi_tui::colors::Theme;
+use yi_tui::theme_file::{BUILT_IN, ground_id, themes_dir};
 
 impl App {
     pub(super) fn on_settings(&self) -> bool {
@@ -42,9 +44,10 @@ impl App {
                 let Some(pane) = self.state.focused_pane_id().filter(|id| Some(*id) != home) else {
                     return;
                 };
+                let mut settings = Settings::new(session.clone(), tab);
+                settings.themes = themes_dir(self.state.home.as_deref().map(std::path::Path::new));
                 if let Some(slot) = self.state.panes.get_mut(&pane) {
-                    slot.content =
-                        PaneContent::Settings(Box::new(Settings::new(session.clone(), tab)));
+                    slot.content = PaneContent::Settings(Box::new(settings));
                 }
                 pane
             }
@@ -152,12 +155,22 @@ impl App {
                     settings.status = Some(text);
                 }
             }
-            Intent::SaveDefault { id, value } => self.send_request(
-                outbound,
-                RequestKind::Settings(pane, true),
-                "_yi/set_default",
-                json!({"id": id, "value": value}),
-            ),
+            Intent::PreviewTheme { id, name } => self.preview_theme(pane, &id, &name),
+            Intent::RestoreTheme => self.restore_theme(),
+            Intent::SaveDefault { id, value } => {
+                if yi_tui::theme_file::is_theme_row(&id) {
+                    self.preview_theme(pane, &id, value.as_str().unwrap_or(BUILT_IN));
+                    if let Some(preview) = &mut self.state.theme_preview {
+                        preview.saving = true;
+                    }
+                }
+                self.send_request(
+                    outbound,
+                    RequestKind::Settings(pane, true),
+                    "_yi/set_default",
+                    json!({"id": id, "value": value}),
+                );
+            }
             Intent::SetSession { config_id, value } => {
                 if let Some(session) = session {
                     self.send_request(
@@ -192,6 +205,17 @@ impl App {
     /// The daemon's rows, or its refusal named on the pane; the console's own rows apply here.
     pub(super) fn absorb_settings(&mut self, pane: PaneId, saved: bool, reply: &Value) {
         self.dirty = true;
+        let theme_saved = self
+            .state
+            .theme_preview
+            .as_ref()
+            .map(|preview| preview.saving);
+        if saved && theme_saved == Some(true) {
+            match reply.pointer("/error/message") {
+                Some(_) => self.restore_theme(),
+                None => self.state.theme_preview = None,
+            }
+        }
         let refusal = reply.pointer("/error/message").and_then(Value::as_str);
         let rows = reply.pointer("/result/rows").cloned().and_then(|rows| {
             serde_json::from_value::<Vec<yi_types::settings::SettingRow>>(rows).ok()
@@ -224,6 +248,85 @@ impl App {
             }
             (None, None) => settings.status = Some("the daemon sent no settings".to_owned()),
         }
+    }
+}
+
+impl App {
+    /// Paints `name` when row `id` names this terminal's ground; the other row only saves.
+    fn preview_theme(&mut self, pane: PaneId, id: &str, name: &str) {
+        if id != ground_id(self.theme.dark) {
+            return;
+        }
+        let preview = self
+            .state
+            .theme_preview
+            .get_or_insert_with(|| ThemePreview {
+                restore: self.theme,
+                pane,
+                id: id.to_owned(),
+                shown: String::new(),
+                warned: false,
+                saving: false,
+            });
+        if preview.shown == name {
+            return;
+        }
+        preview.shown = name.to_owned();
+        let home = self.state.home.as_deref().map(std::path::Path::new);
+        let dir = themes_dir(home);
+        let loaded =
+            yi_tui::theme_file::preview(self.theme.tier, self.theme.dark, dir.as_deref(), name);
+        let warn = loaded
+            .warning
+            .filter(|_| !std::mem::replace(&mut preview.warned, true));
+        if let Some(warning) = warn {
+            self.note(&format!("warning: {warning}"));
+        }
+        self.install_theme(loaded.theme);
+    }
+
+    fn restore_theme(&mut self) {
+        if let Some(preview) = self.state.theme_preview.take() {
+            self.install_theme(preview.restore);
+        }
+    }
+
+    /// A list closed by anything but Enter, a moved focus or a closed pane, puts the palette back.
+    pub(crate) fn settle_theme_preview(&mut self) {
+        let Some(preview) = &self.state.theme_preview else {
+            return;
+        };
+        let open = self.state.focused_pane_id() == Some(preview.pane)
+            && self
+                .state
+                .panes
+                .get(&preview.pane)
+                .is_some_and(|pane| match &pane.content {
+                    PaneContent::Settings(settings) => {
+                        crate::settings::theme_list_open(settings).as_ref() == Some(&preview.id)
+                    }
+                    _ => false,
+                });
+        if !open && !preview.saving {
+            self.restore_theme();
+        }
+    }
+
+    /// Every open chat and cached pane row repaints: their caches are keyed on the palette.
+    fn install_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        for pane in self.state.panes.values_mut() {
+            if let PaneContent::Session {
+                chat: Some(chat), ..
+            } = &mut pane.content
+            {
+                chat.app.set_theme(theme);
+            }
+        }
+        for chat in self.state.parked.values_mut() {
+            chat.app.set_theme(theme);
+        }
+        self.dirty = true;
     }
 }
 
@@ -272,5 +375,101 @@ mod tests {
         for chat in app.state.parked.values() {
             assert_eq!(chat.app.follow(), yi_types::config::FollowMode::Still);
         }
+    }
+
+    fn listing() -> Result<(App, PaneId, PaneId, Outbound), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        let chat = app.state.focused_pane_id().ok_or("no pane")?;
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-theme-preview-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.open_settings(&outbound, 0);
+        let pane = app
+            .state
+            .focused_pane_id()
+            .filter(|id| *id != chat)
+            .ok_or("no settings")?;
+        let rows = yi_types::settings::rows();
+        let interface = rows.iter().filter(|row| row.tab == "Interface");
+        let cursor = interface.clone().position(|row| row.id == "theme.dark");
+        app.absorb_settings(pane, false, &json!({"result": {"rows": rows}}));
+        let settings = app.settings_pane(pane).ok_or("not a settings pane")?;
+        let tab = yi_types::settings::TABS
+            .iter()
+            .position(|tab| *tab == "Interface");
+        settings.tab = tab.ok_or("no Interface tab")? + 1;
+        let row = crate::settings::Target::Row(cursor.ok_or("no theme.dark row")?);
+        app.settings_press(&outbound, pane, row);
+        Ok((app, chat, pane, outbound))
+    }
+
+    #[test]
+    fn a_preview_closed_by_moving_focus_puts_the_palette_back()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, chat, pane, outbound) = listing()?;
+        let built = app.theme.accent;
+        app.settings_key(
+            &outbound,
+            KeyEvent::from(ratatui::crossterm::event::KeyCode::Down),
+        );
+        assert_ne!(app.theme.accent, built, "alabaster painted the console");
+        app.settle_theme_preview();
+        assert_ne!(app.theme.accent, built, "an open list keeps its preview");
+        app.focus_pane(chat);
+        app.settle_theme_preview();
+        assert_eq!(
+            app.theme.accent, built,
+            "settings pane {pane:?} lost focus mid-list"
+        );
+        outbound.shutdown();
+        Ok(())
+    }
+
+    #[test]
+    fn enter_on_this_grounds_list_keeps_the_saved_theme_painted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, _chat, pane, outbound) = listing()?;
+        let built = app.theme.accent;
+        let key = |code| KeyEvent::from(code);
+        app.settings_key(&outbound, key(ratatui::crossterm::event::KeyCode::Down));
+        let chosen = app.theme.accent;
+        app.settings_key(&outbound, key(ratatui::crossterm::event::KeyCode::Enter));
+        app.settle_theme_preview();
+        assert_eq!(
+            app.theme.accent, chosen,
+            "the list closed on Enter while the save was out"
+        );
+        let rows = yi_types::settings::rows();
+        app.absorb_settings(pane, true, &json!({"result": {"rows": rows}}));
+        app.settle_theme_preview();
+        assert_eq!(app.theme.accent, chosen, "the saved theme snapped back");
+        assert_ne!(chosen, built);
+        outbound.shutdown();
+        Ok(())
+    }
+
+    #[test]
+    fn saving_the_other_grounds_theme_leaves_this_palette_alone()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, _chat, pane, outbound) = listing()?;
+        let built = app.theme.accent;
+        let saved = Intent::SaveDefault {
+            id: "theme.light".to_owned(),
+            value: json!("light-prism"),
+        };
+        app.settings_intent(&outbound, pane, None, saved);
+        app.absorb_settings(
+            pane,
+            true,
+            &json!({"result": {"rows": yi_types::settings::rows()}}),
+        );
+        app.settle_theme_preview();
+        assert_eq!(
+            app.theme.accent, built,
+            "a light theme painted on a dark terminal"
+        );
+        outbound.shutdown();
+        Ok(())
     }
 }

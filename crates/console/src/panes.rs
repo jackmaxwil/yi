@@ -475,13 +475,14 @@ pub fn review_view(
 pub(crate) fn cached<K: PartialEq, V>(
     drawn: &mut crate::model::Drawn<K, V>,
     key: K,
+    palette: u64,
     draw: impl FnOnce() -> V,
 ) -> &V {
     let fresh = match drawn.take() {
-        Some((at, rows)) if at == key => (at, rows),
-        _ => (key, draw()),
+        Some((at, painted, rows)) if at == key && painted == palette => (at, painted, rows),
+        _ => (key, palette, draw()),
     };
-    &drawn.insert(fresh).1
+    &drawn.insert(fresh).2
 }
 
 /// Invariant: this scroll holds a view at its top while its rows grow, and a scroll down from

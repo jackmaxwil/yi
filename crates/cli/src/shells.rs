@@ -118,6 +118,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         ask_rx,
         options,
         control,
+        config().theme.as_ref(),
     );
     leave_lane(&session);
     print_resume_hint(&session, &session_name);
@@ -490,6 +491,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .map(std::path::PathBuf::from),
         chrome_pin: chrome_pin(),
         home: std::env::var("HOME").ok(),
+        theme: config().theme.clone(),
     };
     let control = match control(args) {
         Ok(control) => control,

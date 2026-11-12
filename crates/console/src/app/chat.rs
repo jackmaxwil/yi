@@ -1180,14 +1180,7 @@ mod tests {
         let mut owners = std::collections::HashMap::new();
         let mut out = Vec::new();
         let mut step = |out: &mut Vec<u8>| {
-            crate::step_frame(
-                &mut app,
-                &mut terminal,
-                &theme,
-                &mut scheduler,
-                &mut owners,
-                out,
-            )
+            crate::step_frame(&mut app, &mut terminal, &mut scheduler, &mut owners, out)
         };
         step(&mut out)?;
         out.clear();

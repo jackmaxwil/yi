@@ -42,6 +42,7 @@ pub mod status;
 pub mod table;
 pub mod term;
 pub mod terminal;
+pub mod theme_file;
 pub mod thought;
 pub mod title;
 pub mod transcript;

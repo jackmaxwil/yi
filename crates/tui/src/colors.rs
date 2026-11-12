@@ -1,6 +1,8 @@
 use ratatui::style::{Color, Modifier, Style};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+include!("../theme_keys.rs");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColorTier {
     TrueColor,
     Ansi256,
@@ -31,7 +33,7 @@ pub fn detect_dark(colorfgbg: Option<&str>) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct Theme {
     pub tier: ColorTier,
     pub dark: bool,
@@ -55,6 +57,8 @@ pub struct Theme {
     pub run: bool,
     /// The screen's height, which the [`crate::budget`] sizes thought windows and cards from.
     pub rows: usize,
+    /// The colors a theme file set, by [`Over`] slot; an empty slot keeps the built-in role.
+    pub file: [Option<Color>; OVERS],
 }
 
 impl Theme {
@@ -86,6 +90,7 @@ impl Theme {
             user_bg: None,
             run: false,
             rows: 24,
+            file: [None; OVERS],
         };
         if tier != ColorTier::TrueColor || !dark {
             return base;
@@ -119,10 +124,53 @@ impl Theme {
 
     /// Blank spacer rows included, so the band reads as one object.
     pub fn user_style(&self) -> Style {
-        match self.user_bg {
+        let style = match self.user_bg {
             Some(bg) => Style::default().bg(bg),
             None => Style::default(),
+        };
+        self.from_file(Over::UserText)
+            .map_or(style, |color| style.fg(color))
+    }
+
+    pub fn from_file(&self, slot: Over) -> Option<Color> {
+        self.file.get(slot as usize).copied().flatten()
+    }
+
+    pub fn file_or(&self, slot: Over, style: Style) -> Style {
+        self.from_file(slot)
+            .map_or(style, |color| Style::default().fg(color))
+    }
+
+    pub fn pick(&self, slot: Over, fallback: Color) -> Color {
+        self.from_file(slot).unwrap_or(fallback)
+    }
+
+    /// A file's color in `slot`; the base roles are fields every painter already reads.
+    pub(crate) fn set(&mut self, slot: Over, color: Color) {
+        if let Some(cell) = self.file.get_mut(slot as usize) {
+            *cell = Some(color);
         }
+        self.accent = self.pick(Over::Accent, self.accent);
+        self.text = self.pick(Over::Text, self.text);
+        self.muted = self.pick(Over::Muted, self.muted);
+        self.dim = self.pick(Over::Dim, self.dim);
+        self.error = self.pick(Over::Error, self.error);
+        self.warning = self.pick(Over::Warning, self.warning);
+        self.success = self.pick(Over::Success, self.success);
+        self.user_bg = self.from_file(Over::UserBg).or(self.user_bg);
+    }
+
+    /// What a cached row was painted with: it stays fresh only while this does.
+    pub fn palette(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        let colors = Self {
+            run: false,
+            rows: 0,
+            ..*self
+        };
+        colors.hash(&mut hasher);
+        hasher.finish()
     }
 
     pub fn accent_style(&self) -> Style {
@@ -132,11 +180,16 @@ impl Theme {
     /// The dark theme lifts its own ground; every other tier borrows the
     /// terminal's grey rather than inventing a palette.
     pub fn selection_bg(&self) -> Color {
-        self.user_bg.unwrap_or(Color::DarkGray)
+        self.from_file(Over::Selected)
+            .or(self.user_bg)
+            .unwrap_or(Color::DarkGray)
     }
 
     /// The row of the session in front, a shade off the ground; the cursor row is louder.
     pub fn active_row_bg(&self) -> Color {
+        if let Some(color) = self.from_file(Over::Selected) {
+            return color;
+        }
         match self.tier {
             ColorTier::Ansi16 => Color::DarkGray,
             _ if self.dark => Color::Rgb(0x1e, 0x1e, 0x2e),
@@ -182,66 +235,99 @@ impl Theme {
                 fill: None,
             };
         }
-        let polarity = if added { self.success } else { self.error };
-        match (self.tier, self.dark) {
-            (ColorTier::Ansi16, _) => DiffRowStyle {
+        let (slot, own) = if added {
+            (Over::DiffAdded, self.success)
+        } else {
+            (Over::DiffRemoved, self.error)
+        };
+        let polarity = self.pick(slot, own);
+        let Some((bg, gutter_bg)) = self.diff_fill(added) else {
+            return DiffRowStyle {
                 gutter: Style::default().add_modifier(Modifier::DIM),
                 sign: Style::default().fg(polarity),
                 content: Style::default().fg(polarity),
                 fill: None,
-            },
-            (ColorTier::TrueColor, true) => {
-                let bg = if added {
-                    Color::Rgb(0x21, 0x3A, 0x2B)
-                } else {
-                    Color::Rgb(0x4A, 0x22, 0x1D)
-                };
-                DiffRowStyle {
-                    gutter: self.dim_style().bg(bg),
-                    sign: Style::default().fg(polarity).bg(bg),
-                    content: Style::default().fg(polarity).bg(bg),
-                    fill: Some(bg),
-                }
-            }
-            (ColorTier::TrueColor, false) => {
-                let (bg, gutter_bg) = if added {
-                    (Color::Rgb(0xda, 0xfb, 0xe1), Color::Rgb(0xac, 0xee, 0xbb))
-                } else {
-                    (Color::Rgb(0xff, 0xeb, 0xe9), Color::Rgb(0xff, 0xce, 0xcb))
-                };
-                DiffRowStyle {
-                    gutter: Style::default()
-                        .fg(Color::Rgb(0x1f, 0x23, 0x28))
-                        .bg(gutter_bg),
-                    sign: Style::default().fg(polarity).bg(bg),
-                    content: Style::default().bg(bg),
-                    fill: Some(bg),
-                }
-            }
-            (ColorTier::Ansi256, true) => {
-                let bg = Color::Indexed(if added { 22 } else { 52 });
-                DiffRowStyle {
-                    gutter: self.dim_style().bg(bg),
-                    sign: Style::default().fg(polarity).bg(bg),
-                    content: Style::default().fg(polarity).bg(bg),
-                    fill: Some(bg),
-                }
-            }
-            (ColorTier::Ansi256, false) => {
-                let (bg, gutter_bg) = if added {
-                    (Color::Indexed(194), Color::Indexed(157))
-                } else {
-                    (Color::Indexed(224), Color::Indexed(217))
-                };
-                DiffRowStyle {
-                    gutter: Style::default().fg(Color::Indexed(236)).bg(gutter_bg),
-                    sign: Style::default().fg(polarity).bg(bg),
-                    content: Style::default().bg(bg),
-                    fill: Some(bg),
-                }
-            }
+            };
+        };
+        // Incident: a theme naming one var for success and its diff colour drew +/- rows in the
+        // fill's own colour, a blank band; a pair under 3:1 takes the built-in polarity instead.
+        let built = Self::new(self.tier, self.dark);
+        let polarity = if contrast(polarity, bg).is_none_or(|ratio| ratio >= 3.0) {
+            polarity
+        } else if added {
+            built.success
+        } else {
+            built.error
+        };
+        if self.dark {
+            return DiffRowStyle {
+                gutter: self.dim_style().bg(bg),
+                sign: Style::default().fg(polarity).bg(bg),
+                content: Style::default().fg(polarity).bg(bg),
+                fill: Some(bg),
+            };
+        }
+        let ink = match self.tier {
+            ColorTier::TrueColor => Color::Rgb(0x1f, 0x23, 0x28),
+            ColorTier::Ansi256 | ColorTier::Ansi16 => Color::Indexed(236),
+        };
+        DiffRowStyle {
+            gutter: Style::default().fg(ink).bg(gutter_bg),
+            sign: Style::default().fg(polarity).bg(bg),
+            content: Style::default().bg(bg),
+            fill: Some(bg),
         }
     }
+
+    /// The built-in tint of a changed row and of its gutter, by tier and ground.
+    fn diff_fill(&self, added: bool) -> Option<(Color, Color)> {
+        let rgb = |r, g, b| Color::Rgb(r, g, b);
+        Some(match (self.tier, self.dark, added) {
+            (ColorTier::Ansi16, ..) => return None,
+            (ColorTier::TrueColor, true, true) => (rgb(0x21, 0x3A, 0x2B), rgb(0x21, 0x3A, 0x2B)),
+            (ColorTier::TrueColor, true, false) => (rgb(0x4A, 0x22, 0x1D), rgb(0x4A, 0x22, 0x1D)),
+            (ColorTier::TrueColor, false, true) => (rgb(0xda, 0xfb, 0xe1), rgb(0xac, 0xee, 0xbb)),
+            (ColorTier::TrueColor, false, false) => (rgb(0xff, 0xeb, 0xe9), rgb(0xff, 0xce, 0xcb)),
+            (ColorTier::Ansi256, true, true) => (Color::Indexed(22), Color::Indexed(22)),
+            (ColorTier::Ansi256, true, false) => (Color::Indexed(52), Color::Indexed(52)),
+            (ColorTier::Ansi256, false, true) => (Color::Indexed(194), Color::Indexed(157)),
+            (ColorTier::Ansi256, false, false) => (Color::Indexed(224), Color::Indexed(217)),
+        })
+    }
+}
+
+/// The colour a terminal shows for `color`; the 16 named colours and `Reset` are its own choice.
+pub(crate) fn rgb_of(color: Color) -> Option<(u8, u8, u8)> {
+    let level = |at: u8| [0, 95, 135, 175, 215, 255].get(usize::from(at)).copied();
+    match color {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        Color::Indexed(at @ 16..=231) => {
+            let at = at - 16;
+            Some((level(at / 36)?, level(at / 6 % 6)?, level(at % 6)?))
+        }
+        Color::Indexed(at @ 232..=255) => {
+            let grey = (at - 232).saturating_mul(10).saturating_add(8);
+            Some((grey, grey, grey))
+        }
+        _ => None,
+    }
+}
+
+/// WCAG's contrast ratio between two colours, when the terminal does not choose either.
+pub(crate) fn contrast(one: Color, two: Color) -> Option<f64> {
+    let luminance = |(r, g, b): (u8, u8, u8)| {
+        let linear = |c: u8| {
+            let c = f64::from(c) / 255.0;
+            if c <= 0.039_28 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    };
+    let (one, two) = (luminance(rgb_of(one)?), luminance(rgb_of(two)?));
+    Some((one.max(two) + 0.05) / (one.min(two) + 0.05))
 }
 
 pub const ACCENT_RGB: [(u8, u8, u8); 14] = [

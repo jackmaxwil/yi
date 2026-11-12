@@ -4,7 +4,7 @@ use std::sync::{Mutex, PoisonError};
 use ratatui::text::Line;
 
 use crate::cell::{Cell, TranscriptMode};
-use crate::colors::{ColorTier, Theme};
+use crate::colors::Theme;
 
 /// The source a resize rebuild renders from (§17.3). The bound is the reflow row cap, not a
 /// cell count, since cells differ in height by two orders of magnitude.
@@ -19,7 +19,7 @@ pub struct History {
 /// Incident: a scrolled pane re-rendered every cell each frame, 114 ms deep in a session.
 #[derive(Default)]
 struct Rendered {
-    key: Option<(usize, TranscriptMode, ColorTier, bool, usize)>,
+    key: Option<(usize, TranscriptMode, u64, usize)>,
     start: usize,
     rows: VecDeque<Vec<Line<'static>>>,
     growing: Option<Growing>,
@@ -196,8 +196,7 @@ impl History {
         let key = Some((
             width,
             mode,
-            theme.tier,
-            theme.dark,
+            theme.palette(),
             crate::budget::card_rows(theme.rows, false),
         ));
         if rendered.key != key {
@@ -420,5 +419,32 @@ impl History {
         rows: usize,
     ) -> (Vec<Line<'static>>, Vec<usize>) {
         self.replay_last(width, theme, mode, rows.max(1), rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    fn ink(lines: &[Line<'static>]) -> Option<Color> {
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find_map(|span| span.style.fg)
+    }
+
+    #[test]
+    fn a_new_palette_repaints_a_row_the_cache_already_holds() {
+        let mut history = History::default();
+        history.retain(Cell::Notice {
+            text: "hello".to_owned(),
+        });
+        let mut theme = Theme::new(crate::colors::ColorTier::TrueColor, true);
+        let first = history.replay(40, &theme, TranscriptMode::default(), 20);
+        assert_eq!(ink(&first), Some(theme.warning));
+        theme.warning = Color::Rgb(1, 2, 3);
+        let second = history.replay(40, &theme, TranscriptMode::default(), 20);
+        assert_eq!(ink(&second), Some(Color::Rgb(1, 2, 3)));
     }
 }

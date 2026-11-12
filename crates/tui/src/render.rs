@@ -304,6 +304,7 @@ pub fn layout_chat(
             Some(Bottom::Command(popup) | Bottom::File(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Agents(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Model(popup)) => Some(popup.lines(width, &theme)),
+            Some(Bottom::Theme(picker)) => Some(picker.list.lines(width, &theme)),
             None => None,
         }
     };
@@ -403,7 +404,7 @@ pub fn layout_chat(
         && app.plan_tree.is_none()
         && matches!(
             app.bottom,
-            Some(Bottom::Question(_)) | Some(Bottom::Command(_))
+            Some(Bottom::Question(_) | Bottom::Command(_) | Bottom::Theme(_))
         );
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
         let card = u16::try_from(lines.len()).unwrap_or(composer_height);

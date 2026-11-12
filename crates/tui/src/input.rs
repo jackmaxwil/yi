@@ -123,6 +123,7 @@ fn paste_into(app: &mut App, text: &str) {
         Some(Bottom::File(popup)) => popup.paste(text),
         Some(Bottom::Agents(popup)) => popup.paste(text),
         Some(Bottom::Model(popup)) => popup.paste(text),
+        Some(Bottom::Theme(picker)) => picker.list.paste(text),
         Some(Bottom::Command(_)) => {
             app.composer.handle_paste(text);
             refresh_command_list(app);
@@ -182,6 +183,7 @@ pub(crate) fn handle_bottom_key(
         || (key.code == KeyCodeValue::Esc && in_list)
     {
         close_command_list(app);
+        app.leave_theme_list();
         app.bottom = None;
         return;
     }
@@ -207,9 +209,21 @@ pub(crate) fn handle_bottom_key(
         Bottom::Command(popup) | Bottom::File(popup) => popup.handle_key(key),
         Bottom::Agents(popup) => popup.handle_key(key),
         Bottom::Model(popup) => popup.handle_key(key),
+        Bottom::Theme(picker) => picker.list.handle_key(key),
     };
     match result {
-        PopupResult::Open => app.bottom = Some(bottom),
+        PopupResult::Open => {
+            if let Bottom::Theme(picker) = &mut bottom
+                && let Some(name) = picker
+                    .list
+                    .filtered()
+                    .get(picker.list.selected)
+                    .map(|name| String::from(*name))
+            {
+                app.preview_theme(picker, &name);
+            }
+            app.bottom = Some(bottom);
+        }
         PopupResult::Close => match bottom {
             Bottom::Approval(view, reply) => {
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
@@ -224,6 +238,7 @@ pub(crate) fn handle_bottom_key(
                     app.select(model, effort);
                 }
             }
+            Bottom::Theme(picker) => app.close_theme_list(&picker),
             Bottom::Command(_) | Bottom::File(_) | Bottom::Question(_) => {}
         },
         PopupResult::Insert(text) => match bottom {
@@ -240,6 +255,7 @@ pub(crate) fn handle_bottom_key(
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
             Bottom::Question(_) => send_message(app, cmd_tx, text),
+            Bottom::Theme(mut picker) => app.commit_theme(&mut picker, text.trim()),
             Bottom::Agents(_) | Bottom::Model(_) => {}
         },
     }
@@ -464,6 +480,7 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "editor" => app.pending_editor = true,
         "agents" => app.open_agents(),
         "model" => app.open_model_picker(),
+        "theme" => app.open_theme_list(),
         "advisor" | "plan" | "goal" | "permissions" | "compact" | "sessions" | "heartbeat"
         | "todo" => {
             app.pending_command = Some(if args.is_empty() {

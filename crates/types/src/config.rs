@@ -48,6 +48,7 @@ pub struct UserConfig {
     pub keys: Option<std::collections::BTreeMap<String, String>>,
     pub console: Option<ConsoleConfig>,
     pub tui: Option<TuiConfig>,
+    pub theme: Option<ThemeConfig>,
     pub lanes: Option<crate::lane::LanesConfig>,
     pub catalog: Option<CatalogConfig>,
     pub telemetry: Option<TelemetryConfig>,
@@ -464,6 +465,15 @@ pub enum FollowMode {
 pub struct TuiConfig {
     pub pace: Option<u16>,
     pub follow: Option<FollowMode>,
+}
+
+/// `theme.dark` / `theme.light`: a shipped theme or `~/.yi/themes/<name>.json` for that ground;
+/// unset, the built-in palette.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeConfig {
+    pub dark: Option<String>,
+    pub light: Option<String>,
 }
 
 /// `telemetry.enabled`: write one span per request, tool call, turn and compaction to

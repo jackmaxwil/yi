@@ -6,6 +6,11 @@ use crate::colors::Theme;
 use crate::markdown;
 use crate::wrap::wrap_line;
 
+fn thought_style(theme: &Theme) -> ratatui::style::Style {
+    let style = theme.file_or(crate::colors::Over::Thinking, theme.dim_style());
+    style.add_modifier(Modifier::ITALIC)
+}
+
 const THOUGHT_INDENT: &str = "  ";
 pub(crate) const FOLDED: &str = " · ctrl+o";
 
@@ -24,7 +29,7 @@ pub fn head(
         _ => format!("{}.{}k chars", chars / 1000, chars % 1000 / 100),
     };
     let when = took.map_or_else(String::new, |ms| format!(" · {}", elapsed_label(ms)));
-    let style = theme.dim_style().add_modifier(Modifier::ITALIC);
+    let style = thought_style(theme);
     Line::from(Span::styled(format!("  {word}{when} · {size}{cut}"), style))
 }
 
@@ -38,7 +43,7 @@ pub fn lines(
     mode: TranscriptMode,
     header: bool,
 ) -> Vec<Line<'static>> {
-    let style = theme.dim_style().add_modifier(Modifier::ITALIC);
+    let style = thought_style(theme);
     if mode != TranscriptMode::Verbose {
         return vec![head("thought", markdown, took, FOLDED, theme)];
     }

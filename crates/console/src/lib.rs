@@ -42,7 +42,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
-use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
+use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::drive::{
     Control, Deadline, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
 };
@@ -70,6 +70,7 @@ pub struct ConsoleOptions {
     pub browser: Option<PathBuf>,
     pub chrome_pin: Option<crate::browser::Pinned>,
     pub home: Option<String>,
+    pub theme: Option<yi_types::config::ThemeConfig>,
 }
 
 pub struct DriveOptions {
@@ -226,6 +227,7 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
     span.set("events", count);
     let _tick = yi_types::trace::span("console.tick");
     app.tick(outbound);
+    app.settle_theme_preview();
     title_tick(app);
 }
 
@@ -276,13 +278,7 @@ fn draw<B: Backend>(
 }
 
 pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
-    let theme = Theme::new(
-        detect_tier(
-            std::env::var("COLORTERM").ok().as_deref(),
-            std::env::var("TERM").ok().as_deref(),
-        ),
-        detect_dark(std::env::var("COLORFGBG").ok().as_deref()),
-    );
+    let theme = yi_tui::theme_file::startup(options.theme.as_ref());
     let setup = yi_types::trace::span("console.setup");
     yi_tui::highlight::prewarm();
     let (event_tx, events) = client::events();
@@ -331,7 +327,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let stop_input = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let input = client::spawn_input(event_tx, std::sync::Arc::clone(&stop_input));
     drop(setup);
-    let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme, control);
+    let code = run_interactive(&mut app, &mut terminal, &events, &outbound, control);
     stop_input.store(true, std::sync::atomic::Ordering::SeqCst);
     restore_terminal();
     let _ = input.join();
@@ -344,7 +340,6 @@ fn run_interactive(
     terminal: &mut Terminal<ControlPictures<CrosstermBackend<Stdout>>>,
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     outbound: &Outbound,
-    theme: &Theme,
     mut control: Option<Control>,
 ) -> i32 {
     let mut orb_owners = std::collections::HashMap::new();
@@ -385,16 +380,7 @@ fn run_interactive(
         }
         let mut out = std::io::stdout();
         app.flush_osc(&mut out);
-        if step_frame(
-            app,
-            terminal,
-            theme,
-            &mut scheduler,
-            &mut orb_owners,
-            &mut out,
-        )
-        .is_err()
-        {
+        if step_frame(app, terminal, &mut scheduler, &mut orb_owners, &mut out).is_err() {
             return 1;
         }
     }
@@ -406,14 +392,14 @@ fn run_interactive(
 fn step_frame<B: Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
-    theme: &Theme,
     scheduler: &mut yi_tui::frame::FrameScheduler,
     orb_owners: &mut crate::app::ids::Owners,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
     if scheduler.should_draw(Instant::now()) {
         let start = Instant::now();
-        present(app, terminal, theme, orb_owners, out)?;
+        let theme = app.theme;
+        present(app, terminal, &theme, orb_owners, out)?;
         set_window_title(app);
         app.flush_osc(out);
         scheduler.mark_drawn(start, Instant::now());

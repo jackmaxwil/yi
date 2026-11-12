@@ -1,6 +1,7 @@
 //! The picker's logo masks (`data/logos/*.a8`, 32x32 coverage each) ship as one deflated blob
 //! plus the key table in the same sorted order, so index and name never drift apart.
 //! The highlighter's grammars ship as bat's set cut down to `GRAMMARS` and whatever those embed.
+//! The shipped themes ship as one deflated object, each cut to its `vars` and the keys Yi paints.
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
@@ -8,6 +9,7 @@ use serde_json::Value;
 use syntect::parsing::{SyntaxDefinition, SyntaxSetBuilder};
 
 include!("../runtime/pack.rs");
+include!("theme_keys.rs");
 
 /// The languages fences and edited files name, by bat's grammar name. The rest of bat's 213 were
 /// 590 KB of the binary, Julia, Sass, Less, MATLAB, Lisp and CFML the largest of them.
@@ -83,7 +85,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     std::fs::File::create(out.join("logos.rs"))?.write_all(table.as_bytes())?;
     std::fs::File::create(out.join("grammars.packdump"))?.write_all(&grammars()?)?;
-    Ok(())
+    pack_bytes(&themes()?, &out, "themes")
+}
+
+fn themes() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    println!("cargo::rerun-if-changed=themes");
+    println!("cargo::rerun-if-changed=theme_keys.rs");
+    let mut files = Vec::new();
+    for dir in ["themes", "themes/omp"] {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                files.push(path);
+            }
+        }
+    }
+    let mut all = std::collections::BTreeMap::new();
+    for path in files {
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or("theme stem")?;
+        let theme: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        let colors = theme
+            .get("colors")
+            .and_then(Value::as_object)
+            .ok_or("theme colors")?;
+        let kept: serde_json::Map<String, Value> = colors
+            .iter()
+            .filter(|(key, _)| THEME_KEYS.iter().any(|(read, _)| read == key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let vars = theme.get("vars").cloned().unwrap_or(Value::Null);
+        all.insert(
+            stem.to_owned(),
+            serde_json::json!({"vars": vars, "colors": kept}),
+        );
+    }
+    Ok(serde_json::to_vec(&all)?)
 }
 
 /// A linked grammar points into its set by position (`ContextId`), so a cut set renumbers every
