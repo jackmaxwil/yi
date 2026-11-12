@@ -240,6 +240,7 @@ pub fn transform_messages<'a>(
     let mut pending: Vec<(String, String)> = Vec::new();
     let mut seen_results: HashSet<String> = HashSet::new();
     let mut unmatched: Vec<Content> = Vec::new();
+    let mut sent: HashSet<String> = HashSet::new();
     let synthesize = |pending: &mut Vec<(String, String)>,
                       seen: &mut HashSet<String>,
                       unmatched: &mut Vec<Content>,
@@ -283,13 +284,14 @@ pub fn transform_messages<'a>(
                         _ => None,
                     })
                     .collect();
+                sent.extend(pending.iter().map(|(id, _)| id.clone()));
                 result.push(message);
             }
             AgentMessage::ToolResult {
                 tool_call_id,
                 tool_name,
                 ..
-            } if !pending.iter().any(|(id, _)| id == tool_call_id) => {
+            } if !sent.contains(tool_call_id) => {
                 unmatched.push(unmatched_notice(tool_name));
             }
             AgentMessage::ToolResult { tool_call_id, .. } => {
@@ -316,7 +318,7 @@ pub fn transform_messages<'a>(
 fn unmatched_notice(name: &str) -> Content {
     Content::Text {
         text: format!(
-            "[{name} result omitted: its call was in a reply that failed or was stopped, which this request leaves out; run the tool again for its output]"
+            "[{name} result omitted: the call it answers is not in this request; run the tool again for its output]"
         ),
         text_signature: None,
     }
