@@ -442,6 +442,29 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_this_grounds_list_keeps_the_saved_theme_painted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, _chat, pane, outbound) = listing()?;
+        let built = app.theme.accent;
+        let key = |code| KeyEvent::from(code);
+        app.settings_key(&outbound, key(ratatui::crossterm::event::KeyCode::Down));
+        let chosen = app.theme.accent;
+        app.settings_key(&outbound, key(ratatui::crossterm::event::KeyCode::Enter));
+        app.settle_theme_preview();
+        assert_eq!(
+            app.theme.accent, chosen,
+            "the list closed on Enter while the save was out"
+        );
+        let rows = yi_types::settings::rows();
+        app.absorb_settings(pane, true, &json!({"result": {"rows": rows}}));
+        app.settle_theme_preview();
+        assert_eq!(app.theme.accent, chosen, "the saved theme snapped back");
+        assert_ne!(chosen, built);
+        outbound.shutdown();
+        Ok(())
+    }
+
+    #[test]
     fn saving_the_other_grounds_theme_leaves_this_palette_alone()
     -> Result<(), Box<dyn std::error::Error>> {
         let (mut app, _chat, pane, outbound) = listing()?;
