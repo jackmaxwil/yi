@@ -117,7 +117,8 @@ class Screen:
             self.x, self.wrap = self.cols - 1, True
 
     def csi(self, private: str, params: str, final: str):
-        p = [int(v) if v else 0 for v in params.split(";")] if params else []
+        # A colon sub-parameter (SGR 4:3, the curly underline) counts as its head.
+        p = [int(v.split(":")[0] or 0) for v in params.split(";")] if params else []
         arg = lambda i, d=1: p[i] if i < len(p) and p[i] else d
         self.wrap = False
         last_row, last_col = self.rows - 1, self.cols - 1
