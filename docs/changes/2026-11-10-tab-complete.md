@@ -1,6 +1,11 @@
 ---
 issue: Refs #2142
 cut: none crates/tui/tests/input.rs
+shares: #2137 the imported draft this branch replaces
+shares: #2138 sibling import touching the same composer and console test files, being fixed in its own lane
+shares: #2136 imported draft being split, touches render.rs
+shares: #2135 imported draft touching render.rs
+shares: #2134 imported draft touching the console drive tests
 ledger+: TUI | Tab fills the highlighted slash command into the bordered box with a trailing space, and Enter in the `/` list still runs the highlighted match
 ---
 
