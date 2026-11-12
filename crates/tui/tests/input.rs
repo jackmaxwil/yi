@@ -485,11 +485,20 @@ fn enter_in_the_command_list_runs_the_highlighted_match() -> TestResult {
 #[test]
 fn escape_closes_the_command_list_and_empties_the_box() -> TestResult {
     let mut app = app();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     type_text(&mut app, &tx, "/pl");
+    assert_eq!(
+        app.composer_text(),
+        "/pl",
+        "the typed name lives in the box"
+    );
+    assert!(app.bottom_open());
     press(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
     assert!(!app.bottom_open());
     assert_eq!(app.composer_text(), "");
+    type_text(&mut app, &tx, "hello");
+    enter(&mut app, &tx);
+    assert_eq!(sent(&mut rx), ["prompt hello"]);
     Ok(())
 }
 
@@ -601,24 +610,27 @@ fn an_approval_replacing_the_command_list_leaves_no_stray_text() -> TestResult {
     Ok(())
 }
 
-/// Dies with the list taller than the screen: at 60x9 the box that holds the typed text was
-/// pushed off, so the text was invisible.
+/// Dies with the list taller than the screen: the box that holds the typed text was pushed off,
+/// so the text was invisible. On kitty the orb's five rows sit above the list too.
 #[test]
-fn the_command_list_leaves_the_box_on_a_nine_row_screen() -> TestResult {
-    let mut app = app();
-    app.set_width(60);
-    app.set_rows(9);
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    type_text(&mut app, &tx, "/");
-    let rows = common::rows_sized(&mut app, 60, 9)?;
-    assert!(
-        rows.iter().any(|row| row.starts_with(" │/")),
-        "the box with the typed `/` is on screen: {rows:#?}"
-    );
-    assert!(
-        rows.iter()
-            .any(|row| row.contains("[… ") && row.contains("screen cap")),
-        "the cut is named: {rows:#?}"
-    );
+fn the_command_list_leaves_the_box_on_a_short_screen() -> TestResult {
+    for (kitty, height) in [(false, 9), (true, 15)] {
+        let mut app = app();
+        app.set_width(60);
+        app.set_rows(height);
+        app.set_kitty(kitty);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        type_text(&mut app, &tx, "/");
+        let rows = common::rows_sized(&mut app, 60, u16::try_from(height)?)?;
+        assert!(
+            rows.iter().any(|row| row.starts_with(" │/")),
+            "kitty {kitty}: the box with the typed `/` is on screen: {rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("[… ") && row.contains("screen cap")),
+            "kitty {kitty}: the cut is named: {rows:#?}"
+        );
+    }
     Ok(())
 }

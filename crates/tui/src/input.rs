@@ -60,6 +60,11 @@ pub fn handle_terminal_event(
                 handle_plan_tree_key(app, &key);
                 return;
             }
+            if matches!(app.bottom, Some(Bottom::Command(_))) && types_into_box(&key) {
+                edit_composer(app, &key, key_event);
+                refresh_command_list(app);
+                return;
+            }
             if app.bottom.is_some() {
                 handle_bottom_key(app, cmd_tx, &key);
                 app.open_questions();
@@ -103,14 +108,8 @@ pub fn handle_terminal_event(
                         app.bottom = Some(Bottom::Command(command_list(String::new())));
                     } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
                         app.bottom = Some(Bottom::File(file_picker(&app.options.cwd)));
-                    } else if key.code == KeyCodeValue::Backspace
-                        && !key.ctrl
-                        && !key.alt
-                        && !key_event.modifiers.contains(KeyModifiers::SUPER)
-                    {
-                        app.composer.backspace();
                     } else if !filled {
-                        app.composer.input(key_event);
+                        edit_composer(app, &key, key_event);
                     }
                 }
             }
@@ -173,16 +172,27 @@ pub(crate) fn handle_bottom_key(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
     key: &SingleKey,
 ) {
-    if key.code == KeyCodeValue::Char('c')
+    let in_list = matches!(app.bottom, Some(Bottom::Command(_)));
+    if (key.code == KeyCodeValue::Char('c')
         && key.ctrl
-        && !matches!(app.bottom, Some(Bottom::Approval(..)))
+        && !matches!(app.bottom, Some(Bottom::Approval(..))))
+        || (key.code == KeyCodeValue::Esc && in_list)
     {
         close_command_list(app);
         app.bottom = None;
         return;
     }
-    if matches!(app.bottom, Some(Bottom::Command(_))) {
-        handle_command_list(app, cmd_tx, key);
+    if let Some(Bottom::Command(popup)) = &app.bottom
+        && key.code == KeyCodeValue::Tab
+    {
+        let name = popup
+            .filtered()
+            .get(popup.selected)
+            .map(|name| (*name).clone());
+        if let (Some(name), false) = (name, key.ctrl || key.alt || key.shift) {
+            app.composer.set_text(&format!("/{name} "));
+            app.bottom = None;
+        }
         return;
     }
     let Some(mut bottom) = app.bottom.take() else {
@@ -214,7 +224,10 @@ pub(crate) fn handle_bottom_key(
             Bottom::Command(_) | Bottom::File(_) | Bottom::Question(_) => {}
         },
         PopupResult::Insert(text) => match bottom {
-            Bottom::Command(_) => submit_line(app, cmd_tx, text),
+            Bottom::Command(_) => {
+                app.composer.set_text("");
+                submit_line(app, cmd_tx, text);
+            }
             Bottom::File(_) => {
                 app.composer
                     .textarea
@@ -379,66 +392,25 @@ fn refresh_command_list(app: &mut App) {
     }
 }
 
-/// Keys for the command list edit the bordered composer. Tab fills the highlighted name there.
-fn handle_command_list(
-    app: &mut App,
-    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
-    key: &SingleKey,
-) {
-    let Some(mut bottom) = app.bottom.take() else {
-        return;
-    };
-    let Bottom::Command(popup) = &mut bottom else {
-        app.bottom = Some(bottom);
-        return;
-    };
-    match key.code {
-        KeyCodeValue::Esc => {
-            if !popup.keep_draft {
-                app.composer.set_text("");
-            }
-        }
-        KeyCodeValue::Up => {
-            popup.selected = popup.selected.saturating_sub(1);
-            app.bottom = Some(bottom);
-        }
-        KeyCodeValue::Down => {
-            if popup.selected + 1 < popup.filtered().len() {
-                popup.selected += 1;
-            }
-            app.bottom = Some(bottom);
-        }
-        KeyCodeValue::Tab if !key.ctrl && !key.alt && !key.shift => {
-            if let Some(name) = popup.filtered().get(popup.selected) {
-                app.composer.set_text(&format!("/{name} "));
-            }
-        }
-        KeyCodeValue::Enter => {
-            let line = popup
-                .filtered()
-                .get(popup.selected)
-                .map(|name| format!("/{name}"));
-            if let Some(line) = line {
-                app.composer.set_text("");
-                submit_line(app, cmd_tx, line);
-            }
-        }
-        KeyCodeValue::Backspace => {
-            app.composer.backspace();
-            app.bottom = Some(bottom);
-            refresh_command_list(app);
-        }
-        KeyCodeValue::Char(character) if !key.ctrl && !key.alt => {
-            app.composer.textarea.insert_str(character.to_string());
-            app.bottom = Some(bottom);
-            refresh_command_list(app);
-        }
-        KeyCodeValue::Space => {
-            app.composer.textarea.insert_str(" ");
-            app.bottom = Some(bottom);
-            refresh_command_list(app);
-        }
-        _ => app.bottom = Some(bottom),
+/// Every key but these five edits the box; these go to the list's own key table.
+fn types_into_box(key: &SingleKey) -> bool {
+    let list_key = matches!(
+        key.code,
+        KeyCodeValue::Esc | KeyCodeValue::Up | KeyCodeValue::Down | KeyCodeValue::Enter
+    ) || key.code == KeyCodeValue::Tab
+        || (key.ctrl && key.code == KeyCodeValue::Char('c'));
+    !list_key
+}
+
+fn edit_composer(app: &mut App, key: &SingleKey, key_event: ratatui::crossterm::event::KeyEvent) {
+    let plain_backspace = key.code == KeyCodeValue::Backspace
+        && !key.ctrl
+        && !key.alt
+        && !key_event.modifiers.contains(KeyModifiers::SUPER);
+    if plain_backspace {
+        app.composer.backspace();
+    } else {
+        app.composer.input(key_event);
     }
 }
 
