@@ -3344,6 +3344,9 @@ fn a_changed_hue_under_a_live_key_is_transmitted_again() {
     for verb in ["a=t", "a=p"] {
         assert!(written.contains(verb), "{written:?}");
     }
+    let mut again = Vec::new();
+    avatars.sync(&mut again, std::slice::from_ref(&place));
+    assert!(again.is_empty(), "a retransmitted hue is sent once");
 }
 
 fn wire_child(name: &str, status: &str, flag: Option<Value>) -> Value {
@@ -4084,7 +4087,7 @@ fn an_old_daemon_is_named_when_the_resume_brings_no_replay() -> TestResult {
 
 /// Unnamed sessions take their tile letters from the id and their colour from the folder.
 #[test]
-fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
+fn unnamed_rows_take_id_letters_and_the_folder_hue() -> TestResult {
     use yi_console::app::App;
     use yi_console::model::{SessionId, SessionRow, SessionStatus};
     use yi_tui::colors::{ColorTier, Theme, name_accent};
