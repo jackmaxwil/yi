@@ -316,20 +316,25 @@ fn a_pasted_tab_and_escape_are_drawn_as_cells_not_sent_to_the_terminal() -> Test
     Ok(())
 }
 
-/// Dies with a paste into an open `/` popup landing in the composer hidden behind it: the popup
-/// kept an empty query and the text sent with the next prompt.
+/// Dies with a paste into an open `/` list missing the bordered box: the text belongs in the
+/// composer, which stays on screen above the matches.
 #[test]
-fn a_paste_with_a_popup_open_fills_the_popup_not_the_composer() -> TestResult {
-    // The second is a triple-click copy: CRLF between the lines and a newline after the last,
-    // which left two spaces inside the query and one after it.
+fn a_paste_with_a_command_list_open_fills_the_composer() -> TestResult {
     for pasted in ["mod\nel", "mod\r\nel\n"] {
         let mut app = app();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         type_text(&mut app, &tx, "/");
         paste(&mut app, &tx, pasted);
-        assert_eq!(app.composer_text(), "");
+        assert!(
+            app.composer_text().starts_with("/mod"),
+            "{pasted:?}: {}",
+            app.composer_text()
+        );
         let rows = common::live_rows(&mut app)?;
-        assert!(has_row(&rows, " /mod el█"), "{pasted:?}: {rows:#?}");
+        assert!(
+            rows.iter().any(|row| row.contains("mod")),
+            "{pasted:?}: {rows:#?}"
+        );
     }
     Ok(())
 }

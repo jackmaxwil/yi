@@ -3,7 +3,7 @@
 use crate::{AgentSession, PermissionMode};
 
 /// The verbs a host advertises; `/pr` and `/base` still answer, as pointers to `/land`.
-pub const SESSION_VERBS: [&str; 11] = [
+pub const SESSION_VERBS: [&str; 12] = [
     "advisor",
     "plan",
     "goal",
@@ -15,6 +15,7 @@ pub const SESSION_VERBS: [&str; 11] = [
     "heartbeat",
     "todo",
     "learn",
+    "queue",
 ];
 
 pub fn split(line: &str) -> (&str, &str) {
@@ -80,6 +81,7 @@ pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> 
         "heartbeat" => heartbeat(session, args),
         "todo" => todo(session, args),
         "learn" => learn(session, args),
+        "queue" => queue(session, args),
         _ => return None,
     })
 }
@@ -87,6 +89,21 @@ pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> 
 /// Invariant: the verb writes nothing itself; the turn it starts follows the learn skill, which
 /// writes memory and the refine queue only, never a prompt, rule or skill.
 pub const LEARN: &str = "/learn: read(\"yi://skills/learn\") and follow it over this session: save what should outlive it as memory, and queue at most three refine variants, each quoting the line of this session that backs it.";
+
+/// A follow-up, not a steer: it waits for the running turn to finish, and starts one when idle.
+fn queue(session: &AgentSession, args: &str) -> String {
+    let text = args.trim();
+    if text.is_empty() {
+        return "/queue needs the message to run next".to_owned();
+    }
+    let running = session.status() == crate::Status::Running;
+    session.follow_up(text);
+    if running {
+        "/queue: queued to run after this turn".to_owned()
+    } else {
+        "/queue: started".to_owned()
+    }
+}
 
 fn learn(session: &AgentSession, args: &str) -> String {
     let text = format!("{LEARN} {args}");
@@ -315,5 +332,89 @@ pub fn landing_line(landing: &yi_types::lane::Landing) -> String {
             format!("PR {pr} open · {jobs}{behind}")
         }
         Landing::Merged { pr } => format!("PR {pr} merged"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use yi_ai::faux::{faux_assistant_message, faux_model, faux_text};
+    use yi_types::message::StopReason;
+
+    use crate::provider::ProviderStream;
+    use crate::session::{AgentSession, SessionConfig};
+
+    fn idle_session() -> AgentSession {
+        let provider = Arc::new(ProviderStream::new(None));
+        provider.queue_faux(vec![faux_assistant_message(
+            vec![faux_text("taken")],
+            StopReason::Stop,
+        )]);
+        AgentSession::new(
+            SessionConfig {
+                system_prompt: String::new(),
+                model: faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            provider,
+        )
+    }
+
+    #[tokio::test]
+    async fn queue_on_an_idle_session_starts_that_message() {
+        let session = idle_session();
+        let said = super::run(&session, "queue", "one more thing").expect("queue is a verb");
+        assert_eq!(said, "/queue: started");
+        session.wait_idle().await;
+        let asked = format!("{:?}", session.messages());
+        assert!(asked.contains("one more thing"), "{asked}");
+    }
+
+    #[tokio::test]
+    async fn queue_during_a_turn_waits_until_that_turn_ends() {
+        let provider = Arc::new(ProviderStream::new(None));
+        let reply = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+        provider.queue_faux_timed(vec![
+            (reply("first"), std::time::Duration::from_millis(200)),
+            (reply("second"), std::time::Duration::from_millis(0)),
+        ]);
+        let session = AgentSession::new(
+            SessionConfig {
+                system_prompt: String::new(),
+                model: faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            provider,
+        );
+        session.prompt("start").expect("the first turn starts");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while session.status() != crate::Status::Running {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the turn never started"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let said = super::run(&session, "queue", "after this").expect("queue is a verb");
+        assert_eq!(said, "/queue: queued to run after this turn");
+        session.wait_idle().await;
+        let asked = format!("{:?}", session.messages());
+        assert!(asked.contains("after this"), "{asked}");
+    }
+
+    #[tokio::test]
+    async fn queue_with_no_message_starts_nothing() {
+        let session = idle_session();
+        let said = super::run(&session, "queue", "  ").expect("queue is a verb");
+        assert_eq!(said, "/queue needs the message to run next");
+        assert!(
+            !format!("{:?}", session.messages()).contains("one more thing"),
+            "{:?}",
+            session.messages()
+        );
+        assert_eq!(session.status(), crate::Status::Idle);
     }
 }
