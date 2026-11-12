@@ -136,7 +136,10 @@ fn count(plan: &Plan, name: TodoStateName) -> usize {
         .count()
 }
 
-/// One line for the advisor digest header: states and counts only.
+const UNCHECKED_DONE_MAX: usize = 4;
+
+/// Invariant: the advisor digest stays one line; unchecked completion cuts name the cap
+/// and the call that restores the full list.
 pub fn summary_line(plan: &Plan) -> String {
     let mut line = format!(
         "plan {} v{} touched {}: {} ready, {} running, {} blocked, {} done of {}",
@@ -156,6 +159,30 @@ pub fn summary_line(plan: &Plan) -> String {
     let abandoned = count(plan, TodoStateName::Abandoned);
     if abandoned > 0 {
         line.push_str(&format!(", {abandoned} abandoned"));
+    }
+    let mut unchecked = Vec::with_capacity(UNCHECKED_DONE_MAX);
+    let mut unchecked_total = 0;
+    for todo in &plan.todos {
+        if matches!(todo.state, TodoState::Done { .. }) && todo.contract.is_none() {
+            unchecked_total += 1;
+            if unchecked.len() < UNCHECKED_DONE_MAX {
+                unchecked.push(todo.label.as_str());
+            }
+        }
+    }
+    if unchecked_total > 0 {
+        line.push_str(&format!(", done unchecked: {}", unchecked.join(", ")));
+        if unchecked_total > unchecked.len() {
+            line.push(' ');
+            line.push_str(&yi_tools::cut_row(
+                unchecked.len(),
+                unchecked_total,
+                "unchecked Done todos",
+                "UNCHECKED",
+                UNCHECKED_DONE_MAX,
+                r#"plan {"op":"view","full":true}"#,
+            ));
+        }
     }
     line
 }

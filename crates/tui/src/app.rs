@@ -1005,6 +1005,7 @@ pub fn run_tui(
             last_todo_full = todo_full;
             app.scheduler.request();
         }
+
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
         crate::render::step_frame(&mut app, &mut terminal, Some(&port), &mut images);
     }

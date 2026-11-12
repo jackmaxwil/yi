@@ -314,6 +314,8 @@ pub struct Todo {
     pub state: TodoState,
     pub delegation: Option<Delegation>,
     pub subplan: Option<PlanId>,
+    /// Invariant: a `plan.split` child carries its parent and cannot itself be split.
+    pub split_parent: Option<TodoLabel>,
     pub retries: RetryCount,
     /// Grouping only: a child has a label and a state, never an edge, a delegation or a
     /// sub-plan of its own, and the whole tree is replaced by one `set`.
@@ -326,6 +328,14 @@ pub struct Todo {
     pub attempt: AttemptId,
     /// Refused transitions on this todo, saturating at the cap the reducer names.
     pub refusals: u32,
+    /// Invariant: only failed product verdicts advance this count; stale and abstained checks do not.
+    pub red_count: u8,
+    /// Fingerprint of the latest failure for a repeated-evidence premise hint.
+    pub red_fingerprint: Option<Digest>,
+    /// Whether the latest failed verification matched the preceding failure fingerprint.
+    pub red_repeat: bool,
+    /// Invariant: one structural change buys one claim, consumed by the next admitted verification.
+    pub readmit: bool,
     /// What `done` verifies; a todo without one is completed on the caller's word alone.
     pub contract: Option<Contract>,
     /// The contract's canonical digest as frozen at `start`; a `done` whose contract digests
@@ -346,7 +356,12 @@ impl Todo {
             after: Vec::new(),
             state: TodoState::Pending,
             delegation: None,
+            split_parent: None,
             subplan: None,
+            red_count: 0,
+            red_fingerprint: None,
+            red_repeat: false,
+            readmit: false,
             retries: RetryCount::default(),
             children: Vec::new(),
             note: None,
@@ -474,12 +489,22 @@ struct TodoRepr {
     delegation: Option<Delegation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subplan: Option<PlanId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    split_parent: Option<TodoLabel>,
     #[serde(default, skip_serializing_if = "RetryCount::is_zero")]
     retries: RetryCount,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     children: Vec<TodoRepr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<Note>,
+    #[serde(default)]
+    red_count: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    red_fingerprint: Option<Digest>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    red_repeat: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    readmit: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     evidence: Option<String>,
     /// Defaults exist for the format-1 reader alone; the format-2 schema requires both.
@@ -540,6 +565,11 @@ impl From<Todo> for TodoRepr {
             after: todo.after,
             delegation: todo.delegation,
             subplan: todo.subplan,
+            split_parent: todo.split_parent,
+            red_count: todo.red_count,
+            red_fingerprint: todo.red_fingerprint,
+            red_repeat: todo.red_repeat,
+            readmit: todo.readmit,
             retries: todo.retries,
             children: todo.children.into_iter().map(Self::from).collect(),
             note: todo.note,
@@ -628,6 +658,11 @@ impl TryFrom<TodoRepr> for Todo {
             state,
             delegation: repr.delegation,
             subplan: repr.subplan,
+            split_parent: repr.split_parent,
+            red_count: repr.red_count,
+            red_fingerprint: repr.red_fingerprint,
+            red_repeat: repr.red_repeat,
+            readmit: repr.readmit,
             retries: repr.retries,
             children,
             note: repr.note,
