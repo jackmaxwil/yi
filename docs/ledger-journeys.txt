@@ -663,11 +663,11 @@ permission modes/rules/holds, deterministic auto | `cli_surfaces::a_headless_den
 skill classifier | `session_faux::three_approval_failures_deliver_one_breaker_notice`
 kernel + ipython + rlm() subagents | `kernel_bootstrap::tests::the_note_points_at_help_on_one_name`
 skills: catalog ladder, `$name`, Yi's triggered skills | `skills_e2e::every_skill_file_the_binary_ships_is_under_a_skill_root`
-custom OpenAI-compatible providers | `custom_providers::a_declared_provider_streams_through_its_own_base_url_and_key` (T2)
-custom OpenAI-compatible providers | `custom_providers::a_declared_provider_with_no_key_is_refused_before_any_request` (T2)
-custom OpenAI-compatible providers | `custom_providers::a_custom_provider_named_like_a_built_in_one_is_refused_at_load` (T2)
-custom OpenAI-compatible providers | `custom_providers::a_catalog_cache_leaves_the_declared_models_in_place` (T2)
-custom OpenAI-compatible providers | `custom_providers::a_literal_api_key_is_the_bearer` (T2)
+custom providers | `custom_providers::a_declared_provider_streams_through_its_own_base_url_and_key` (T2)
+custom providers | `custom_providers::a_declared_provider_with_no_key_is_refused_before_any_request` (T2)
+custom providers | `custom_providers::a_custom_provider_named_like_a_built_in_one_is_refused_at_load` (T2)
+custom providers | `custom_providers::a_catalog_cache_leaves_the_declared_models_in_place` (T2)
+custom providers | `custom_providers::a_literal_api_key_is_the_bearer` (T2)
 cache marks and TTL from the session ledger | `cache_miss::the_cheapest_ttl_tracks_the_better_static_ttl_on_known_gap_mixes` (T0)
 cache marks and TTL from the session ledger | `cache_miss::an_upstream_pin_needs_two_switch_misses_inside_half_an_hour` (T0)
 cache marks and TTL from the session ledger | `cache_miss::four_zero_read_writes_stop_the_tail_mark_for_an_hour` (T0)
@@ -747,3 +747,4 @@ pure loop + event enum | `journeys::a_failed_edit_leaves_its_test_unrun` (T2)
 host-written memory (one file per fact, hook index) | `session_faux::learn_starts_a_turn_that_opens_its_skill_with_the_users_focus` (T1)
 host-written memory (one file per fact, hook index) | `input::learn_is_sent_as_a_prompt_that_opens_its_skill` (T0)
 tool results left without their call | `build_params_conformance::a_result_whose_reply_failed_reaches_every_wire_as_a_notice` (T0)
+custom providers | `custom_providers::a_declared_api_picks_the_wire_and_its_key_is_the_bearer` (T2)

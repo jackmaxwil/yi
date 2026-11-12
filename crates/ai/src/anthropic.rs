@@ -827,7 +827,7 @@ fn run_request(
         ""
     };
     let url = format!("{}/v1/messages{beta}", model.base_url);
-    let base = if oauth {
+    let base = if oauth || crate::compat::compat_bool(model, "bearerAuth", false) {
         vec![
             ("authorization", format!("Bearer {api_key}")),
             ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
