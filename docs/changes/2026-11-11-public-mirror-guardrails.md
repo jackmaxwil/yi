@@ -1,4 +1,6 @@
 ---
+version: 0.1029.0
+decisions: D586
 issue: Closes #2141
 cut: none scripts/guardrails/check_scan.py
 shares: #2135 the imported Max drafts carry the same mirror skip hunks; this branch is their split-out replacement

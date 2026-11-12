@@ -1,4 +1,5 @@
 ---
+version: 0.1030.0
 issue: Closes #2143
 raise: crate ai +35, tests +62, comments +2
 shares: #2136 the GitHub #6 import draft this splits out; its Responses-only repair is replaced here
