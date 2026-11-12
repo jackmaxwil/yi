@@ -11,6 +11,7 @@ shares: #2138 its docs/YI_DESIGN.md hunks sit past line 1250, far from the secti
 shares: #2139 its docs/YI_DESIGN.md hunks sit past line 1250, far from the section 13 lines this PR edits
 shares: #2150 its docs/YI_DESIGN.md hunks sit past line 1250, far from the section 13 lines this PR edits
 shares: #2152 its docs/YI_DESIGN.md hunks sit past line 1250, far from the section 13 lines this PR edits
+shares: #2153 its docs/YI_DESIGN.md hunk is in the permission section near line 680, far from the section 13 lines this PR edits
 ledger+: plan: git-tracked document + step table + dispatch | two red verdicts on an attempt refuse the next `done` before its check until a `split` (one level, the parent held until its children finish) or an `append` with `for_task`, and the cap-th asks the user, whose `unblock` buys one claim
 ---
 A plan todo whose contract keeps failing now has to change course before it is claimed again. After two red verdicts on one attempt, the next `done` is refused before its check runs, and the refusal names the two ways out: `split` the todo into one to four children, which the parent then waits for, or `append` todos with `for_task` naming it. Either buys one claim. The third red blocks the todo on the user as before, and the user's unblock now buys one more claim instead of leaving the todo pending with every later `done` refused. A `split` or targeted `append` that would buy nothing is refused with the rung it met. `plan.done_refusal_cap` moves both gated rungs.
