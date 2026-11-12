@@ -390,6 +390,7 @@ pub fn options() -> yi_tui::app::TuiOptions {
         initial_prompt: None,
         pace: 0,
         follow: yi_types::config::FollowMode::default(),
+        assist: None,
     }
 }
 

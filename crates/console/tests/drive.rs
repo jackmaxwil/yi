@@ -694,6 +694,7 @@ fn run_console(
             project_order,
             home: Some(drive_home().display().to_string()),
             theme: None,
+            assist: None,
         },
         DriveOptions {
             script: steps,
@@ -740,6 +741,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             project_order: Vec::new(),
             home: Some(drive_home().display().to_string()),
             theme: None,
+            assist: None,
         },
         DriveOptions {
             script: steps,

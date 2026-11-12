@@ -75,6 +75,7 @@ impl App {
             initial_prompt: None,
             pace: self.state.chat_pace,
             follow: self.state.chat_follow,
+            assist: self.state.chat_assist.clone(),
         };
         let theme = yi_tui::colors::Theme {
             run: true,

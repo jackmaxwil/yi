@@ -82,7 +82,7 @@ for (;;) {
     var line = held.slice(0, nl), reply;
     held = held.slice(nl + 1);
     var q = {id: -1};
-    try { q = JSON.parse(line); reply = {id: q.id, out: answer(q.op, q.text)}; } catch (e) { reply = {id: q.id, out: []}; }
+    try { q = JSON.parse(line); reply = {id: q.id, out: answer(q.op, q.text)}; } catch (e) { reply = {id: q.id, out: null}; }
     out.writeData($(JSON.stringify(reply) + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
   }
 }"#;
@@ -151,6 +151,10 @@ impl Speller {
             let Some((ask, text, _)) = self.asked.remove(&id) else {
                 continue;
             };
+            // A request the checker failed on is not an answer: the next sync asks it again.
+            if out.is_null() {
+                continue;
+            }
             if self.known.len() >= KNOWN {
                 self.known.clear();
             }

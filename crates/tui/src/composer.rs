@@ -55,7 +55,7 @@ impl Default for Composer {
             search: None,
             wrap_width: 80,
             top: 0,
-            assist: crate::assist::Assist::installed(),
+            assist: crate::assist::Assist::default(),
             recalled: false,
             group: None,
         }

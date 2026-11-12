@@ -68,14 +68,6 @@ pub trait Engine: Send {
     }
 }
 
-static INSTALLED: OnceLock<(AssistSettings, std::path::PathBuf)> = OnceLock::new();
-
-/// Arms the native engines and the word list from `sessions` for this process. A headless
-/// drive never calls it, so its frames never depend on the machine's dictionary or history.
-pub fn install(settings: AssistSettings, sessions: std::path::PathBuf) {
-    let _ = INSTALLED.set((settings, sessions));
-}
-
 /// Where the cursor sits and what the edit was, for [`Assist::sync`].
 pub struct At<'a> {
     pub text: &'a str,
@@ -100,6 +92,7 @@ pub struct Assist {
     settings: AssistSettings,
     engine: Option<Box<dyn Engine>>,
     words: Arc<OnceLock<Words>>,
+    sessions: Option<std::path::PathBuf>,
     text: String,
     marks: Vec<(usize, Range<usize>)>,
     ghost: String,
@@ -123,6 +116,7 @@ impl Assist {
             settings,
             engine,
             words,
+            sessions: None,
             text: String::new(),
             marks: Vec::new(),
             ghost: String::new(),
@@ -137,12 +131,15 @@ impl Assist {
         }
     }
 
-    /// What [`install`] armed; with nothing installed, lists only.
-    pub fn installed() -> Self {
-        match INSTALLED.get() {
-            Some((settings, _)) => Self::new(*settings, engine::apple(settings), engine::words()),
-            None => Self::new(AssistSettings::DEFAULT, None, Arc::default()),
-        }
+    /// The native engines and the word list from a sessions root. A headless drive passes
+    /// `None` and gets lists only, so its frames never depend on the machine.
+    pub fn native(native: Option<(AssistSettings, std::path::PathBuf)>) -> Self {
+        let Some((settings, sessions)) = native else {
+            return Self::new(AssistSettings::DEFAULT, None, Arc::default());
+        };
+        let mut assist = Self::new(settings, engine::apple(&settings), engine::words());
+        assist.sessions = Some(sessions);
+        assist
     }
 
     pub(crate) fn set_styles(&mut self, typo: Style, dim: Style) {
@@ -204,7 +201,7 @@ impl Assist {
     /// Invariant: a list opens only on an edit the user typed. A recalled history entry or a
     /// paste never opens one, so the next arrow still walks history.
     pub fn sync(&mut self, at: &At<'_>) {
-        if let Some((_, sessions)) = INSTALLED.get() {
+        if let Some(sessions) = &self.sessions {
             engine::load_words(&self.words, sessions);
         }
         let line = at.text.split('\n').nth(at.row).unwrap_or_default();
@@ -459,7 +456,7 @@ impl Assist {
 
 impl Default for Assist {
     fn default() -> Self {
-        Self::installed()
+        Self::native(None)
     }
 }
 

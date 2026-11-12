@@ -71,6 +71,7 @@ pub struct ConsoleOptions {
     pub chrome_pin: Option<crate::browser::Pinned>,
     pub home: Option<String>,
     pub theme: Option<yi_types::config::ThemeConfig>,
+    pub assist: Option<(yi_tui::assist::AssistSettings, PathBuf)>,
 }
 
 pub struct DriveOptions {
@@ -783,6 +784,7 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.side.order = options.project_order.clone();
     app.state.chat_pace = options.pace;
     app.state.chat_follow = options.follow;
+    app.state.chat_assist = options.assist.clone();
     app.state.follow_fallback = options.follow;
     app.state.home.clone_from(&options.home);
     app.state.chrome =

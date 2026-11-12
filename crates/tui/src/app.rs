@@ -339,6 +339,7 @@ impl App {
             follow,
             pane_rows: PaneRows::default(),
         };
+        app.set_assist(crate::assist::Assist::native(app.options.assist.clone()));
         app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
         app

@@ -12,6 +12,8 @@ pub struct TuiOptions {
     /// The streamed reveal's speed as a percentage of the default; 0 paints text on arrival.
     pub pace: u16,
     pub follow: yi_types::config::FollowMode,
+    /// The native engines' settings and the sessions root the word list reads.
+    pub assist: Option<(crate::assist::AssistSettings, std::path::PathBuf)>,
 }
 
 impl App {

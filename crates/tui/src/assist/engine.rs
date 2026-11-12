@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,9 +63,10 @@ impl Engine for Apple {
     }
 }
 
-/// The user's own words, counted, from the prompts of their recent sessions.
+/// The user's own words, counted, from their recent prompts; ordered, so a prefix is a range of
+/// the vocabulary rather than a scan of all of it.
 #[derive(Debug, Default)]
-pub struct Words(HashMap<String, u32>);
+pub struct Words(BTreeMap<String, u32>);
 
 const SESSIONS: usize = 16;
 /// Incident: a session's second line carries the whole system prompt, over 64 KiB, so a 64 KiB
@@ -92,10 +93,9 @@ impl Words {
     /// The rest of the most used word that starts with `prefix`.
     pub fn suffix(&self, prefix: &str) -> Option<String> {
         let prefix = prefix.to_lowercase();
-        let longer = self
-            .0
-            .iter()
-            .filter(|(word, _)| word.len() > prefix.len() && word.starts_with(&prefix));
+        let started = self.0.range(prefix.clone()..);
+        let longer = (started.take_while(|(word, _)| word.starts_with(&prefix)))
+            .filter(|(word, _)| word.len() > prefix.len());
         let best = longer.max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))?;
         best.0.get(prefix.len()..).map(str::to_owned)
     }

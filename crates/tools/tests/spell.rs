@@ -89,6 +89,27 @@ fn an_error_reply_costs_one_request_and_the_peer_answers_the_next() {
     assert_eq!(spans, Some(Answer::Spans(std::iter::once(2..7).collect())));
 }
 
+/// Dies with a line blind for the session: a request the checker failed on was kept as an
+/// empty answer, so the line was never asked again and its marks never came.
+#[test]
+fn a_failed_request_is_asked_again_and_its_marks_arrive() {
+    let mut peer = yi_tools::command("sh");
+    peer.args([
+        "-c",
+        r#"out=null; while read -r line; do id=$(printf '%s' "$line" | sed 's/^{"id":\([0-9]*\).*/\1/'); printf '{"id":%s,"out":%s}\n' "$id" "$out"; out='[[2,5]]'; done"#,
+    ]);
+    let mut speller = Speller::spawn(peer);
+    let until = Instant::now() + DEADLINE;
+    let mut spans = None;
+    while spans.is_none() && Instant::now() < until {
+        speller.poll(Instant::now());
+        spans = speller.ask(Ask::Check, "a blorp", Instant::now()).cloned();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(speller.alive());
+    assert_eq!(spans, Some(Answer::Spans(std::iter::once(2..7).collect())));
+}
+
 /// Dies with a missing checker read as one still starting: the peer that never spawned leaves
 /// spelling absent, not waiting.
 #[test]
