@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use yi_tui::colors::Theme;
-use yi_tui::theme_file::{BUILT_IN, is_theme_row};
+use yi_tui::theme_file::{BUILT_IN, ground_id, is_theme_row};
 use yi_types::acp::AcpConfigOption;
 use yi_types::settings::{Applies, SettingKind, SettingRow, TABS, pane_edits_list};
 
@@ -573,12 +573,9 @@ pub(crate) fn targets(
     let total = count(settings, options);
     let (first, room) = window(settings, usize::from(inner.height));
     let top = inner.y.saturating_add(2);
+    let listed = list_height(settings);
     for row in first..total.min(first.saturating_add(room)) {
-        let below = if row > settings.cursor {
-            list_height(settings)
-        } else {
-            0
-        };
+        let below = if row > settings.cursor { listed } else { 0 };
         let offset = u16::try_from(row.saturating_sub(first).saturating_add(below)).unwrap_or(0);
         out.push((
             Rect::new(inner.x, top.saturating_add(offset), inner.width, 1),
@@ -737,10 +734,17 @@ pub fn view(
             Style::default().fg(theme.warning),
         ));
     }
+    let listing = theme_list_open(settings).map(|id| id == ground_id(theme.dark));
     let hint = match (&settings.edit, settings.tab) {
         (Some(Edit::Type(_)), _) => " type · enter save · empty unsets · esc cancel",
-        (Some(Edit::Pick { .. }), _) if theme_list_open(settings).is_some() => {
+        (Some(Edit::Pick { .. }), _) if listing == Some(true) => {
             " ↑↓ preview · enter save · esc restore"
+        }
+        (Some(Edit::Pick { .. }), _) if listing == Some(false) && theme.dark => {
+            " ↑↓ choose · enter saves it for a light terminal · esc cancel"
+        }
+        (Some(Edit::Pick { .. }), _) if listing == Some(false) => {
+            " ↑↓ choose · enter saves it for a dark terminal · esc cancel"
         }
         (Some(Edit::Pick { .. }), _) => " ↑↓ choose · enter save · esc cancel",
         (None, SESSION) => " ↑↓ move · ←→ tab · enter change · d make default",
@@ -751,16 +755,13 @@ pub fn view(
     lines
 }
 
-const LISTED: usize = 8;
-
 /// The open theme list under its row: the first name shown, how many, and how many exist.
 fn list_span(settings: &Settings) -> Option<(usize, usize, usize)> {
     theme_list_open(settings)?;
     let Some(Edit::Pick { options, cursor }) = &settings.edit else {
         return None;
     };
-    let start = cursor.saturating_sub(LISTED.saturating_sub(1));
-    let shown = options.len().saturating_sub(start).min(LISTED);
+    let (start, shown) = yi_tui::popup::window(*cursor, options.len());
     Some((start, shown, options.len()))
 }
 
@@ -1012,6 +1013,19 @@ mod theme_rows {
         );
         let last = texts.last().map(String::as_str);
         assert_eq!(last, Some(" ↑↓ preview · enter save · esc restore"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_other_grounds_list_says_it_only_saves() -> TestResult {
+        let mut settings = on_dark_theme()?;
+        settings.cursor = settings.cursor.saturating_add(1);
+        press(&mut settings, KeyCode::Enter);
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = view(&settings, &[], false, 80, 40, &theme);
+        let hint = lines.last().map(text);
+        let saves = " ↑↓ choose · enter saves it for a light terminal · esc cancel";
+        assert_eq!(hint.as_deref(), Some(saves));
         Ok(())
     }
 

@@ -3,6 +3,7 @@ use crate::common::{self, VT100Backend};
 use crate::scratch::Scratch;
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Color;
 use tokio::sync::mpsc::UnboundedSender;
 use yi_tui::Command;
 use yi_tui::app::App;
@@ -15,11 +16,12 @@ const NORD: &str = "38;2;136;192;208";
 const BUILT: &str = "38;2;130;170;255";
 
 /// `/theme` reads `~/.yi/config.json` and `~/.yi/themes`, so the run's own files must not steer it.
-fn own_home() -> std::io::Result<Scratch> {
+fn own_home() -> std::io::Result<(Scratch, std::path::PathBuf)> {
     let scratch = Scratch::new("yi-theme-list")?;
+    let home = scratch.home()?;
     // Invariant: nextest runs one test per process and the fallback lane one thread.
-    unsafe { std::env::set_var("HOME", scratch.home()?) };
-    Ok(scratch)
+    unsafe { std::env::set_var("HOME", &home) };
+    Ok((scratch, home))
 }
 
 fn keys(app: &mut App, tx: &UnboundedSender<Command>, codes: impl IntoIterator<Item = KeyCode>) {
@@ -51,7 +53,7 @@ fn listed(
 
 #[test]
 fn a_preview_repaints_the_live_rows_and_esc_puts_the_palette_back() -> TestResult {
-    let _home = own_home()?;
+    let (_scratch, _home) = own_home()?;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = common::app();
     let mut terminal = Terminal::new(VT100Backend::with_scrollback(80, 24, 200), 4)?;
@@ -81,7 +83,7 @@ fn a_preview_repaints_the_live_rows_and_esc_puts_the_palette_back() -> TestResul
 
 #[test]
 fn an_approval_over_an_open_theme_list_puts_the_palette_back() -> TestResult {
-    let _home = own_home()?;
+    let (_scratch, _home) = own_home()?;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = common::app();
     let mut terminal = Terminal::new(VT100Backend::new(80, 24), 4)?;
@@ -119,4 +121,54 @@ fn a_new_palette_leaves_a_scrolled_pane_where_it_was() {
         (12, 12),
         "a palette change jumped the pane to its bottom"
     );
+}
+
+#[test]
+fn enter_in_theme_saves_the_name_for_this_terminals_ground() -> TestResult {
+    let (_scratch, home) = own_home()?;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = common::app();
+    let mut terminal = Terminal::new(VT100Backend::new(80, 24), 4)?;
+    listed(&mut app, &tx, &mut terminal);
+    keys(&mut app, &tx, [KeyCode::Enter]);
+    let rows = yi_runtime::settings::current(&home)?;
+    let saved = |id: &str| {
+        rows.iter()
+            .find(|row| row.id == id)
+            .map(|row| row.value.clone())
+    };
+    assert_eq!(saved("theme.dark"), Some(serde_json::json!("dark-nord")));
+    assert_eq!(saved("theme.light"), Some(serde_json::Value::Null));
+    Ok(())
+}
+
+#[test]
+fn a_launch_paints_the_theme_config_names_for_its_ground() -> TestResult {
+    let (_scratch, home) = own_home()?;
+    let themes = home.join(".yi/themes");
+    std::fs::create_dir_all(&themes)?;
+    std::fs::write(
+        themes.join("mine.json"),
+        r##"{"colors":{"accent":"#010203"}}"##,
+    )?;
+    std::fs::write(
+        themes.join("theirs.json"),
+        r##"{"colors":{"accent":"#040506"}}"##,
+    )?;
+    let config = yi_types::config::ThemeConfig {
+        dark: Some("mine".to_owned()),
+        light: Some("theirs".to_owned()),
+    };
+    let mut painted = Vec::new();
+    for ground in ["15;0", "0;15"] {
+        // Invariant: nextest runs one test per process and the fallback lane one thread.
+        unsafe {
+            std::env::set_var("COLORTERM", "truecolor");
+            std::env::set_var("COLORFGBG", ground);
+        }
+        painted.push(yi_tui::theme_file::startup(Some(&config)).accent);
+    }
+    let (dark, light) = (Color::Rgb(1, 2, 3), Color::Rgb(4, 5, 6));
+    assert_eq!(painted, [dark, light], "a dark then a light terminal");
+    Ok(())
 }
