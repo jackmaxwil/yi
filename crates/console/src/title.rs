@@ -1,5 +1,5 @@
 use crate::App;
-use crate::model::SessionStatus::{self, DoneUnseen, Idle, Unknown, Working};
+use crate::model::SessionStatus::{self, Blocked, DoneUnseen, Idle, Unknown, Working};
 use yi_tui::motion::TabMark;
 
 /// The scenes the title may draw, by weight, and the seed that picks one.
@@ -44,12 +44,13 @@ impl TitleOptions {
     }
 }
 
-fn focused_status(app: &App) -> Option<crate::model::SessionStatus> {
-    app.state
-        .focused_pane()
-        .and_then(|pane| pane.session())
-        .and_then(|id| app.state.sessions.get(id))
-        .map(|row| row.status)
+fn focused_row(app: &App) -> Option<&crate::model::SessionRow> {
+    let id = app.state.focused_pane()?.session()?;
+    app.state.sessions.get(id)
+}
+
+fn focused_status(app: &App) -> Option<SessionStatus> {
+    focused_row(app).map(|row| row.status)
 }
 
 fn format_window_title(
@@ -58,27 +59,21 @@ fn format_window_title(
     elapsed: std::time::Duration,
 ) -> String {
     let mark = match status {
-        Some(SessionStatus::Working) => TabMark::Working,
-        Some(SessionStatus::Blocked) => TabMark::Attention,
+        Some(Working) => TabMark::Working,
+        Some(Blocked) => TabMark::Attention,
         Some(DoneUnseen | Idle | Unknown) | None => TabMark::Ready,
     };
     yi_tui::motion::tab_title(label, mark, elapsed)
 }
 
 pub(crate) fn window_title(app: &App) -> String {
-    let row = app
-        .state
-        .focused_session()
-        .and_then(|id| app.state.sessions.get(&id));
+    let row = focused_row(app);
     let elapsed = app
         .state
         .window_title_pulse_start
         .map_or(std::time::Duration::ZERO, |start| app.clock.since(start));
-    format_window_title(
-        row.map_or_else(String::new, |row| row.label()).as_str(),
-        row.map(|row| row.status),
-        elapsed,
-    )
+    let label = row.map_or_else(String::new, |row| row.label());
+    format_window_title(&label, row.map(|row| row.status), elapsed)
 }
 
 /// How long until the working pulse next changes frame; `None` when the title is not pulsing.

@@ -108,7 +108,8 @@ impl App {
         }
     }
 
-    pub fn refresh_title(&mut self) {
+    /// The title to write now, or `None` while the one on screen still holds.
+    pub fn refresh_title(&mut self) -> Option<String> {
         let mark = match self.orb_state() {
             None => TabMark::Ready,
             Some(OrbState::Listening) => TabMark::Attention,
@@ -116,17 +117,9 @@ impl App {
         };
         let elapsed = self.clock.since(self.turn_started);
         let title = crate::motion::tab_title(&self.base_title, mark, elapsed);
-        if title != self.shown_title {
-            self.pending_title = Some(title.clone());
-            self.shown_title = title;
-        }
-    }
-
-    pub fn take_title(&mut self) -> Option<String> {
-        self.pending_title.take()
-    }
-
-    pub(crate) fn update_prompt_title(&mut self, focus: &str) {
-        self.base_title = focus.to_owned();
+        (title != self.shown_title).then(|| {
+            self.shown_title.clone_from(&title);
+            title
+        })
     }
 }

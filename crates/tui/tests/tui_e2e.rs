@@ -2466,7 +2466,6 @@ fn a_host_notice_titles_nothing_and_draws_no_prompt_rail() -> TestResult {
         !second.contains("\x1b]2;"),
         "a host notice titles nothing: {second:?}"
     );
-    assert_eq!(app.take_title(), None);
     let rows: Vec<String> = (0..24)
         .map(|row| terminal.backend().row_text(row))
         .collect();
@@ -2737,8 +2736,7 @@ fn the_recorded_session_titles_nothing_on_a_host_notice() -> TestResult {
     let last = prompts.last().cloned().unwrap_or_default();
     for mode in MODES {
         let (mut app, rows) = replayed(mode)?;
-        app.refresh_title();
-        let title = app.take_title().unwrap_or_default();
+        let title = app.refresh_title().unwrap_or_default();
         let label = title.strip_prefix("Yi ").and_then(|t| t.split_once(' '));
         assert_eq!(
             label.map(|(_, label)| label),

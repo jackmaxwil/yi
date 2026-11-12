@@ -81,7 +81,6 @@ impl App {
             ..self.theme
         };
         let mut app = yi_tui::app::App::new(options, theme, yi_tui::keymap::default_keymap(), 80);
-        let _ = app.take_title();
         app.set_clock(self.clock);
         app.set_pane();
         Box::new(Chat {

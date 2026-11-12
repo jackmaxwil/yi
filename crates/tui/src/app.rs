@@ -172,7 +172,6 @@ pub struct App {
     orb_stale: bool,
     base_title: String,
     shown_title: String,
-    pub(crate) pending_title: Option<String>,
     pub(crate) started_at: Instant,
     pub(crate) clock: crate::motion::Clock,
     pub(crate) quit: bool,
@@ -311,7 +310,6 @@ impl App {
             orb_stale: false,
             base_title: String::new(),
             shown_title: String::new(),
-            pending_title: None,
             started_at: Instant::now(),
             clock: crate::motion::Clock::Real,
             quit: false,
@@ -642,7 +640,7 @@ impl App {
                             focus = focus.chars().take(39).collect::<String>() + "…";
                         }
                         if !focus.is_empty() {
-                            self.update_prompt_title(&focus);
+                            self.base_title = focus;
                         }
                         self.commit_cell(&Cell::User { text });
                     }

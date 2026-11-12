@@ -125,11 +125,13 @@ pub fn named(text: &str) -> Option<String> {
 
 /// The model had nothing to name: `<title/>`, a card with no body, or broken `<title` markup.
 fn declined(text: &str) -> bool {
-    opens_title(text) && named(text).is_none()
+    named(text).is_none() && (opens_title(text) || title_tag(text).is_some())
 }
 
 fn opens_title(text: &str) -> bool {
-    text.to_ascii_lowercase().contains("<title")
+    text.trim_start()
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("<title"))
 }
 
 fn card(emoji: Option<&str>, code: Option<&str>, body: &str) -> Option<String> {
@@ -139,20 +141,33 @@ fn card(emoji: Option<&str>, code: Option<&str>, body: &str) -> Option<String> {
         .filter(|code| {
             !code.is_empty() && code.len() <= 6 && code.chars().all(|c| c.is_ascii_alphanumeric())
         })?;
-    let title = clean(body)?;
-    Some(format!("{icon} {code}: {title}"))
+    let prefix = format!("{icon} {code}: ");
+    let room = TITLE_CAP.saturating_sub(prefix.chars().count());
+    Some(format!("{prefix}{}", clean_within(body, room)?))
 }
 
-/// Invariant: an icon is 1-8 non-ASCII characters and none is invisible, so a model cannot
-/// reorder or hide the tab text; U+200D joins emoji and stays.
+/// Invariant: an icon is 1-8 emoji characters (pictographs, skin tones, ZWJ, VS16) and at
+/// least one is a pictograph, so letters and invisible characters cannot ride in the tab.
 fn is_icon(icon: &str) -> bool {
-    let invisible = |ch: char| {
-        ch.is_control()
-            || matches!(ch, '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200c}' | '\u{200e}'..='\u{200f}'
-                | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}')
+    let joiner = |ch: char| matches!(ch, '\u{200d}' | '\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}');
+    let pictograph = |ch: char| {
+        !joiner(ch)
+            && matches!(ch, '\u{a9}' | '\u{ae}' | '\u{203c}' | '\u{2049}' | '\u{2122}' | '\u{2139}'
+                | '\u{2190}'..='\u{21ff}' | '\u{2300}'..='\u{23ff}' | '\u{24c2}' | '\u{25a0}'..='\u{25ff}'
+                | '\u{2600}'..='\u{27bf}' | '\u{2934}'..='\u{2935}' | '\u{2b00}'..='\u{2bff}'
+                | '\u{3030}' | '\u{303d}' | '\u{3297}' | '\u{3299}' | '\u{1f000}'..='\u{1faff}')
     };
-    let count = icon.chars().count();
-    (1..=8).contains(&count) && icon.chars().all(|ch| !ch.is_ascii() && !invisible(ch))
+    (1..=8).contains(&icon.chars().count())
+        && icon.chars().all(|ch| pictograph(ch) || joiner(ch))
+        && icon.chars().any(pictograph)
+}
+
+/// Invariant: a title never carries a character that reorders or hides text; controls are
+/// the sink's to drop.
+fn invisible(ch: char) -> bool {
+    matches!(ch, '\u{ad}' | '\u{34f}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
+        | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{2800}' | '\u{3164}'
+        | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
 }
 
 fn title_tag(text: &str) -> Option<(&str, &str)> {
@@ -180,29 +195,38 @@ fn attr<'a>(attrs: &'a str, name: &str) -> Option<&'a str> {
     inner.get(..stop)
 }
 
+const TITLE_CAP: usize = 48;
+
 pub fn clean(text: &str) -> Option<String> {
+    clean_within(text, TITLE_CAP)
+}
+
+fn clean_within(text: &str, max: usize) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
     let line = line
         .trim_start_matches(['#', '*', ' '])
         .trim_matches(['"', '\'', '`', '*', ' '])
         .trim_end_matches('.');
-    let words: Vec<&str> = line.split_whitespace().collect();
     let mut title = String::new();
-    for word in words {
-        if title.chars().count() + word.chars().count() + 1 > 48 {
+    for word in line.split_whitespace() {
+        let word: String = word.chars().filter(|&ch| !invisible(ch)).collect();
+        if word.is_empty() {
+            continue;
+        }
+        if title.chars().count() + word.chars().count() + 1 > max {
             break;
         }
         if !title.is_empty() {
             title.push(' ');
         }
-        title.push_str(word);
+        title.push_str(&word);
     }
     (!title.is_empty()).then_some(title)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{declined, named};
+    use super::{clean, declined, named};
 
     #[test]
     fn a_card_reply_keeps_the_emoji_the_model_chose() {
@@ -235,18 +259,63 @@ mod tests {
     }
 
     #[test]
-    fn an_invisible_character_cannot_ride_in_the_emoji() {
+    fn a_plain_title_that_mentions_the_tag_is_still_a_title() {
+        let plain = "Fix <title> tag rendering";
+        assert!(!declined(plain));
+        assert_eq!(named(plain), Some(plain.to_owned()));
+    }
+
+    #[test]
+    fn only_an_emoji_icon_makes_a_card_and_no_invisible_character_rides_along() {
         let card = |icon: &str| {
             named(&format!(
                 "<title emoji=\"{icon}\" code=\"RTL\">Fix the tab</title>"
             ))
         };
-        assert_eq!(card("\u{202e}🧪"), Some("Fix the tab".to_owned()));
-        assert_eq!(card("🧪\u{200b}"), Some("Fix the tab".to_owned()));
-        assert_eq!(card("é"), Some("é RTL: Fix the tab".to_owned()));
+        let plain = Some("Fix the tab".to_owned());
+        for bad in [
+            "\u{202e}🧪",
+            "🧪\u{200b}",
+            "é",
+            "\u{e0041}🧪",
+            "\u{2800}",
+            "\u{200d}",
+            "🧪🧪🧪🧪🧪🧪🧪🧪🧪",
+        ] {
+            assert_eq!(card(bad), plain, "{bad:?}");
+        }
+        for good in ["🧪", "👍🏽", "👨\u{200d}👩\u{200d}👧", "❤\u{fe0f}", "⭐"] {
+            assert_eq!(
+                card(good),
+                Some(format!("{good} RTL: Fix the tab")),
+                "{good:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_title_body_loses_bidi_overrides_and_the_card_stays_within_the_cap() {
         assert_eq!(
-            card("👨\u{200d}👩\u{200d}👧"),
-            Some("👨\u{200d}👩\u{200d}👧 RTL: Fix the tab".to_owned())
+            named("<title emoji=\"🧪\" code=\"A\">Fix \u{202e}the tab</title>"),
+            Some("🧪 A: Fix the tab".to_owned())
+        );
+        assert_eq!(clean("Fix \u{202e}the tab"), Some("Fix the tab".to_owned()));
+        let long = "word ".repeat(30);
+        let name =
+            named(&format!("<title emoji=\"🧪\" code=\"LONG\">{long}</title>")).unwrap_or_default();
+        assert!((1..=48).contains(&name.chars().count()), "{name}");
+        assert!(name.starts_with("🧪 LONG: word"), "{name}");
+    }
+
+    #[test]
+    fn the_card_filter_reads_either_attribute_order_and_upcases_the_code() {
+        assert_eq!(
+            named("<title code=\"park\" emoji=\"🅿️\">Fix park tests</title>"),
+            Some("🅿️ PARK: Fix park tests".to_owned())
+        );
+        assert_eq!(
+            named("<title emoji=\"🧪\" code=\"TOOLONG\">Fix park tests</title>"),
+            Some("Fix park tests".to_owned())
         );
     }
 }

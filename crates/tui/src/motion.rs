@@ -64,6 +64,7 @@ pub fn pulse_frame(elapsed_ms: u128) -> char {
         .copied()
         .unwrap_or('◆')
 }
+
 /// Invariant: OSC 2 stays text-only; its four-frame pulse stays distinct from the kitty orb.
 pub fn tab_title_pulse(elapsed: Duration) -> &'static str {
     match elapsed.as_millis() / PULSE_PERIOD_MS % 4 {
