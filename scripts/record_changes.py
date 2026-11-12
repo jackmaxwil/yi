@@ -18,7 +18,7 @@ import datetime, os, pathlib, re, shutil, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
 import adr
-from _common import BLOB_ALLOW as ALLOW, BLOB_CAP as CAP, row_key, table_rows
+from _common import BLOB_ALLOW as ALLOW, BLOB_CAP as CAP, may_skip, row_key, table_rows
 from check_changes import DECISIONS, DIR, VERSION, apply_ledger, changelog_rows, parse, table
 
 ARCH, LOG, INDEX = "docs/ARCHITECTURE.md", "docs/CHANGELOG.md", "docs/solutions/README.md"
@@ -411,6 +411,9 @@ def ledger_selfcheck(tmp, sh, run, gate, bad):
 
 def selfcheck():
     if subprocess.run(("git", "-C", str(ROOT), "cat-file", "-e", PIN), capture_output=True).returncode:
+        if may_skip():
+            print("skip record history selfcheck (public mirror omits source commits; run in unfiltered source checkout)")
+            return 0
         print(f"FAIL record selfcheck\n  the fixture commit {PIN[:9]} is missing; fetch main's full history")
         return 1
     real = landed(ROOT, PIN)

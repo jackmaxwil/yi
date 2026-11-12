@@ -18,7 +18,7 @@ import threading
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import BASE, ROOT, fail, is_public_mirror, test_mask
+from _common import BASE, ROOT, fail, is_public_mirror, may_skip, test_mask
 from check_public_surface import rule_lines, unscanned
 
 BASELINE = BASE / "scan.json"
@@ -365,7 +365,7 @@ def selfcheck(off="", fixtures=None):
         else:
             path = ROOT / ".forgejo/workflows" / workflow
             if not path.is_file():
-                if is_public_mirror():
+                if may_skip():
                     if not off:
                         print(f"skip scan selfcheck workflow {workflow}:{job} (public mirror omits .forgejo/workflows/{workflow}; run in unfiltered source checkout)")
                 else:
@@ -402,7 +402,7 @@ def selfcheck(off="", fixtures=None):
     for real in ("crates/runtime/src/memory/doc.rs", "skills/yi/session-mining/extract.py"):
         if any(fnmatch.fnmatch(real, pattern) for pattern in gitleaks_ignores()):
             errors.append(f"gitleaks skips real source: {real}")
-    if not is_public_mirror():
+    if not may_skip():
         deny = set(rule_lines(ROOT / "scripts/mirror/deny.txt"))
         for regex in re.findall(r"^regex = '''(.+)'''$", (RULES / "gitleaks.toml").read_text(), re.M):
             if regex not in deny:
@@ -610,6 +610,8 @@ def mirror_input_cases():
     errors = []
     with tempfile.TemporaryDirectory() as temp:
         root = pathlib.Path(temp)
+        if (ROOT / "scripts/mirror/deny.txt").is_file() and is_public_mirror():
+            errors.append("the source tree was taken for the public mirror")
         if source_fixture_missing(root):
             errors.append("a public mirror was treated as a source checkout missing fixtures")
         source = root / "source"
@@ -633,9 +635,9 @@ def main(argv):
         if source_fixture_missing():
             fail(["source fixture directory missing: scripts/scan/fixtures/gitleaks"], "scan selfcheck")
             return
-        if is_public_mirror() and not (FIXTURES / "gitleaks").is_dir():
+        if may_skip() and not (FIXTURES / "gitleaks").is_dir():
             print("skip scan selfcheck gitleaks fixtures (public mirror omits scripts/scan/fixtures/gitleaks; run in unfiltered source checkout)")
-        if is_public_mirror():
+        if may_skip():
             print("skip scan selfcheck mirror rules (public mirror omits scripts/mirror/deny.txt; run in unfiltered source checkout)")
         findings, tools = gather(fixture_tasks(), strict)
         absent = sorted(set(FAMILIES) - tools)

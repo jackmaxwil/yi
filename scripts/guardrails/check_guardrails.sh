@@ -57,13 +57,13 @@ after() {
   fi
   return "$rc"
 }
-public_mirror() { [ ! -d "$1/scripts/mirror" ]; }
+public_mirror() { [ -z "${CI:-}" ] && [ ! -d "$1/scripts/mirror" ]; }
 
 # Only this flag proves --quiet keeps a green gate's skip row while dropping the rest of its output.
 if [ "${1:-}" = --selfcheck ]; then
   N=3 QUIET=1
   mkdir -p "$OUT/source/scripts/mirror"
-  if ! public_mirror "$OUT/public" || public_mirror "$OUT/source"; then
+  if ! (unset CI; public_mirror "$OUT/public") || public_mirror "$OUT/source" || CI=1 public_mirror "$OUT/public"; then
     echo "FAIL public mirror detection"
     exit 1
   fi
