@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 mod alias;
 use alias::Aliases;
-pub use alias::{Links, command_reads_alias, links};
+pub use alias::{CD_DIRS_MAX, Links, command_reads_alias, links};
 
 /// Credential stores, protected recursively: destroying one private key inside
 /// ~/.ssh is as damaging as destroying the directory. yi's own provider logins, OAuth profiles
@@ -878,15 +878,6 @@ fn runs_destructive(segment: &str) -> bool {
         })
 }
 
-/// A command's words, split at whitespace, separators and redirections, quotes trimmed.
-fn path_words(command: &str) -> impl Iterator<Item = &str> {
-    let words =
-        command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c) || "<>".contains(c));
-    words
-        .map(|word| word.trim_matches(['"', '\'']))
-        .filter(|word| !word.is_empty())
-}
-
 /// A destructive verb in any segment sends every path-shaped token of the whole command through
 /// the denylist, since a quoted `;` may cut a segment short. No shell parsing (D15).
 pub fn command_targets_catastrophic(
@@ -896,7 +887,11 @@ pub fn command_targets_catastrophic(
     if !command.split(SEPARATORS).any(runs_destructive) {
         return None;
     }
-    for token in path_words(command).filter(|token| !token.starts_with('-')) {
+    for token in command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c)) {
+        let token = token.trim_matches(['"', '\'']);
+        if token.is_empty() || token.starts_with('-') {
+            continue;
+        }
         // Incident: `rm -rf /` trimmed to an empty path that expanded to the working dir and
         // `rm -rf .git` was skipped for having no slash. Every non-flag argument counts now.
         let trimmed = token.trim_end_matches(['*', '/']);

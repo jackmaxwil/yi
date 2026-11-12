@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::tool::{ToolFuture, error_tool_result};
 use yi_loop::{AgentTool, ToolOutcome};
+use yi_permission::CD_DIRS_MAX;
 use yi_tools::{CancelFlag, Tool, ToolContext};
 use yi_types::model::ToolDef;
 
@@ -185,10 +186,6 @@ pub(crate) fn host_wall(
         .or_else(|| wall.check("bash", yi_tools::ToolKind::Exec, &args, cwd));
     walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
 }
-
-/// Incident: each relative `cd` resolved against every dir so far, doubling them, so a chain of
-/// k cds cost 2^k resolves per word; past this the check refuses rather than skip a target.
-const CD_DIRS_MAX: usize = 64;
 
 /// Refuses a command naming a root or a dir above one, but a spare, in most spellings (`~`, a glob,
 /// `..` after a `cd`, glued to a flag). Text only: `$(…)`, a variable or a built path pass it.

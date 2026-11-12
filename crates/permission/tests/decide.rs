@@ -589,6 +589,58 @@ fn a_store_linked_into_another_store_counts_its_name_once() -> TestResult {
     Ok(())
 }
 
+/// A redirect target is never what `rm` destroys: silencing a cleanup must not turn `/dev/null`
+/// into a protected path that is denied in every mode.
+#[test]
+fn a_redirect_is_no_destruction_target() -> TestResult {
+    let context = context();
+    let yolo = |command: &str| {
+        let call = bash_call(command, "canonical");
+        decide(
+            &call,
+            PermissionMode::Yolo,
+            &[],
+            &SessionRules::new(),
+            &[],
+            &context,
+        )
+    };
+    for command in [
+        "rm -rf build 2>/dev/null",
+        "rm -rf dist >/dev/null 2>&1",
+        "rmdir old </dev/null",
+    ] {
+        let decided = yolo(command);
+        assert!(
+            !matches!(decided, Decision::Deny { .. }),
+            "{command}: {decided:?}"
+        );
+    }
+    let named = yolo("rm -rf /dev/sda");
+    assert!(
+        matches!(named, Decision::Deny { .. }),
+        "a named device stopped counting"
+    );
+    Ok(())
+}
+
+/// Each distinct `cd` target is one more place a path is judged from, so past the cap the
+/// command asks and says why; a target named twice counts once.
+#[test]
+fn cd_targets_are_capped_loudly_and_counted_once() -> TestResult {
+    let (_scratch, context) = crate::open::keyed("yi-belt-cd-cap")?;
+    let cds = |n: usize| (0..n).map(|i| format!("cd d{i}; ")).collect::<String>() + "ls";
+    assert_eq!(command_reads_alias(&cds(64), &context), None);
+    let past = command_reads_alias(&cds(65), &context).unwrap_or_default();
+    assert!(
+        past.contains("more than 64 cd targets (CD_DIRS_MAX)"),
+        "{past}"
+    );
+    let same = "cd d0; ".repeat(100) + "ls";
+    assert_eq!(command_reads_alias(&same, &context), None);
+    Ok(())
+}
+
 /// Incident: under `--yolo` a `read` of /etc/nginx/nginx.conf was refused as catastrophic
 /// while `bash cat` printed the same bytes (the 2026-09-10 harness audit, S3). A read is
 /// refused for what it leaks or never finishes: a key, the workspace .git, a directory a walk
