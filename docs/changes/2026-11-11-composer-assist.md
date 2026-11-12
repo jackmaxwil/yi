@@ -5,6 +5,16 @@ decision: Spelling is Apple's NSSpellChecker, reached by a long-lived `/usr/bin/
 ledger+: TUI | the composer stays on screen under typo curls (macOS spelling), a ghost suffix and lists for `/`, `$`, `@`, schemes and emoji; a list opens only on typing
 growth: +1572 the speller is 282 lines in yi-tools and the composer's assist 1188 in yi-tui; weighed for deletion and cut: the small-model download and `yi predict` (-55 cli, -120 engine), the compiled `spell.m` helper and its build step (-157), the question card's own assist (-113), the usage-ranked slash ledger, the test-only engine switches (`fake_engine`, `observe`, four thread-locals) and the dead file-walk `searching` path; kept: emoji and scheme rows (the owner's list) and the session word list, the only completion off macOS
 raise: crate cli +10, crate console +53, crate runtime +25, crate tools +282, crate tui +1188, crate types +15, comments +45, tests +571
+cut: none crates/console/src/app/chat.rs
+cut: none crates/console/src/lib.rs
+cut: none crates/tui/src/app.rs
+cut: none crates/tui/src/colors.rs
+cut: none crates/tui/src/commands.rs
+cut: none crates/tui/src/highlight.rs
+cut: none crates/tui/src/input.rs
+cut: none crates/tui/src/markdown.rs
+cut: none crates/tui/src/render.rs
+cut: none crates/tui/src/status.rs
 shares: #2149 the queue branch, merged here; its command-list popup is replaced by the composer's list
 shares: #2138 the theme branch this one stacks on
 ---
