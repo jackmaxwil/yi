@@ -1,6 +1,8 @@
 import contextlib, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+def is_public_mirror(root=ROOT):
+    return not (root / "scripts/mirror").is_dir()
 # Net src lines a version may add unpriced (040). Here rather than in check_growth
 # because check_pr_metadata prices the same band on a PR's own diff, and two
 # copies of a budget is two budgets.
