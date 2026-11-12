@@ -235,15 +235,7 @@ impl App {
             let Some(row) = self.state.sessions.get(id) else {
                 continue;
             };
-            keys.push((id.0.clone(), row.seed().to_owned()));
-        }
-        for index in self.state.visible_rows() {
-            let Some(id) = self.state.order.get(index) else {
-                continue;
-            };
-            for child in self.state.children.get(id).into_iter().flatten() {
-                keys.push((child.id.as_str().to_owned(), child.name.clone()));
-            }
+            keys.push((id.0.clone(), crate::avatar::hue_seed(row).to_owned()));
         }
         let seeds: Vec<&str> = keys.iter().map(|(_, seed)| seed.as_str()).collect();
         let hues = crate::avatar::assign_accents(&seeds);

@@ -3267,6 +3267,90 @@ fn session_with_children(
     Ok(app)
 }
 
+/// Owner, 2026-11-11, "Folder colour, own creature": one folder, one hue; each its own mark.
+#[test]
+fn sessions_share_their_folders_hue_and_keep_their_own_creature() -> TestResult {
+    use yi_console::model::{SessionId, SessionRow, SessionStatus};
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let child = [wire_child("grep-bot", "running", None)];
+    let mut app = session_with_children(SidebarMode::Rail, SessionStatus::Idle, "one", &child)?;
+    for (id, root) in [
+        ("s-beta", "/tmp/demo-root"),
+        ("s-gamma", "/tmp/other"),
+        ("s-nil", ""),
+        ("s-nil2", ""),
+    ] {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: root.to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 1,
+            last_ms: 0,
+            pinned: None,
+        });
+    }
+    app.assign_accents();
+    let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 60);
+    let avatar = |key: &str| {
+        rows.iter()
+            .filter_map(|row| row.avatar.clone())
+            .find(|at| at.key == key)
+            .ok_or(format!("no avatar for {key}"))
+    };
+    let (alpha, beta) = (avatar("s-alpha")?, avatar("s-beta")?);
+    let (gamma, nil, kid) = (avatar("s-gamma")?, avatar("s-nil")?, avatar("c-grep-bot")?);
+    assert_eq!(alpha.accent, beta.accent, "one folder, one hue");
+    assert_eq!(
+        alpha.accent, kid.accent,
+        "a child wears its parent's folder hue"
+    );
+    assert_ne!(alpha.accent, gamma.accent, "another folder, another hue");
+    assert_ne!(alpha.accent, nil.accent, "no folder, a hue of its own");
+    assert_ne!(
+        nil.accent,
+        avatar("s-nil2")?.accent,
+        "two folderless rows do not share one"
+    );
+    for at in [&alpha, &beta, &gamma, &nil, &kid] {
+        assert_eq!(at.seed, at.key, "the creature is seeded by the session id");
+    }
+    Ok(())
+}
+
+/// Incident: the bitmap carries its hue; a changed hue under a live key kept the old colour.
+#[test]
+fn a_changed_hue_under_a_live_key_is_transmitted_again() {
+    use yi_console::avatar::{Art, Avatars, Placement};
+    let mut place = Placement {
+        col: 2,
+        row: 0,
+        cols: 4,
+        rows: 2,
+        key: "s-alpha".to_owned(),
+        seed: "s-alpha".to_owned(),
+        accent: (1, 2, 3),
+        state: None,
+        art: Art::Identicon,
+    };
+    let mut avatars = Avatars::default();
+    avatars.sync(&mut Vec::new(), std::slice::from_ref(&place));
+    let mut same = Vec::new();
+    avatars.sync(&mut same, std::slice::from_ref(&place));
+    assert!(same.is_empty(), "an unchanged frame writes nothing");
+    place.accent = (9, 8, 7);
+    let mut moved = Vec::new();
+    avatars.sync(&mut moved, std::slice::from_ref(&place));
+    let written = String::from_utf8_lossy(&moved);
+    for verb in ["a=t", "a=p"] {
+        assert!(written.contains(verb), "{written:?}");
+    }
+    let mut again = Vec::new();
+    avatars.sync(&mut again, std::slice::from_ref(&place));
+    assert!(again.is_empty(), "a retransmitted hue is sent once");
+}
+
 fn wire_child(name: &str, status: &str, flag: Option<Value>) -> Value {
     let mut update = json!({"id": format!("c-{name}"), "name": name, "status": status,
         "activity": "executing", "toolUseCount": 2, "tokenCount": 100});
@@ -4003,9 +4087,9 @@ fn an_old_daemon_is_named_when_the_resume_brings_no_replay() -> TestResult {
     )
 }
 
-/// Unnamed sessions take their tile and colour from the id, so no two look alike.
+/// Unnamed sessions take their tile letters from the id and their colour from the folder.
 #[test]
-fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
+fn unnamed_rows_take_id_letters_and_the_folder_hue() -> TestResult {
     use yi_console::app::App;
     use yi_console::model::{SessionId, SessionRow, SessionStatus};
     use yi_tui::colors::{ColorTier, Theme, name_accent};
@@ -4030,11 +4114,11 @@ fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
         .map(|span| (span.content.to_string(), span.style.bg))
         .collect();
     assert!(
-        tiles.contains(&("AL".to_owned(), Some(name_accent("alpha-1")))),
+        tiles.contains(&("AL".to_owned(), Some(name_accent("/tmp/demo-root")))),
         "{tiles:?}"
     );
     assert!(
-        tiles.contains(&("BE".to_owned(), Some(name_accent("beta-2")))),
+        tiles.contains(&("BE".to_owned(), Some(name_accent("/tmp/demo-root")))),
         "{tiles:?}"
     );
     Ok(())
