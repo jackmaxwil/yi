@@ -29,6 +29,16 @@ pub struct Composer {
     top: usize,
     assist: crate::assist::Assist,
     recalled: bool,
+    group: Option<Group>,
+}
+
+/// A replacement's textarea steps, whether undo or redo takes them next, the lines they left
+/// and the cursor to put back: one step while the box still holds those lines.
+struct Group {
+    steps: usize,
+    undo: bool,
+    lines: Vec<String>,
+    cursor: (usize, usize),
 }
 
 impl Default for Composer {
@@ -47,6 +57,7 @@ impl Default for Composer {
             top: 0,
             assist: crate::assist::Assist::installed(),
             recalled: false,
+            group: None,
         }
     }
 }
@@ -110,7 +121,7 @@ impl Composer {
         self.assist = assist;
     }
 
-    pub fn sync_assist(&mut self, cwd: &str, session_dir: &str) {
+    pub fn sync_assist(&mut self, cwd: &str) {
         let (row, col) = self.textarea.cursor();
         let text = self.text();
         let typed = !std::mem::take(&mut self.recalled);
@@ -119,7 +130,6 @@ impl Composer {
             row,
             col,
             cwd,
-            session_dir,
             typed,
         };
         self.assist.sync(&at);
@@ -152,9 +162,10 @@ impl Composer {
         self.apply(act, row).then_some(submit)
     }
 
-    pub(crate) fn autocorrect_before_space(&mut self) {
+    pub(crate) fn autocorrect_after_space(&mut self) {
         let (row, col) = self.textarea.cursor();
-        if let Some((start, end, fixed)) = self.assist.correction(&self.line_at(row), col) {
+        let word_end = col.saturating_sub(1);
+        if let Some((start, end, fixed)) = self.assist.correction(&self.line_at(row), word_end) {
             self.splice(row, start, end, &fixed);
         }
     }
@@ -182,14 +193,65 @@ impl Composer {
         self.textarea.lines().get(row).cloned().unwrap_or_default()
     }
 
-    /// Invariant: an edit through the textarea, never a rebuilt one, so ctrl+z undoes it.
+    /// Invariant: the textarea takes a replacement as a delete and an insert; [`Composer::group`]
+    /// makes them one undo step that puts back the typed text and the cursor.
     fn splice(&mut self, row: usize, start: usize, end: usize, text: &str) {
-        let (Ok(row), Ok(col)) = (u16::try_from(row), u16::try_from(start)) else {
+        let before = self.textarea.cursor();
+        let after = before
+            .1
+            .saturating_sub(end.saturating_sub(start))
+            .saturating_add(text.chars().count());
+        let (Ok(at), Ok(col), Ok(back)) = (
+            u16::try_from(row),
+            u16::try_from(start),
+            u16::try_from(after),
+        ) else {
             return;
         };
-        self.textarea.move_cursor(CursorMove::Jump(row, col));
-        self.textarea.delete_str(end.saturating_sub(start));
-        self.textarea.insert_str(text);
+        self.textarea.move_cursor(CursorMove::Jump(at, col));
+        let steps = usize::from(self.textarea.delete_str(end.saturating_sub(start)))
+            + usize::from(self.textarea.insert_str(text));
+        self.textarea.move_cursor(CursorMove::Jump(at, back));
+        self.group = Some(Group {
+            steps,
+            undo: true,
+            lines: self.textarea.lines().to_vec(),
+            cursor: before,
+        });
+    }
+
+    /// One undo or redo over a whole replacement, or `false` when the last edit was not one.
+    fn step_group(&mut self, undo: bool) -> bool {
+        let Some(Group {
+            steps,
+            undo: next,
+            lines,
+            cursor,
+        }) = self.group.take()
+        else {
+            return false;
+        };
+        if next != undo || lines != self.textarea.lines() {
+            return false;
+        }
+        let back = self.textarea.cursor();
+        for _ in 0..steps {
+            if undo {
+                self.textarea.undo();
+            } else {
+                self.textarea.redo();
+            }
+        }
+        if let (Ok(row), Ok(col)) = (u16::try_from(cursor.0), u16::try_from(cursor.1)) {
+            self.textarea.move_cursor(CursorMove::Jump(row, col));
+        }
+        self.group = Some(Group {
+            steps,
+            undo: !undo,
+            lines: self.textarea.lines().to_vec(),
+            cursor: back,
+        });
+        true
     }
 
     pub fn search_active(&self) -> bool {
@@ -343,6 +405,11 @@ impl Composer {
 
     pub fn input(&mut self, event: KeyEvent) {
         self.history_index = None;
+        match history_key(&event) {
+            Some(undo) if self.step_group(undo) => return,
+            Some(_) => {}
+            None => self.group = None,
+        }
         let up = match event.code {
             KeyCode::Up => true,
             KeyCode::Down => false,
@@ -467,6 +534,7 @@ impl Composer {
     /// Backspace deletes a whole paste marker when the cursor sits at its
     /// end (the atom rule: a marker never decays into stray text).
     pub fn backspace(&mut self) {
+        self.group = None;
         let (row, col) = self.textarea.cursor();
         let line = self.textarea.lines().get(row).cloned().unwrap_or_default();
         let prefix: String = line.chars().take(col).collect();
@@ -683,13 +751,26 @@ fn width_of(text: Option<&String>, from: usize, to: usize) -> usize {
     })
 }
 
+/// `Some(true)` for an undo chord, `Some(false)` for a redo one.
+fn history_key(key: &KeyEvent) -> Option<bool> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let cmd = key.modifiers.contains(KeyModifiers::SUPER);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Char('Z') if ctrl => Some(false),
+        KeyCode::Char('U') if cmd => Some(false),
+        KeyCode::Char('z') if ctrl => Some(!shift),
+        KeyCode::Char('u') if cmd => Some(!shift),
+        _ => None,
+    }
+}
+
 /// Incident: Ghostty sends Cmd+Delete as ctrl+u, which the textarea took for undo. Shell and
 /// macOS editing keys are bound here before the textarea's own emacs table; true when handled.
 pub fn edit_key(textarea: &mut TextArea<'_>, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let cmd = key.modifiers.contains(KeyModifiers::SUPER);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let jump = |textarea: &mut TextArea<'_>, to| {
         textarea.move_cursor(to);
         true
@@ -699,14 +780,8 @@ pub fn edit_key(textarea: &mut TextArea<'_>, key: KeyEvent) -> bool {
         KeyCode::Backspace if cmd => clear_line(textarea),
         KeyCode::Backspace if ctrl => textarea.delete_word(),
         KeyCode::Delete if ctrl => textarea.delete_next_word(),
-        KeyCode::Char('z' | 'Z') if ctrl && (shift || key.code == KeyCode::Char('Z')) => {
-            textarea.redo()
-        }
-        KeyCode::Char('u' | 'U') if cmd && (shift || key.code == KeyCode::Char('U')) => {
-            textarea.redo()
-        }
-        KeyCode::Char('z') if ctrl => textarea.undo(),
-        KeyCode::Char('u') if cmd => textarea.undo(),
+        _ if history_key(&key) == Some(false) => textarea.redo(),
+        _ if history_key(&key) == Some(true) => textarea.undo(),
         KeyCode::Char('j') if ctrl => {
             textarea.insert_newline();
             true
@@ -775,8 +850,15 @@ impl crate::app::App {
 
     pub(crate) fn sync_assist(&mut self) {
         let cwd = self.options.cwd.clone();
-        let session_dir = self.options.session_dir.clone();
-        self.composer.sync_assist(&cwd, &session_dir);
+        self.composer.sync_assist(&cwd);
+        if self.composer.assist.lost() {
+            let deadline = yi_runtime::spell::DEADLINE.as_secs();
+            self.commit_cell(&crate::cell::Cell::Notice {
+                text: format!(
+                    "spelling marks off for this session: the spell checker failed or took over {deadline} s"
+                ),
+            });
+        }
     }
 
     /// Tab takes a drawn suggestion; ctrl+. lists guesses for the word before the cursor.
@@ -801,7 +883,6 @@ impl crate::app::App {
             row,
             col,
             cwd: &self.options.cwd,
-            session_dir: &self.options.session_dir,
             typed: true,
         };
         let act = self.composer.assist.tab(&at);

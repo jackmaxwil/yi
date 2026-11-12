@@ -9,7 +9,7 @@ use ratatui::style::{Modifier, Style};
 use tokio::sync::mpsc::UnboundedSender;
 use yi_tui::Command;
 use yi_tui::app::{App, TuiOptions};
-use yi_tui::assist::{Ask, Assist, AssistSettings, Engine, Words};
+use yi_tui::assist::{Ask, Assist, AssistSettings, Engine, Words, shortcode_before};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::composer::Composer;
 use yi_tui::keymap::default_keymap;
@@ -54,6 +54,23 @@ impl Engine for Fake {
             Ask::Guesses | Ask::Correct => collapse(text).into_iter().collect(),
             Ask::Check => Vec::new(),
         })
+    }
+}
+
+/// A spell checker that never answers: `alive` says whether it is still trying.
+struct Mute(bool);
+
+impl Engine for Mute {
+    fn typos(&mut self, _: &str) -> Option<Vec<Range<usize>>> {
+        None
+    }
+
+    fn words(&mut self, _: Ask, _: &str) -> Option<Vec<String>> {
+        None
+    }
+
+    fn alive(&self) -> bool {
+        self.0
     }
 }
 
@@ -104,7 +121,7 @@ fn marked(text: &str) -> Vec<String> {
     let mut composer = Composer::default();
     composer.set_assist(assist(&[], false));
     composer.set_text(text);
-    composer.sync_assist("/tmp", "");
+    composer.sync_assist("/tmp");
     composer.set_typo_style(yi_tui::assist::spell_style(ratatui::style::Color::Red));
     let height = composer.layout(60, 40);
     composer.set_frame(Style::default(), Style::default(), Style::default(), None);
@@ -173,6 +190,41 @@ fn tab_takes_only_a_drawn_ghost_and_one_undo_removes_it() -> TestResult {
     Ok(())
 }
 
+/// Dies with one ctrl+z leaving the user's text half gone: a replacement was a delete and an
+/// insert, so `ship :rocket:` undid to `ship ` and a correction undid only its space.
+#[test]
+fn a_replacement_is_one_undo_step_that_puts_back_what_was_typed() -> TestResult {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = Scratch::new("yi-assist-undo")?;
+    std::fs::write(dir.join("main.rs"), "")?;
+    let at = dir.display().to_string();
+    for (on, typed, then, rows) in [
+        (true, "say helllo ", "say hello ", 1),
+        (false, "ship :rocket:", "ship 🚀", 1),
+        (false, "fix @ma", "fix main.rs ", 2),
+    ] {
+        let mut app = app_in(&at, assist(&[], on));
+        type_text(&mut app, &tx, typed);
+        if rows == 2 {
+            key(&mut app, &tx, KeyCode::Tab);
+        }
+        assert_eq!(app.composer_text(), then);
+        press(&mut app, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.composer_text(), typed);
+        let redo = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        press(&mut app, &tx, KeyCode::Char('z'), redo);
+        assert_eq!(app.composer_text(), then);
+        press(&mut app, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        type_text(&mut app, &tx, "x");
+        assert_eq!(
+            app.composer_text(),
+            format!("{typed}x"),
+            "the cursor came back"
+        );
+    }
+    Ok(())
+}
+
 /// Dies with autocorrect rewriting a word nobody asked it to, or doing nothing once asked.
 #[test]
 fn autocorrect_rewrites_on_space_only_when_on() {
@@ -219,6 +271,10 @@ fn a_typed_shortcode_becomes_emoji_and_code_keeps_its_colons() {
         type_text(&mut app, &tx, typed);
         assert_eq!(app.composer_text(), kept, "{typed}");
     }
+    for (text, row, col) in [("```\nx :joy:", 1, 7), ("<b>x :joy: y</b>", 0, 10)] {
+        assert_eq!(shortcode_before(text, row, col), None, "{text}");
+    }
+    assert!(shortcode_before("x :joy:", 0, 7).is_some());
     let mut pasted = app_in("/tmp", assist(&[], false));
     paste(&mut pasted, &tx, "a :joy: b");
     assert_eq!(
@@ -247,6 +303,55 @@ fn a_file_row_replaces_the_token_at_the_cursor() -> TestResult {
         key(&mut app, &tx, KeyCode::Tab);
         assert_eq!(app.composer_text(), want, "{typed}");
     }
+    Ok(())
+}
+
+/// Dies with `@newfile` finding nothing: the folder was walked once per process, so a file the
+/// agent wrote after the first `@` list never listed.
+#[test]
+fn a_file_written_after_one_list_lists_in_the_next() -> TestResult {
+    let dir = Scratch::new("yi-assist-fresh")?;
+    std::fs::write(dir.join("old.rs"), "")?;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = app_in(&dir.display().to_string(), assist(&[], false));
+    type_text(&mut app, &tx, "@");
+    let rows = common::live_rows(&mut app)?;
+    assert!(rows.iter().any(|row| row.contains("old.rs")), "{rows:#?}");
+    key(&mut app, &tx, KeyCode::Backspace);
+    std::fs::write(dir.join("new.rs"), "")?;
+    type_text(&mut app, &tx, "@");
+    let rows = common::live_rows(&mut app)?;
+    assert!(rows.iter().any(|row| row.contains("new.rs")), "{rows:#?}");
+    Ok(())
+}
+
+/// Dies with a 100 Hz wake loop behind a checker that cannot answer, or spelling going quiet
+/// with no word: a dead checker is named once, and neither one keeps the loop awake.
+#[test]
+fn a_checker_that_cannot_answer_costs_no_wake_and_a_dead_one_says_so_once() -> TestResult {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let still = Assist::new(
+        AssistSettings::DEFAULT,
+        Some(Box::new(Mute(true))),
+        Arc::default(),
+    );
+    let mut app = app_in("/tmp", still);
+    type_text(&mut app, &tx, "a helllo");
+    press(&mut app, &tx, KeyCode::Char('.'), KeyModifiers::CONTROL);
+    assert_eq!(app.assist_wake(), std::time::Duration::MAX);
+    let dead = Assist::new(
+        AssistSettings::DEFAULT,
+        Some(Box::new(Mute(false))),
+        Arc::default(),
+    );
+    let mut app = app_in("/tmp", dead);
+    type_text(&mut app, &tx, "hi there");
+    let rows = common::live_rows(&mut app)?;
+    let said = rows
+        .iter()
+        .filter(|row| row.contains("spelling marks off"))
+        .count();
+    assert_eq!(said, 1, "{rows:#?}");
     Ok(())
 }
 
@@ -340,14 +445,15 @@ fn the_word_list_reads_user_text_from_the_per_folder_store() -> TestResult {
 }
 
 /// Dies with the mark drawn as a plain red underline: the cell crossterm actually writes for the
-/// spelling style must carry the curl, and an ordinary underline must stay straight.
+/// spelling style must carry the curl, an ordinary underline stays straight, and a terminal
+/// without true color gets a plain underline and no `58` it may misread.
 #[test]
 fn the_spelling_mark_reaches_the_terminal_as_a_curl() -> TestResult {
     use ratatui::backend::{Backend, CrosstermBackend};
-    let draw = |style: Style| -> Result<Vec<u8>, Box<dyn Error>> {
+    let draw_on = |style: Style, curly: bool| -> Result<Vec<u8>, Box<dyn Error>> {
         let mut out = Vec::new();
         {
-            let mut backend = CrosstermBackend::new(yi_tui::term::Squiggle::new(&mut out));
+            let mut backend = CrosstermBackend::new(yi_tui::term::Squiggle::new(&mut out, curly));
             let mut cell = ratatui::buffer::Cell::default();
             cell.set_symbol("x").set_style(style);
             backend.draw(std::iter::once((0, 0, &cell)))?;
@@ -355,6 +461,7 @@ fn the_spelling_mark_reaches_the_terminal_as_a_curl() -> TestResult {
         }
         Ok(out)
     };
+    let draw = |style: Style| draw_on(style, true);
     let curls = |bytes: &[u8]| bytes.windows(6).filter(|w| *w == b"\x1b[4:3m").count();
     let spelled = draw(yi_tui::assist::spell_style(ratatui::style::Color::Rgb(
         255, 95, 95,
@@ -367,5 +474,13 @@ fn the_spelling_mark_reaches_the_terminal_as_a_curl() -> TestResult {
     );
     let link = draw(Style::default().add_modifier(Modifier::UNDERLINED))?;
     assert_eq!(curls(&link), 0, "{:?}", String::from_utf8_lossy(&link));
+    let red = ratatui::style::Color::Rgb(255, 95, 95);
+    let plain = draw_on(yi_tui::assist::spell_style(red), false)?;
+    let text = String::from_utf8_lossy(&plain);
+    assert!(
+        curls(&plain) == 0 && !text.contains("[58") && !text.contains("[59"),
+        "{text:?}"
+    );
+    assert!(text.contains("\x1b[4m"), "{text:?}");
     Ok(())
 }

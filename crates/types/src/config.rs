@@ -432,7 +432,6 @@ pub struct TuiConfig {
     pub typos: Option<bool>,
     pub complete: Option<CompleteEngine>,
     pub autocorrect: Option<bool>,
-    pub assist_rows: Option<u8>,
 }
 
 /// `tui.complete`: which word source fills the ghost suffix; `auto` blends both.

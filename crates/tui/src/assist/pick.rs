@@ -198,36 +198,17 @@ fn filter_files(names: &[String], query: &str) -> Vec<String> {
 /// The whitespace-delimited token around `col` and the char index it starts at.
 pub(super) fn token(line: &str, col: usize) -> (usize, String) {
     let chars: Vec<char> = line.chars().collect();
-    let col = col.min(chars.len());
-    let start = (0..col)
-        .rev()
-        .take_while(|at| chars.get(*at).is_some_and(|ch| !ch.is_whitespace()))
-        .last()
-        .unwrap_or(col);
-    let end = (col..chars.len())
-        .take_while(|at| chars.get(*at).is_some_and(|ch| !ch.is_whitespace()))
-        .count();
+    let (start, end) = super::mask::run(&chars, col, |ch| !ch.is_whitespace());
     (
         start,
-        chars
-            .iter()
-            .skip(start)
-            .take(col.saturating_sub(start).saturating_add(end))
-            .collect(),
+        chars.get(start..end).unwrap_or_default().iter().collect(),
     )
 }
 
 pub(super) fn word_before(line: &str, col: usize) -> String {
     let chars: Vec<char> = line.chars().take(col).collect();
-    let letters = chars
-        .iter()
-        .rev()
-        .take_while(|ch| ch.is_alphabetic())
-        .count();
-    chars
-        .iter()
-        .skip(chars.len().saturating_sub(letters))
-        .collect()
+    let (start, end) = super::mask::run(&chars, col, char::is_alphabetic);
+    chars.get(start..end).unwrap_or_default().iter().collect()
 }
 
 /// What `word` adds after `prefix`, matched without case, when it adds anything.

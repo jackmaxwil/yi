@@ -140,9 +140,10 @@ impl RecordingBackend {
     pub fn new(width: u16, height: u16, record: Option<&Path>) -> io::Result<Self> {
         force_color();
         let cast = match record {
-            Some(path) => Some(CrosstermBackend::new(Squiggle::new(CastWriter::create(
-                path, width, height,
-            )?))),
+            Some(path) => Some(CrosstermBackend::new(Squiggle::new(
+                CastWriter::create(path, width, height)?,
+                crate::term::curls(),
+            ))),
             None => None,
         };
         Ok(Self {

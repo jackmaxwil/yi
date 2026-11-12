@@ -112,8 +112,7 @@ fn leaves() -> Vec<String> {
                 follow,
                 typos,
                 complete,
-                autocorrect,
-                assist_rows
+                autocorrect
             }),
         ),
         ("theme", fields!(ThemeConfig { dark, light })),

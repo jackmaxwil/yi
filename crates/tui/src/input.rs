@@ -94,10 +94,10 @@ pub fn handle_terminal_event(
                     {
                         app.composer.backspace();
                     } else {
-                        if key.code == KeyCodeValue::Space && !key.ctrl && !key.alt {
-                            app.composer.autocorrect_before_space();
-                        }
                         app.composer.input(key_event);
+                        if key.code == KeyCodeValue::Space && !key.ctrl && !key.alt {
+                            app.composer.autocorrect_after_space();
+                        }
                         if key.code == KeyCodeValue::Char(':') && !key.ctrl && !key.alt {
                             app.composer.close_shortcode();
                         }
@@ -266,7 +266,6 @@ pub(crate) fn handle_action(
         Action::InsertNewline => app.composer.insert_newline(),
         Action::Abort => {
             if app.composer.dismiss_assist() {
-                app.open_questions();
                 return;
             }
             handle_escape(app, cmd_tx);
@@ -276,7 +275,6 @@ pub(crate) fn handle_action(
                 return;
             }
             if app.composer.dismiss_assist() {
-                app.open_questions();
                 return;
             }
             let now = Instant::now();

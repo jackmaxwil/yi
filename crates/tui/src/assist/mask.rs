@@ -90,7 +90,7 @@ pub(super) fn keep_span(chars: &[char], mask: &[bool], start: usize, end: usize)
     if !(start..end).all(|index| mask.get(index).copied().unwrap_or(false)) {
         return false;
     }
-    let (token_start, token_end) = bounds(chars, start);
+    let (token_start, token_end) = run(chars, start, |ch| !ch.is_whitespace());
     if (token_start..token_end).any(|index| {
         let ch = chars[index];
         matches!(ch, '_' | '/' | '.' | '\\') || ch.is_ascii_digit()
@@ -107,28 +107,18 @@ pub(super) fn keep_span(chars: &[char], mask: &[bool], start: usize, end: usize)
     !line_skipped(chars, start)
 }
 
-fn bounds(chars: &[char], index: usize) -> (usize, usize) {
-    let mut start = index;
-    while start > 0 && !chars[start - 1].is_whitespace() {
-        start -= 1;
-    }
-    let mut end = index;
-    while end < chars.len() && !chars[end].is_whitespace() {
-        end += 1;
-    }
-    (start, end)
+/// The run of `keep` chars around `at`, as a start and an exclusive end.
+pub(super) fn run(chars: &[char], at: usize, keep: impl Fn(char) -> bool) -> (usize, usize) {
+    let at = at.min(chars.len());
+    let kept = |index: usize| chars.get(index).is_some_and(|ch| keep(*ch));
+    let back = (0..at).rev().take_while(|index| kept(*index)).count();
+    let ahead = (at..chars.len()).take_while(|index| kept(*index)).count();
+    (at.saturating_sub(back), at.saturating_add(ahead))
 }
 
 fn line_skipped(chars: &[char], index: usize) -> bool {
-    let mut start = index;
-    while start > 0 && chars[start - 1] != '\n' {
-        start -= 1;
-    }
-    let mut end = index;
-    while end < chars.len() && chars[end] != '\n' {
-        end += 1;
-    }
-    let line: String = chars[start..end].iter().collect();
+    let (start, end) = run(chars, index, |ch| ch != '\n');
+    let line: String = chars.get(start..end).unwrap_or_default().iter().collect();
     let trimmed = line.trim_start();
     if trimmed.starts_with("->") || trimmed.starts_with("=>") {
         return true;

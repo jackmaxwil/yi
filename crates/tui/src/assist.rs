@@ -29,15 +29,15 @@ pub struct AssistSettings {
     pub typos: bool,
     pub complete: CompleteEngine,
     pub autocorrect: bool,
-    pub rows: usize,
 }
+
+const LIST_ROWS: usize = 10;
 
 impl AssistSettings {
     pub const DEFAULT: Self = Self {
         typos: true,
         complete: CompleteEngine::Auto,
         autocorrect: false,
-        rows: 10,
     };
 
     pub fn from_tui(tui: Option<&TuiConfig>) -> Self {
@@ -48,7 +48,6 @@ impl AssistSettings {
             typos: tui.typos.unwrap_or(true),
             complete: tui.complete.unwrap_or(CompleteEngine::Auto),
             autocorrect: tui.autocorrect.unwrap_or(false),
-            rows: usize::from(tui.assist_rows.unwrap_or(10).clamp(1, 10)),
         }
     }
 }
@@ -64,14 +63,17 @@ pub trait Engine: Send {
     fn waiting(&self) -> bool {
         false
     }
+    fn alive(&self) -> bool {
+        true
+    }
 }
 
-static INSTALLED: OnceLock<AssistSettings> = OnceLock::new();
+static INSTALLED: OnceLock<(AssistSettings, std::path::PathBuf)> = OnceLock::new();
 
-/// Arms the native engines for this process. A headless drive never calls it, so its frames
-/// never depend on the machine's dictionary.
-pub fn install(settings: AssistSettings) {
-    let _ = INSTALLED.set(settings);
+/// Arms the native engines and the word list from `sessions` for this process. A headless
+/// drive never calls it, so its frames never depend on the machine's dictionary or history.
+pub fn install(settings: AssistSettings, sessions: std::path::PathBuf) {
+    let _ = INSTALLED.set((settings, sessions));
 }
 
 /// Where the cursor sits and what the edit was, for [`Assist::sync`].
@@ -80,7 +82,6 @@ pub struct At<'a> {
     pub row: usize,
     pub col: usize,
     pub cwd: &'a str,
-    pub session_dir: &'a str,
     pub typed: bool,
 }
 
@@ -137,7 +138,7 @@ impl Assist {
     /// What [`install`] armed; with nothing installed, lists only.
     pub fn installed() -> Self {
         match INSTALLED.get() {
-            Some(settings) => Self::new(*settings, engine::apple(settings), engine::words()),
+            Some((settings, _)) => Self::new(*settings, engine::apple(settings), engine::words()),
             None => Self::new(AssistSettings::DEFAULT, None, Arc::default()),
         }
     }
@@ -169,8 +170,7 @@ impl Assist {
 
     /// How soon the host loop should come back for answers still out.
     pub(crate) fn wake(&self) -> Duration {
-        let out = self.guess_for.is_some() || self.engine.as_ref().is_some_and(|e| e.waiting());
-        if out {
+        if self.engine.as_ref().is_some_and(|engine| engine.waiting()) {
             Duration::from_millis(10)
         } else {
             Duration::MAX
@@ -185,14 +185,25 @@ impl Assist {
         let count = engine.poll();
         let moved = count != self.seen;
         self.seen = count;
-        moved
+        moved || !engine.alive()
+    }
+
+    /// True once, when the engine died: spelling is off for the session from here.
+    pub(crate) fn lost(&mut self) -> bool {
+        let dead = self.engine.as_ref().is_some_and(|engine| !engine.alive());
+        if dead {
+            self.engine = None;
+            self.marks.clear();
+            self.guess_for = None;
+        }
+        dead
     }
 
     /// Invariant: a list opens only on an edit the user typed. A recalled history entry or a
     /// paste never opens one, so the next arrow still walks history.
     pub fn sync(&mut self, at: &At<'_>) {
-        if INSTALLED.get().is_some() {
-            engine::load_words(&self.words, at.session_dir);
+        if let Some((_, sessions)) = INSTALLED.get() {
+            engine::load_words(&self.words, sessions);
         }
         let line = at.text.split('\n').nth(at.row).unwrap_or_default();
         let edited = at.text != self.text;
@@ -219,7 +230,16 @@ impl Assist {
             return;
         }
         self.dismissed = None;
-        self.pick = self.lists.offer(at, line);
+        self.pick = self.offer(at, line);
+    }
+
+    /// Incident: a file the agent wrote after the first `@` never listed, so each list that
+    /// opens walks the folder again; an open list narrows over the walk it opened with.
+    fn offer(&mut self, at: &At<'_>, line: &str) -> Option<Pick> {
+        if self.pick.is_none() {
+            self.lists = pick::Sources::default();
+        }
+        self.lists.offer(at, line)
     }
 
     pub(crate) fn lines(&self, width: usize) -> Option<Vec<Line<'static>>> {
@@ -229,7 +249,7 @@ impl Assist {
         if let Some(note) = &pick.note {
             lines.push(Line::from(clip(note, width)));
         }
-        let room = self.settings.rows.max(1);
+        let room = LIST_ROWS;
         let shown = pick.rows.iter().take(room);
         let pad = shown
             .clone()
@@ -252,7 +272,7 @@ impl Assist {
             lines.push(Line::from(spans));
         }
         if let Some(more) = pick.rows.len().checked_sub(room).filter(|more| *more > 0) {
-            let note = format!("   … {more} more · tui.assistRows {room} · type to narrow");
+            let note = format!("   … {more} more · list cap {room} · type to narrow");
             lines.push(Line::styled(clip(&note, width), self.dim));
         }
         Some(lines)
@@ -279,12 +299,12 @@ impl Assist {
     }
 
     pub(crate) fn move_sel(&mut self, down: bool) -> bool {
-        let rows = self.settings.rows.max(1);
         let Some(pick) = self.pick.as_mut() else {
             return false;
         };
         if down {
-            pick.selected = (pick.selected + 1).min(pick.rows.len().min(rows).saturating_sub(1));
+            let last = pick.rows.len().min(LIST_ROWS).saturating_sub(1);
+            pick.selected = pick.selected.saturating_add(1).min(last);
         } else {
             pick.selected = pick.selected.saturating_sub(1);
         }
@@ -305,7 +325,7 @@ impl Assist {
             }
             return Act::Insert(text);
         }
-        let Some(pick) = self.lists.offer(at, line) else {
+        let Some(pick) = self.offer(at, line) else {
             return Act::Nope;
         };
         if pick.rows.len() == 1 {
@@ -349,7 +369,7 @@ impl Assist {
             return;
         };
         let Some(guesses) = engine.words(Ask::Guesses, &word) else {
-            self.guess_for = Some(word);
+            self.guess_for = engine.waiting().then_some(word);
             return;
         };
         self.pick = pick::guesses(guesses, &word, col, pick::token(line, col).1);
@@ -486,29 +506,8 @@ pub fn shortcode_before(
 
 pub(crate) fn in_typing_word(line: &str, cursor: usize, cell: usize) -> bool {
     let chars: Vec<char> = line.chars().collect();
-    let letter = |at: usize| {
-        chars
-            .get(at)
-            .is_some_and(|ch| ch.is_alphabetic() || *ch == '\'')
-    };
-    let cursor = cursor.min(chars.len());
-    let anchor = if letter(cursor) {
-        cursor
-    } else if cursor > 0 && letter(cursor - 1) {
-        cursor - 1
-    } else {
-        return false;
-    };
-    let start = (0..=anchor)
-        .rev()
-        .take_while(|at| letter(*at))
-        .last()
-        .unwrap_or(anchor);
-    let end = (anchor..chars.len())
-        .take_while(|at| letter(*at))
-        .last()
-        .unwrap_or(anchor);
-    (start..=end).contains(&cell)
+    let (start, end) = mask::run(&chars, cursor, |ch| ch.is_alphabetic() || ch == '\'');
+    (start..end).contains(&cell)
 }
 
 fn clip(text: &str, width: usize) -> String {

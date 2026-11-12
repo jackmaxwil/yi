@@ -314,7 +314,10 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
                 | ratatui::crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     );
-    let backend = ControlPictures(CrosstermBackend::new(Squiggle::new(stdout)));
+    let backend = ControlPictures(CrosstermBackend::new(Squiggle::new(
+        stdout,
+        yi_tui::term::curls(),
+    )));
     let mut terminal = match Terminal::new(backend) {
         Ok(terminal) => terminal,
         Err(error) => {

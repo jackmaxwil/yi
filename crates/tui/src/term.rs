@@ -186,7 +186,7 @@ pub fn build_terminal(
     height: u16,
 ) -> std::io::Result<Terminal<Backend>> {
     Terminal::new(
-        ControlPictures(CrosstermBackend::new(Squiggle::new(writer))),
+        ControlPictures(CrosstermBackend::new(Squiggle::new(writer, curls()))),
         height,
     )
 }
@@ -243,20 +243,31 @@ pub fn framed(out: &mut impl Write, write: impl FnOnce(&mut Vec<u8>)) -> std::io
 pub struct Squiggle<W> {
     inner: W,
     held: Vec<u8>,
+    curly: bool,
 }
 
 impl<W> Squiggle<W> {
-    pub fn new(inner: W) -> Self {
+    /// Without `curly`, the `58`/`59` underline colors are dropped and the mark is a plain
+    /// underline: a terminal without them can read `58;5;1` as blink and bold.
+    pub fn new(inner: W, curly: bool) -> Self {
         Self {
             inner,
             held: Vec::new(),
+            curly,
         }
     }
 }
 
+/// Curls go only where the terminal advertises true color, the tier that carries SGR 58.
+pub fn curls() -> bool {
+    let env = |name| std::env::var(name).ok();
+    let tier = crate::colors::detect_tier(env("COLORTERM").as_deref(), env("TERM").as_deref());
+    tier == crate::colors::ColorTier::TrueColor
+}
+
 /// Writes every complete sequence of `data` and returns how much it consumed; a sequence cut at
 /// the end waits for the next write.
-fn curl(inner: &mut impl Write, data: &[u8]) -> std::io::Result<usize> {
+fn curl(inner: &mut impl Write, data: &[u8], curly: bool) -> std::io::Result<usize> {
     let mut at = 0;
     while let Some(offset) = data
         .get(at..)
@@ -268,10 +279,13 @@ fn curl(inner: &mut impl Write, data: &[u8]) -> std::io::Result<usize> {
             return Ok(start);
         };
         let seq = data.get(start..end).unwrap_or_default();
-        if is_underline_color(seq) {
+        let colored = is_underline_color(seq) || seq == b"\x1b[59m";
+        if curly && is_underline_color(seq) {
             inner.write_all(b"\x1b[4:3m")?;
         }
-        inner.write_all(seq)?;
+        if curly || !colored {
+            inner.write_all(seq)?;
+        }
         at = end;
     }
     inner.write_all(data.get(at..).unwrap_or_default())?;
@@ -299,12 +313,12 @@ fn is_underline_color(seq: &[u8]) -> bool {
 impl<W: Write> Write for Squiggle<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if self.held.is_empty() {
-            let used = curl(&mut self.inner, buf)?;
+            let used = curl(&mut self.inner, buf, self.curly)?;
             self.held
                 .extend_from_slice(buf.get(used..).unwrap_or_default());
         } else {
             self.held.extend_from_slice(buf);
-            let used = curl(&mut self.inner, &self.held)?;
+            let used = curl(&mut self.inner, &self.held, self.curly)?;
             self.held.drain(..used);
         }
         Ok(buf.len())

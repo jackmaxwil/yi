@@ -57,6 +57,10 @@ impl Engine for Apple {
     fn waiting(&self) -> bool {
         with(|speller| Some(speller.waiting())).unwrap_or_default()
     }
+
+    fn alive(&self) -> bool {
+        with(|speller| Some(speller.alive())).unwrap_or_default()
+    }
 }
 
 /// The user's own words, counted, from the prompts of their recent sessions.
@@ -102,11 +106,11 @@ pub(super) fn words() -> Arc<OnceLock<Words>> {
 }
 
 /// Reads the word list once, off the key thread; completion has no n-gram words until it lands.
-pub(super) fn load_words(words: &Arc<OnceLock<Words>>, sessions_dir: &str) {
+pub(super) fn load_words(words: &Arc<OnceLock<Words>>, sessions_dir: &std::path::Path) {
     if !Arc::ptr_eq(words, &WORDS) || LOADING.swap(true, Ordering::Relaxed) {
         return;
     }
-    let (cell, dir) = (Arc::clone(words), std::path::PathBuf::from(sessions_dir));
+    let (cell, dir) = (Arc::clone(words), sessions_dir.to_path_buf());
     let _detached = std::thread::Builder::new()
         .name("yi-words".to_owned())
         .spawn(move || cell.set(Words::from_sessions(&dir)));

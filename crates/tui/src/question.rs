@@ -591,7 +591,8 @@ impl App {
     /// Opens at the turn's end: `ask_user` ends the turn, so the card never races a stream.
     /// Another view up keeps the questions until it closes.
     pub(crate) fn open_questions(&mut self) {
-        if self.bottom.is_none() && !self.composer.assist_open() && !self.asked.is_empty() {
+        if self.bottom.is_none() && !self.asked.is_empty() {
+            self.composer.dismiss_assist();
             let asked = std::mem::take(&mut self.asked);
             self.bottom = Some(Bottom::Question(QuestionView::new(asked, self.kitty)));
             self.scheduler.request();
