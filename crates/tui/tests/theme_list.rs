@@ -1,5 +1,6 @@
 //! `/theme`: a preview repaints the live rows only, and every close but Enter puts the palette back.
 use crate::common::{self, VT100Backend};
+use crate::scratch::Scratch;
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc::UnboundedSender;
@@ -12,6 +13,14 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// dark-nord's accent (`nord8`, #88c0d0) and the built-in truecolor dark accent (#82aaff).
 const NORD: &str = "38;2;136;192;208";
 const BUILT: &str = "38;2;130;170;255";
+
+/// `/theme` reads `~/.yi/config.json` and `~/.yi/themes`, so the run's own files must not steer it.
+fn own_home() -> std::io::Result<Scratch> {
+    let scratch = Scratch::new("yi-theme-list")?;
+    // Invariant: nextest runs one test per process and the fallback lane one thread.
+    unsafe { std::env::set_var("HOME", scratch.home()?) };
+    Ok(scratch)
+}
 
 fn keys(app: &mut App, tx: &UnboundedSender<Command>, codes: impl IntoIterator<Item = KeyCode>) {
     for code in codes {
@@ -42,6 +51,7 @@ fn listed(
 
 #[test]
 fn a_preview_repaints_the_live_rows_and_esc_puts_the_palette_back() -> TestResult {
+    let _home = own_home()?;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = common::app();
     let mut terminal = Terminal::new(VT100Backend::with_scrollback(80, 24, 200), 4)?;
@@ -71,6 +81,7 @@ fn a_preview_repaints_the_live_rows_and_esc_puts_the_palette_back() -> TestResul
 
 #[test]
 fn an_approval_over_an_open_theme_list_puts_the_palette_back() -> TestResult {
+    let _home = own_home()?;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = common::app();
     let mut terminal = Terminal::new(VT100Backend::new(80, 24), 4)?;
