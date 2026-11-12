@@ -40,7 +40,8 @@ pub struct Speller {
     replies: Receiver<Option<(u64, Value)>>,
     next: u64,
     asked: HashMap<u64, (Ask, String, Instant)>,
-    known: HashMap<(Ask, String), Answer>,
+    /// Keyed by a hash of the asked text, so a long draft's lines are not kept twice.
+    known: HashMap<(Ask, u64), Answer>,
     answered: u64,
 }
 
@@ -80,7 +81,8 @@ for (;;) {
   for (var nl; (nl = held.indexOf('\n')) >= 0;) {
     var line = held.slice(0, nl), reply;
     held = held.slice(nl + 1);
-    try { var q = JSON.parse(line); reply = {id: q.id, out: answer(q.op, q.text)}; } catch (e) { reply = {id: -1, out: []}; }
+    var q = {id: -1};
+    try { q = JSON.parse(line); reply = {id: q.id, out: answer(q.op, q.text)}; } catch (e) { reply = {id: q.id, out: []}; }
     out.writeData($(JSON.stringify(reply) + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
   }
 }"#;
@@ -114,7 +116,7 @@ impl Speller {
 
     /// The answer when it is known; otherwise the question goes out and `None` comes back.
     pub fn ask(&mut self, ask: Ask, text: &str, now: Instant) -> Option<&Answer> {
-        let key = (ask, text.to_owned());
+        let key = (ask, digest(text));
         if self.known.contains_key(&key) {
             return self.known.get(&key);
         }
@@ -129,7 +131,7 @@ impl Speller {
             match jobs.try_send(line) {
                 Ok(()) => {
                     self.next = id.saturating_add(1);
-                    self.asked.insert(id, (ask, key.1, now));
+                    self.asked.insert(id, (ask, text.to_owned(), now));
                 }
                 Err(TrySendError::Full(_)) => {}
                 Err(TrySendError::Disconnected(_)) => self.jobs = None,
@@ -153,7 +155,7 @@ impl Speller {
                 self.known.clear();
             }
             let answer = decode(ask, &text, &out);
-            self.known.insert((ask, text), answer);
+            self.known.insert((ask, digest(&text)), answer);
             self.answered = self.answered.saturating_add(1);
         }
         let late =
@@ -220,15 +222,26 @@ fn read_replies(stdout: std::process::ChildStdout, answers: &SyncSender<Option<(
             Ok(n) if n > 0 && line.ends_with(b"\n") => serde_json::from_slice::<Value>(&line).ok(),
             _ => None,
         };
-        let parsed = reply.and_then(|reply| {
-            let id = reply.get("id").and_then(Value::as_u64)?;
-            Some((id, reply.get("out").cloned().unwrap_or(Value::Null)))
-        });
-        let stop = parsed.is_none();
-        if answers.send(parsed).is_err() || stop {
+        let Some(reply) = reply else {
+            let _ = answers.send(None);
+            return;
+        };
+        // A reply naming no request is the peer's own error line: it costs that one request.
+        let Some(id) = reply.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
+        let out = reply.get("out").cloned().unwrap_or(Value::Null);
+        if answers.send(Some((id, out))).is_err() {
             return;
         }
     }
+}
+
+fn digest(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn decode(ask: Ask, text: &str, out: &Value) -> Answer {

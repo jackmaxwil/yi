@@ -184,9 +184,10 @@ impl<B: Write> Write for ControlPictures<B> {
 pub fn build_terminal(
     writer: Box<dyn Write + Send>,
     height: u16,
+    tier: crate::colors::ColorTier,
 ) -> std::io::Result<Terminal<Backend>> {
     Terminal::new(
-        ControlPictures(CrosstermBackend::new(Squiggle::new(writer, curls()))),
+        ControlPictures(CrosstermBackend::new(Squiggle::new(writer, tier))),
         height,
     )
 }
@@ -247,22 +248,15 @@ pub struct Squiggle<W> {
 }
 
 impl<W> Squiggle<W> {
-    /// Without `curly`, the `58`/`59` underline colors are dropped and the mark is a plain
-    /// underline: a terminal without them can read `58;5;1` as blink and bold.
-    pub fn new(inner: W, curly: bool) -> Self {
+    /// Below the true-color tier, which carries SGR 58, the `58`/`59` underline colors are
+    /// dropped and the mark is a plain underline: such a terminal can read `58;5;1` as blink.
+    pub fn new(inner: W, tier: crate::colors::ColorTier) -> Self {
         Self {
             inner,
             held: Vec::new(),
-            curly,
+            curly: tier == crate::colors::ColorTier::TrueColor,
         }
     }
-}
-
-/// Curls go only where the terminal advertises true color, the tier that carries SGR 58.
-pub fn curls() -> bool {
-    let env = |name| std::env::var(name).ok();
-    let tier = crate::colors::detect_tier(env("COLORTERM").as_deref(), env("TERM").as_deref());
-    tier == crate::colors::ColorTier::TrueColor
 }
 
 /// Writes every complete sequence of `data` and returns how much it consumed; a sequence cut at

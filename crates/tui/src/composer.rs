@@ -197,10 +197,12 @@ impl Composer {
     /// makes them one undo step that puts back the typed text and the cursor.
     fn splice(&mut self, row: usize, start: usize, end: usize, text: &str) {
         let before = self.textarea.cursor();
-        let after = before
-            .1
-            .saturating_sub(end.saturating_sub(start))
-            .saturating_add(text.chars().count());
+        let inserted = start.saturating_add(text.chars().count());
+        let after = match before.1 {
+            col if col >= end => inserted.saturating_add(col.saturating_sub(end)),
+            col if col >= start => inserted,
+            col => col,
+        };
         let (Ok(at), Ok(col), Ok(back)) = (
             u16::try_from(row),
             u16::try_from(start),

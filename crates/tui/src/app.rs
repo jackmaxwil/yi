@@ -904,7 +904,8 @@ pub fn run_tui(
     }));
     let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let height = MIN_VIEWPORT_ROWS.min(rows.saturating_sub(1)).max(1);
-    let mut terminal = match term::build_terminal(writer, height) {
+    let theme = crate::theme_file::startup(theme);
+    let mut terminal = match term::build_terminal(writer, height, theme.tier) {
         Ok(terminal) => terminal,
         Err(error) => {
             eprintln!("error: failed to build terminal: {error}");
@@ -922,7 +923,6 @@ pub fn run_tui(
         eprintln!("warning: keys config: {error}");
     }
 
-    let theme = crate::theme_file::startup(theme);
     let mut app = App::new(options, theme, keymap, usize::from(cols));
     app.set_rows(usize::from(rows));
     app.kitty = yi_orb::kitty::supported();

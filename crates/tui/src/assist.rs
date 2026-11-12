@@ -108,6 +108,7 @@ pub struct Assist {
     guess_for: Option<String>,
     seen: u64,
     lists: pick::Sources,
+    opened: Option<(usize, usize, Option<char>)>,
     typo: Style,
     dim: Style,
 }
@@ -130,6 +131,7 @@ impl Assist {
             guess_for: None,
             seen: 0,
             lists: pick::Sources::default(),
+            opened: None,
             typo: spell_style(Color::Rgb(255, 95, 95)),
             dim: Style::default().add_modifier(Modifier::DIM),
         }
@@ -233,11 +235,14 @@ impl Assist {
         self.pick = self.offer(at, line);
     }
 
-    /// Incident: a file the agent wrote after the first `@` never listed, so each list that
-    /// opens walks the folder again; an open list narrows over the walk it opened with.
+    /// Incident: a file the agent wrote after the first `@` never listed, so each new token
+    /// walks the folder again; its later keys, matching or not, narrow over that one walk.
     fn offer(&mut self, at: &At<'_>, line: &str) -> Option<Pick> {
-        if self.pick.is_none() {
+        let (start, token) = pick::token(line, at.col);
+        let opened = (at.row, start, token.chars().next());
+        if self.opened != Some(opened) {
             self.lists = pick::Sources::default();
+            self.opened = Some(opened);
         }
         self.lists.offer(at, line)
     }
@@ -432,7 +437,7 @@ impl Assist {
         if col != line.chars().count() || prefix.chars().count() < 2 {
             return String::new();
         }
-        let ngram = self.words.get().and_then(|words| words.suffix(&prefix));
+        let ngram = || self.words.get().and_then(|words| words.suffix(&prefix));
         let mut apple = || {
             let word = (self
                 .engine
@@ -444,9 +449,9 @@ impl Assist {
         };
         let found = match self.settings.complete {
             CompleteEngine::Off => None,
-            CompleteEngine::Ngram => ngram,
+            CompleteEngine::Ngram => ngram(),
             CompleteEngine::Apple => apple(),
-            CompleteEngine::Auto => blend(apple(), ngram),
+            CompleteEngine::Auto => blend(apple(), ngram()),
         };
         found.unwrap_or_default()
     }

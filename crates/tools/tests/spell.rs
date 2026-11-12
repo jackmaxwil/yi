@@ -1,8 +1,6 @@
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
-use yi_tools::spell::Answer;
-use yi_tools::spell::{Ask, DEADLINE, Speller};
+use yi_tools::spell::{Answer, Ask, DEADLINE, Speller};
 
 #[cfg(target_os = "macos")]
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -68,6 +66,27 @@ fn a_peer_that_never_answers_costs_no_wait_and_dies_at_the_deadline() {
     assert!(!speller.alive());
     assert!(!speller.waiting());
     assert!(speller.ask(Ask::Check, "a blorp", start).is_none());
+}
+
+/// Dies with one failed request taken for a dead peer: the checker's own error reply, which
+/// names no request, turned spelling off for the session while the peer still answered.
+#[test]
+fn an_error_reply_costs_one_request_and_the_peer_answers_the_next() {
+    let mut peer = yi_tools::command("sh");
+    peer.args([
+        "-c",
+        r#"while read -r line; do id=$(printf '%s' "$line" | sed 's/^{"id":\([0-9]*\).*/\1/'); printf '{"id":-1,"out":[]}\n{"id":%s,"out":[[2,5]]}\n' "$id"; done"#,
+    ]);
+    let mut speller = Speller::spawn(peer);
+    let until = Instant::now() + DEADLINE;
+    let mut spans = None;
+    while spans.is_none() && Instant::now() < until {
+        speller.poll(Instant::now());
+        spans = speller.ask(Ask::Check, "a blorp", Instant::now()).cloned();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(speller.alive());
+    assert_eq!(spans, Some(Answer::Spans(std::iter::once(2..7).collect())));
 }
 
 /// Dies with a missing checker read as one still starting: the peer that never spawned leaves

@@ -307,7 +307,8 @@ fn a_file_row_replaces_the_token_at_the_cursor() -> TestResult {
 }
 
 /// Dies with `@newfile` finding nothing: the folder was walked once per process, so a file the
-/// agent wrote after the first `@` list never listed.
+/// agent wrote after the first `@` list never listed. A token's later keys reuse its one walk,
+/// so a query that matches nothing walks no folder per key.
 #[test]
 fn a_file_written_after_one_list_lists_in_the_next() -> TestResult {
     let dir = Scratch::new("yi-assist-fresh")?;
@@ -322,7 +323,75 @@ fn a_file_written_after_one_list_lists_in_the_next() -> TestResult {
     type_text(&mut app, &tx, "@");
     let rows = common::live_rows(&mut app)?;
     assert!(rows.iter().any(|row| row.contains("new.rs")), "{rows:#?}");
+    type_text(&mut app, &tx, "zz");
+    std::fs::write(dir.join("zzz.rs"), "")?;
+    type_text(&mut app, &tx, "z");
+    assert!(
+        !app.bottom_open(),
+        "the token's keys walked the folder again"
+    );
+    type_text(&mut app, &tx, " @zzz");
+    let rows = common::live_rows(&mut app)?;
+    assert!(rows.iter().any(|row| row.contains("zzz.rs")), "{rows:#?}");
     Ok(())
+}
+
+/// Dies with an accepted row split by the next key: Tab on a row with the cursor inside its
+/// token put the cursor before the row's trailing space.
+#[test]
+fn a_row_taken_mid_token_leaves_the_cursor_after_it() -> TestResult {
+    let dir = Scratch::new("yi-assist-mid")?;
+    std::fs::write(dir.join("main.rs"), "")?;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = app_in(&dir.display().to_string(), assist(&[], false));
+    type_text(&mut app, &tx, "fix @ma");
+    key(&mut app, &tx, KeyCode::Left);
+    key(&mut app, &tx, KeyCode::Tab);
+    type_text(&mut app, &tx, "x");
+    assert_eq!(app.composer_text(), "fix main.rs x");
+    Ok(())
+}
+
+/// Dies with `:ro` offering nothing: the emoji rows are the list's own source, and Tab takes
+/// the highlighted one.
+#[test]
+fn a_typed_colon_lists_emoji_and_tab_takes_one() -> TestResult {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = app_in("/tmp", assist(&[], false));
+    type_text(&mut app, &tx, "go :rock");
+    let rows = common::live_rows(&mut app)?;
+    assert!(
+        rows.iter().any(|row| row.contains(":rocket: 🚀")),
+        "{rows:#?}"
+    );
+    key(&mut app, &tx, KeyCode::Tab);
+    assert_eq!(app.composer_text(), "go 🚀");
+    Ok(())
+}
+
+/// Dies with a settings row doing nothing: each `tui` key reaches the assist it names, and an
+/// unset key keeps its default.
+#[test]
+fn each_tui_key_reaches_the_assist_settings() {
+    use yi_types::config::{CompleteEngine, TuiConfig};
+    let set = TuiConfig {
+        typos: Some(false),
+        complete: Some(CompleteEngine::Ngram),
+        autocorrect: Some(true),
+        ..TuiConfig::default()
+    };
+    let want = AssistSettings {
+        typos: false,
+        complete: CompleteEngine::Ngram,
+        autocorrect: true,
+    };
+    assert_eq!(AssistSettings::from_tui(Some(&set)), want);
+    let unset = TuiConfig::default();
+    assert_eq!(
+        AssistSettings::from_tui(Some(&unset)),
+        AssistSettings::DEFAULT
+    );
+    assert_eq!(AssistSettings::from_tui(None), AssistSettings::DEFAULT);
 }
 
 /// Dies with a 100 Hz wake loop behind a checker that cannot answer, or spelling going quiet
@@ -450,10 +519,10 @@ fn the_word_list_reads_user_text_from_the_per_folder_store() -> TestResult {
 #[test]
 fn the_spelling_mark_reaches_the_terminal_as_a_curl() -> TestResult {
     use ratatui::backend::{Backend, CrosstermBackend};
-    let draw_on = |style: Style, curly: bool| -> Result<Vec<u8>, Box<dyn Error>> {
+    let draw_on = |style: Style, tier: ColorTier| -> Result<Vec<u8>, Box<dyn Error>> {
         let mut out = Vec::new();
         {
-            let mut backend = CrosstermBackend::new(yi_tui::term::Squiggle::new(&mut out, curly));
+            let mut backend = CrosstermBackend::new(yi_tui::term::Squiggle::new(&mut out, tier));
             let mut cell = ratatui::buffer::Cell::default();
             cell.set_symbol("x").set_style(style);
             backend.draw(std::iter::once((0, 0, &cell)))?;
@@ -461,7 +530,7 @@ fn the_spelling_mark_reaches_the_terminal_as_a_curl() -> TestResult {
         }
         Ok(out)
     };
-    let draw = |style: Style| draw_on(style, true);
+    let draw = |style: Style| draw_on(style, ColorTier::TrueColor);
     let curls = |bytes: &[u8]| bytes.windows(6).filter(|w| *w == b"\x1b[4:3m").count();
     let spelled = draw(yi_tui::assist::spell_style(ratatui::style::Color::Rgb(
         255, 95, 95,
@@ -475,12 +544,12 @@ fn the_spelling_mark_reaches_the_terminal_as_a_curl() -> TestResult {
     let link = draw(Style::default().add_modifier(Modifier::UNDERLINED))?;
     assert_eq!(curls(&link), 0, "{:?}", String::from_utf8_lossy(&link));
     let red = ratatui::style::Color::Rgb(255, 95, 95);
-    let plain = draw_on(yi_tui::assist::spell_style(red), false)?;
-    let text = String::from_utf8_lossy(&plain);
-    assert!(
-        curls(&plain) == 0 && !text.contains("[58") && !text.contains("[59"),
-        "{text:?}"
-    );
-    assert!(text.contains("\x1b[4m"), "{text:?}");
+    for tier in [ColorTier::Ansi256, ColorTier::Ansi16] {
+        let plain = draw_on(yi_tui::assist::spell_style(red), tier)?;
+        let text = String::from_utf8_lossy(&plain);
+        let colored = text.contains("[58") || text.contains("[59");
+        assert!(curls(&plain) == 0 && !colored, "{tier:?}: {text:?}");
+        assert!(text.contains("\x1b[4m"), "{text:?}");
+    }
     Ok(())
 }

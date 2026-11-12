@@ -761,7 +761,12 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
 }
 
 fn oracle_screen() -> Result<ratatui::Terminal<yi_tui::capture::RecordingBackend>, Box<dyn Error>> {
-    let mut terminal = ratatui::Terminal::new(yi_tui::capture::RecordingBackend::new(8, 5, None)?)?;
+    let mut terminal = ratatui::Terminal::new(yi_tui::capture::RecordingBackend::new(
+        8,
+        5,
+        None,
+        yi_tui::colors::ColorTier::Ansi16,
+    )?)?;
     terminal.draw(|frame| {
         use ratatui::layout::Rect;
         use ratatui::widgets::Paragraph;
