@@ -12,7 +12,7 @@ use yi_types::message::{AgentMessage, Attribution};
 
 use crate::approval::{ApprovalView, AskChoice, AskRequest};
 use crate::cell::{Cell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
-use crate::colors::{Theme, detect_dark, detect_tier};
+use crate::colors::Theme;
 use crate::composer::Composer;
 use crate::focus::set_focus;
 use crate::frame::FrameScheduler;
@@ -57,7 +57,7 @@ pub(crate) enum Bottom {
     File(ListPopup),
     Agents(crate::agents::AgentsPopup),
     Model(Box<crate::model::ModelPopup>),
-    Theme(ListPopup),
+    Theme(Box<crate::theme_file::Picker>),
 }
 pub type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
 pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
@@ -74,9 +74,6 @@ pub(crate) const ORB_PX: usize = 320;
 
 pub struct App {
     pub(crate) theme: Theme,
-    /// The palette from when `/theme` opened, put back on Esc.
-    pub(crate) theme_restore: Option<Theme>,
-    pub(crate) theme_warned: bool,
     pub(crate) keymap: Keymap,
     pub(crate) scheduler: FrameScheduler,
     pub(crate) composer: Composer,
@@ -233,8 +230,6 @@ impl App {
         let follow = options.follow;
         let mut app = Self {
             theme,
-            theme_restore: None,
-            theme_warned: false,
             keymap,
             scheduler: FrameScheduler::default(),
             composer: Composer::default(),
@@ -393,6 +388,7 @@ impl App {
     pub fn open_approval(&mut self, ask: AskRequest) {
         let mut view = ApprovalView::new(ask.title, ask.description, ask.grants);
         view.tool_call_id = ask.tool_call_id;
+        self.leave_theme_list();
         self.bottom = Some(Bottom::Approval(view, ask.reply));
         self.scheduler.request();
     }
@@ -890,7 +886,7 @@ pub fn run_tui(
     ask_rx: Receiver<AskRequest>,
     options: TuiOptions,
     mut control: Option<crate::drive::Control>,
-    theme_file: Option<&std::path::Path>,
+    theme: Option<&yi_types::config::ThemeConfig>,
 ) -> i32 {
     crate::highlight::prewarm();
     let (ui_rx, cmd_tx, runtime_thread) =
@@ -927,11 +923,6 @@ pub fn run_tui(
         }
     };
 
-    let tier = detect_tier(
-        std::env::var("COLORTERM").ok().as_deref(),
-        std::env::var("TERM").ok().as_deref(),
-    );
-    let dark = detect_dark(std::env::var("COLORFGBG").ok().as_deref());
     let mut keymap = default_keymap();
     let overrides: Vec<(&str, &str)> = options
         .keys
@@ -942,11 +933,8 @@ pub fn run_tui(
         eprintln!("warning: keys config: {error}");
     }
 
-    let loaded = crate::theme_file::load(tier, dark, theme_file);
-    if let Some(warning) = loaded.warning {
-        eprintln!("warning: {warning}");
-    }
-    let mut app = App::new(options, loaded.theme, keymap, usize::from(cols));
+    let theme = crate::theme_file::startup(theme);
+    let mut app = App::new(options, theme, keymap, usize::from(cols));
     app.set_rows(usize::from(rows));
     app.kitty = yi_orb::kitty::supported();
 

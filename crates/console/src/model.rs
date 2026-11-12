@@ -554,6 +554,7 @@ pub struct ConsoleState {
     /// The mouse pointer shape last asked of the terminal (OSC 22), so only a change is sent.
     pub(crate) pointer: &'static str,
     pub side: crate::sidebar::SideUi,
+    pub theme_preview: Option<crate::settings::ThemePreview>,
 }
 
 impl ConsoleState {
@@ -610,6 +611,7 @@ impl ConsoleState {
             snap: None,
             pointer: "",
             side: crate::sidebar::SideUi::default(),
+            theme_preview: None,
             quit: false,
         }
     }

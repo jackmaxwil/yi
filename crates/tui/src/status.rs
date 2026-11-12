@@ -3,7 +3,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::cell::spinner_frame;
-use crate::colors::{Theme, name_accent};
+use crate::colors::{Over, Theme, name_accent};
 
 #[derive(Debug, Clone, Default)]
 pub struct StatusInput {
@@ -153,7 +153,7 @@ fn context_segment(used: u64, window: u64, theme: &Theme) -> (String, Color) {
         (permille / 10).to_string()
     };
     let hue = if permille < CTX_WARN {
-        theme.pick(crate::colors::Over::StatusContext, theme.accent)
+        theme.pick(Over::StatusContext, theme.accent)
     } else if permille < CTX_FULL {
         theme.warning
     } else {
@@ -258,11 +258,7 @@ fn hue(input: &StatusInput, theme: &Theme, color: Color) -> Style {
 }
 
 fn chevron(theme: &Theme) -> Span<'static> {
-    let style = match theme.over[crate::colors::Over::StatusSep as usize] {
-        Some(color) => Style::default().fg(color),
-        None => theme.dim_style(),
-    };
-    Span::styled(" › ", style)
+    Span::styled(" › ", theme.file_or(Over::StatusSep, theme.dim_style()))
 }
 
 /// What and where: the model and how it runs, then the place and its landing.
@@ -279,7 +275,7 @@ fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     let model_style = if input.focused_child.is_some() {
         seg_style
     } else {
-        Style::default().fg(theme.pick(crate::colors::Over::StatusModel, theme.text))
+        Style::default().fg(theme.pick(Over::StatusModel, theme.text))
     };
     spans.push(Span::styled(format!(" {}", input.model), model_style));
     if let Some(provider) = &input.provider {
@@ -308,11 +304,7 @@ fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
         segs.push((
             kind,
             place,
-            hue(
-                input,
-                theme,
-                theme.pick(crate::colors::Over::StatusPath, theme.cyan),
-            ),
+            hue(input, theme, theme.pick(Over::StatusPath, theme.cyan)),
         ));
         if let Some(branch) = &input.branch {
             let shown = match &input.lane {
@@ -324,10 +316,11 @@ fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
                 label.push_str(&format!(" +{}", input.dirty));
             }
             let git = if input.dirty > 0 {
-                theme.pick(crate::colors::Over::StatusGitDirty, theme.orange)
+                Over::StatusGitDirty
             } else {
-                theme.pick(crate::colors::Over::StatusGitClean, theme.orange)
+                Over::StatusGitClean
             };
+            let git = theme.pick(git, theme.orange);
             segs.push(("branch", label, hue(input, theme, git)));
         }
     }
@@ -358,18 +351,14 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
             hue(
                 input,
                 theme,
-                theme.pick(crate::colors::Over::StatusSubagents, theme.magenta),
+                theme.pick(Over::StatusSubagents, theme.magenta),
             ),
         ));
     }
     segs.extend(input.cost.clone().map(|cost| {
         (
             cost,
-            hue(
-                input,
-                theme,
-                theme.pick(crate::colors::Over::StatusSpend, theme.success),
-            ),
+            hue(input, theme, theme.pick(Over::StatusSpend, theme.success)),
         )
     }));
     segs.extend(

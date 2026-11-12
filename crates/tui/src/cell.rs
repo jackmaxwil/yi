@@ -717,7 +717,7 @@ const ANSWER_CAP: usize = 16 * 1024;
 #[derive(Default)]
 pub struct AnswerRows(std::sync::Mutex<Option<KeptRows>>);
 
-type KeptRows = (usize, ColorTier, bool, u64, String, Vec<Line<'static>>);
+type KeptRows = (usize, u64, String, Vec<Line<'static>>);
 
 impl AnswerRows {
     fn window<R>(
@@ -731,23 +731,13 @@ impl AnswerRows {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fresh = held
-            .as_ref()
-            .is_some_and(|(w, tier, dark, palette, source, _)| {
-                (*w, *tier, *dark, *palette) == (width, theme.tier, theme.dark, theme.palette())
-                    && source == answer
-            });
+        let fresh = held.as_ref().is_some_and(|(w, palette, source, _)| {
+            (*w, *palette) == (width, theme.palette()) && source == answer
+        });
         if !fresh {
             let rows = markdown::render(answer, width.saturating_sub(6), theme).into_iter();
             let rows = rows.skip_while(|line| line.spans.is_empty()).collect();
-            *held = Some((
-                width,
-                theme.tier,
-                theme.dark,
-                theme.palette(),
-                answer.to_owned(),
-                rows,
-            ));
+            *held = Some((width, theme.palette(), answer.to_owned(), rows));
         }
         pick(held.as_ref().map_or(&[], |(.., rows)| rows.as_slice()))
     }

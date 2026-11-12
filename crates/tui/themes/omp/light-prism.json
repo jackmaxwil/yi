@@ -4,6 +4,7 @@
 	"vars": {
 		"white": "#ffffff",
 		"slate": "#4a4f57",
+		"muted": "slate",
 		"dim": "#6b7280",
 		"violet": "#7c4dff",
 		"indigo": "#4f46e5",

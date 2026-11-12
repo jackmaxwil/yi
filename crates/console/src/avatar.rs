@@ -286,8 +286,6 @@ fn retransmit(
 pub struct Avatars {
     pool: ImageIds,
     ids: HashMap<String, ImageId>,
-    /// The ink last transmitted for a key. A theme change keeps the key and must send new pixels.
-    ink: HashMap<String, (u8, u8, u8)>,
     placed: HashMap<String, (u16, u16, u16, u16)>,
     motion: HashMap<String, Motion>,
     forgotten: bool,
@@ -311,24 +309,13 @@ impl Avatars {
             self.placed.remove(&key);
             self.motion.remove(&key);
             if let Some(image) = self.ids.remove(&key) {
-                self.ink.remove(&key);
                 let _ = kitty::delete_id(out, image.raw());
             }
         }
         for place in rows {
             let (col, row, cols, rows) = (place.col, place.row, place.cols, place.rows);
-            let image = match self.ids.get(&place.key).copied() {
-                Some(image) => {
-                    if self.ink.get(&place.key) != Some(&place.accent) {
-                        let (data, size) = pixels(place);
-                        let _ = kitty::transmit(out, image.raw(), &data, size);
-                        if let Some(&(col, row, cols, rows)) = self.placed.get(&place.key) {
-                            let _ = kitty::place(out, image.raw(), col, row, cols, rows);
-                        }
-                        self.ink.insert(place.key.clone(), place.accent);
-                    }
-                    image
-                }
+            let image = match self.ids.get(&place.key) {
+                Some(image) => *image,
                 None => {
                     let Some(image) = self.pool.allocate() else {
                         continue;
@@ -336,7 +323,6 @@ impl Avatars {
                     let (data, size) = pixels(place);
                     let _ = kitty::transmit(out, image.raw(), &data, size);
                     self.ids.insert(place.key.clone(), image);
-                    self.ink.insert(place.key.clone(), place.accent);
                     image
                 }
             };
@@ -404,7 +390,6 @@ impl Avatars {
         }
         for key in std::mem::take(&mut self.placed).into_keys() {
             self.ids.remove(&key);
-            self.ink.remove(&key);
             self.motion.remove(&key);
         }
     }

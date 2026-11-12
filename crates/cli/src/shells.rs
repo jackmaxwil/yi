@@ -118,7 +118,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         ask_rx,
         options,
         control,
-        theme_file(terminal_dark()).as_deref(),
+        config().theme.as_ref(),
     );
     leave_lane(&session);
     print_resume_hint(&session, &session_name);
@@ -299,38 +299,6 @@ fn reveal_pace(args: &Args) -> u16 {
         .as_ref()
         .and_then(|tui| tui.pace)
         .unwrap_or(100)
-}
-
-#[cfg(feature = "tui")]
-fn terminal_dark() -> bool {
-    yi_tui::colors::detect_dark(std::env::var("COLORFGBG").ok().as_deref())
-}
-
-/// `theme.dark` or `theme.light` names `~/.yi/themes/<name>.json` for this ground.
-#[cfg(feature = "tui")]
-fn theme_file(dark: bool) -> Option<std::path::PathBuf> {
-    let loaded = config();
-    let theme = loaded.theme.as_ref()?;
-    let raw = if dark {
-        theme.dark.as_deref()
-    } else {
-        theme.light.as_deref()
-    }?;
-    let name = raw.trim();
-    if name.is_empty() {
-        return None;
-    }
-    if !yi_tui::theme_file::theme_name_ok(name) {
-        eprintln!("warning: theme: `{name}` is not a theme name");
-        return None;
-    }
-    let home = std::env::var_os("HOME")?;
-    Some(
-        std::path::PathBuf::from(home)
-            .join(".yi")
-            .join("themes")
-            .join(format!("{name}.json")),
-    )
 }
 
 #[cfg(feature = "tui")]
@@ -523,7 +491,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .map(std::path::PathBuf::from),
         chrome_pin: chrome_pin(),
         home: std::env::var("HOME").ok(),
-        theme_file: theme_file(terminal_dark()),
+        theme: config().theme.clone(),
     };
     let control = match control(args) {
         Ok(control) => control,
