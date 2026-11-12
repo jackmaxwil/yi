@@ -55,6 +55,72 @@ pub struct Theme {
     pub run: bool,
     /// The screen's height, which the [`crate::budget`] sizes thought windows and cards from.
     pub rows: usize,
+    /// A theme file's selection ground. Unset, selection uses the user-message ground.
+    pub selected: Option<Color>,
+    /// A theme file's diff row tints. Unset, truecolor keeps the built-in fills.
+    pub diff_added: Option<Color>,
+    pub diff_removed: Option<Color>,
+    /// A theme file's syntax roles. Unset, each role keeps the palette color it already used.
+    pub syntax_keyword: Option<Color>,
+    pub syntax_string: Option<Color>,
+    pub syntax_number: Option<Color>,
+    pub syntax_type: Option<Color>,
+    pub syntax_function: Option<Color>,
+    pub syntax_variable: Option<Color>,
+    /// Colors a theme file sets on top of the built-in roles. Empty means the role color.
+    pub over: [Option<Color>; OVERS],
+}
+
+/// A theme-file color that replaces one built-in role. The discriminant is the `over` index.
+#[derive(Clone, Copy)]
+pub enum Over {
+    MdHeading,
+    MdLink,
+    MdLinkUrl,
+    MdCode,
+    MdCodeBorder,
+    MdBullet,
+    MdQuote,
+    MdHr,
+    UserText,
+    Thinking,
+    StatusModel,
+    StatusPath,
+    StatusGitClean,
+    StatusGitDirty,
+    StatusSep,
+    StatusSpend,
+    StatusContext,
+    StatusSubagents,
+    SyntaxComment,
+}
+
+pub const OVERS: usize = 19;
+
+const _: () = assert!(Over::SyntaxComment as usize + 1 == OVERS);
+
+fn color_tag(color: Color) -> (u8, u8, u8, u8) {
+    match color {
+        Color::Reset => (0, 0, 0, 0),
+        Color::Black => (1, 0, 0, 0),
+        Color::Red => (2, 0, 0, 0),
+        Color::Green => (3, 0, 0, 0),
+        Color::Yellow => (4, 0, 0, 0),
+        Color::Blue => (5, 0, 0, 0),
+        Color::Magenta => (6, 0, 0, 0),
+        Color::Cyan => (7, 0, 0, 0),
+        Color::Gray => (8, 0, 0, 0),
+        Color::DarkGray => (9, 0, 0, 0),
+        Color::LightRed => (10, 0, 0, 0),
+        Color::LightGreen => (11, 0, 0, 0),
+        Color::LightYellow => (12, 0, 0, 0),
+        Color::LightBlue => (13, 0, 0, 0),
+        Color::LightMagenta => (14, 0, 0, 0),
+        Color::LightCyan => (15, 0, 0, 0),
+        Color::White => (16, 0, 0, 0),
+        Color::Indexed(index) => (17, index, 0, 0),
+        Color::Rgb(red, green, blue) => (18, red, green, blue),
+    }
 }
 
 impl Theme {
@@ -86,6 +152,16 @@ impl Theme {
             user_bg: None,
             run: false,
             rows: 24,
+            selected: None,
+            diff_added: None,
+            diff_removed: None,
+            syntax_keyword: None,
+            syntax_string: None,
+            syntax_number: None,
+            syntax_type: None,
+            syntax_function: None,
+            syntax_variable: None,
+            over: [None; OVERS],
         };
         if tier != ColorTier::TrueColor || !dark {
             return base;
@@ -119,9 +195,13 @@ impl Theme {
 
     /// Blank spacer rows included, so the band reads as one object.
     pub fn user_style(&self) -> Style {
-        match self.user_bg {
+        let style = match self.user_bg {
             Some(bg) => Style::default().bg(bg),
             None => Style::default(),
+        };
+        match self.over[Over::UserText as usize] {
+            Some(color) => style.fg(color),
+            None => style,
         }
     }
 
@@ -129,14 +209,60 @@ impl Theme {
         Style::default().fg(self.accent)
     }
 
+    /// The theme file's color for `slot`, or `fallback` when the file leaves it out.
+    pub fn pick(&self, slot: Over, fallback: Color) -> Color {
+        self.over[slot as usize].unwrap_or(fallback)
+    }
+
+    /// The colors a paint bakes into a row. A cached row is only fresh while this stays put.
+    pub fn palette(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        for color in [
+            Some(self.accent),
+            Some(self.text),
+            Some(self.muted),
+            Some(self.dim),
+            Some(self.error),
+            Some(self.warning),
+            Some(self.success),
+            Some(self.magenta),
+            Some(self.cyan),
+            Some(self.teal),
+            Some(self.orange),
+            Some(self.purple),
+            Some(self.blue5),
+            self.user_bg,
+            self.selected,
+            self.diff_added,
+            self.diff_removed,
+            self.syntax_keyword,
+            self.syntax_string,
+            self.syntax_number,
+            self.syntax_type,
+            self.syntax_function,
+            self.syntax_variable,
+        ] {
+            color.map(color_tag).hash(&mut hasher);
+        }
+        for color in self.over {
+            color.map(color_tag).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     /// The dark theme lifts its own ground; every other tier borrows the
     /// terminal's grey rather than inventing a palette.
     pub fn selection_bg(&self) -> Color {
-        self.user_bg.unwrap_or(Color::DarkGray)
+        self.selected.or(self.user_bg).unwrap_or(Color::DarkGray)
     }
 
     /// The row of the session in front, a shade off the ground; the cursor row is louder.
     pub fn active_row_bg(&self) -> Color {
+        if let Some(color) = self.selected.or(self.user_bg) {
+            return color;
+        }
         match self.tier {
             ColorTier::Ansi16 => Color::DarkGray,
             _ if self.dark => Color::Rgb(0x1e, 0x1e, 0x2e),
@@ -191,11 +317,11 @@ impl Theme {
                 fill: None,
             },
             (ColorTier::TrueColor, true) => {
-                let bg = if added {
-                    Color::Rgb(0x21, 0x3A, 0x2B)
-                } else {
-                    Color::Rgb(0x4A, 0x22, 0x1D)
-                };
+                let bg = self.diff_fill(
+                    added,
+                    Color::Rgb(0x21, 0x3A, 0x2B),
+                    Color::Rgb(0x4A, 0x22, 0x1D),
+                );
                 DiffRowStyle {
                     gutter: self.dim_style().bg(bg),
                     sign: Style::default().fg(polarity).bg(bg),
@@ -204,7 +330,9 @@ impl Theme {
                 }
             }
             (ColorTier::TrueColor, false) => {
-                let (bg, gutter_bg) = if added {
+                let (bg, gutter_bg) = if let Some(fill) = self.diff_fill_override(added) {
+                    (fill, fill)
+                } else if added {
                     (Color::Rgb(0xda, 0xfb, 0xe1), Color::Rgb(0xac, 0xee, 0xbb))
                 } else {
                     (Color::Rgb(0xff, 0xeb, 0xe9), Color::Rgb(0xff, 0xce, 0xcb))
@@ -240,6 +368,19 @@ impl Theme {
                     fill: Some(bg),
                 }
             }
+        }
+    }
+
+    fn diff_fill(&self, added: bool, added_fill: Color, removed_fill: Color) -> Color {
+        self.diff_fill_override(added)
+            .unwrap_or(if added { added_fill } else { removed_fill })
+    }
+
+    fn diff_fill_override(&self, added: bool) -> Option<Color> {
+        if added {
+            self.diff_added
+        } else {
+            self.diff_removed
         }
     }
 }

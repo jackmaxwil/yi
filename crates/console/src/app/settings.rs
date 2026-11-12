@@ -1,5 +1,6 @@
 use ratatui::crossterm::event::KeyEvent;
 use serde_json::{Value, json};
+use yi_tui::colors::Theme;
 use yi_types::acp::AcpConfigOption;
 
 use super::{App, RequestKind};
@@ -86,10 +87,12 @@ impl App {
             return;
         };
         let (session, options) = self.settings_options(pane);
+        let home = self.state.home.clone();
         let Some(settings) = self.settings_pane(pane) else {
             return;
         };
         settings.status = None;
+        fill_theme_choices(settings, &home);
         let intent = crate::settings::key(settings, key, &options);
         self.dirty = true;
         self.settings_intent(outbound, pane, session, intent);
@@ -101,16 +104,30 @@ impl App {
         self.dirty = true;
         match target {
             Target::Tab(tab) => {
+                let open = self
+                    .settings_pane(pane)
+                    .is_some_and(|settings| crate::settings::theme_list_open(settings));
+                if open {
+                    self.restore_theme();
+                }
                 if let Some(settings) = self.settings_pane(pane) {
                     (settings.tab, settings.cursor) = (tab, 0);
                     (settings.edit, settings.status) = (None, None);
                 }
             }
             Target::Row(row) => {
+                let open = self
+                    .settings_pane(pane)
+                    .is_some_and(|settings| crate::settings::theme_list_open(settings));
+                if open {
+                    self.restore_theme();
+                }
                 let (session, options) = self.settings_options(pane);
+                let home = self.state.home.clone();
                 let Some(settings) = self.settings_pane(pane) else {
                     return;
                 };
+                fill_theme_choices(settings, &home);
                 let intent = crate::settings::click(settings, row, &options);
                 self.settings_intent(outbound, pane, session, intent);
             }
@@ -152,12 +169,27 @@ impl App {
                     settings.status = Some(text);
                 }
             }
-            Intent::SaveDefault { id, value } => self.send_request(
-                outbound,
-                RequestKind::Settings(pane, true),
-                "_yi/set_default",
-                json!({"id": id, "value": value}),
-            ),
+            Intent::PreviewTheme(name) => {
+                self.remember_theme();
+                self.preview_theme(&name);
+            }
+            Intent::RestoreTheme => self.restore_theme(),
+            Intent::SaveDefault { id, value } => {
+                if id == "theme.dark" || id == "theme.light" {
+                    let name = value
+                        .as_str()
+                        .unwrap_or(yi_tui::theme_file::BUILT_IN)
+                        .to_owned();
+                    self.remember_theme();
+                    self.preview_theme(&name);
+                }
+                self.send_request(
+                    outbound,
+                    RequestKind::Settings(pane, true),
+                    "_yi/set_default",
+                    json!({"id": id, "value": value}),
+                );
+            }
             Intent::SetSession { config_id, value } => {
                 if let Some(session) = session {
                     self.send_request(
@@ -192,6 +224,15 @@ impl App {
     /// The daemon's rows, or its refusal named on the pane; the console's own rows apply here.
     pub(super) fn absorb_settings(&mut self, pane: PaneId, saved: bool, reply: &Value) {
         self.dirty = true;
+        if saved {
+            let refused = reply.pointer("/error/message").is_some();
+            if refused {
+                self.restore_theme();
+            } else {
+                self.theme_restore = None;
+                self.theme_warned = false;
+            }
+        }
         let refusal = reply.pointer("/error/message").and_then(Value::as_str);
         let rows = reply.pointer("/result/rows").cloned().and_then(|rows| {
             serde_json::from_value::<Vec<yi_types::settings::SettingRow>>(rows).ok()
@@ -225,6 +266,74 @@ impl App {
             (None, None) => settings.status = Some("the daemon sent no settings".to_owned()),
         }
     }
+
+    fn themes_dir(&self) -> std::path::PathBuf {
+        let home = self
+            .state
+            .home
+            .clone()
+            .or_else(|| std::env::var("HOME").ok());
+        match home {
+            Some(home) => std::path::PathBuf::from(home).join(".yi").join("themes"),
+            None => std::path::PathBuf::from(".yi").join("themes"),
+        }
+    }
+
+    fn remember_theme(&mut self) {
+        if self.theme_restore.is_none() {
+            self.theme_restore = Some(self.theme);
+            self.theme_warned = false;
+        }
+    }
+
+    fn preview_theme(&mut self, name: &str) {
+        let loaded =
+            yi_tui::theme_file::preview(self.theme.tier, self.theme.dark, &self.themes_dir(), name);
+        if let Some(warning) = loaded.warning.filter(|_| !self.theme_warned) {
+            self.theme_warned = true;
+            self.note(&format!("warning: {warning}"));
+        }
+        self.install_theme(loaded.theme);
+    }
+
+    fn restore_theme(&mut self) {
+        self.theme_warned = false;
+        if let Some(theme) = self.theme_restore.take() {
+            self.install_theme(theme);
+        }
+    }
+
+    fn install_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        for pane in self.state.panes.values_mut() {
+            match &mut pane.content {
+                crate::model::PaneContent::Session {
+                    chat: Some(chat), ..
+                } => chat.app.set_theme(theme),
+                crate::model::PaneContent::Markdown { drawn, .. }
+                | crate::model::PaneContent::Diff { drawn, .. } => *drawn = None,
+                crate::model::PaneContent::Notebook { drawn, .. } => *drawn = None,
+                crate::model::PaneContent::SessionDiff { drawn, .. } => *drawn = None,
+                _ => {}
+            }
+        }
+        for chat in self.state.parked.values_mut() {
+            chat.app.set_theme(theme);
+        }
+        // A resize throws away the frame and the images. A theme change has to do the same,
+        // or rows and pictures painted at startup stay on that palette until the next launch.
+        self.avatars.forget();
+        self.pending_clear = true;
+        self.dirty = true;
+    }
+}
+
+fn fill_theme_choices(settings: &mut crate::settings::Settings, home: &Option<String>) {
+    let dir = home
+        .as_ref()
+        .map(|home| std::path::PathBuf::from(home).join(".yi").join("themes"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".yi").join("themes"));
+    settings.theme_choices = yi_tui::theme_file::list(&dir);
 }
 
 #[cfg(test)]

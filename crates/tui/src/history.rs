@@ -19,7 +19,7 @@ pub struct History {
 /// Incident: a scrolled pane re-rendered every cell each frame, 114 ms deep in a session.
 #[derive(Default)]
 struct Rendered {
-    key: Option<(usize, TranscriptMode, ColorTier, bool, usize)>,
+    key: Option<(usize, TranscriptMode, ColorTier, bool, usize, u64)>,
     start: usize,
     rows: VecDeque<Vec<Line<'static>>>,
     growing: Option<Growing>,
@@ -29,6 +29,7 @@ struct Rendered {
 /// the whole answer, 40-90 ms a commit. Its rows now grow past the settled prefix.
 struct Growing {
     index: usize,
+    palette: u64,
     settled: crate::markdown::Settled,
     stash: Vec<Line<'static>>,
     kept: usize,
@@ -54,12 +55,18 @@ impl Rendered {
             return cell.lines(width, theme, mode, 0);
         };
         let _span = yi_types::trace::span("tui.cell_grow").arg("bytes", markdown.len());
+        let palette = theme.palette();
         let grow = match self.growing.take() {
-            Some(grow) if grow.index == index && !grow.stash.is_empty() => {
+            // A theme change leaves the settled rows in the old colors. They are painted
+            // again from the source rather than extended.
+            Some(grow)
+                if grow.index == index && grow.palette == palette && !grow.stash.is_empty() =>
+            {
                 self.growing.insert(grow)
             }
             _ => self.growing.insert(Growing {
                 index,
+                palette,
                 settled: crate::markdown::Settled::default(),
                 stash: Vec::new(),
                 kept: 0,
@@ -199,6 +206,7 @@ impl History {
             theme.tier,
             theme.dark,
             crate::budget::card_rows(theme.rows, false),
+            theme.palette(),
         ));
         if rendered.key != key {
             *rendered = Rendered {
@@ -370,6 +378,14 @@ impl History {
         self.cells.len()
     }
 
+    /// Drop rows painted for an older palette. The next read renders them again.
+    pub fn forget_render(&mut self) {
+        *self
+            .rendered
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner) = Rendered::default();
+    }
+
     pub fn tail(
         &self,
         width: usize,
@@ -420,5 +436,33 @@ impl History {
         rows: usize,
     ) -> (Vec<Line<'static>>, Vec<usize>) {
         self.replay_last(width, theme, mode, rows.max(1), rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    #[test]
+    fn a_new_palette_repaints_a_cached_row() {
+        let mut history = History::default();
+        history.retain(Cell::Notice {
+            text: "hello".to_owned(),
+        });
+        let mut theme = Theme::new(ColorTier::TrueColor, true);
+        let first = history.replay(40, &theme, TranscriptMode::default(), 20);
+        let before = first
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find_map(|span| span.style.fg);
+        assert_eq!(before, Some(theme.warning));
+        theme.warning = Color::Rgb(1, 2, 3);
+        let second = history.replay(40, &theme, TranscriptMode::default(), 20);
+        let after = second
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find_map(|span| span.style.fg);
+        assert_eq!(after, Some(Color::Rgb(1, 2, 3)));
     }
 }

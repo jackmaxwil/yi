@@ -247,8 +247,8 @@ pub(crate) fn notebook_cells<'a>(
 }
 
 /// Invariant: rows drawn under a key (the width, and for Review its scope, note and the diff's
-/// revision), redrawn only when the key moves; a new pane content starts with none.
-pub type Drawn<K, V = Rows> = Option<(K, V)>;
+/// revision) and the palette that painted them, redrawn when either moves; a new pane starts empty.
+pub type Drawn<K, V = Rows> = Option<(K, u64, V)>;
 pub type Rows = Vec<ratatui::text::Line<'static>>;
 pub type ReviewKey = (usize, usize, ReviewScope, String, u64);
 
@@ -274,8 +274,8 @@ pub enum PaneContent {
     Notebook {
         session: Option<SessionId>,
         full: bool,
-        /// Invariant: the rows drawn at a width, cleared by every cell update and by `v`.
-        drawn: Option<(usize, Vec<ratatui::text::Line<'static>>)>,
+        /// Invariant: the rows drawn at a width and palette, cleared by every cell update and by `v`.
+        drawn: Drawn<usize>,
     },
     SessionDiff {
         session: SessionId,

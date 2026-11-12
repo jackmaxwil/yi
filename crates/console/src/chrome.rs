@@ -236,7 +236,7 @@ pub(crate) fn render_gear(app: &mut App, frame: &mut Frame<'_>, gear: Rect, them
             row: gear.y,
             cols: GEAR_COLS,
             rows: GEAR_ROWS,
-            key: format!("settings-gear#{width}x{height}"),
+            key: format!("settings-gear#{width}x{height}#{accent:?}"),
             seed: String::new(),
             accent,
             state: None,

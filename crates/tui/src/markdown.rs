@@ -464,7 +464,14 @@ impl Builder<'_> {
             self.prefix()
         };
         if !lead.is_empty() {
-            let rail = Style::default().fg(self.theme.purple);
+            let fallback = self.theme.purple;
+            let rail = if lead.contains('▌') {
+                Style::default().fg(self.theme.pick(crate::colors::Over::MdQuote, fallback))
+            } else if lead.contains('│') {
+                Style::default().fg(self.theme.pick(crate::colors::Over::MdCodeBorder, fallback))
+            } else {
+                Style::default().fg(fallback)
+            };
             self.spans.push(Span::styled(lead, rail));
         }
         self.spans.extend(marker);
@@ -508,7 +515,9 @@ impl Builder<'_> {
         if let Some(level) = self.list_stack.last_mut() {
             level.hang = UnicodeWidthStr::width(marker.as_str());
         }
-        let style = self.style().fg(self.theme.accent);
+        let style = self.style().fg(self
+            .theme
+            .pick(crate::colors::Over::MdBullet, self.theme.accent));
         self.pending_marker = Some(Span::styled(format!("{}{marker}", " ".repeat(pad)), style));
     }
 
@@ -683,7 +692,8 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
         Event::End(TagEnd::Strikethrough) => b.pop_style(),
         Event::Start(Tag::Link { dest_url, .. }) => {
             b.link = Some((dest_url.to_string(), String::new()));
-            b.push_style(|s| s.fg(b.theme.blue5).add_modifier(Modifier::UNDERLINED));
+            let link = b.theme.pick(crate::colors::Over::MdLink, b.theme.blue5);
+            b.push_style(move |s| s.fg(link).add_modifier(Modifier::UNDERLINED));
             b.text("");
         }
         Event::End(TagEnd::Link) => {
@@ -695,7 +705,8 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
                 && label != dest
                 && dest.strip_prefix("mailto:") != Some(label.as_str())
             {
-                b.push(Span::styled(format!(" ({dest})"), b.theme.dim_style()));
+                let url = b.theme.pick(crate::colors::Over::MdLinkUrl, b.theme.dim);
+                b.push(Span::styled(format!(" ({dest})"), Style::default().fg(url)));
             }
         }
         Event::Code(code) => {
@@ -782,6 +793,9 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
 }
 
 fn code_hue(theme: &Theme, code: &str) -> Color {
+    if let Some(color) = theme.over[crate::colors::Over::MdCode as usize] {
+        return color;
+    }
     let path_like = (code.contains('/') && !code.contains(' ')) || is_path(code);
     if path_like {
         crate::card::tool_hue(theme, "read")
@@ -940,12 +954,13 @@ fn paint(
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 b.blank();
-                let (accent, cyan) = (b.theme.accent, b.theme.cyan);
+                let heading = b.theme.pick(crate::colors::Over::MdHeading, b.theme.accent);
+                let second = b.theme.pick(crate::colors::Over::MdHeading, b.theme.cyan);
                 // The level has to be legible without the literal `#` marks
                 // Yi drops.
                 b.push_style(move |s| match level {
-                    HeadingLevel::H1 => s.fg(accent).add_modifier(Modifier::BOLD),
-                    HeadingLevel::H2 => s.fg(cyan).add_modifier(Modifier::BOLD),
+                    HeadingLevel::H1 => s.fg(heading).add_modifier(Modifier::BOLD),
+                    HeadingLevel::H2 => s.fg(second).add_modifier(Modifier::BOLD),
                     HeadingLevel::H3 => s.add_modifier(Modifier::BOLD),
                     _ => s.add_modifier(Modifier::ITALIC),
                 });
@@ -961,7 +976,8 @@ fn paint(
                     let rule: String = std::iter::repeat_n('━', length).collect();
                     b.out.push(Line::from(Span::styled(
                         format!("{prefix}{rule}"),
-                        Style::default().fg(b.theme.accent),
+                        Style::default()
+                            .fg(b.theme.pick(crate::colors::Over::MdHeading, b.theme.accent)),
                     )));
                 }
                 b.blank();
@@ -1044,7 +1060,7 @@ fn paint(
                 b.blank();
                 b.out.push(Line::from(Span::styled(
                     format!("{}———", b.prefix()),
-                    b.theme.dim_style(),
+                    Style::default().fg(b.theme.pick(crate::colors::Over::MdHr, b.theme.dim)),
                 )));
             }
             _ => {}

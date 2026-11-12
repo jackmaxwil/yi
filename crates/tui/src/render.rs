@@ -301,7 +301,9 @@ pub fn layout_chat(
         match &app.bottom {
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),
             Some(Bottom::Question(view)) => Some(view.lines(width, &theme)),
-            Some(Bottom::Command(popup) | Bottom::File(popup)) => Some(popup.lines(width, &theme)),
+            Some(Bottom::Command(popup) | Bottom::File(popup) | Bottom::Theme(popup)) => {
+                Some(popup.lines(width, &theme))
+            }
             Some(Bottom::Agents(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Model(popup)) => Some(popup.lines(width, &theme)),
             None => None,
@@ -371,7 +373,7 @@ pub fn layout_chat(
 
     let composer_too = app.tree.is_none()
         && app.plan_tree.is_none()
-        && matches!(app.bottom, Some(Bottom::Question(_)));
+        && matches!(app.bottom, Some(Bottom::Question(_) | Bottom::Theme(_)));
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
         let card = u16::try_from(lines.len()).unwrap_or(composer_height);
         card.saturating_add(if composer_too { composer_height } else { 0 })

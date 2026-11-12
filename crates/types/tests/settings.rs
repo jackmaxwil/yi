@@ -3,7 +3,7 @@ use yi_types::config::{
     BashConfig, BrowserConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig,
     EditConfig, KernelConfig, MailConfig, McpConfig, MemoryConfig, ModelRoles, NodeConfig,
     PermissionsConfig, PlanConfig, PlansConfig, RlmConfig, SandboxConfig, SkillsConfig,
-    SpendConfig, TelemetryConfig, TuiConfig, UserConfig, WebSearchConfig,
+    SpendConfig, TelemetryConfig, ThemeConfig, TuiConfig, UserConfig, WebSearchConfig,
 };
 use yi_types::lane::LanesConfig;
 use yi_types::settings::{SettingKind, SettingRow, refusal, rows};
@@ -43,6 +43,7 @@ fn leaves() -> Vec<String> {
         keys,
         console,
         tui,
+        theme,
         lanes,
         catalog,
         telemetry,
@@ -105,6 +106,7 @@ fn leaves() -> Vec<String> {
         ),
         ("browser", fields!(BrowserConfig { path })),
         ("tui", fields!(TuiConfig { pace, follow })),
+        ("theme", fields!(ThemeConfig { dark, light })),
         (
             "lanes",
             fields!(LanesConfig {

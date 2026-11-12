@@ -1135,11 +1135,13 @@ mod tests {
                 !written.contains(&format!("a=t,i={id},")),
                 "the unfocused pane retransmitted its mark: {written:?}"
             );
-            assert!(
-                !written.contains(&format!("a=p,i={id},")),
-                "the unfocused pane re-placed its mark: {written:?}"
-            );
         }
+        assert!(
+            right_ids
+                .iter()
+                .any(|id| written.contains(&format!("a=p,i={id},"))),
+            "a redraw clears the mark, so the unfocused pane puts the same picture back: {written:?}"
+        );
         assert!(
             crate::chat_wake(&app) > yi_tui::orb::FRAME,
             "an unfocused running pane wakes the loop in {:?}, inside one {:?} frame",
@@ -1180,14 +1182,7 @@ mod tests {
         let mut owners = std::collections::HashMap::new();
         let mut out = Vec::new();
         let mut step = |out: &mut Vec<u8>| {
-            crate::step_frame(
-                &mut app,
-                &mut terminal,
-                &theme,
-                &mut scheduler,
-                &mut owners,
-                out,
-            )
+            crate::step_frame(&mut app, &mut terminal, &mut scheduler, &mut owners, out)
         };
         step(&mut out)?;
         out.clear();

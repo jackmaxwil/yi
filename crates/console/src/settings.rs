@@ -35,6 +35,8 @@ pub struct Settings {
     pub rows: Option<Vec<SettingRow>>,
     pub edit: Option<Edit>,
     pub status: Option<String>,
+    /// `built-in` plus the stems in `~/.yi/themes`, filled before a key or a press.
+    pub theme_choices: Vec<String>,
 }
 
 impl Settings {
@@ -46,6 +48,7 @@ impl Settings {
             rows: None,
             edit: None,
             status: None,
+            theme_choices: Vec::new(),
         }
     }
 
@@ -62,8 +65,18 @@ impl Settings {
 /// What a key asks the app to send; the pane itself only moves its cursor and edit.
 pub enum Intent {
     None,
-    SaveDefault { id: String, value: Value },
-    SetSession { config_id: String, value: String },
+    SaveDefault {
+        id: String,
+        value: Value,
+    },
+    SetSession {
+        config_id: String,
+        value: String,
+    },
+    /// Paint `name` on the open console while the theme list is still open.
+    PreviewTheme(String),
+    /// Put back the palette from when the theme list opened.
+    RestoreTheme,
     Note(String),
 }
 
@@ -129,6 +142,18 @@ enum How {
 }
 
 /// The value a press moves a choice to: the one after the current, wrapping.
+fn theme_row(settings: &Settings) -> bool {
+    settings
+        .tab_rows()
+        .get(settings.cursor)
+        .is_some_and(|row| row.id == "theme.dark" || row.id == "theme.light")
+}
+
+/// The dark or light theme list is open, so leaving it should restore the palette.
+pub(crate) fn theme_list_open(settings: &Settings) -> bool {
+    theme_row(settings) && matches!(settings.edit, Some(Edit::Pick { .. }))
+}
+
 fn stepped(picks: &[String], current: &str) -> Option<String> {
     if picks.len() < 2 {
         return None;
@@ -158,14 +183,31 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
                 KeyCode::Esc => (None, None),
                 _ => (Some(cursor), None),
             };
+            let theme = theme_row(settings);
+            let moved = matches!(key.code, KeyCode::Up | KeyCode::Down);
             if let Some(cursor) = next {
+                let name = picks.get(cursor).cloned();
                 settings.edit = Some(Edit::Pick {
                     options: picks,
                     cursor,
                 });
+                if theme && moved {
+                    return Intent::PreviewTheme(
+                        name.unwrap_or_else(|| yi_tui::theme_file::BUILT_IN.to_owned()),
+                    );
+                }
+                return Intent::None;
+            }
+            if theme && key.code == KeyCode::Esc {
+                return Intent::RestoreTheme;
             }
             return chosen.map_or(Intent::None, |choice| {
-                commit(settings, options, Value::String(choice))
+                let value = if theme && choice == yi_tui::theme_file::BUILT_IN {
+                    Value::Null
+                } else {
+                    Value::String(choice)
+                };
+                commit(settings, options, value)
             });
         }
         Some(Edit::Type(mut text)) => {
@@ -280,6 +322,24 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
     else {
         return Intent::None;
     };
+    if row.id == "theme.dark" || row.id == "theme.light" {
+        let picks = if settings.theme_choices.is_empty() {
+            vec![yi_tui::theme_file::BUILT_IN.to_owned()]
+        } else {
+            settings.theme_choices.clone()
+        };
+        let current = row
+            .value
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(yi_tui::theme_file::BUILT_IN);
+        let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
+        settings.edit = Some(Edit::Pick {
+            options: picks,
+            cursor,
+        });
+        return Intent::None;
+    }
     match &row.kind {
         SettingKind::Toggle => {
             let on = if row.value.is_null() {
@@ -381,6 +441,13 @@ fn shown(row: &SettingRow) -> String {
         (Value::Number(count), _) if entries => format!("{count} entries"),
         (Value::Null, Value::Bool(true)) => "on (default)".to_owned(),
         (Value::Null, Value::Bool(false)) => "off (default)".to_owned(),
+        (Value::Null, default) if matches!(row.id.as_str(), "theme.dark" | "theme.light") => {
+            default
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .unwrap_or(yi_tui::theme_file::BUILT_IN)
+                .to_owned()
+        }
         (value, _) => shown_value(value),
     }
 }
@@ -637,6 +704,12 @@ pub fn view(
             Span::styled(clip(&shown, value), Style::default().fg(theme.teal)),
             Span::styled(clip(applies, tail), theme.dim_style()),
         ]));
+        if chosen
+            && theme_list_open(settings)
+            && let Some(Edit::Pick { options, cursor }) = &settings.edit
+        {
+            lines.extend(theme_choices(options, *cursor, theme));
+        }
     }
     if rows.len() > room {
         lines.push(Line::styled(
@@ -667,6 +740,9 @@ pub fn view(
     }
     let hint = match (&settings.edit, settings.tab) {
         (Some(Edit::Type(_)), _) => " type · enter save · empty unsets · esc cancel",
+        (Some(Edit::Pick { .. }), _) if theme_list_open(settings) => {
+            " ↑↓ preview · enter save · esc restore"
+        }
         (Some(Edit::Pick { .. }), _) => " ↑↓ choose · enter save · esc cancel",
         (None, SESSION) => " ↑↓ move · ←→ tab · enter change · d make default",
         (None, KEYS) => " ↑↓ move · ←→ tab",
@@ -677,6 +753,34 @@ pub fn view(
 }
 
 /// The row window `view` draws and a press resolves against: the first row and how many fit.
+fn theme_choices(options: &[String], cursor: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let start = cursor.saturating_sub(7);
+    let mut lines = Vec::new();
+    for (index, name) in options.iter().enumerate().skip(start).take(8) {
+        let marked = index == cursor;
+        let style = if marked {
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            theme.muted_style()
+        };
+        let mark = if marked { "▸" } else { " " };
+        lines.push(Line::from(Span::styled(
+            format!("      {mark} {name}"),
+            style,
+        )));
+    }
+    let shown = start.saturating_add(8).min(options.len());
+    if shown < options.len() {
+        lines.push(Line::styled(
+            format!("        … {} more", options.len() - shown),
+            theme.dim_style(),
+        ));
+    }
+    lines
+}
+
 fn window(settings: &Settings, visible: usize) -> (usize, usize) {
     let room = visible.saturating_sub(8).max(1);
     (crate::panes::first_row(settings.cursor, room), room)
@@ -809,5 +913,63 @@ mod tests {
         }
         not_edited("skills.global", serde_json::json!(2))?;
         not_edited("lanes.land", Value::Null)
+    }
+
+    /// An unset theme row names the palette already on screen.
+    #[test]
+    fn an_unset_theme_row_shows_built_in() {
+        let rows = yi_types::settings::rows();
+        let row = rows.iter().find(|row| row.id == "theme.dark").unwrap();
+        assert!(row.value.is_null());
+        assert_eq!(shown(row), "built-in");
+    }
+
+    /// Dark theme opens the file list. Down previews the next name, Enter saves it, Esc restores.
+    #[test]
+    fn a_theme_row_previews_on_move_and_saves_or_restores() {
+        use ratatui::crossterm::event::KeyModifiers;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let rows = yi_types::settings::rows();
+        let at = rows.iter().position(|row| row.id == "theme.dark").unwrap();
+        let tab = TABS.iter().position(|tab| *tab == rows[at].tab).unwrap() + 1;
+        let mut settings = Settings::new(None, tab);
+        settings.rows = Some(rows);
+        settings.theme_choices = vec!["built-in".to_owned(), "acid".to_owned()];
+        settings.cursor = settings
+            .tab_rows()
+            .iter()
+            .position(|row| row.id == "theme.dark")
+            .unwrap();
+        assert!(matches!(
+            key(&mut settings, press(KeyCode::Enter), &[]),
+            Intent::None
+        ));
+        assert!(theme_list_open(&settings));
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let drawn: String = view(&settings, &[], false, 80, 24, &theme)
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(drawn.contains("built-in"), "{drawn}");
+        assert!(drawn.contains("acid"), "{drawn}");
+        assert!(matches!(
+            key(&mut settings, press(KeyCode::Down), &[]),
+            Intent::PreviewTheme(name) if name == "acid"
+        ));
+        assert!(matches!(
+            key(&mut settings, press(KeyCode::Enter), &[]),
+            Intent::SaveDefault { ref id, ref value }
+                if id == "theme.dark" && *value == serde_json::json!("acid")
+        ));
+        key(&mut settings, press(KeyCode::Enter), &[]);
+        assert!(matches!(
+            key(&mut settings, press(KeyCode::Esc), &[]),
+            Intent::RestoreTheme
+        ));
+        key(&mut settings, press(KeyCode::Enter), &[]);
+        assert!(matches!(
+            key(&mut settings, press(KeyCode::Enter), &[]),
+            Intent::SaveDefault { ref value, .. } if value.is_null()
+        ));
     }
 }

@@ -105,7 +105,9 @@ pub fn tick(
                 state.at = Some((col, row));
             }
         }
-        Some((col, row)) if state.at != Some((col, row)) => {
+        // A redraw of these cells clears the placement and leaves the picture behind.
+        // Putting the same id back keeps the resting mark, without sending a new frame.
+        Some((col, row)) => {
             let placed = kitty::place(
                 out,
                 state.ids[state.front],

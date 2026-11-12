@@ -57,6 +57,7 @@ pub(crate) enum Bottom {
     File(ListPopup),
     Agents(crate::agents::AgentsPopup),
     Model(Box<crate::model::ModelPopup>),
+    Theme(ListPopup),
 }
 pub type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
 pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
@@ -73,6 +74,9 @@ pub(crate) const ORB_PX: usize = 320;
 
 pub struct App {
     pub(crate) theme: Theme,
+    /// The palette from when `/theme` opened, put back on Esc.
+    pub(crate) theme_restore: Option<Theme>,
+    pub(crate) theme_warned: bool,
     pub(crate) keymap: Keymap,
     pub(crate) scheduler: FrameScheduler,
     pub(crate) composer: Composer,
@@ -229,6 +233,8 @@ impl App {
         let follow = options.follow;
         let mut app = Self {
             theme,
+            theme_restore: None,
+            theme_warned: false,
             keymap,
             scheduler: FrameScheduler::default(),
             composer: Composer::default(),
@@ -884,6 +890,7 @@ pub fn run_tui(
     ask_rx: Receiver<AskRequest>,
     options: TuiOptions,
     mut control: Option<crate::drive::Control>,
+    theme_file: Option<&std::path::Path>,
 ) -> i32 {
     crate::highlight::prewarm();
     let (ui_rx, cmd_tx, runtime_thread) =
@@ -935,7 +942,11 @@ pub fn run_tui(
         eprintln!("warning: keys config: {error}");
     }
 
-    let mut app = App::new(options, Theme::new(tier, dark), keymap, usize::from(cols));
+    let loaded = crate::theme_file::load(tier, dark, theme_file);
+    if let Some(warning) = loaded.warning {
+        eprintln!("warning: {warning}");
+    }
+    let mut app = App::new(options, loaded.theme, keymap, usize::from(cols));
     app.set_rows(usize::from(rows));
     app.kitty = yi_orb::kitty::supported();
 
