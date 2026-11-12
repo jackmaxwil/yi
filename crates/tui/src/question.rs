@@ -130,6 +130,8 @@ pub(crate) struct QuestionView {
     kitty: bool,
     other: String,
     answers: Vec<String>,
+    guesses: Vec<String>,
+    guess_at: usize,
 }
 
 impl QuestionView {
@@ -145,7 +147,60 @@ impl QuestionView {
             kitty,
             other: String::new(),
             answers: Vec::new(),
+            guesses: Vec::new(),
+            guess_at: 0,
         }
+    }
+
+    fn assist_key(&mut self, key: &SingleKey) -> Option<PopupResult> {
+        if key.ctrl && matches!(key.code, KeyCodeValue::Char('.')) {
+            if self.guesses.is_empty() {
+                self.guesses = crate::assist::guesses_for(&self.other, self.other.chars().count());
+                self.guess_at = 0;
+            } else {
+                self.guesses.clear();
+            }
+            return Some(PopupResult::Open);
+        }
+        if !self.guesses.is_empty() {
+            match key.code {
+                KeyCodeValue::Up => {
+                    self.guess_at = self.guess_at.saturating_sub(1);
+                    return Some(PopupResult::Open);
+                }
+                KeyCodeValue::Down => {
+                    self.guess_at = self
+                        .guess_at
+                        .saturating_add(1)
+                        .min(self.guesses.len().saturating_sub(1));
+                    return Some(PopupResult::Open);
+                }
+                KeyCodeValue::Enter | KeyCodeValue::Tab => {
+                    if let Some(guess) = self.guesses.get(self.guess_at).cloned() {
+                        let end = self.other.chars().count();
+                        if let Some((rewritten, _)) = replace_word(&self.other, end, &guess) {
+                            self.other = rewritten;
+                        }
+                    }
+                    self.guesses.clear();
+                    return Some(PopupResult::Open);
+                }
+                KeyCodeValue::Esc => {
+                    self.guesses.clear();
+                    return Some(PopupResult::Open);
+                }
+                _ => {}
+            }
+        }
+        if matches!(key.code, KeyCodeValue::Tab) && !key.ctrl && !key.alt {
+            let ghost = crate::assist::ghost_suffix(&self.other, self.other.chars().count());
+            if !ghost.is_empty() {
+                self.other.push_str(&ghost);
+                self.other.push(' ');
+                return Some(PopupResult::Open);
+            }
+        }
+        None
     }
 
     fn current(&self) -> Option<&Question> {
@@ -159,6 +214,7 @@ impl QuestionView {
         self.page = self.page.saturating_add(1);
         self.cursor = 0;
         self.other.clear();
+        self.guesses.clear();
         if let Some(next) = self.current() {
             self.typing = next.choices.is_empty();
             return PopupResult::Open;
@@ -338,21 +394,34 @@ impl QuestionView {
         );
         rows.push(label);
         let mut field = Row::default();
+        let col0 = left.saturating_add(1);
         match self.typing || !self.other.is_empty() {
-            true => field.put(
-                left.saturating_add(1),
-                &format!("{}▏", self.other),
-                text,
-                end,
-            ),
-            false => field.put(
-                left.saturating_add(1),
-                "Type your own answer here",
-                theme.dim_style(),
-                end,
-            ),
+            true => {
+                let mut col = col0;
+                for (text_part, tone) in
+                    crate::assist::tones(&self.other, self.other.chars().count())
+                {
+                    let style = match tone {
+                        crate::assist::Tone::Typo => {
+                            text.patch(crate::assist::spell_style(theme.error))
+                        }
+                        crate::assist::Tone::Ghost => theme.dim_style(),
+                        crate::assist::Tone::Plain => text,
+                    };
+                    let width = text_part.width();
+                    field.put(col, &text_part, style, end);
+                    col = col.saturating_add(width);
+                }
+                field.put(col, "▏", text, end);
+            }
+            false => field.put(col0, "Type your own answer here", theme.dim_style(), end),
         }
         rows.push(field);
+        if let Some(guess) = self.guesses.get(self.guess_at) {
+            let mut hint = Row::default();
+            hint.put(left.saturating_add(1), guess, theme.accent_style(), end);
+            rows.push(hint);
+        }
         pieces.push(piece(Part::Badge { on }, badge, start, 3, 1));
         let field_cols = end.saturating_sub(left);
         pieces.push(piece(
@@ -522,6 +591,9 @@ impl BottomView for QuestionView {
             return PopupResult::Close;
         };
         if self.typing {
+            if let Some(result) = self.assist_key(key) {
+                return result;
+            }
             return match key.code {
                 KeyCodeValue::Enter => {
                     let text = self.other.trim().to_owned();
@@ -532,6 +604,10 @@ impl BottomView for QuestionView {
                     }
                 }
                 KeyCodeValue::Esc => {
+                    if !self.guesses.is_empty() {
+                        self.guesses.clear();
+                        return PopupResult::Open;
+                    }
                     self.typing = false;
                     PopupResult::Open
                 }
@@ -542,11 +618,21 @@ impl BottomView for QuestionView {
                     PopupResult::Open
                 }
                 KeyCodeValue::Space => {
+                    if let Some((rewritten, _)) =
+                        crate::assist::correct_last(&self.other, self.other.chars().count())
+                    {
+                        self.other = rewritten;
+                    }
                     self.other.push(' ');
                     PopupResult::Open
                 }
                 KeyCodeValue::Char(c) if !key.ctrl && !key.alt => {
                     self.other.push(c);
+                    if let Some((rewritten, _)) =
+                        crate::assist::rewrite_emoji(&self.other, self.other.chars().count())
+                    {
+                        self.other = rewritten;
+                    }
                     PopupResult::Open
                 }
                 _ => PopupResult::Open,
@@ -591,7 +677,7 @@ impl App {
     /// Opens at the turn's end: `ask_user` ends the turn, so the card never races a stream.
     /// Another view up keeps the questions until it closes.
     pub(crate) fn open_questions(&mut self) {
-        if self.bottom.is_none() && !self.asked.is_empty() {
+        if self.bottom.is_none() && !self.composer.assist_open() && !self.asked.is_empty() {
             let asked = std::mem::take(&mut self.asked);
             self.bottom = Some(Bottom::Question(QuestionView::new(asked, self.kitty)));
             self.scheduler.request();
@@ -877,4 +963,18 @@ pub fn tick_with(
     state.at = Some(at);
     state.size = (cols16, rows16);
     state.last = Some((pieces, canvas));
+}
+
+fn replace_word(line: &str, col: usize, word: &str) -> Option<(String, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    let col = col.min(chars.len());
+    let mut start = col;
+    while start > 0 && chars[start - 1].is_alphabetic() {
+        start -= 1;
+    }
+    let mut out = String::new();
+    out.extend(chars[..start].iter());
+    out.push_str(word);
+    out.extend(chars[col..].iter());
+    Some((out, start + word.chars().count()))
 }

@@ -1312,6 +1312,9 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
+- The composer stays up while assistance is open. A curly underline in the error color, a ghost suffix, and a
+  completion list for `/`, `@`, skills, fetch schemes and emoji draw over the draft. Esc closes
+  the list and leaves the draft. Word completion defaults to auto. Autocorrect defaults off.
 - The working line names an open wait (`AgentEvent::Wait`: a provider retry, a compaction, a
   kernel boot) with its cause and a countdown, and a tool call draws while its arguments stream.
 - The palette is fixed: tier from `COLORTERM`/`TERM`, light or dark from `COLORFGBG` (default
@@ -1441,7 +1444,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime, ai | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui, runtime | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime, logos and the runtime's prompts, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
-| `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
+| `ratatui` | `crossterm`, `scrolling-regions`, `underline-color` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
 | `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |

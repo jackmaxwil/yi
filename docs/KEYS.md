@@ -43,3 +43,5 @@ digits, ⌘T, ⌘W and the rest belong to the terminal.
 A chat pane is solo's chat, the same code: composer with history and paste
 markers, `/` verbs, `@` files, `esc esc` for the entry tree, `/plantree`, the
 permission popup (`y` / `a` / `n`), the working line and orb, the status row.
+Tab accepts a ghost suffix or a completion row while one is showing. `ctrl+.`
+lists guesses for the word at the cursor. Esc closes that list and leaves the draft.

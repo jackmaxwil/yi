@@ -27,6 +27,7 @@ pub struct Composer {
     search: Option<HistorySearch>,
     wrap_width: usize,
     top: usize,
+    assist: crate::assist::Assist,
 }
 
 impl Default for Composer {
@@ -43,6 +44,7 @@ impl Default for Composer {
             search: None,
             wrap_width: 80,
             top: 0,
+            assist: crate::assist::Assist::new(),
         }
     }
 }
@@ -85,6 +87,7 @@ impl Composer {
         use ratatui::widgets::{Block, BorderType, Borders};
         self.textarea.set_placeholder_style(placeholder);
         self.textarea.set_cursor_style(cursor);
+        self.assist.set_dim(placeholder);
         let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -93,6 +96,120 @@ impl Composer {
             block = block.title(title);
         }
         self.textarea.set_block(block);
+    }
+
+    pub fn set_typo_style(&mut self, style: ratatui::style::Style) {
+        self.assist.set_typo(style);
+    }
+
+    pub fn refresh(&mut self) {
+        self.sync_assist("", "");
+    }
+
+    pub fn sync_assist(&mut self, cwd: &str, session_dir: &str) {
+        let (row, col) = self.textarea.cursor();
+        let line = self.line_at(row);
+        if let Some((rewritten, next)) = crate::assist::rewrite_emoji(&line, col) {
+            self.replace_line(row, rewritten, next);
+        }
+        let (row, col) = self.textarea.cursor();
+        let text = self.text();
+        let line = self.line_at(row);
+        self.assist.sync(&text, &line, row, col, cwd, session_dir);
+    }
+
+    pub(crate) fn assist_open(&self) -> bool {
+        self.assist.open()
+    }
+
+    pub(crate) fn assist_lines(&self, width: usize) -> Option<Vec<ratatui::text::Line<'static>>> {
+        self.assist.lines(width)
+    }
+
+    pub(crate) fn dismiss_assist(&mut self) -> bool {
+        self.assist.dismiss()
+    }
+
+    pub(crate) fn move_assist(&mut self, down: bool) -> bool {
+        self.assist.move_sel(down)
+    }
+
+    pub(crate) fn assist_key(&mut self, key: &crate::keymap::SingleKey) -> bool {
+        use crate::keymap::KeyCodeValue;
+        if key.ctrl && matches!(key.code, KeyCodeValue::Char('.')) {
+            let (row, col) = self.textarea.cursor();
+            let line = self.line_at(row);
+            self.assist.toggle_guesses(&line, col);
+            return true;
+        }
+        if matches!(key.code, KeyCodeValue::Tab) && !key.ctrl && !key.alt && !key.shift {
+            return self.accept_assist();
+        }
+        false
+    }
+
+    pub(crate) fn accept_assist(&mut self) -> bool {
+        let (row, col) = self.textarea.cursor();
+        let line = self.line_at(row);
+        let act = self.assist.tab(&line, col);
+        self.apply(act, row, &line)
+    }
+
+    pub(crate) fn enter_assist(&mut self) -> Option<bool> {
+        let (row, _) = self.textarea.cursor();
+        let line = self.line_at(row);
+        let (act, submit) = self.assist.enter(&line);
+        if !self.apply(act, row, &line) {
+            return None;
+        }
+        Some(submit)
+    }
+
+    pub(crate) fn autocorrect_before_space(&mut self) {
+        let (row, col) = self.textarea.cursor();
+        let line = self.line_at(row);
+        if let Some((rewritten, next)) = crate::assist::correct_last(&line, col) {
+            self.replace_line(row, rewritten, next);
+        }
+    }
+
+    pub(crate) fn known_skill(&mut self, name: &str, cwd: &str) -> bool {
+        self.assist.known_skill(name, cwd)
+    }
+
+    fn apply(&mut self, act: crate::assist::Act, row: usize, line: &str) -> bool {
+        match act {
+            crate::assist::Act::Nope => false,
+            crate::assist::Act::Insert(text) => {
+                self.textarea.insert_str(text);
+                true
+            }
+            crate::assist::Act::Splice { start, end, text } => {
+                let (rewritten, next) = splice_chars(line, start, end, &text);
+                self.replace_line(row, rewritten, next);
+                true
+            }
+        }
+    }
+
+    fn line_at(&self, row: usize) -> String {
+        self.textarea.lines().get(row).cloned().unwrap_or_default()
+    }
+
+    fn replace_line(&mut self, row: usize, line: String, col: usize) {
+        let mut lines: Vec<String> = self.textarea.lines().to_vec();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        if let Some(slot) = lines.get_mut(row) {
+            *slot = line;
+        }
+        self.textarea = TextArea::from(lines);
+        self.textarea
+            .set_cursor_line_style(ratatui::style::Style::default());
+        let row = u16::try_from(row).unwrap_or(0);
+        let col = u16::try_from(col).unwrap_or(0);
+        self.textarea.move_cursor(CursorMove::Jump(row, col));
     }
 
     pub fn search_active(&self) -> bool {
@@ -484,6 +601,11 @@ impl Composer {
                 if selection.is_some_and(|(from, to)| from <= (line, col) && (line, col) < to) {
                     cell_style = cell_style.add_modifier(Modifier::REVERSED);
                 }
+                if self.assist.typo_at(line, col)
+                    && !(index == cursor && crate::assist::in_typing_word(text, cursor_col, col))
+                {
+                    cell_style = cell_style.patch(self.assist.typo_style());
+                }
                 if index == cursor && col == cursor_col {
                     cell_style = cell_style.patch(cursor_style);
                 }
@@ -510,8 +632,37 @@ impl Composer {
             {
                 cell.set_symbol(" ").set_style(style.patch(cursor_style));
             }
+            if index == cursor && cursor_col == end && !self.assist.ghost().is_empty() {
+                let ghost_at = x.saturating_add(1);
+                let room = usize::from(inner.right().saturating_sub(ghost_at));
+                buffer.set_stringn(
+                    ghost_at,
+                    y,
+                    self.assist.ghost(),
+                    room,
+                    self.assist.dim_style(),
+                );
+            }
         }
     }
+}
+
+fn splice_chars(line: &str, start: usize, end: usize, insert: &str) -> (String, usize) {
+    let mut out = String::new();
+    let mut placed = false;
+    for (index, ch) in line.chars().enumerate() {
+        if index == start {
+            out.push_str(insert);
+            placed = true;
+        }
+        if index < start || index >= end {
+            out.push(ch);
+        }
+    }
+    if !placed {
+        out.push_str(insert);
+    }
+    (out, start + insert.chars().count())
 }
 
 /// Invariant: each step is about the golden ratio past the last, so a long paste moves the
@@ -636,5 +787,15 @@ impl crate::app::App {
             self.composer.textarea.insert_newline();
         }
         self.composer.textarea.insert_str(quoted);
+    }
+
+    pub fn ghost_showing(&self) -> bool {
+        !self.composer.assist.ghost().is_empty()
+    }
+
+    pub(crate) fn sync_assist(&mut self) {
+        let cwd = self.options.cwd.clone();
+        let session_dir = self.options.session_dir.clone();
+        self.composer.sync_assist(&cwd, &session_dir);
     }
 }

@@ -15,6 +15,7 @@ mod usage_record;
 
 mod agents;
 mod asks;
+mod assist;
 mod cards;
 mod child_rows;
 mod composer_box;

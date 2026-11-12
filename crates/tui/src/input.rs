@@ -5,11 +5,10 @@ use ratatui::crossterm::event::{Event as CtEvent, KeyEventKind, KeyModifiers};
 use crate::app::{App, Bottom, Command};
 use crate::approval::AskChoice;
 use crate::cell::Cell;
-use crate::commands::SLASH_COMMANDS;
 use crate::focus::{FocusMove, focus_move, set_focus};
 use crate::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey};
 use crate::plantree::PlanTreeResult;
-use crate::popup::{BottomView, ListPopup, PopupResult, walk_files};
+use crate::popup::{BottomView, PopupResult};
 use crate::tree::TreeResult;
 
 pub(crate) const ESC_WINDOW: Duration = Duration::from_secs(1);
@@ -30,6 +29,7 @@ pub fn handle_terminal_event(
                 paste_into(bottom, &text);
             } else if !app.composer.search_active() {
                 app.composer.handle_paste(&text);
+                app.sync_assist();
             }
             app.scheduler.request();
         }
@@ -86,17 +86,7 @@ pub fn handle_terminal_event(
                         && app.follow() != yi_types::config::FollowMode::Slide
                     {
                         app.advance_follow(20);
-                    } else if key.code == KeyCodeValue::Char('/')
-                        && !key.ctrl
-                        && !key.alt
-                        && app.composer.is_empty()
-                    {
-                        app.bottom = Some(Bottom::Command(ListPopup::new(
-                            '/',
-                            SLASH_COMMANDS.iter().map(|s| (*s).to_owned()).collect(),
-                        )));
-                    } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
-                        app.bottom = Some(Bottom::File(file_picker(&app.options.cwd)));
+                    } else if app.composer.assist_key(&key) {
                     } else if key.code == KeyCodeValue::Backspace
                         && !key.ctrl
                         && !key.alt
@@ -104,10 +94,14 @@ pub fn handle_terminal_event(
                     {
                         app.composer.backspace();
                     } else {
+                        if key.code == KeyCodeValue::Space && !key.ctrl && !key.alt {
+                            app.composer.autocorrect_before_space();
+                        }
                         app.composer.input(key_event);
                     }
                 }
             }
+            app.sync_assist();
         }
         _ => {}
     }
@@ -117,25 +111,10 @@ fn paste_into(bottom: &mut Bottom, text: &str) {
     match bottom {
         Bottom::Approval(view, _) => view.paste(text),
         Bottom::Question(view) => view.paste(text),
-        Bottom::Command(popup) | Bottom::File(popup) | Bottom::Theme(popup) => popup.paste(text),
+        Bottom::Theme(popup) => popup.paste(text),
         Bottom::Agents(popup) => popup.paste(text),
         Bottom::Model(popup) => popup.paste(text),
     }
-}
-
-const PICKER_CAP: usize = 5_000;
-
-fn file_picker(cwd: &str) -> ListPopup {
-    let mut files = walk_files(std::path::Path::new(cwd), PICKER_CAP + 1);
-    let more = files.len() > PICKER_CAP;
-    files.truncate(PICKER_CAP);
-    let mut popup = ListPopup::new('@', files);
-    if more {
-        popup.note = Some(format!(
-            "[…] {PICKER_CAP} of {PICKER_CAP}+ files · picker cap {PICKER_CAP} · Esc, then type the path"
-        ));
-    }
-    popup
 }
 
 pub(crate) fn handle_tree_key(app: &mut App, key: &SingleKey) {
@@ -183,9 +162,7 @@ pub(crate) fn handle_bottom_key(
     let result = match &mut bottom {
         Bottom::Approval(view, _) => view.handle_key(key),
         Bottom::Question(view) => view.handle_key(key),
-        Bottom::Command(popup) | Bottom::File(popup) | Bottom::Theme(popup) => {
-            popup.handle_key(key)
-        }
+        Bottom::Theme(popup) => popup.handle_key(key),
         Bottom::Agents(popup) => popup.handle_key(key),
         Bottom::Model(popup) => popup.handle_key(key),
     };
@@ -214,15 +191,9 @@ pub(crate) fn handle_bottom_key(
                 }
             }
             Bottom::Theme(_) => app.restore_theme(),
-            Bottom::Command(_) | Bottom::File(_) | Bottom::Question(_) => {}
+            Bottom::Question(_) => {}
         },
         PopupResult::Insert(text) => match bottom {
-            Bottom::Command(_) => submit_line(app, cmd_tx, text),
-            Bottom::File(_) => {
-                app.composer
-                    .textarea
-                    .insert_str(format!("{} ", text.trim_start_matches('@')));
-            }
             Bottom::Approval(view, reply) => {
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
@@ -238,7 +209,19 @@ fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Comman
     let text = match slash_line(text) {
         Slash::Command(command) => match yi_runtime::slash::split(&command) {
             ("learn", focus) => format!("{} {focus}", yi_runtime::slash::LEARN),
-            _ => return handle_slash(app, &command),
+            _ => {
+                let (name, args) = yi_runtime::slash::split(&command);
+                if args.is_empty() {
+                    let cwd = app.options.cwd.clone();
+                    if app.composer.known_skill(name, &cwd) {
+                        format!("Read yi://skills/{name} and follow it.")
+                    } else {
+                        return handle_slash(app, &command);
+                    }
+                } else {
+                    return handle_slash(app, &command);
+                }
+            }
         },
         Slash::Prompt(text) => text,
     };
@@ -278,14 +261,30 @@ pub(crate) fn handle_action(
                 let _ = app.composer.accept_search();
                 return;
             }
+            if let Some(submit) = app.composer.enter_assist() {
+                if submit && let Some(text) = app.composer.take_submission() {
+                    submit_line(app, cmd_tx, text);
+                }
+                return;
+            }
             if let Some(text) = app.composer.take_submission() {
                 submit_line(app, cmd_tx, text);
             }
         }
         Action::InsertNewline => app.composer.insert_newline(),
-        Action::Abort => handle_escape(app, cmd_tx),
+        Action::Abort => {
+            if app.composer.dismiss_assist() {
+                app.open_questions();
+                return;
+            }
+            handle_escape(app, cmd_tx);
+        }
         Action::Quit => {
             if app.composer.cancel_search() {
+                return;
+            }
+            if app.composer.dismiss_assist() {
+                app.open_questions();
                 return;
             }
             let now = Instant::now();
@@ -303,8 +302,16 @@ pub(crate) fn handle_action(
                 }
             }
         }
-        Action::HistoryPrev => app.composer.history_prev(),
-        Action::HistoryNext => app.composer.history_next(),
+        Action::HistoryPrev => {
+            if !app.composer.move_assist(false) {
+                app.composer.history_prev();
+            }
+        }
+        Action::HistoryNext => {
+            if !app.composer.move_assist(true) {
+                app.composer.history_next();
+            }
+        }
         Action::HistorySearch => app.composer.begin_search(),
         Action::ToggleExpand => app.cycle_mode(),
         Action::ToggleHud => app.hud_hidden = !app.hud_hidden,
