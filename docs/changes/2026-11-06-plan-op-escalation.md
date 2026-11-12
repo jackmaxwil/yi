@@ -1,4 +1,6 @@
 ---
+version: 0.1031.0
+decisions: D587
 issue: Closes #2146
 growth: +534 the red ladder module (rung table with each exit's call, gate, readmission, split, the cap's stock question, the count a retry carries, and its unit tests over hand-built journal records) and the refusal cap on `Verifier` and `Decided` moved out of state.rs to keep it under the ceiling; weighed and deleted: the evidence fingerprint and repeat hint, a stored red count (the journal already counts it, as the cap did), the split's sibling read/write overlap keys, readmission of a reopened dependency's dependents, the unchecked-done digest, and a model-visible `split` in the tool schema
 raise: tests +758, comments +15, crate runtime +504, crate types +28

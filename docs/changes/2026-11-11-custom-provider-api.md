@@ -1,4 +1,6 @@
 ---
+version: 0.1034.0
+decisions: D588
 issue: Closes #2144
 raise: crate cli +1, crate types +36, tests +73
 cut: none docs/YI_DESIGN.md
