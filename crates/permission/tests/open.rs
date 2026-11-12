@@ -24,19 +24,11 @@ struct Swap {
 
 impl Swap {
     fn new(name: &str) -> Result<(Self, ReadGate), Box<dyn Error>> {
-        let scratch = Scratch::new(name)?;
-        let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
-        let (store, d) = (home.join(".ssh"), workspace.join("d"));
-        std::fs::create_dir_all(&store)?;
+        let (scratch, context) = keyed(name)?;
+        let (store, d) = (scratch.join("home/.ssh"), scratch.join("workspace/d"));
         std::fs::create_dir_all(&d)?;
-        std::fs::write(store.join("id_rsa"), KEY)?;
         std::fs::write(d.join("id_rsa"), "ordinary\n")?;
-        let gate = ReadGate::new(&CatastrophicContext {
-            home_dir: Some(home),
-            working_dir: Some(workspace),
-            workspace_git: Vec::new(),
-            host_owned: Vec::new(),
-        });
+        let gate = ReadGate::new(&context);
         Ok((
             Self {
                 _scratch: scratch,
@@ -181,7 +173,7 @@ fn a_cwd_spelled_through_a_link_and_dotdot_keeps_its_git_dir_walled() -> TestRes
 }
 
 /// `home/.ssh/id_rsa` holds the key, beside an empty `workspace`.
-fn keyed(name: &str) -> Result<(Scratch, CatastrophicContext), Box<dyn Error>> {
+pub(crate) fn keyed(name: &str) -> Result<(Scratch, CatastrophicContext), Box<dyn Error>> {
     let scratch = Scratch::new(name)?;
     let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
     std::fs::create_dir_all(home.join(".ssh"))?;
@@ -287,15 +279,22 @@ fn an_unreadable_store_is_named_and_asks_only_for_a_two_name_path() -> TestResul
     );
     std::fs::write(&own, "ordinary\n")?;
     std::fs::hard_link(&own, &twin)?;
+    std::fs::create_dir_all(scratch.join("workspace/nested"))?;
+    std::fs::hard_link(&own, scratch.join("workspace/nested/inner"))?;
     std::fs::write(scratch.join("workspace/single"), "ordinary\n")?;
     let judged = |command: &str| command_reads_alias(command, &context).unwrap_or_default();
     let opened = ReadGate::new(&context).open(&twin, &[]).err();
     let opened = opened.map(|error| error.to_string()).unwrap_or_default();
 
     let unread = format!("{} could not be read", scratch.join("home/.aws").display());
-    for why in [judged("cat twin"), opened] {
+    for why in [judged("cat twin"), judged("cd nested && cat inner"), opened] {
         assert!(why.contains(&unread), "{why}");
     }
+    // A file the cut scan could not judge is no protected path, which decide would deny outright.
+    assert!(
+        !ReadGate::new(&context).denies(&twin),
+        "a cut scan made a protected path"
+    );
     assert_eq!([judged("rg token"), judged("jq '.[]' single")], ["", ""]);
     let single = ReadGate::new(&context).open(&scratch.join("workspace/single"), &[]);
     assert_eq!(io::read_to_string(single?)?, "ordinary\n");

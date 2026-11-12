@@ -679,8 +679,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   `env -u` for every inherited variable a name heuristic marks as a secret (D324); in auto mode the
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
   one; a profile matches the name opened, so while a store file has a name outside the stores every
-  bash command asks and stays contained once approved (the read gate refuses that file on the
-  descriptor it opened); no unix socket (#599), and the only network is loopback, where a per-spawn CONNECT proxy
+  bash command asks and stays contained once approved, unless a rule, a grant or yolo allows it as
+  it would a direct store read (the read gate refuses that file on the descriptor it opened); no
+  unix socket (#599), and the only network is loopback, where a per-spawn CONNECT proxy
   decides by host name: the seed, `sandbox.egress`, a kept grant, then a person (#601). Package caches
   are writable, never `.cargo/bin` or a config. A lane's git reaches origin through a host-run mirror and an
   outbox the host forwards; trunk, `main`, `master` and a tag ask a person (#1933). Without it, `Contain`

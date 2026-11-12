@@ -219,7 +219,14 @@ fn a_hard_linked_key_keeps_an_allowed_search_contained() -> TestResult {
         tokio::sync::broadcast::channel(8).0,
     )
     .with_sandbox(Some(sandbox(vec![project.clone()])));
-    let asker: Asker = Arc::new(|_| AskOutcome::AllowOnce);
+    let asks = Arc::new(Mutex::new(0_usize));
+    let seen = Arc::clone(&asks);
+    let asker: Asker = Arc::new(move |_| {
+        *seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        AskOutcome::AllowOnce
+    });
     let asked = PermissionBroker::new(
         PermissionMode::Auto,
         project.clone(),
@@ -254,9 +261,16 @@ fn a_hard_linked_key_keeps_an_allowed_search_contained() -> TestResult {
         assert_eq!(by_ask.containment, contained, "{state}: {}", by_ask.reason);
     };
     check("an outside alias", "c1");
+    // Only the alias asks: main allows `rg` outright, and a cut scan names no alias.
+    assert_eq!(
+        *asks.lock().map_err(|_| "poisoned")?,
+        1,
+        "the alias did not ask"
+    );
     std::fs::remove_file(project.join("key-copy"))?;
     std::os::unix::fs::symlink(".aws", home.join(".aws"))?;
     check("a cut scan", "c2");
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 1, "a cut scan asked");
     Ok(())
 }
 

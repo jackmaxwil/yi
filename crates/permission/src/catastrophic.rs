@@ -434,7 +434,7 @@ impl ReadGate {
         self.denies_spelling(path)
             || beneath_via(&self.trees, &self.tree_ids, path, LINK_HOPS)
             || denied_file(&self.ids, meta.as_ref())
-            || self.aliases.names(&self.stores, meta.as_ref()).is_some()
+            || self.aliases.identified(&self.stores, meta.as_ref())
     }
 
     /// [`Self::denies`] for a path [`fs::canonicalize`] just returned, which has no link left to
@@ -450,12 +450,7 @@ impl ReadGate {
     /// A walk's entry, whose ancestors the walk judged on its way in: the identity `meta` read
     /// without following it. Its spelling adds nothing, since every guarded directory has one.
     pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
-        denied_file(&self.ids, meta) || self.is_store_alias(meta)
-    }
-
-    /// Whether `meta` is a file with two names refused as a store file, or as one maybe.
-    pub fn is_store_alias(&self, meta: Option<&fs::Metadata>) -> bool {
-        self.aliases.names(&self.stores, meta).is_some()
+        denied_file(&self.ids, meta) || self.aliases.identified(&self.stores, meta)
     }
 
     /// Why this gate's store scan stopped short, once a hard-linked file made it run.

@@ -511,20 +511,11 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
 /// readable by any command, and every one asks until that name is gone; nothing walks the tree.
 #[test]
 fn a_key_with_a_name_outside_the_stores_makes_every_command_ask() -> TestResult {
-    let scratch = Scratch::new("yi-belt-hardlink")?;
+    let (scratch, context) = crate::open::keyed("yi-belt-hardlink")?;
     let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
-    let key = home.join(".ssh/id_rsa");
-    let alias = workspace.join("nested/key-copy");
-    std::fs::create_dir_all(home.join(".ssh"))?;
+    let (key, alias) = (home.join(".ssh/id_rsa"), workspace.join("nested/key-copy"));
     std::fs::create_dir_all(workspace.join("nested"))?;
-    std::fs::write(&key, "FAKE SSH KEY")?;
     std::fs::hard_link(&key, &alias)?;
-    let context = CatastrophicContext {
-        home_dir: Some(home.clone()),
-        working_dir: Some(workspace.clone()),
-        workspace_git: Vec::new(),
-        host_owned: Vec::new(),
-    };
     let commands = [
         "cat nested/key-copy|head",
         "rg token",
@@ -572,6 +563,29 @@ fn a_key_with_a_name_outside_the_stores_makes_every_command_ask() -> TestResult 
     std::fs::hard_link(&key, home.join(".ssh/id_rsa.bak"))?;
     let after = asked(&context);
     assert!(after.iter().all(String::is_empty), "{after:?}");
+    Ok(())
+}
+
+/// A store linked to a file in another store names that file once, so a link outside both
+/// still asks; a store linked to a dotfiles copy with one name asks nothing.
+#[test]
+fn a_store_linked_into_another_store_counts_its_name_once() -> TestResult {
+    let (scratch, context) = crate::open::keyed("yi-belt-store-link")?;
+    let home = scratch.join("home");
+    std::fs::create_dir_all(home.join(".aws"))?;
+    std::fs::create_dir_all(scratch.join("dotfiles"))?;
+    std::fs::write(home.join(".aws/netrc"), "machine x password y")?;
+    std::fs::write(scratch.join("dotfiles/npmrc"), "//registry:_authToken=x")?;
+    std::os::unix::fs::symlink(home.join(".aws/netrc"), home.join(".netrc"))?;
+    std::os::unix::fs::symlink(scratch.join("dotfiles/npmrc"), home.join(".npmrc"))?;
+    std::fs::hard_link(
+        home.join(".aws/netrc"),
+        scratch.join("workspace/netrc-copy"),
+    )?;
+    let asked = command_reads_alias("ls", &context).unwrap_or_default();
+    assert!(asked.contains("hard link outside the stores"), "{asked:?}");
+    std::fs::remove_file(scratch.join("workspace/netrc-copy"))?;
+    assert_eq!(command_reads_alias("ls", &context), None);
     Ok(())
 }
 

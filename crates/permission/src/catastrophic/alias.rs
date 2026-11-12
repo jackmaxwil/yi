@@ -1,8 +1,8 @@
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use super::{CatastrophicContext, FileId, SEPARATORS, expand, file_id, stores};
+use super::{CatastrophicContext, FileId, SEPARATORS, cd_target, expand, file_id, stores};
 
 /// How many directory entries name one file.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -63,8 +63,9 @@ impl std::fmt::Display for Unscanned {
 /// Invariant: a link inside a store is not followed, as no path rule follows it; a store that is
 /// itself a link is, as the sandbox binds its resolved path.
 fn scan_stores(stores: &[PathBuf]) -> Result<StoreFiles, Unscanned> {
-    let mut files = StoreFiles::new();
-    let mut note = |path: PathBuf, meta: &fs::Metadata| {
+    let (mut files, mut seen) = (StoreFiles::new(), std::collections::HashSet::new());
+    // Incident: a store linked to a file in another store counted that one name twice.
+    let mut note = |path: PathBuf, real: PathBuf, meta: &fs::Metadata| {
         if let Some(id) = file_id(meta) {
             let links = links(meta);
             let file = files.entry(id).or_insert(StoreFile {
@@ -72,7 +73,9 @@ fn scan_stores(stores: &[PathBuf]) -> Result<StoreFiles, Unscanned> {
                 links,
                 names: Links(0),
             });
-            file.names = Links(file.names.0.saturating_add(1));
+            if seen.insert(real) {
+                file.names = Links(file.names.0.saturating_add(1));
+            }
         }
     };
     let (mut pending, mut walked, mut entries) =
@@ -80,7 +83,15 @@ fn scan_stores(stores: &[PathBuf]) -> Result<StoreFiles, Unscanned> {
     for store in stores {
         match fs::metadata(store) {
             Ok(meta) if meta.is_dir() => pending.push(store.clone()),
-            Ok(meta) if meta.is_file() => note(store.clone(), &meta),
+            Ok(meta) if meta.is_file() => {
+                let unreadable =
+                    |error: io::Error| Unscanned::Unreadable(store.clone(), error.kind());
+                note(
+                    store.clone(),
+                    fs::canonicalize(store).map_err(unreadable)?,
+                    &meta,
+                );
+            }
             Err(error) if error.kind() != io::ErrorKind::NotFound => {
                 return Err(Unscanned::Unreadable(store.clone(), error.kind()));
             }
@@ -93,6 +104,7 @@ fn scan_stores(stores: &[PathBuf]) -> Result<StoreFiles, Unscanned> {
         if !id.is_none_or(|id| walked.insert(id)) {
             continue;
         }
+        let real = fs::canonicalize(&dir).map_err(unreadable)?;
         for entry in fs::read_dir(&dir).map_err(unreadable)? {
             let entry = entry.map_err(unreadable)?;
             entries = entries.saturating_add(1);
@@ -101,7 +113,9 @@ fn scan_stores(stores: &[PathBuf]) -> Result<StoreFiles, Unscanned> {
             }
             match entry.metadata() {
                 Ok(meta) if meta.is_dir() => pending.push(entry.path()),
-                Ok(meta) if meta.is_file() => note(entry.path(), &meta),
+                Ok(meta) if meta.is_file() => {
+                    note(entry.path(), real.join(entry.file_name()), &meta)
+                }
                 Err(error) if error.kind() != io::ErrorKind::NotFound => {
                     return Err(Unscanned::Unreadable(entry.path(), error.kind()));
                 }
@@ -132,6 +146,14 @@ impl Aliases {
         }
     }
 
+    /// Whether the scan identified `meta` as a store file: a cut scan identifies none, so a
+    /// protected-path verdict is never made of a file it could not judge.
+    pub(super) fn identified(&self, stores: &[PathBuf], meta: Option<&fs::Metadata>) -> bool {
+        let meta = meta.filter(|meta| meta.is_file() && links(meta).shared());
+        let files = meta.and_then(|_| self.scan(stores).as_ref().ok());
+        (files.zip(meta.and_then(file_id))).is_some_and(|(files, id)| files.contains_key(&id))
+    }
+
     /// A store file with a name outside every store; a cut scan claims none, since every
     /// path that has two names still asks through [`Aliases::names`].
     fn outside(&self, stores: &[PathBuf]) -> Option<String> {
@@ -154,12 +176,23 @@ pub fn command_reads_alias(command: &str, context: &CatastrophicContext) -> Opti
     let (stores, aliases) = (stores(context), Aliases::default());
     let words =
         command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c) || "<>".contains(c));
-    (words.map(|word| word.replace(['\'', '"', '\\'], "")))
-        .filter(|word| !word.is_empty() && !word.starts_with('-'))
-        .find_map(|word| {
-            let path = expand(&word, context);
-            let why = aliases.names(&stores, fs::metadata(&path).ok().as_ref())?;
-            Some(format!("{} is {why}", path.display()))
-        })
-        .or_else(|| aliases.outside(&stores))
+    // Every `cd` target joins the dirs a later word resolves from, as the wall's check does.
+    let (mut dirs, mut after_cd) = (Vec::new(), false);
+    for word in (words.map(|word| word.replace(['\'', '"', '\\'], ""))).filter(|w| !w.is_empty()) {
+        let at = expand(&word, context);
+        if cd_target(&word, &mut after_cd) {
+            dirs.push(at.clone());
+        }
+        let relative = Path::new(&word).is_relative() && !word.starts_with('~');
+        let elsewhere = (dirs.iter().filter(|_| relative)).map(|dir| dir.join(&word));
+        for path in std::iter::once(at)
+            .chain(elsewhere)
+            .filter(|_| !word.starts_with('-'))
+        {
+            if let Some(why) = aliases.names(&stores, fs::metadata(&path).ok().as_ref()) {
+                return Some(format!("{} is {why}", path.display()));
+            }
+        }
+    }
+    aliases.outside(&stores)
 }
