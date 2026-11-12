@@ -1,7 +1,7 @@
 use serde_json::json;
 use std::error::Error;
 use yi_types::message::{AgentMessage, Content, UserContent};
-use yi_types::model::{LlmContext, Reuse, ToolDef, Ttl};
+use yi_types::model::{LlmContext, Model, Reuse, ToolDef, Ttl};
 
 const RECORDED: &str = include_str!("fixtures/build_params_2026-11-09.txt");
 
@@ -59,6 +59,19 @@ fn history() -> Result<Vec<AgentMessage>, Box<dyn Error>> {
     ])
 }
 
+fn wire_body(api: &str, model: &Model, context: &LlmContext) -> String {
+    match api {
+        "cursor-agent" => yi_ai::cursor::prompt_of(context),
+        "anthropic-messages" => {
+            yi_ai::anthropic::build_params(model, context, &Default::default()).to_string()
+        }
+        "openai-completions" => {
+            yi_ai::openai::build_params(model, context, &Default::default()).to_string()
+        }
+        _ => yi_ai::openai_responses::build_params(model, context, &Default::default()).to_string(),
+    }
+}
+
 /// Bodies recorded from the adapters before history was borrowed: the wire may not move.
 #[test]
 fn every_adapter_builds_the_recorded_body() -> Result<(), Box<dyn Error>> {
@@ -96,23 +109,10 @@ fn every_adapter_builds_the_recorded_body() -> Result<(), Box<dyn Error>> {
                         tools: Some(tools.clone()),
                         tool_choice: None,
                     };
-                    let body = match api {
-                        "anthropic-messages" => {
-                            yi_ai::anthropic::build_params(&model, &context, &Default::default())
-                        }
-                        "openai-completions" => {
-                            yi_ai::openai::build_params(&model, &context, &Default::default())
-                        }
-                        _ => yi_ai::openai_responses::build_params(
-                            &model,
-                            &context,
-                            &Default::default(),
-                        ),
-                    };
+                    let body = wire_body(api, &model, &context);
                     let expected = recorded.next().ok_or("fixture ran out of bodies")?;
                     assert_eq!(
-                        body.to_string(),
-                        expected,
+                        body, expected,
                         "{api} at {base}, vision {vision}, shared {shared:?}"
                     );
                 }
@@ -169,17 +169,7 @@ fn a_block_this_build_cannot_read_reaches_every_wire_as_its_notice() -> Result<(
         if vision {
             model.input = vec!["text".to_owned(), "image".to_owned()];
         }
-        let body = match api {
-            "cursor-agent" => yi_ai::cursor::prompt_of(&context),
-            "anthropic-messages" => {
-                yi_ai::anthropic::build_params(&model, &context, &Default::default()).to_string()
-            }
-            "openai-completions" => {
-                yi_ai::openai::build_params(&model, &context, &Default::default()).to_string()
-            }
-            _ => yi_ai::openai_responses::build_params(&model, &context, &Default::default())
-                .to_string(),
-        };
+        let body = wire_body(api, &model, &context);
         let blocks = if api == "cursor-agent" { 3 } else { 4 };
         let notices = body.matches(yi_types::message::UNREAD_CONTENT).count();
         assert_eq!(notices, blocks, "{api}, vision {vision}: {body}");
@@ -193,6 +183,78 @@ fn a_block_this_build_cannot_read_reaches_every_wire_as_its_notice() -> Result<(
                 !body.contains(raw),
                 "{api}, vision {vision}, sent {raw}: {body}"
             );
+        }
+    }
+    Ok(())
+}
+
+/// Dies with a 400 on every later request: a result after a note answers a call already answered,
+/// and a failed reply's result answers none; each is a notice, its text in no role.
+#[test]
+fn a_result_whose_reply_failed_reaches_every_wire_as_a_notice() -> Result<(), Box<dyn Error>> {
+    let result = |id: &str, text: &str| AgentMessage::ToolResult {
+        tool_call_id: id.to_owned(),
+        tool_name: "bash".to_owned(),
+        content: vec![Content::Text {
+            text: text.to_owned(),
+            text_signature: None,
+        }],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: false,
+        timestamp: 2,
+    };
+    let call =
+        |id: &str| json!([{"type":"toolCall","id":id,"name":"bash","arguments":{"cmd":"ls"}}]);
+    let context = LlmContext {
+        cache_ttl: Ttl::Min5,
+        cache_tail: false,
+        system_prompt: "s".to_owned(),
+        messages: vec![
+            AgentMessage::user_input(UserContent::Text("look".to_owned()), 0),
+            assistant("m", "toolUse", call("kept_1"))?,
+            AgentMessage::user_input(UserContent::Text("a note".to_owned()), 1),
+            result("kept_1", "kept output"),
+            assistant("m", "error", call("dropped_1"))?,
+            result("dropped_1", "fetched page text"),
+            AgentMessage::user_input(UserContent::Text("go on".to_owned()), 3),
+        ],
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: Reuse::Loop,
+        tools: None,
+        tool_choice: None,
+    };
+    let notice = "[bash result omitted: no call before it in this request still awaits it; run the tool again for its output]";
+    for api in [
+        "anthropic-messages",
+        "openai-completions",
+        "openai-responses",
+    ] {
+        let model = crate::common::model("m", api, "p", "http://h", None);
+        let body = wire_body(api, &model, &context);
+        for output in ["fetched page text", "kept output"] {
+            assert!(!body.contains(output), "{api} sent {output}: {body}");
+        }
+        let answers = match api {
+            "anthropic-messages" => r#""tool_use_id":"kept_1""#,
+            "openai-completions" => r#""tool_call_id":"kept_1""#,
+            _ => r#""type":"function_call_output","call_id":"kept_1""#,
+        };
+        assert_eq!(body.matches(answers).count(), 1, "{api}: {body}");
+        assert!(
+            !body.contains("dropped_1"),
+            "{api} sent the dropped call or its result: {body}"
+        );
+        assert_eq!(body.matches(notice).count(), 2, "{api}: {body}");
+        let parsed: serde_json::Value = serde_json::from_str(&body)?;
+        let items = (parsed.get("messages").or_else(|| parsed.get("input")))
+            .and_then(serde_json::Value::as_array)
+            .ok_or("no message list")?;
+        for item in (items.iter()).filter(|item| item.to_string().contains(notice)) {
+            assert_eq!(item["role"], "user", "{api}: {body}");
         }
     }
     Ok(())
