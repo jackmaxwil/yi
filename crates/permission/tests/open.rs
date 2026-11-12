@@ -204,12 +204,6 @@ fn a_hard_link_to_a_key_file_is_refused() -> TestResult {
     std::fs::hard_link(&own, &twin)?;
     let gate = ReadGate::new(&context);
 
-    assert!(gate.denies(&alias), "ReadGate::denies allowed the alias");
-    let entry = std::fs::symlink_metadata(&alias)?;
-    assert!(
-        gate.denies_entry(Some(&entry)),
-        "ReadGate::denies_entry allowed the alias"
-    );
     let why = gate.open(&alias, &[]).err().map(|error| error.to_string());
     let why = why.unwrap_or_default();
     assert!(
@@ -290,11 +284,6 @@ fn an_unreadable_store_is_named_and_asks_only_for_a_two_name_path() -> TestResul
     for why in [judged("cat twin"), judged("cd nested && cat inner"), opened] {
         assert!(why.contains(&unread), "{why}");
     }
-    // A file the cut scan could not judge is no protected path, which decide would deny outright.
-    assert!(
-        !ReadGate::new(&context).denies(&twin),
-        "a cut scan made a protected path"
-    );
     assert_eq!([judged("rg token"), judged("jq '.[]' single")], ["", ""]);
     let single = ReadGate::new(&context).open(&scratch.join("workspace/single"), &[]);
     assert_eq!(io::read_to_string(single?)?, "ordinary\n");

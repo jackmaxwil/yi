@@ -518,3 +518,29 @@ fn grep_names_an_unreadable_store_beside_the_hard_linked_files_it_skipped() -> T
     );
     Ok(())
 }
+
+/// Under a wall a walk reads each entry's identity; a hard link to a key is still opened through
+/// the gate, so grep counts it as refused rather than skipping it unseen.
+#[cfg(unix)]
+#[test]
+fn a_walled_grep_counts_a_hard_linked_key_as_refused() -> TestResult {
+    let scratch = Scratch::new("yi-paths-walled-alias")?;
+    let (home, project) = (scratch.join("home"), scratch.join("project"));
+    fs::create_dir_all(home.join(".ssh"))?;
+    fs::create_dir_all(&project)?;
+    fs::write(home.join(".ssh/id_rsa"), "FAKE KEY MARKER\n")?;
+    fs::hard_link(home.join(".ssh/id_rsa"), project.join("key-copy"))?;
+    fs::write(project.join("notes"), "MARKER notes\n")?;
+    fs::create_dir_all(scratch.join("walled"))?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let mut context = ToolContext::new(project.clone());
+    context.deny_read = vec![scratch.join("walled")];
+    let found = grep(&context, &[("pattern", "MARKER")]);
+    assert!(
+        found.contains("MARKER notes") && found.contains("[1 file(s) refused:"),
+        "{found}"
+    );
+    assert!(!found.contains("KEY MARKER"), "{found}");
+    Ok(())
+}

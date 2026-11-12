@@ -200,16 +200,11 @@ fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {
 
 /// The profile cannot see a hard link, so a call it holds gains nothing by leaving: a rule's
 /// allow and an approved ask both stay contained, with an alias and with a cut store scan.
+#[cfg(unix)]
 #[test]
 fn a_hard_linked_key_keeps_an_allowed_search_contained() -> TestResult {
-    let scratch = Scratch::new("yi-scope-hardlink")?;
-    let (home, project) = (scratch.join("home"), scratch.join("project"));
-    std::fs::create_dir_all(home.join(".ssh"))?;
-    std::fs::create_dir_all(&project)?;
-    std::fs::write(home.join(".ssh/id_rsa"), "FAKE KEY MARKER\n")?;
-    std::fs::hard_link(home.join(".ssh/id_rsa"), project.join("key-copy"))?;
-    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
-    unsafe { std::env::set_var("HOME", &home) };
+    let (_scratch, home, project, key) = key_store("yi-scope-hardlink")?;
+    std::fs::hard_link(&key, project.join("key-copy"))?;
     let rule = yi_runtime::ConfigRule::new("bash", "rg *", yi_runtime::ConfigRuleAction::Allow)?;
     let ruled = PermissionBroker::new(
         PermissionMode::Auto,

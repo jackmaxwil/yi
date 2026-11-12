@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::{CatastrophicContext, FileId, SEPARATORS, cd_target, expand, file_id, stores};
+use super::{CatastrophicContext, FileId, cd_target, expand, file_id, path_words, stores};
 
 /// How many directory entries name one file.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -127,7 +127,7 @@ fn scan_stores(stores: &[PathBuf]) -> Result<StoreFiles, Unscanned> {
 }
 
 /// Invariant: a hard link names a store file past every path rule, the sandbox's too, which
-/// judges the name opened; the stores are scanned at most once per check, and only on demand.
+/// judges the name opened; scanned once per check or gate, never kept, so a new link is seen.
 #[derive(Default)]
 pub(super) struct Aliases(std::sync::OnceLock<Result<StoreFiles, Unscanned>>);
 
@@ -144,14 +144,6 @@ impl Aliases {
                 .map(|file| format!("another name for {}", file.path.display())),
             Err(why) => Some(format!("a hard-linked file, and {why}")),
         }
-    }
-
-    /// Whether the scan identified `meta` as a store file: a cut scan identifies none, so a
-    /// protected-path verdict is never made of a file it could not judge.
-    pub(super) fn identified(&self, stores: &[PathBuf], meta: Option<&fs::Metadata>) -> bool {
-        let meta = meta.filter(|meta| meta.is_file() && links(meta).shared());
-        let files = meta.and_then(|_| self.scan(stores).as_ref().ok());
-        (files.zip(meta.and_then(file_id))).is_some_and(|(files, id)| files.contains_key(&id))
     }
 
     /// A store file with a name outside every store; a cut scan claims none, since every
@@ -174,17 +166,15 @@ impl Aliases {
 /// sandbox matches the name opened; a cut scan leaves only a named two-name path asking.
 pub fn command_reads_alias(command: &str, context: &CatastrophicContext) -> Option<String> {
     let (stores, aliases) = (stores(context), Aliases::default());
-    let words =
-        command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c) || "<>".contains(c));
     // Every `cd` target joins the dirs a later word resolves from, as the wall's check does.
     let (mut dirs, mut after_cd) = (Vec::new(), false);
-    for word in (words.map(|word| word.replace(['\'', '"', '\\'], ""))).filter(|w| !w.is_empty()) {
-        let at = expand(&word, context);
-        if cd_target(&word, &mut after_cd) {
+    for word in path_words(command) {
+        let at = expand(word, context);
+        if cd_target(word, &mut after_cd) {
             dirs.push(at.clone());
         }
-        let relative = Path::new(&word).is_relative() && !word.starts_with('~');
-        let elsewhere = (dirs.iter().filter(|_| relative)).map(|dir| dir.join(&word));
+        let relative = Path::new(word).is_relative() && !word.starts_with('~');
+        let elsewhere = (dirs.iter().filter(|_| relative)).map(|dir| dir.join(word));
         for path in std::iter::once(at)
             .chain(elsewhere)
             .filter(|_| !word.starts_with('-'))

@@ -360,8 +360,8 @@ const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 /// What a read may not touch (D180, D323): a key, the workspace `.git` or a device, which never
 /// ends (`/dev/zero`) or waits (`/dev/tty`), and a directory a walk would carry into a key
 /// store; judged by file identity too, so letter case, a link, `/private` or a firmlink names no
-/// way in; [`ReadGate::open`] judges the file it opened, so no swapped link either (#890), and a
-/// hard link to a store file is refused by identity. Built once per call or walk.
+/// way in; [`ReadGate::open`] judges the file it opened, so no swapped link either (#890), nor a
+/// hard link to a store file, which only that open judges. Built once per call or walk.
 pub struct ReadGate {
     context: CatastrophicContext,
     stores: Vec<PathBuf>,
@@ -430,11 +430,9 @@ impl ReadGate {
     /// A named path: refused when it or an ancestor is guarded by spelling or by identity, a
     /// missing tail judged by its existing head and a dangling link by where it points.
     pub fn denies(&self, path: &Path) -> bool {
-        let meta = fs::metadata(path).ok();
         self.denies_spelling(path)
             || beneath_via(&self.trees, &self.tree_ids, path, LINK_HOPS)
-            || denied_file(&self.ids, meta.as_ref())
-            || self.aliases.identified(&self.stores, meta.as_ref())
+            || denied_file(&self.ids, fs::metadata(path).ok().as_ref())
     }
 
     /// [`Self::denies`] for a path [`fs::canonicalize`] just returned, which has no link left to
@@ -450,7 +448,7 @@ impl ReadGate {
     /// A walk's entry, whose ancestors the walk judged on its way in: the identity `meta` read
     /// without following it. Its spelling adds nothing, since every guarded directory has one.
     pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
-        denied_file(&self.ids, meta) || self.aliases.identified(&self.stores, meta)
+        denied_file(&self.ids, meta)
     }
 
     /// Why this gate's store scan stopped short, once a hard-linked file made it run.
@@ -880,6 +878,15 @@ fn runs_destructive(segment: &str) -> bool {
         })
 }
 
+/// A command's words, split at whitespace, separators and redirections, quotes trimmed.
+fn path_words(command: &str) -> impl Iterator<Item = &str> {
+    let words =
+        command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c) || "<>".contains(c));
+    words
+        .map(|word| word.trim_matches(['"', '\'']))
+        .filter(|word| !word.is_empty())
+}
+
 /// A destructive verb in any segment sends every path-shaped token of the whole command through
 /// the denylist, since a quoted `;` may cut a segment short. No shell parsing (D15).
 pub fn command_targets_catastrophic(
@@ -889,11 +896,7 @@ pub fn command_targets_catastrophic(
     if !command.split(SEPARATORS).any(runs_destructive) {
         return None;
     }
-    for token in command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c)) {
-        let token = token.trim_matches(['"', '\'']);
-        if token.is_empty() || token.starts_with('-') {
-            continue;
-        }
+    for token in path_words(command).filter(|token| !token.starts_with('-')) {
         // Incident: `rm -rf /` trimmed to an empty path that expanded to the working dir and
         // `rm -rf .git` was skipped for having no slash. Every non-flag argument counts now.
         let trimmed = token.trim_end_matches(['*', '/']);
