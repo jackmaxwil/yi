@@ -494,7 +494,7 @@ fn session_rows(
     };
     let (state, news) = detail(app, id, row, now);
     let state_rows = if is_focused || news { 2 } else { 1 };
-    let hue = app.accent_of(&id.0, row.seed());
+    let hue = app.accent_of(&id.0, crate::avatar::hue_seed(row));
     if rail {
         rows.push(SidebarRow {
             index: Some(index),
@@ -652,7 +652,7 @@ fn child_rows(
         } else {
             "  ├"
         };
-        let hue = app.accent_of(child.id.as_str(), &child.name);
+        let hue = app.accent_of(&id.0, &id.0);
         let mut spans = vec![
             Span::styled(connector.to_owned(), theme.dim_style()),
             tile_span(app, name_tile(&child.name), hue),

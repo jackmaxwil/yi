@@ -106,11 +106,24 @@ pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
     out
 }
 
+pub fn hue_seed(row: &crate::model::SessionRow) -> &str {
+    if row.root.is_empty() {
+        &row.id.0
+    } else {
+        &row.root
+    }
+}
+
 pub fn assign_accents(seeds: &[&str]) -> Vec<usize> {
     let count = yi_tui::colors::ACCENT_RGB.len();
     let mut taken = vec![false; count];
+    let mut seen: HashMap<&str, usize> = HashMap::new();
     let mut out = Vec::with_capacity(seeds.len());
     for seed in seeds {
+        if let Some(hue) = seen.get(seed) {
+            out.push(*hue);
+            continue;
+        }
         let start = yi_tui::colors::accent_index(seed);
         let pick = (0..count)
             .map(|step| (start + step) % count)
@@ -119,6 +132,7 @@ pub fn assign_accents(seeds: &[&str]) -> Vec<usize> {
         if let Some(slot) = taken.get_mut(pick) {
             *slot = true;
         }
+        seen.insert(seed, pick);
         out.push(pick);
     }
     out
@@ -287,6 +301,7 @@ pub struct Avatars {
     pool: ImageIds,
     ids: HashMap<String, ImageId>,
     placed: HashMap<String, (u16, u16, u16, u16)>,
+    sent: HashMap<String, (u8, u8, u8)>,
     motion: HashMap<String, Motion>,
     forgotten: bool,
 }
@@ -308,6 +323,7 @@ impl Avatars {
         for key in gone {
             self.placed.remove(&key);
             self.motion.remove(&key);
+            self.sent.remove(&key);
             if let Some(image) = self.ids.remove(&key) {
                 let _ = kitty::delete_id(out, image.raw());
             }
@@ -323,6 +339,7 @@ impl Avatars {
                     let (data, size) = pixels(place);
                     let _ = kitty::transmit(out, image.raw(), &data, size);
                     self.ids.insert(place.key.clone(), image);
+                    self.sent.insert(place.key.clone(), place.accent);
                     image
                 }
             };
@@ -340,6 +357,10 @@ impl Avatars {
                     self.motion.remove(&place.key);
                     let identicon = rgba(&grid(&place.seed), place.accent);
                     retransmit(out, image, &identicon, self.placed.get(&place.key));
+                }
+                (None, None) if self.sent.get(&place.key) != Some(&place.accent) => {
+                    retransmit(out, image, &pixels(place).0, self.placed.get(&place.key));
+                    self.sent.insert(place.key.clone(), place.accent);
                 }
                 (None, None) => {}
             }
@@ -391,6 +412,7 @@ impl Avatars {
         for key in std::mem::take(&mut self.placed).into_keys() {
             self.ids.remove(&key);
             self.motion.remove(&key);
+            self.sent.remove(&key);
         }
     }
 }
@@ -737,6 +759,9 @@ mod tests {
             &fewer[..],
             "a shorter list keeps the same hues for its head"
         );
+        let shared = assign_accents(&["/repo", "/other", "/repo"]);
+        assert_eq!(shared[0], shared[2], "one directory keeps one hue");
+        assert_ne!(shared[0], shared[1], "a second directory takes another hue");
     }
 
     #[test]
