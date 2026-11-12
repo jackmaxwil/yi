@@ -1,4 +1,6 @@
 ---
+version: 0.1028.0
+decisions: D585
 issue: Closes #2140
 raise: crate console +23, tests +90
 decision: A session's accent follows the folder it was started in and its identicon creature stays seeded by its own id; a child wears its parent's folder hue; a row with no folder keeps a hue of its own | owner, 2026-11-11, asked whether sessions in one folder should look identical: "Folder colour, own creature" | seed the accent by the session name and the avatar placement by the id again; this supersedes only the hue half of the console session avatars row and of the badge colours D417 says the id hashes to
