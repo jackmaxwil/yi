@@ -235,14 +235,20 @@ impl App {
             let Some(row) = self.state.sessions.get(id) else {
                 continue;
             };
-            keys.push((id.0.clone(), row.seed().to_owned()));
+            keys.push((id.0.clone(), row.icon_seed().to_owned()));
         }
         for index in self.state.visible_rows() {
             let Some(id) = self.state.order.get(index) else {
                 continue;
             };
+            let parent = self
+                .state
+                .sessions
+                .get(id)
+                .map(SessionRow::icon_seed)
+                .unwrap_or(id.0.as_str());
             for child in self.state.children.get(id).into_iter().flatten() {
-                keys.push((child.id.as_str().to_owned(), child.name.clone()));
+                keys.push((child.id.as_str().to_owned(), parent.to_owned()));
             }
         }
         let seeds: Vec<&str> = keys.iter().map(|(_, seed)| seed.as_str()).collect();

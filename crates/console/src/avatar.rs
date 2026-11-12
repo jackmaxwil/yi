@@ -1,5 +1,6 @@
-//! A session's avatar: a 7×7 mirrored identicon seeded by the session id, rastered for
-//! the kitty graphics protocol, with the initials tile every terminal draws under it.
+//! A session's avatar: a 7×7 mirrored identicon seeded by the directory it was started
+//! in, rastered for the kitty graphics protocol, with the initials tile every terminal
+//! draws under it.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -109,8 +110,13 @@ pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
 pub fn assign_accents(seeds: &[&str]) -> Vec<usize> {
     let count = yi_tui::colors::ACCENT_RGB.len();
     let mut taken = vec![false; count];
+    let mut seen: HashMap<&str, usize> = HashMap::new();
     let mut out = Vec::with_capacity(seeds.len());
     for seed in seeds {
+        if let Some(hue) = seen.get(seed) {
+            out.push(*hue);
+            continue;
+        }
         let start = yi_tui::colors::accent_index(seed);
         let pick = (0..count)
             .map(|step| (start + step) % count)
@@ -119,6 +125,7 @@ pub fn assign_accents(seeds: &[&str]) -> Vec<usize> {
         if let Some(slot) = taken.get_mut(pick) {
             *slot = true;
         }
+        seen.insert(seed, pick);
         out.push(pick);
     }
     out
@@ -737,6 +744,9 @@ mod tests {
             &fewer[..],
             "a shorter list keeps the same hues for its head"
         );
+        let shared = assign_accents(&["/repo", "/other", "/repo"]);
+        assert_eq!(shared[0], shared[2], "one directory keeps one hue");
+        assert_ne!(shared[0], shared[1], "a second directory takes another hue");
     }
 
     #[test]
