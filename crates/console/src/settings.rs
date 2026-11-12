@@ -573,12 +573,9 @@ pub(crate) fn targets(
     let total = count(settings, options);
     let (first, room) = window(settings, usize::from(inner.height));
     let top = inner.y.saturating_add(2);
+    let listed = list_height(settings);
     for row in first..total.min(first.saturating_add(room)) {
-        let below = if row > settings.cursor {
-            list_height(settings)
-        } else {
-            0
-        };
+        let below = if row > settings.cursor { listed } else { 0 };
         let offset = u16::try_from(row.saturating_sub(first).saturating_add(below)).unwrap_or(0);
         out.push((
             Rect::new(inner.x, top.saturating_add(offset), inner.width, 1),
