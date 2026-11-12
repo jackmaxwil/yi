@@ -1,6 +1,8 @@
 ---
 issue: Closes #2143
 raise: crate ai +29, tests +79, comments +2
+shares: #2136 the GitHub #6 import draft this splits out; its Responses-only orphan test is replaced here
+shares: #2137 stacked on the #6 import, so it carries the same Responses orphan test
 ledger=: tool results left without their call | 5 | core | M | L | a replay that drops a failed or stopped reply drops the calls it carried, and each of their results becomes a user-role notice naming the tool, why its output was left out and that running the tool again gets it, on every wire; the output itself never reaches the request, in any role
 ---
 A request no longer carries a tool result whose call it does not carry. The replay drops a reply
