@@ -12,7 +12,7 @@ use yi_types::plan::contract::{
     VerificationToken,
 };
 use yi_types::plan::doc::{BlockedOn, Plan, PlanId, TodoLabel, TodoState, TouchCount};
-use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, RequestId};
+use yi_types::plan::ledger::{EffectId, JournalRecord, RequestId};
 
 use super::acceptance::{Contracted, verification};
 use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Txn};
@@ -189,27 +189,13 @@ impl PlanEngine {
                 label: label.clone(),
             });
         }
-        if todo.red_count >= 2 && !todo.readmit {
-            let mut demand = if todo.red_count >= 3 {
-                "stop and ask the user before spending another attempt"
-            } else {
-                "make a structural change before another claim"
-            }
-            .to_owned();
-            if todo.red_repeat {
-                if todo.after.is_empty() {
-                    demand.push_str("; re-check this task's premise before trying again");
-                } else {
-                    let dependencies = todo.after.iter().map(|label| label.as_str()).collect::<Vec<_>>().join(", ");
-                    demand.push_str(&format!("; re-check dependency assumptions for {dependencies} before trying again"));
-                }
-            }
-            return Err(PlanOpError::EscalationRequired {
-                label: label.clone(),
-                count: todo.red_count,
-                demand,
-            });
-        }
+        let cap = crate::levers::get().plan_done_refusal_cap;
+        super::ladder::split_pending(current, label)?;
+        super::ladder::gate(
+            todo,
+            super::ladder::red(&txn.records, label, todo.attempt),
+            cap,
+        )?;
         let Some(contract) = todo.contract.clone() else {
             return Ok(Phase1::Plain(Box::new(
                 self.settle(&mut txn, &id, &root, op)?,
@@ -650,9 +636,9 @@ impl PlanEngine {
         self.emit(&committed);
         // The cap counts refused verdicts on this attempt: a refused transition, a stale
         // token and an abstention are not verdicts on the product.
-        let refused = refused_verdicts(&txn.records, label, prepared.token.attempt);
+        let refused = super::ladder::red(&txn.records, label, prepared.token.attempt);
         let refusal_cap = crate::levers::get().plan_done_refusal_cap;
-        let capped = refused >= refusal_cap
+        let capped = super::ladder::rung(refused, refusal_cap).blocks
             && txn
                 .state
                 .plan(&prepared.id)?
@@ -711,26 +697,6 @@ impl Drop for Workspace {
     }
 }
 
-/// The `done_refused` records on this todo's attempt whose verdict decided something about the
-/// product: an abstention is not one.
-fn refused_verdicts(records: &[JournalRecord], label: &TodoLabel, attempt: AttemptId) -> u32 {
-    let count = records
-        .iter()
-        .filter(|record| {
-            record.record.op == KIND_DONE_REFUSED
-                && record.record.todo.as_ref() == Some(label)
-                && record.attempt == Some(attempt)
-                && record
-                    .verdict
-                    .as_ref()
-                    .and_then(|verdict| verdict.get("outcome"))
-                    .and_then(Value::as_str)
-                    != Some("abstain")
-        })
-        .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
-}
-
 /// Administrative completions (plan sections 3.6 and 5.6), checked before any effect: a `submit`
 /// is the running agent's own or the engine's for it; an `accept` lands as `AcceptedByUser`.
 pub(super) fn admit(
@@ -759,6 +725,8 @@ pub(super) fn admit(
         }
         _ => {}
     }
+    let cap = crate::levers::get().plan_done_refusal_cap;
+    decided.readmit = super::ladder::admit(&txn.records, plan, &txn.principal, op, cap)?;
     Ok(())
 }
 

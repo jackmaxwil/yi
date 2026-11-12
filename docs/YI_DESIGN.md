@@ -991,9 +991,12 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - `TodoState { Pending, Running{by}, Blocked{on, note}, Done{output, resolution},
   Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Channel{address, filter?}, Other }`,
   `PlanState { Active, Done, Superseded{by}, Abandoned, Other }`.
-- `OpKind`, 23 kinds; the `plan` tool schema shows the first 16 (`MODEL_OPS`): `set, init, append,
+- `OpKind`, 24 kinds; the `plan` tool schema shows the first 16 (`MODEL_OPS`): `set, init, append,
   drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view,
-  accepted_by_user`.
+  accepted_by_user`. The rest parse on every surface: `split` adds one to four children
+  (`<label>-split-<n>`, its parent in `extra.split_parent`, after the parent's prerequisites and before the
+  parent) and moves no state; a parent splits once, a child never, and the parent's `done` waits
+  for each child to be done or dropped.
 - `Actor { Owner, Child, User, Host, Engine }`. User may apply every op; Owner every op but
   `fuse_reset`, `resolve`, `accepted_by_user` and a resolving `repair`; Host `unblock, reconcile`;
   Child `view, submit`; Engine `start, submit, done, fail, retry`.
@@ -1022,15 +1025,20 @@ field still decodes so an old contract keeps its frozen digest.
   `verification_requested`, releases the lease, runs the verifier (own deadline, emptied env, a
   copy of the tree), re-acquires, compares the whole token, and commits the verdict with
   `Done{VerifiedDone}`, `done_refused`, or `verification_stale` for a moved token.
-- `Outcome { Pass, Fail, Abstain, Escalate }`. Staleness and abstention charge nothing; the
-  `plan.done_refusal_cap`-th refusal (default 3) derives `block{on: User}`.
+- `Outcome { Pass, Fail, Abstain, Escalate }`. Staleness and abstention charge nothing. The
+  refused verdicts on the attempt pick a rung of the red ladder (`plan/ladder.rs::LADDER`) under
+  `plan.done_refusal_cap` (default 3): below cap − 1 a `done` runs its check; at cap − 1 it is
+  refused before the check until a `split` of the todo or an `append` whose `for_task` names it;
+  the cap-th derives `block{on: User}`, and only the user's `unblock` (as `Actor::User`, or
+  carrying an answer to an ask) readmits. A readmission buys one claim, spent by the next
+  `verification_requested`; a `split` or targeted `append` that would buy none is refused.
 - `start` refuses a `judge` item and names the deciders that run (`cmd`, `schema`, `example`);
   the variant decodes so old journals replay, and a started one abstains `no judge`.
 - A legacy contract's retired `covers` globs are inert; its cmd items run at done.
 - `Resolution { VerifiedDone, AcceptedByUser, LegacyUnverified }`. A todo with a contract or a
   stated acceptance completes only beside one, on every path (`set`, `import`, `repair`,
   `supersede` share the validator); any other on the caller's word.
-- Owner: [`plan/done.rs`](../crates/runtime/src/plan/done.rs). Settled by: D194, D216.
+- Owner: [`plan/done.rs`](../crates/runtime/src/plan/done.rs), [`plan/ladder.rs`](../crates/runtime/src/plan/ladder.rs). Settled by: D194, D216.
 
 ### 13.2 Worktree acceptance
 A worktree todo needs a contract; it is Done only via acceptance or as `AcceptedByUser`.

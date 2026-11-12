@@ -234,7 +234,6 @@ impl Usage {
                 total: zero(),
             },
             unknown: false,
-
         }
     }
 

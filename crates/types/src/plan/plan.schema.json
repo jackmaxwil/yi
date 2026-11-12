@@ -110,22 +110,6 @@
             "description": "refused transitions on this todo, capped",
             "type": "integer"
           },
-          "red_count": {
-            "description": "consecutive failed product verdicts; stale and abstained checks do not count",
-            "type": "integer"
-          },
-          "red_fingerprint": {
-            "description": "fingerprint of the latest failed evidence",
-            "type": "string"
-          },
-          "red_repeat": {
-            "description": "whether the latest failure fingerprint matched the previous failure",
-            "type": "boolean"
-          },
-          "readmit": {
-            "description": "one structural-change readmission, consumed by the next claim",
-            "type": "boolean"
-          },
           "retries": {
             "description": "retries charged, carried from format 1",
             "type": "integer"
@@ -244,10 +228,6 @@
           },
           "subplan": {
             "description": "the sub-plan this todo decomposed into",
-            "type": "string"
-          },
-          "split_parent": {
-            "description": "parent label for a flat child created by plan.split; such a child cannot be split again",
             "type": "string"
           },
           "delegation": {

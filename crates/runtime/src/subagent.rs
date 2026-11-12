@@ -575,7 +575,6 @@ impl SubagentHost {
                 .children
                 .lock()
                 .map_err(|_| "subagent state poisoned")?;
-
             children.insert(
                 child_id.clone(),
                 ChildRecord {
@@ -1018,4 +1017,3 @@ impl SubagentHost {
         });
     }
 }
-

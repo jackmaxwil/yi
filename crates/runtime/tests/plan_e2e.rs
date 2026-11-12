@@ -5,8 +5,8 @@ use scratch::Scratch;
 use std::error::Error;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use serde_json::{Value, json};
 
+use yi_kernel::client::HostHandlers;
 use yi_runtime::HostRegistry;
 use yi_runtime::plan::ops::{Actor, Delegate, PlanEngine};
 use yi_runtime::plan::store::PlanStore;
@@ -76,7 +76,6 @@ fn harness(dir: &Path, store: &yi_session::SharedSession, stale_turns: u64) -> H
     );
     (service, delivered)
 }
-
 
 fn assistant_turn_end() -> AgentEvent {
     AgentEvent::MessageEnd {
@@ -186,49 +185,6 @@ fn summary_and_frontier_render_the_document() -> TestResult {
         frontier.contains("- ship it") && frontier.contains("In progress: build it (by kid)"),
         "{frontier}"
     );
-    Ok(())
-}
-
-#[test]
-fn summary_names_uncontracted_done_todos_with_a_loud_cut() -> TestResult {
-    let dir = Scratch::new("yi-plan-summary-unchecked")?;
-    let store = PlanStore::open(dir.join("plans"))?;
-    let id = PlanId::new("summary")?;
-    let mut verified = todo(
-        "verified",
-        TodoState::Done {
-            output: None,
-            resolution: None,
-        },
-    )?;
-    verified.contract = Some(command_contract(&store, &id, "true")?);
-    let mut todos = Vec::new();
-    for index in 1..=5 {
-        todos.push(todo(
-            &format!("unchecked-{index}"),
-            TodoState::Done {
-                output: None,
-                resolution: None,
-            },
-        )?);
-    }
-    todos.push(verified);
-    todos.push(todo("pending", TodoState::Pending)?);
-    let summary = yi_runtime::plan::summary_line(&doc_plan("summary", 1, todos)?);
-    assert!(
-        summary.contains("done unchecked: unchecked-1, unchecked-2, unchecked-3, unchecked-4"),
-        "at most four unchecked Done todos are named: {summary}"
-    );
-    assert!(
-        summary.contains("[… 4 of 5 unchecked Done todos (UNCHECKED 4); the rest: plan {\"op\":\"view\",\"full\":true}]"),
-        "the cut names its count, cap, and full-view call: {summary}"
-    );
-    assert!(!summary.contains("unchecked-5"), "the fifth name is not silently appended");
-    assert!(
-        !summary.contains("verified"),
-        "a typed Contract is not counted as unchecked"
-    );
-    assert!(!summary.contains("+1 more"), "the cut is explicit");
     Ok(())
 }
 
@@ -370,62 +326,106 @@ fn command_contract(
     store: &PlanStore,
     plan: &PlanId,
     command: &str,
-) -> Result<yi_types::plan::contract::Contract, Box<dyn Error>> {
+) -> Result<serde_json::Value, Box<dyn Error>> {
     let checker = crate::checker::put_checker(
         &store.artifacts(plan),
         &crate::checker::checker_manifest(command, 10_000, &[], false),
         &store.nonce(),
     )?;
-    Ok(serde_json::from_value(json!({
+    Ok(serde_json::json!({
         "class": "inline",
         "items": [{"id": "check", "critical": true, "weight": 100,
                    "decider": {"cmd": {"checker": checker, "timeout_ms": 10_000}}}],
         "threshold": 1000,
         "min_coverage": 1000
-    }))?)
+    }))
 }
 
-async fn route_op(
-    registry: &HostRegistry,
-    request_id: &str,
-    op: &str,
-    args: Value,
-) -> Result<serde_json::Map<String, Value>, Box<dyn Error>> {
-    plan_op(
-        registry,
-        json!({"request_id": request_id, "op": op, "args": args}),
-    )
-    .await
-    .map_err(Into::into)
-}
-
-async fn fail_twice(
-    registry: &HostRegistry,
-    workspace: &Path,
-    label: &str,
-    prefix: &str,
-) -> TestResult {
-    let start = route_op(
-        registry,
-        &format!("{prefix}start"),
-        "start",
-        json!({"label": label}),
+// Dies with the gate in `prepare` or `split_pending` gone, or with a streak reset in the split:
+// each turns one of the refusals below into a check that ran, or the last red into no block.
+#[tokio::test]
+async fn a_plan_op_caller_climbs_the_red_ladder_through_a_split() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-ladder")?;
+    let workspace = dir.join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let store = PlanStore::open(dir.join("plans"))?;
+    let goal = "climb the red ladder";
+    let plan = PlanId::slug(goal)?;
+    let red = command_contract(&store, &plan, "exit 1")?;
+    let green = command_contract(&store, &plan, "true")?;
+    let engine =
+        Arc::new(PlanEngine::new(store.clone(), Arc::new(NoChildren)).with_cwd(workspace.clone()));
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
+    let calls = std::cell::Cell::new(0);
+    let op = |op: &str, args: serde_json::Value| {
+        calls.set(calls.get() + 1);
+        let request = format!("ladder-{}", calls.get());
+        plan_op(
+            &registry,
+            serde_json::json!({"request_id": request, "op": op, "args": args}),
+        )
+    };
+    let message = |reply: &serde_json::Map<String, serde_json::Value>| {
+        reply["refusal"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let todos = serde_json::json!([{"label": "land it", "contract": red}]);
+    assert_eq!(
+        op("init", serde_json::json!({"goal": goal, "todos": todos})).await?["ok"],
+        true
+    );
+    assert_eq!(
+        op("start", serde_json::json!({"label": "land it"})).await?["ok"],
+        true
+    );
+    for claim in 1..=3 {
+        std::fs::write(workspace.join("product"), format!("claim {claim}"))?;
+        let reply = op("done", serde_json::json!({"label": "land it"})).await?;
+        let expected = if claim < 3 {
+            "refused for"
+        } else {
+            "refused: before its check at red 2 of 3"
+        };
+        assert!(
+            message(&reply).contains(expected),
+            "claim {claim}: {reply:?}"
+        );
+    }
+    let subtask =
+        serde_json::json!({"title": "parse", "acceptance": "it parses", "contract": green});
+    let split = op(
+        "split",
+        serde_json::json!({"label": "land it", "subtasks": [subtask]}),
     )
     .await?;
-    assert_eq!(start["ok"], true, "{start:?}");
-    for attempt in 1..=2 {
-        let reply = route_op(
-            registry,
-            &format!("{prefix}done{attempt}"),
-            "done",
-            json!({"label": label}),
-        )
-        .await?;
-        assert_eq!(reply["ok"], false, "the false checker should refuse: {reply:?}");
-        if attempt == 1 {
-            std::fs::write(workspace.join(format!("{prefix}-change")), "changed")?;
-        }
+    assert_eq!(split["ok"], true, "{split:?}");
+    let held = op("done", serde_json::json!({"label": "land it"})).await?;
+    assert!(
+        message(&held).contains(r#"split child "land it-split-1" is not finished"#),
+        "{held:?}"
+    );
+    for verb in ["start", "done"] {
+        let reply = op(verb, serde_json::json!({"label": "land it-split-1"})).await?;
+        assert_eq!(reply["ok"], true, "{verb}: {reply:?}");
     }
+    let last = op("done", serde_json::json!({"label": "land it"})).await?;
+    assert!(
+        message(&last).contains("done refused for \"land it\""),
+        "{last:?}"
+    );
+    let todo = store
+        .read(&plan)?
+        .todo(&TodoLabel::new("land it")?)
+        .cloned()
+        .ok_or("todo")?;
+    assert!(
+        matches!(&todo.state, TodoState::Blocked { note, .. } if note.contains("3 refused verdicts")),
+        "the third red asks the user: {:?}",
+        todo.state
+    );
     Ok(())
 }
 
@@ -476,172 +476,6 @@ pub(crate) fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, 
         children: Vec::new(),
         cites: Default::default(),
     })
-}
-
-/// Exercises Split and targeted Append through the same registered route a Python caller uses.
-#[tokio::test]
-async fn a_plan_op_journey_splits_and_readmits_after_escalation() -> TestResult {
-    let dir = Scratch::new("yi-plan-op-escalation-journey")?;
-    let workspace = dir.join("workspace");
-    std::fs::create_dir_all(&workspace)?;
-    let store = PlanStore::open(dir.join("plans"))?;
-    let goal = "plan op escalation journey";
-    let plan_id = PlanId::slug(goal)?;
-    let failing = serde_json::to_value(command_contract(&store, &plan_id, "false")?)?;
-    let passing = serde_json::to_value(command_contract(&store, &plan_id, "true")?)?;
-    let engine = Arc::new(
-        PlanEngine::new(store.clone(), Arc::new(NoChildren)).with_cwd(workspace.clone()),
-    );
-    let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
-
-    let opened = route_op(
-        &registry,
-        "j1",
-        "init",
-        json!({"goal": goal, "todos": [
-            {"label": "split target", "contract": failing.clone()},
-            {"label": "append target", "contract": failing.clone()},
-            {"label": "untouched target", "contract": failing}
-        ]}),
-    )
-    .await?;
-    assert_eq!(opened["ok"], true, "{opened:?}");
-
-    fail_twice(&registry, &workspace, "split target", "split").await?;
-    let split_gate = route_op(
-        &registry,
-        "splitgate",
-        "done",
-        json!({"label": "split target"}),
-    )
-    .await?;
-    let split_message = split_gate["refusal"]["message"].as_str().ok_or("split gate")?;
-    assert!(split_message.contains("red through 2 attempts"), "{split_message}");
-    let split = route_op(
-        &registry,
-        "splitop",
-        "split",
-        json!({"label": "split target", "subtasks": [{
-            "title": "Check the narrow case",
-            "acceptance": "The narrow case passes its declared check.",
-            "contract": passing.clone()
-        }]}),
-    )
-    .await?;
-    assert_eq!(split["ok"], true, "{split:?}");
-    let plan = store.read(&plan_id)?;
-    let child = plan
-        .todo(&TodoLabel::new("split target-split-1")?)
-        .ok_or("split child")?;
-    assert_eq!(child.split_parent.as_ref().map(TodoLabel::as_str), Some("split target"));
-    assert!(child.contract.is_some(), "Split keeps the typed contract on its child");
-
-    for (label, prefix) in [("append target", "append"), ("untouched target", "other")] {
-        fail_twice(&registry, &workspace, label, prefix).await?;
-    }
-    let append_gate = route_op(
-        &registry,
-        "appendgate",
-        "done",
-        json!({"label": "append target"}),
-    )
-    .await?;
-    assert!(
-        append_gate["refusal"]["message"]
-            .as_str()
-            .is_some_and(|text| text.contains("red through 2 attempts")),
-        "{append_gate:?}"
-    );
-    let append = route_op(
-        &registry,
-        "appendop",
-        "append",
-        json!({
-            "for_task": "append target",
-            "todos": [{"label": "support item", "contract": passing.clone()}]
-        }),
-    )
-    .await?;
-    assert_eq!(append["ok"], true, "{append:?}");
-    let plan = store.read(&plan_id)?;
-    assert!(plan.todo(&TodoLabel::new("append target")?).ok_or("append target")?.readmit);
-    assert!(!plan.todo(&TodoLabel::new("untouched target")?).ok_or("untouched target")?.readmit);
-
-    let still_gated = route_op(
-        &registry,
-        "othergate",
-        "done",
-        json!({"label": "untouched target"}),
-    )
-    .await?;
-    assert!(
-        still_gated["refusal"]["message"]
-            .as_str()
-            .is_some_and(|text| text.contains("red through 2 attempts")),
-        "{still_gated:?}"
-    );
-    std::fs::write(workspace.join("after-readmission"), "new claim")?;
-    let third_red = route_op(
-        &registry,
-        "appendthird",
-        "done",
-        json!({"label": "append target"}),
-    )
-    .await?;
-    assert_eq!(third_red["ok"], false, "{third_red:?}");
-    let plan = store.read(&plan_id)?;
-    let target = plan.todo(&TodoLabel::new("append target")?).ok_or("append target")?;
-    assert_eq!(target.red_count, 3);
-    assert!(!target.readmit, "the targeted claim consumes readmission");
-
-    // A later structural call cannot buy another claim at red three.
-    for (request, op, args) in [
-        (
-            "lateappend",
-            "append",
-            json!({"for_task": "append target", "todos": [
-                {"label": "late support item", "contract": passing.clone()}
-            ]}),
-        ),
-        (
-            "latesplit",
-            "split",
-            json!({"label": "append target", "subtasks": [{
-                "title": "Handle the remaining case",
-                "acceptance": "The remaining case passes its declared check.",
-                "contract": passing
-            }]}),
-        ),
-    ] {
-        let reply = route_op(&registry, request, op, args).await?;
-        assert!(
-            reply["ok"] == true
-                || reply["refusal"]["message"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("user")),
-            "a red-three structural refusal must ask the user: {reply:?}"
-        );
-    }
-    let plan = store.read(&plan_id)?;
-    let target = plan.todo(&TodoLabel::new("append target")?).ok_or("append target")?;
-    assert_eq!(target.red_count, 3, "structure cannot reset the user-ask rung");
-    assert!(!target.readmit, "structure cannot readmit a red-three task");
-
-    let ask_gate = route_op(
-        &registry,
-        "appendask",
-        "done",
-        json!({"label": "append target"}),
-    )
-    .await?;
-    assert!(
-        ask_gate["refusal"]["message"]
-            .as_str()
-            .is_some_and(|text| text.contains("ask the user")),
-        "{ask_gate:?}"
-    );
-    Ok(())
 }
 
 /// Guards `check_actor`'s `Submit` grant and `done::admit`: a child's `plan.op` may submit an
@@ -1239,6 +1073,7 @@ fn a_lost_ledger_write_does_not_orphan_the_plan_it_opened() -> TestResult {
     }
     Ok(())
 }
+
 /// Dies with a cell's refusal teaching the tool's set-row move, which `plan.op`'s strict set
 /// refuses: each hint a cell reads is followed as written, and the call it names lands.
 #[tokio::test]

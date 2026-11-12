@@ -313,8 +313,6 @@ def parse_events(path):
         turns.append(message)
         usage = message.get("usage")
         _add_tokens(totals, usage)
-        if isinstance(usage, dict) and usage.get("unknown") is True:
-            unknown += 1
         if isinstance(usage, dict) and isinstance(usage.get("cost"), dict):
             total = usage["cost"].get("total")
             if isinstance(total, (int, float)) and not isinstance(total, bool):

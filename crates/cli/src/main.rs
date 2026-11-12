@@ -63,7 +63,6 @@ fn render_text(event: &AgentEvent) -> Option<String> {
     }
 }
 
-
 fn effective_cwd(args: &Args) -> std::path::PathBuf {
     args.cwd.as_ref().map_or_else(
         || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),

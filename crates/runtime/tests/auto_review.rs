@@ -1,5 +1,6 @@
 use crate::scratch;
 use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
@@ -409,6 +410,7 @@ fn journal(broker: &PermissionBroker) -> Arc<Mutex<Vec<Answerer>>> {
 fn answerers(journal: &Mutex<Vec<Answerer>>) -> Vec<Answerer> {
     journal.lock().map(|by| by.clone()).unwrap_or_default()
 }
+
 /// D28: headless, an escalation degrades to text that keeps the evidence,
 /// never a silent terminal error.
 #[tokio::test]
@@ -573,6 +575,7 @@ fn a_root_nobody_attends_is_handed_the_default_and_goes_on() -> TestResult {
     }
     Ok(())
 }
+
 #[test]
 fn the_review_fragment_names_the_tool_that_answers_a_denial() {
     let fragment = review_fragment();

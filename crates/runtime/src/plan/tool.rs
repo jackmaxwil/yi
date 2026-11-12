@@ -385,6 +385,27 @@ pub(super) fn need<T: FromArg>(
     opt(args, op, field)?.ok_or(ArgError::Missing { op, field })
 }
 
+/// Invariant: a subtask key nothing reads is refused, so a misspelled `contract` never lands a
+/// child on the unverified path while the journaled shape itself stays lenient.
+fn subtasks(args: &Map<String, Value>) -> Result<Vec<yi_types::plan::op::SplitSpec>, ArgError> {
+    let rows = args
+        .get("subtasks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for (at, row) in rows.enumerate() {
+        let mut keys = row.as_object().into_iter().flat_map(Map::keys);
+        if let Some(key) =
+            keys.find(|key| !["title", "acceptance", "contract"].contains(&key.as_str()))
+        {
+            return Err(ArgError::Declared(format!(
+                "split subtasks[{at}] does not take {key:?}; a subtask is {{title, acceptance, contract?}}"
+            )));
+        }
+    }
+    need(args, OpKind::Split, "subtasks")
+}
+
 pub(super) fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, ArgError> {
     match opt(args, op, "label")? {
         Some(label) => Ok(label),
@@ -493,7 +514,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         OpKind::Split => Op::Split {
             label: label(args, kind)?,
-            subtasks: need(args, kind, "subtasks")?,
+            subtasks: subtasks(args)?,
         },
         OpKind::Supersede => Op::Supersede {
             reason: need(args, kind, "reason")?,
@@ -717,7 +738,11 @@ impl PlanTool {
                 let first = match &request.op {
                     Op::Set { goal, rows, .. } => (goal.as_ref().map(|g| g.as_str().to_owned()))
                         .or_else(|| rows.first().map(|row| row.spec.label.to_string())),
-                    Op::Append { todos, for_task: None } | Op::Supersede { todos, .. } => {
+                    Op::Append {
+                        todos,
+                        for_task: None,
+                    }
+                    | Op::Supersede { todos, .. } => {
                         todos.first().map(|todo| todo.label.to_string())
                     }
                     _ => None,
@@ -736,7 +761,11 @@ impl PlanTool {
                             keep_rest: false,
                         }
                     }
-                    Op::Append { todos, for_task: None } | Op::Supersede { todos, .. } => Op::Init { goal, todos },
+                    Op::Append {
+                        todos,
+                        for_task: None,
+                    }
+                    | Op::Supersede { todos, .. } => Op::Init { goal, todos },
                     other => other,
                 };
                 said.push(if matches!(request.op, Op::Set { goal: Some(_), .. }) {

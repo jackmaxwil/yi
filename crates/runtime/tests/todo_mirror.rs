@@ -217,7 +217,10 @@ fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
     let (_session, todos, engine) = mirrored(&dir)?;
     let (first, gate) = (TodoLabel::new("first")?, TodoLabel::new("gate")?);
     let wide: Result<Vec<_>, _> = (0..250).map(|at| spec(&format!("s{at}"), false)).collect();
-    engine.apply(owner(Op::Append { todos: wide?, for_task: None }))?;
+    engine.apply(owner(Op::Append {
+        todos: wide?,
+        for_task: None,
+    }))?;
     let stop = std::sync::atomic::AtomicBool::new(false);
     let state_of = |todos: &TodoStore| {
         let list = todos.list();
