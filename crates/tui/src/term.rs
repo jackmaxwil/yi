@@ -238,56 +238,44 @@ pub fn framed(out: &mut impl Write, write: impl FnOnce(&mut Vec<u8>)) -> std::io
     out.flush()
 }
 
-/// Incident: SGR 4 in the error color painted the whole word red. A `58` underline
-/// color is preceded by SGR 4:3, so the letters stay and the mark is a curl.
+/// Incident: SGR 4 in the error color painted the whole word red. A `58` underline color is
+/// preceded by SGR 4:3 here, so the letters keep their color and the mark is a curl.
 pub struct Squiggle<W> {
     inner: W,
-    pending: Vec<u8>,
+    held: Vec<u8>,
 }
 
 impl<W> Squiggle<W> {
     pub fn new(inner: W) -> Self {
         Self {
             inner,
-            pending: Vec::new(),
+            held: Vec::new(),
         }
     }
 }
 
-pub fn spell_marks(input: &[u8]) -> Vec<u8> {
-    let mut pending = input.to_vec();
-    let mut out = take_ready(&mut pending);
-    out.append(&mut pending);
-    out
-}
-
-fn take_ready(buf: &mut Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < buf.len() {
-        if buf.get(i) != Some(&0x1b) {
-            let start = i;
-            while buf.get(i).is_some_and(|byte| *byte != 0x1b) {
-                i = i.saturating_add(1);
-            }
-            if let Some(chunk) = buf.get(start..i) {
-                out.extend_from_slice(chunk);
-            }
-            continue;
-        }
-        let Some(end) = csi_end(buf, i) else {
-            break;
+/// Writes every complete sequence of `data` and returns how much it consumed; a sequence cut at
+/// the end waits for the next write.
+fn curl(inner: &mut impl Write, data: &[u8]) -> std::io::Result<usize> {
+    let mut at = 0;
+    while let Some(offset) = data
+        .get(at..)
+        .and_then(|rest| rest.iter().position(|b| *b == 0x1b))
+    {
+        let start = at.saturating_add(offset);
+        inner.write_all(data.get(at..start).unwrap_or_default())?;
+        let Some(end) = csi_end(data, start) else {
+            return Ok(start);
         };
-        if buf.get(i..end).is_some_and(is_underline_color) {
-            out.extend_from_slice(b"\x1b[4:3m");
+        let seq = data.get(start..end).unwrap_or_default();
+        if is_underline_color(seq) {
+            inner.write_all(b"\x1b[4:3m")?;
         }
-        if let Some(seq) = buf.get(i..end) {
-            out.extend_from_slice(seq);
-        }
-        i = end;
+        inner.write_all(seq)?;
+        at = end;
     }
-    buf.drain(..i);
-    out
+    inner.write_all(data.get(at..).unwrap_or_default())?;
+    Ok(data.len())
 }
 
 fn csi_end(data: &[u8], start: usize) -> Option<usize> {
@@ -310,17 +298,21 @@ fn is_underline_color(seq: &[u8]) -> bool {
 
 impl<W: Write> Write for Squiggle<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.pending.extend_from_slice(buf);
-        let ready = take_ready(&mut self.pending);
-        self.inner.write_all(&ready)?;
+        if self.held.is_empty() {
+            let used = curl(&mut self.inner, buf)?;
+            self.held
+                .extend_from_slice(buf.get(used..).unwrap_or_default());
+        } else {
+            self.held.extend_from_slice(buf);
+            let used = curl(&mut self.inner, &self.held)?;
+            self.held.drain(..used);
+        }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        if !self.pending.is_empty() {
-            let rest = std::mem::take(&mut self.pending);
-            self.inner.write_all(&rest)?;
-        }
+        self.inner.write_all(&self.held)?;
+        self.held.clear();
         self.inner.flush()
     }
 }

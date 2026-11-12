@@ -1,194 +1,371 @@
 use std::error::Error;
+use std::ops::Range;
+use std::sync::Arc;
 
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
+use tokio::sync::mpsc::UnboundedSender;
+use yi_tui::Command;
 use yi_tui::app::{App, TuiOptions};
-use yi_tui::assist::{self, FileOffer};
+use yi_tui::assist::{Ask, Assist, AssistSettings, Engine, Words};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::composer::Composer;
 use yi_tui::keymap::default_keymap;
 
 use crate::common;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn paint(composer: &mut Composer) -> Buffer {
-    let height = composer.layout(40, 20);
-    composer.set_frame(Style::default(), Style::default(), Style::default(), None);
-    let mut buffer = Buffer::empty(Rect::new(0, 0, 40, height.saturating_add(2)));
-    composer.render(Rect::new(0, 0, 40, height), &mut buffer);
-    buffer
+/// A dictionary with one rule: three equal letters in a row are a typo, and the word with that
+/// run cut to two is its correction and only guess. It completes from a fixed word list.
+struct Fake(&'static [&'static str]);
+
+fn collapse(word: &str) -> Option<String> {
+    let chars: Vec<char> = word.chars().collect();
+    let tripled = chars.windows(3).any(|w| w[0] == w[1] && w[1] == w[2]);
+    let kept =
+        (0..chars.len()).filter(|&i| i < 2 || chars[i - 1] != chars[i] || chars[i - 2] != chars[i]);
+    tripled.then(|| kept.map(|i| chars[i]).collect())
 }
 
-fn underlined(buffer: &Buffer) -> bool {
-    buffer.content().iter().any(|cell| {
-        cell.modifier.contains(Modifier::UNDERLINED)
-            && cell.fg == Color::Reset
-            && cell.underline_color == Color::Rgb(255, 95, 95)
-    })
-}
-
-#[test]
-fn a_fake_engine_underlines_a_prose_typo_and_skips_code() -> TestResult {
-    let _fake = assist::fake_engine();
-    for (text, marked) in [
-        ("helllo", false),
-        ("helllo ", true),
-        ("`helllo`", false),
-        ("foo_bar", false),
-        ("foo_barrr", false),
-        ("/plan", false),
-        ("/helllo", false),
-        ("hellloWorld", false),
-        ("see helllo", false),
-        ("see helllo ", true),
-        ("see helllo now", true),
-    ] {
-        let mut composer = Composer::default();
-        composer.set_text(text);
-        composer.refresh();
-        assert_eq!(underlined(&paint(&mut composer)), marked, "{text}");
+impl Engine for Fake {
+    fn typos(&mut self, line: &str) -> Option<Vec<Range<usize>>> {
+        let mut spans = Vec::new();
+        let mut at = 0;
+        for word in line.split(|ch: char| !ch.is_alphabetic()) {
+            let len = word.chars().count();
+            if collapse(word).is_some() {
+                spans.push(at..at + len);
+            }
+            at += len + 1;
+        }
+        Some(spans)
     }
-    Ok(())
+
+    fn words(&mut self, ask: Ask, text: &str) -> Option<Vec<String>> {
+        Some(match ask {
+            Ask::Complete => (self.0.iter())
+                .filter(|w| w.starts_with(text))
+                .map(|w| (*w).to_owned())
+                .collect(),
+            Ask::Guesses | Ask::Correct => collapse(text).into_iter().collect(),
+            Ask::Check => Vec::new(),
+        })
+    }
 }
 
-#[test]
-fn tab_accepts_a_ghost_and_one_undo_removes_it() -> TestResult {
-    let _words = assist::observe("zzqhello");
-    let mut app = app();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    type_text(&mut app, &tx, "zzqh");
-    press(&mut app, &tx, KeyCode::Tab, KeyModifiers::NONE);
-    assert_eq!(app.composer_text(), "zzqhello ");
-    press(&mut app, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
-    assert_eq!(app.composer_text(), "zzqh");
-    Ok(())
+fn assist(words: &'static [&'static str], autocorrect: bool) -> Assist {
+    let settings = AssistSettings {
+        autocorrect,
+        ..AssistSettings::DEFAULT
+    };
+    Assist::new(settings, Some(Box::new(Fake(words))), Arc::default())
 }
 
-#[test]
-fn typing_through_a_ghost_keeps_the_rest() -> TestResult {
-    let _words = assist::observe("zzqhello");
-    let mut composer = Composer::default();
-    composer.set_text("zzqh");
-    composer.refresh();
-    assert_eq!(assist::ghost_suffix("zzqh", 4), "ello");
-    composer.set_text("zzqhe");
-    composer.refresh();
-    assert_eq!(assist::ghost_suffix("zzqhe", 5), "llo");
-    Ok(())
-}
-
-#[test]
-fn autocorrect_stays_off_until_asked() -> TestResult {
-    let _fake = assist::fake_engine();
-    let mut app = app();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    type_text(&mut app, &tx, "helllo ");
-    assert_eq!(app.composer_text(), "helllo ");
-    let _auto = assist::autocorrect_on();
-    type_text(&mut app, &tx, "helllo ");
-    assert!(
-        app.composer_text().contains("hello "),
-        "{:?}",
-        app.composer_text()
-    );
-    Ok(())
-}
-
-#[test]
-fn ctrl_dot_lists_a_guess_for_the_word() -> TestResult {
-    let _fake = assist::fake_engine();
-    let mut app = app();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    type_text(&mut app, &tx, "helllo");
-    press(&mut app, &tx, KeyCode::Char('.'), KeyModifiers::CONTROL);
-    let rows = common::live_rows(&mut app)?;
-    assert!(rows.iter().any(|row| row.contains("hello")), "{rows:#?}");
-    press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(app.composer_text(), "hello");
-    Ok(())
-}
-
-#[test]
-fn a_closed_shortcode_rewrites_before_a_list() -> TestResult {
-    let mut composer = Composer::default();
-    composer.set_text(":joy:");
-    composer.refresh();
-    assert_eq!(composer.text(), "😂");
-    Ok(())
-}
-
-#[test]
-fn file_rows_keep_the_previous_list_while_a_walk_is_still_out() {
-    let previous = vec!["src/main.rs".to_owned(), "justfile".to_owned()];
-    let FileOffer {
-        labels,
-        searching,
-        note,
-    } = assist::file_rows(&previous, None, "just", false, 10);
-    assert!(searching);
-    assert_eq!(labels, vec!["justfile".to_owned()]);
-    assert!(note.is_none());
-}
-
-#[test]
-fn blend_keeps_the_longer_suffix_and_otherwise_the_first() {
-    assert_eq!(
-        assist::blend(Some("lo"), Some("lo there"), None).as_deref(),
-        Some("lo there")
-    );
-    assert_eq!(
-        assist::blend(Some("xyz"), Some("abc"), None).as_deref(),
-        Some("xyz")
-    );
-}
-
-#[test]
-fn a_utf16_range_lands_on_a_character() {
-    assert_eq!(assist::char_index("😀x", 2), 1);
-}
-
-fn app() -> App {
-    App::new(
-        TuiOptions {
-            session_name: "assist".to_owned(),
-            ..common::options()
-        },
+fn app_in(cwd: &str, assist: Assist) -> App {
+    let options = TuiOptions {
+        session_name: "assist".to_owned(),
+        cwd: cwd.to_owned(),
+        ..common::options()
+    };
+    let mut app = App::new(
+        options,
         Theme::new(ColorTier::TrueColor, true),
         default_keymap(),
         80,
-    )
+    );
+    app.set_assist(assist);
+    app
 }
 
-fn press(
-    app: &mut App,
-    tx: &tokio::sync::mpsc::UnboundedSender<yi_tui::Command>,
-    code: KeyCode,
-    modifiers: KeyModifiers,
-) {
+fn press(app: &mut App, tx: &UnboundedSender<Command>, code: KeyCode, modifiers: KeyModifiers) {
     yi_tui::input::handle_terminal_event(app, tx, Event::Key(KeyEvent::new(code, modifiers)));
 }
 
-fn type_text(app: &mut App, tx: &tokio::sync::mpsc::UnboundedSender<yi_tui::Command>, text: &str) {
+fn key(app: &mut App, tx: &UnboundedSender<Command>, code: KeyCode) {
+    press(app, tx, code, KeyModifiers::NONE);
+}
+
+fn type_text(app: &mut App, tx: &UnboundedSender<Command>, text: &str) {
     for ch in text.chars() {
-        press(app, tx, KeyCode::Char(ch), KeyModifiers::NONE);
+        key(app, tx, KeyCode::Char(ch));
     }
 }
 
+fn paste(app: &mut App, tx: &UnboundedSender<Command>, text: &str) {
+    yi_tui::input::handle_terminal_event(app, tx, Event::Paste(text.to_owned()));
+}
+
+/// The marked runs of `text` with the cursor at its end, painted the way the box paints them.
+fn marked(text: &str) -> Vec<String> {
+    let mut composer = Composer::default();
+    composer.set_assist(assist(&[], false));
+    composer.set_text(text);
+    composer.sync_assist("/tmp", "");
+    composer.set_typo_style(yi_tui::assist::spell_style(ratatui::style::Color::Red));
+    let height = composer.layout(60, 40);
+    composer.set_frame(Style::default(), Style::default(), Style::default(), None);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 60, height));
+    composer.render(Rect::new(0, 0, 60, height), &mut buffer);
+    let under = |x: u16, y: u16| {
+        buffer
+            .cell((x, y))
+            .is_some_and(|c| c.modifier.contains(Modifier::UNDERLINED))
+    };
+    let row = |y: u16| -> String {
+        (0..60)
+            .filter(|x| under(*x, y))
+            .filter_map(|x| buffer.cell((x, y)).map(|c| c.symbol().to_owned()))
+            .collect()
+    };
+    (0..height).map(row).filter(|run| !run.is_empty()).collect()
+}
+
+/// Dies with code words underlined: a word inside a fenced block, a path, a snake name or an
+/// inline span was checked like prose, and each line of a fence was masked on its own.
 #[test]
-fn a_spell_mark_is_a_curl_and_a_link_stays_straight() -> TestResult {
-    let curled = yi_tui::term::spell_marks(b"\x1b[4m\x1b[58;2;255;95;95mh");
-    assert_eq!(curled, b"\x1b[4m\x1b[4:3m\x1b[58;2;255;95;95mh");
-    assert_eq!(yi_tui::term::spell_marks(b"\x1b[4mlink"), b"\x1b[4mlink");
-    let mut out = Vec::new();
-    {
-        let mut writer = yi_tui::term::Squiggle::new(&mut out);
-        std::io::Write::write_all(&mut writer, b"\x1b[58;")?;
-        std::io::Write::write_all(&mut writer, b"5;9m")?;
-        std::io::Write::flush(&mut writer)?;
+fn typo_marks_fall_on_prose_and_never_on_code() {
+    assert_eq!(marked("see helllo now"), ["helllo"]);
+    assert!(
+        marked("helllo").is_empty(),
+        "the word still being typed is left alone"
+    );
+    for code in [
+        "`helllo` ",
+        "foo_barrr ",
+        "src/helllo.rs ",
+        "/helllo ",
+        "hellloWorld ",
+    ] {
+        assert!(marked(code).is_empty(), "{code}");
     }
-    assert_eq!(out, b"\x1b[4:3m\x1b[58;5;9m");
+    let fenced = "the sshh moment:\n```rust\nlet helllo = 1;\nfn mmmain() {}\n```\nand thhhen ";
+    assert_eq!(marked(fenced), ["thhhen"]);
+}
+
+/// Dies with Tab inserting a ghost nobody saw: with the cursor two letters before a word's end
+/// the old ghost was that word's tail, and Tab turned `hello` into `hello lo`.
+#[test]
+fn tab_takes_only_a_drawn_ghost_and_one_undo_removes_it() -> TestResult {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = app_in("/tmp", assist(&["zzqhello"], false));
+    type_text(&mut app, &tx, "zzqh");
+    assert!(app.ghost_showing());
+    key(&mut app, &tx, KeyCode::Tab);
+    assert_eq!(app.composer_text(), "zzqhello ");
+    press(&mut app, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(app.composer_text(), "zzqh");
+
+    let mut mid = app_in("/tmp", assist(&["zzqhello"], false));
+    type_text(&mut mid, &tx, "zzqhel");
+    key(&mut mid, &tx, KeyCode::Left);
+    key(&mut mid, &tx, KeyCode::Left);
+    assert!(!mid.ghost_showing(), "no ghost is drawn mid-word");
+    key(&mut mid, &tx, KeyCode::Tab);
+    assert!(
+        !mid.composer_text().contains("lo"),
+        "{:?}",
+        mid.composer_text()
+    );
+    Ok(())
+}
+
+/// Dies with autocorrect rewriting a word nobody asked it to, or doing nothing once asked.
+#[test]
+fn autocorrect_rewrites_on_space_only_when_on() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut off = app_in("/tmp", assist(&[], false));
+    type_text(&mut off, &tx, "helllo ");
+    assert_eq!(off.composer_text(), "helllo ");
+    let mut on = app_in("/tmp", assist(&[], true));
+    type_text(&mut on, &tx, "say helllo ");
+    assert_eq!(on.composer_text(), "say hello ");
+}
+
+/// Dies with ctrl+. showing nothing, or Enter on a guess replacing the wrong span.
+#[test]
+fn ctrl_dot_lists_guesses_and_enter_takes_one() -> TestResult {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = app_in("/tmp", assist(&[], false));
+    type_text(&mut app, &tx, "a helllo");
+    press(&mut app, &tx, KeyCode::Char('.'), KeyModifiers::CONTROL);
+    let rows = common::live_rows(&mut app)?;
+    assert!(rows.iter().any(|row| row.trim() == "> hello"), "{rows:#?}");
+    key(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(app.composer_text(), "a hello");
+    Ok(())
+}
+
+/// Dies with a coding agent's prompt rewritten under the user: `::check::` and `10:100:` became
+/// emoji. Only a whole `:name:` token typed closed in prose turns into its emoji.
+#[test]
+fn a_typed_shortcode_becomes_emoji_and_code_keeps_its_colons() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    for (typed, kept) in [
+        ("ship it :rocket:", "ship it 🚀"),
+        ("nice :ok_hand:", "nice 👌"),
+        (
+            "call yi_tui::check::run and std::x::y",
+            "call yi_tui::check::run and std::x::y",
+        ),
+        ("at 10:100: ok", "at 10:100: ok"),
+        ("`a :joy:`", "`a :joy:`"),
+        ("http://h/:joy:", "http://h/:joy:"),
+    ] {
+        let mut app = app_in("/tmp", assist(&[], false));
+        type_text(&mut app, &tx, typed);
+        assert_eq!(app.composer_text(), kept, "{typed}");
+    }
+    let mut pasted = app_in("/tmp", assist(&[], false));
+    paste(&mut pasted, &tx, "a :joy: b");
+    assert_eq!(
+        pasted.composer_text(),
+        "a :joy: b",
+        "a paste is taken as written"
+    );
+}
+
+/// Dies with a completion splicing the wrong place: the first whitespace word equal to the token
+/// was replaced, with single spaces assumed, so `fix  @ma` lost a space and a repeated token
+/// changed its first copy.
+#[test]
+fn a_file_row_replaces_the_token_at_the_cursor() -> TestResult {
+    let dir = Scratch::new("yi-assist-files")?;
+    std::fs::write(dir.join("main.rs"), "")?;
+    let at = dir.display().to_string();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    for (typed, want) in [
+        ("fix  @ma", "fix  main.rs "),
+        ("  @ma", "  main.rs "),
+        ("@ma and @ma", "@ma and main.rs "),
+    ] {
+        let mut app = app_in(&at, assist(&[], false));
+        type_text(&mut app, &tx, typed);
+        key(&mut app, &tx, KeyCode::Tab);
+        assert_eq!(app.composer_text(), want, "{typed}");
+    }
+    Ok(())
+}
+
+/// Dies with Up stuck on a recalled `/compact` or `@src` entry: recalling it opened a list, and
+/// the next arrow moved the list instead of history.
+#[test]
+fn arrows_walk_history_through_recalled_slash_and_file_entries() -> TestResult {
+    let dir = Scratch::new("yi-assist-history")?;
+    std::fs::write(dir.join("src.rs"), "")?;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut keymap = default_keymap();
+    keymap.apply_overrides([("up", "history-prev"), ("down", "history-next")])?;
+    let options = TuiOptions {
+        cwd: dir.display().to_string(),
+        ..common::options()
+    };
+    let mut app = App::new(options, Theme::new(ColorTier::TrueColor, true), keymap, 80);
+    app.set_assist(assist(&[], false));
+    for entry in ["/compact", "ask @src"] {
+        paste(&mut app, &tx, entry);
+        key(&mut app, &tx, KeyCode::Enter);
+    }
+    for want in ["ask @src", "/compact"] {
+        key(&mut app, &tx, KeyCode::Up);
+        assert_eq!(app.composer_text(), want);
+        assert!(!app.bottom_open(), "{want}: a recalled entry opened a list");
+    }
+    key(&mut app, &tx, KeyCode::Down);
+    assert_eq!(app.composer_text(), "ask @src");
+    Ok(())
+}
+
+/// Dies with a skill named like a verb taking the verb over: `/quit` became a prompt to read
+/// that skill. Skills list under `$`, and every `/` row is a built-in.
+#[test]
+fn a_skill_named_like_a_verb_lists_under_dollar_not_slash() -> TestResult {
+    let dir = Scratch::new("yi-assist-skills")?;
+    let skill = dir.join(".yi/skills/quit");
+    std::fs::create_dir_all(&skill)?;
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: quit\ndescription: a skill that quits\n---\nbody\n",
+    )?;
+    let at = dir.display().to_string();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut slash = app_in(&at, assist(&[], false));
+    type_text(&mut slash, &tx, "/qui");
+    let rows = common::live_rows(&mut slash)?;
+    assert!(
+        rows.iter().any(|row| row.contains("leave the session")),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("a skill that quits")),
+        "{rows:#?}"
+    );
+    let mut dollar = app_in(&at, assist(&[], false));
+    type_text(&mut dollar, &tx, "$qu");
+    key(&mut dollar, &tx, KeyCode::Tab);
+    assert_eq!(dollar.composer_text(), "$quit ");
+    Ok(())
+}
+
+/// Dies with JSON keys offered as words (`timestamp`, `customType`) or with no words at all from
+/// the per-folder store. The scrubber masked every entry id, so the copy gets them back unique.
+#[test]
+fn the_word_list_reads_user_text_from_the_per_folder_store() -> TestResult {
+    let dir = Scratch::new("yi-assist-words")?;
+    let folder = dir.join("--repo--");
+    std::fs::create_dir_all(&folder)?;
+    let recorded = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/sessions/01a0648f.jsonl");
+    let scrubbed = std::fs::read_to_string(recorded)?;
+    let lines = scrubbed
+        .lines()
+        .enumerate()
+        .map(|(n, line)| line.replacen("\"id\":\"[MASKED]\"", &format!("\"id\":\"e{n}\""), 1));
+    let restored: String = lines.map(|line| line + "\n").collect();
+    std::fs::write(folder.join("2026-01-01T00-00-00_01a0648f.jsonl"), restored)?;
+    let words = Words::from_sessions(&dir);
+    assert_eq!(words.suffix("avail").as_deref(), Some("able"));
+    assert_eq!(words.suffix("ipyt").as_deref(), Some("hon"));
+    for key in ["timest", "customt", "creat"] {
+        assert_eq!(words.suffix(key), None, "{key}: a JSON key was learned");
+    }
+    assert_eq!(
+        Words::from_sessions(&dir.join("missing")).suffix("av"),
+        None
+    );
+    Ok(())
+}
+
+/// Dies with the mark drawn as a plain red underline: the cell crossterm actually writes for the
+/// spelling style must carry the curl, and an ordinary underline must stay straight.
+#[test]
+fn the_spelling_mark_reaches_the_terminal_as_a_curl() -> TestResult {
+    use ratatui::backend::{Backend, CrosstermBackend};
+    let draw = |style: Style| -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut out = Vec::new();
+        {
+            let mut backend = CrosstermBackend::new(yi_tui::term::Squiggle::new(&mut out));
+            let mut cell = ratatui::buffer::Cell::default();
+            cell.set_symbol("x").set_style(style);
+            backend.draw(std::iter::once((0, 0, &cell)))?;
+            Backend::flush(&mut backend)?;
+        }
+        Ok(out)
+    };
+    let curls = |bytes: &[u8]| bytes.windows(6).filter(|w| *w == b"\x1b[4:3m").count();
+    let spelled = draw(yi_tui::assist::spell_style(ratatui::style::Color::Rgb(
+        255, 95, 95,
+    )))?;
+    assert_eq!(
+        curls(&spelled),
+        1,
+        "{:?}",
+        String::from_utf8_lossy(&spelled)
+    );
+    let link = draw(Style::default().add_modifier(Modifier::UNDERLINED))?;
+    assert_eq!(curls(&link), 0, "{:?}", String::from_utf8_lossy(&link));
     Ok(())
 }

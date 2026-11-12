@@ -66,9 +66,11 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         .lane()
         .and_then(|lane| lane.row())
         .map(|(_, row)| row);
-    yi_tui::assist::install(yi_types::config::AssistSettings::from_tui(
-        config().tui.as_ref(),
-    ));
+    if !args.headless {
+        yi_tui::assist::install(yi_tui::assist::AssistSettings::from_tui(
+            config().tui.as_ref(),
+        ));
+    }
     let options = yi_tui::TuiOptions {
         model: model.clone(),
         session_name: session_name.clone(),
@@ -447,9 +449,11 @@ fn chrome_pin() -> Option<yi_console::browser::Pinned> {
 /// `yi console` — the workspace shell, an ACP client over the serve daemon.
 #[cfg(feature = "tui")]
 pub fn run_console_command(args: &Args) -> i32 {
-    yi_tui::assist::install(yi_types::config::AssistSettings::from_tui(
-        config().tui.as_ref(),
-    ));
+    if !args.headless {
+        yi_tui::assist::install(yi_tui::assist::AssistSettings::from_tui(
+            config().tui.as_ref(),
+        ));
+    }
     let console = config().console.clone().unwrap_or_default();
     // A headless drive keeps the title off unless the config asks, so its frames hold still.
     let title = if console.title_intro.unwrap_or(!args.headless) {

@@ -129,7 +129,7 @@ fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestRes
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
-        "wait-idle 10000\ntype @\nwait-frame 10000 \u{2026} 93 more\n\
+        "wait-idle 10000\ntype @\nwait-frame 10000 \u{2026} 91 more\n\
          type f100\nkey enter\nwait-frame 10000 !@f100\n\
          wait-frame 10000 \u{2502}f100.txt\nquit\n",
     )?;
@@ -1402,6 +1402,44 @@ fn queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highlighted_command(
     let all = frames_text(&frames)?;
     assert!(!all.contains("unknown command"), "{all}");
     assert!(!all.contains("no reactor"), "{all}");
+    Ok(())
+}
+
+/// Dies with the `/` list hiding the draft or Tab dropping its highlight: the rows sit above the
+/// box that holds `/p`, each with what it does, and Tab writes the highlighted name there.
+#[test]
+fn the_slash_list_sits_over_the_draft_and_tab_fills_the_highlight() -> TestResult {
+    let dir = Scratch::new("yi-tui-assist")?;
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "type /p\nwait-frame 10000 \u{2502}/p\nkey down\nkey tab\nwait-frame 10000 \u{2502}/plantree\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+    let output = drive(&dir, &keys, &frames)?
+        .arg("--cwd")
+        .arg(&dir)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let entries = frame_entries(&frames)?;
+    let first = std::fs::read_to_string(entries.first().ok_or("no frames dumped")?.path())?;
+    let rows: Vec<&str> = first
+        .lines()
+        .map(|row| row.trim_matches(['"', ',']).trim_end())
+        .collect();
+    let list = (rows
+        .iter()
+        .position(|row| *row == "> /plan         open a plan"))
+    .ok_or(format!("{rows:#?}"))?;
+    let draft = rows
+        .iter()
+        .position(|row| row.starts_with(" \u{2502}/p "))
+        .ok_or(format!("{rows:#?}"))?;
+    assert!(list < draft, "{rows:#?}");
     Ok(())
 }
 

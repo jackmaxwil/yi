@@ -748,3 +748,5 @@ host-written memory (one file per fact, hook index) | `session_faux::learn_start
 host-written memory (one file per fact, hook index) | `input::learn_is_sent_as_a_prompt_that_opens_its_skill` (T0)
 TUI | `theme_list::a_preview_repaints_the_live_rows_and_esc_puts_the_palette_back` (T0)
 TUI | `tui_drive::queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highlighted_command` (T2)
+TUI | `tui_drive::the_slash_list_sits_over_the_draft_and_tab_fills_the_highlight` (T2)
+TUI | `assist::arrows_walk_history_through_recalled_slash_and_file_entries` (T0)

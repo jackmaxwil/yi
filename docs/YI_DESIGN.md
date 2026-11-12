@@ -1312,9 +1312,10 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
-- The composer stays up while assistance is open. A curly underline in the error color, a ghost suffix, and a
-  completion list for `/`, `@`, skills, fetch schemes and emoji draw over the draft. Esc closes
-  the list and leaves the draft. Word completion defaults to auto. Autocorrect defaults off.
+- The composer stays up while assistance is open. A curly underline in the error color (macOS
+  spelling), a ghost suffix, and a completion list for `/` verbs, `$` skills, `@` files, fetch
+  schemes and emoji draw over the draft; a list opens only on typing. Esc closes the list and
+  leaves the draft. Word completion defaults to auto. Autocorrect defaults off.
 - The working line names an open wait (`AgentEvent::Wait`: a provider retry, a compaction, a
   kernel boot) with its cause and a countdown, and a tool call draws while its arguments stream.
 - The palette is built in, tier from `COLORTERM`/`TERM` and light or dark from `COLORFGBG`

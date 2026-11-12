@@ -1,5 +1,3 @@
-use super::CharSpan;
-
 pub(super) fn prose_mask(chars: &[char]) -> Vec<bool> {
     let mut prose = vec![true; chars.len()];
     let mut fence: Option<char> = None;
@@ -85,35 +83,6 @@ fn mask_inline(prose: &mut [bool], start: usize, end: usize, chars: &[char]) {
     }
 }
 
-pub(super) fn triple_spans(chars: &[char]) -> Vec<CharSpan> {
-    let mut spans = Vec::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if !chars[index].is_alphabetic() {
-            index += 1;
-            continue;
-        }
-        let start = index;
-        while index < chars.len() && chars[index].is_alphabetic() {
-            index += 1;
-        }
-        let mut run = 1;
-        let mut hit = false;
-        for at in start + 1..index {
-            if chars[at] == chars[at - 1] {
-                run += 1;
-                hit |= run >= 3;
-            } else {
-                run = 1;
-            }
-        }
-        if hit {
-            spans.push(CharSpan { start, end: index });
-        }
-    }
-    spans
-}
-
 pub(super) fn keep_span(chars: &[char], mask: &[bool], start: usize, end: usize) -> bool {
     if start >= end || end > chars.len() {
         return false;
@@ -176,29 +145,4 @@ fn line_skipped(chars: &[char], index: usize) -> bool {
         && head
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-}
-
-pub(super) fn collapse(word: &str) -> Option<String> {
-    let chars: Vec<char> = word.chars().collect();
-    let mut out = String::new();
-    let mut index = 0;
-    let mut changed = false;
-    while index < chars.len() {
-        let mut end = index + 1;
-        while end < chars.len() && chars[end] == chars[index] {
-            end += 1;
-        }
-        let run = end - index;
-        if run >= 3 {
-            out.push(chars[index]);
-            out.push(chars[index]);
-            changed = true;
-        } else {
-            for ch in &chars[index..end] {
-                out.push(*ch);
-            }
-        }
-        index = end;
-    }
-    changed.then_some(out)
 }

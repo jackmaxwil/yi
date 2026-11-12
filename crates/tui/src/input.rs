@@ -86,7 +86,7 @@ pub fn handle_terminal_event(
                         && app.follow() != yi_types::config::FollowMode::Slide
                     {
                         app.advance_follow(20);
-                    } else if app.composer.assist_key(&key) {
+                    } else if app.assist_key(&key) {
                     } else if key.code == KeyCodeValue::Backspace
                         && !key.ctrl
                         && !key.alt
@@ -98,6 +98,9 @@ pub fn handle_terminal_event(
                             app.composer.autocorrect_before_space();
                         }
                         app.composer.input(key_event);
+                        if key.code == KeyCodeValue::Char(':') && !key.ctrl && !key.alt {
+                            app.composer.close_shortcode();
+                        }
                     }
                 }
             }
@@ -205,24 +208,12 @@ pub(crate) fn handle_bottom_key(
     }
 }
 
-/// Invariant: Enter in the composer and in the `/` popup both submit here, so `//word` prompts.
+/// Invariant: Enter in the composer and in the `/` list both submit here, so `//word` prompts.
 fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
     let text = match slash_line(text) {
         Slash::Command(command) => match yi_runtime::slash::split(&command) {
             ("learn", focus) => format!("{} {focus}", yi_runtime::slash::LEARN),
-            _ => {
-                let (name, args) = yi_runtime::slash::split(&command);
-                if args.is_empty() {
-                    let cwd = app.options.cwd.clone();
-                    if app.composer.known_skill(name, &cwd) {
-                        format!("Read yi://skills/{name} and follow it.")
-                    } else {
-                        return handle_slash(app, &command);
-                    }
-                } else {
-                    return handle_slash(app, &command);
-                }
-            }
+            _ => return handle_slash(app, &command),
         },
         Slash::Prompt(text) => text,
     };

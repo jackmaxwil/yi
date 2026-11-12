@@ -43,7 +43,6 @@ mod mcp_oauth;
 mod monkey;
 mod plan_cli;
 mod plan_ops;
-mod predict_cmd;
 mod rpc_protocol;
 mod serve_daemon;
 mod tool_import;

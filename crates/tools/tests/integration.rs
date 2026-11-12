@@ -24,6 +24,7 @@ mod orient;
 mod paths;
 mod program_values;
 mod sandbox;
+mod spell;
 mod tools;
 mod write_atomic;
 

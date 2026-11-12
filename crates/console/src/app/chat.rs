@@ -839,22 +839,28 @@ mod tests {
     use crate::model::Zone;
     use yi_types::subagent::{ChildActivity, ChildId};
 
-    /// Dies with Tab leaving the gray ending in place and moving focus out of the chat.
+    /// Dies with Tab leaving a drawn gray ending in place and moving focus out of the chat, or
+    /// with Tab held in the chat by a ghost nobody sees once the draft ends in a space.
     #[test]
-    fn tab_fills_the_gray_suggestion_instead_of_switching_zones() {
+    fn tab_fills_a_drawn_gray_suggestion_and_otherwise_switches_zones() {
         let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
         let mut app = App::new("/r".to_owned(), theme);
         app.state.title = None;
         app.state.zone = Zone::Panes;
         let session = SessionId("s-a".to_owned());
-        let chat = app.make_chat(&session);
+        let mut chat = app.make_chat(&session);
+        let mut words = yi_tui::assist::Words::default();
+        words.learn("zzqhello");
+        let settings = yi_tui::assist::AssistSettings::DEFAULT;
+        let words = std::sync::Arc::new(std::sync::OnceLock::from(words));
+        chat.app
+            .set_assist(yi_tui::assist::Assist::new(settings, None, words));
         if let Some(pane) = app.state.focused_pane_mut() {
             pane.content = PaneContent::Session {
                 session: Some(session),
                 chat: Some(chat),
             };
         }
-        let _words = yi_tui::assist::observe("zzqhello zzqhello");
         let (events, _received) = crate::client::events();
         let socket = std::env::temp_dir().join("yi-tab-ghost.sock");
         let (outbound, _threads) = crate::client::spawn(socket, events);
@@ -864,16 +870,24 @@ mod tests {
                 CtEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
             );
         };
+        let text = |app: &mut App| {
+            app.focused_chat()
+                .map(|chat| chat.app.composer_text())
+                .unwrap_or_default()
+        };
         for ch in ['z', 'z', 'q', 'h'] {
             press(&mut app, KeyCode::Char(ch));
         }
         press(&mut app, KeyCode::Tab);
-        let text = app
-            .focused_chat()
-            .map(|chat| chat.app.composer_text())
-            .unwrap_or_default();
-        assert_eq!(app.state.zone, Zone::Panes, "{text}");
-        assert!(text.starts_with("zzqhello"), "{text}");
+        assert_eq!(app.state.zone, Zone::Panes);
+        assert_eq!(text(&mut app), "zzqhello ");
+        press(&mut app, KeyCode::Tab);
+        assert_ne!(
+            app.state.zone,
+            Zone::Panes,
+            "nothing is drawn, so Tab leaves the chat"
+        );
+        assert_eq!(text(&mut app), "zzqhello ");
     }
 
     /// Dies with `w` doing nothing after ↓ ran past the last file or a scope switch shortened

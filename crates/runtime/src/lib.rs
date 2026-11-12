@@ -161,6 +161,7 @@ pub use yi_permission::{
 };
 pub use yi_session as session_store;
 pub use yi_tools::ignore::Ignore;
+pub use yi_tools::spell;
 pub use yi_tools::{
     Change, ChangeKind, Converter, Documents, builtin_tools, builtin_tools_with,
     discover_exec_tools, edit_file, list_files,

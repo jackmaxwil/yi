@@ -15,7 +15,6 @@ complete -c yi -n __fish_use_subcommand -a gc -d 'preview the retention sweep, -
 complete -c yi -n __fish_use_subcommand -a debug -d 'info, paths, config, profile, trace, select'
 complete -c yi -n __fish_use_subcommand -a why -d 'trace a line or a todo back to its goal'
 complete -c yi -n __fish_use_subcommand -a plan -d 'plan ops as the owner'
-complete -c yi -n __fish_use_subcommand -a predict -d 'compare word engines, or download the small model'
 complete -c yi -n __fish_use_subcommand -a todo -d 'print the newest todo list'
 complete -c yi -n __fish_use_subcommand -a memory -d 'list, search, import or forget memories'
 complete -c yi -n __fish_use_subcommand -a sessions -d 'list, show, or remove stored sessions'

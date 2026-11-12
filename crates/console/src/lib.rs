@@ -475,7 +475,8 @@ fn chat_wake(app: &App) -> Duration {
             } => {
                 let orb =
                     (Some(*id) == focused && chat.app.orb_animating()).then(|| chat.orb.wake());
-                Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
+                let wake = chat.app.reveal_wake().min(chat.app.assist_wake());
+                Some(wake.min(orb.unwrap_or(Duration::MAX)))
             }
             _ => None,
         })

@@ -18,7 +18,6 @@ _yi() {
         'debug:info, paths, config, profile, trace, select'
         'why:trace a line or a todo back to its goal'
         'plan:plan ops as the owner'
-        'predict:compare word engines, or download the small model'
         'todo:print the newest todo list'
         'memory:list, search, import or forget memories'
         'sessions:list, show, or remove stored sessions'

@@ -28,6 +28,7 @@ pub struct Composer {
     wrap_width: usize,
     top: usize,
     assist: crate::assist::Assist,
+    recalled: bool,
 }
 
 impl Default for Composer {
@@ -44,7 +45,8 @@ impl Default for Composer {
             search: None,
             wrap_width: 80,
             top: 0,
-            assist: crate::assist::Assist::new(),
+            assist: crate::assist::Assist::installed(),
+            recalled: false,
         }
     }
 }
@@ -73,6 +75,7 @@ impl Composer {
             .set_cursor_line_style(ratatui::style::Style::default());
         self.textarea.move_cursor(tui_textarea::CursorMove::Bottom);
         self.textarea.move_cursor(tui_textarea::CursorMove::End);
+        self.recalled = true;
     }
 
     /// Re-styled per draw so theme and running state stay current; a reverse-i-search title
@@ -87,7 +90,8 @@ impl Composer {
         use ratatui::widgets::{Block, BorderType, Borders};
         self.textarea.set_placeholder_style(placeholder);
         self.textarea.set_cursor_style(cursor);
-        self.assist.set_dim(placeholder);
+        self.assist
+            .set_styles(self.assist.typo_style(), placeholder);
         let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -99,23 +103,26 @@ impl Composer {
     }
 
     pub fn set_typo_style(&mut self, style: ratatui::style::Style) {
-        self.assist.set_typo(style);
+        self.assist.set_styles(style, self.assist.dim_style());
     }
 
-    pub fn refresh(&mut self) {
-        self.sync_assist("", "");
+    pub fn set_assist(&mut self, assist: crate::assist::Assist) {
+        self.assist = assist;
     }
 
     pub fn sync_assist(&mut self, cwd: &str, session_dir: &str) {
         let (row, col) = self.textarea.cursor();
-        let line = self.line_at(row);
-        if let Some((rewritten, next)) = crate::assist::rewrite_emoji(&line, col) {
-            self.replace_line(row, rewritten, next);
-        }
-        let (row, col) = self.textarea.cursor();
         let text = self.text();
-        let line = self.line_at(row);
-        self.assist.sync(&text, &line, row, col, cwd, session_dir);
+        let typed = !std::mem::take(&mut self.recalled);
+        let at = crate::assist::At {
+            text: &text,
+            row,
+            col,
+            cwd,
+            session_dir,
+            typed,
+        };
+        self.assist.sync(&at);
     }
 
     pub(crate) fn assist_open(&self) -> bool {
@@ -134,59 +141,34 @@ impl Composer {
         self.assist.move_sel(down)
     }
 
-    pub(crate) fn assist_key(&mut self, key: &crate::keymap::SingleKey) -> bool {
-        use crate::keymap::KeyCodeValue;
-        if key.ctrl && matches!(key.code, KeyCodeValue::Char('.')) {
-            let (row, col) = self.textarea.cursor();
-            let line = self.line_at(row);
-            self.assist.toggle_guesses(&line, col);
-            return true;
-        }
-        if matches!(key.code, KeyCodeValue::Tab) && !key.ctrl && !key.alt && !key.shift {
-            return self.accept_assist();
-        }
-        false
-    }
-
-    pub(crate) fn accept_assist(&mut self) -> bool {
-        let (row, col) = self.textarea.cursor();
-        let line = self.line_at(row);
-        let act = self.assist.tab(&line, col);
-        self.apply(act, row, &line)
-    }
-
     pub(crate) fn enter_assist(&mut self) -> Option<bool> {
         let (row, _) = self.textarea.cursor();
         let line = self.line_at(row);
         let (act, submit) = self.assist.enter(&line);
-        if !self.apply(act, row, &line) {
-            return None;
-        }
-        Some(submit)
+        self.apply(act, row).then_some(submit)
     }
 
     pub(crate) fn autocorrect_before_space(&mut self) {
         let (row, col) = self.textarea.cursor();
-        let line = self.line_at(row);
-        if let Some((rewritten, next)) = crate::assist::correct_last(&line, col) {
-            self.replace_line(row, rewritten, next);
+        if let Some((start, end, fixed)) = self.assist.correction(&self.line_at(row), col) {
+            self.splice(row, start, end, &fixed);
         }
     }
 
-    pub(crate) fn known_skill(&mut self, name: &str, cwd: &str) -> bool {
-        self.assist.known_skill(name, cwd)
+    pub(crate) fn close_shortcode(&mut self) {
+        let (row, col) = self.textarea.cursor();
+        if let Some((start, end, emoji)) = crate::assist::shortcode_before(&self.text(), row, col) {
+            self.splice(row, start, end, emoji);
+        }
     }
 
-    fn apply(&mut self, act: crate::assist::Act, row: usize, line: &str) -> bool {
+    fn apply(&mut self, act: crate::assist::Act, row: usize) -> bool {
         match act {
             crate::assist::Act::Nope => false,
-            crate::assist::Act::Insert(text) => {
-                self.textarea.insert_str(text);
-                true
-            }
+            crate::assist::Act::Shown => true,
+            crate::assist::Act::Insert(text) => self.textarea.insert_str(text),
             crate::assist::Act::Splice { start, end, text } => {
-                let (rewritten, next) = splice_chars(line, start, end, &text);
-                self.replace_line(row, rewritten, next);
+                self.splice(row, start, end, &text);
                 true
             }
         }
@@ -196,20 +178,14 @@ impl Composer {
         self.textarea.lines().get(row).cloned().unwrap_or_default()
     }
 
-    fn replace_line(&mut self, row: usize, line: String, col: usize) {
-        let mut lines: Vec<String> = self.textarea.lines().to_vec();
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-        if let Some(slot) = lines.get_mut(row) {
-            *slot = line;
-        }
-        self.textarea = TextArea::from(lines);
-        self.textarea
-            .set_cursor_line_style(ratatui::style::Style::default());
-        let row = u16::try_from(row).unwrap_or(0);
-        let col = u16::try_from(col).unwrap_or(0);
+    /// Invariant: an edit through the textarea, never a rebuilt one, so ctrl+z undoes it.
+    fn splice(&mut self, row: usize, start: usize, end: usize, text: &str) {
+        let (Ok(row), Ok(col)) = (u16::try_from(row), u16::try_from(start)) else {
+            return;
+        };
         self.textarea.move_cursor(CursorMove::Jump(row, col));
+        self.textarea.delete_str(end.saturating_sub(start));
+        self.textarea.insert_str(text);
     }
 
     pub fn search_active(&self) -> bool {
@@ -430,6 +406,7 @@ impl Composer {
     }
 
     pub fn handle_paste(&mut self, raw: &str) {
+        self.recalled = true;
         let text = normalize_newlines(raw);
         let lines = text.split('\n').count();
         if lines > MARKER_LINES || text.chars().count() > MARKER_CHARS {
@@ -647,24 +624,6 @@ impl Composer {
     }
 }
 
-fn splice_chars(line: &str, start: usize, end: usize, insert: &str) -> (String, usize) {
-    let mut out = String::new();
-    let mut placed = false;
-    for (index, ch) in line.chars().enumerate() {
-        if index == start {
-            out.push_str(insert);
-            placed = true;
-        }
-        if index < start || index >= end {
-            out.push(ch);
-        }
-    }
-    if !placed {
-        out.push_str(insert);
-    }
-    (out, start + insert.chars().count())
-}
-
 /// Invariant: each step is about the golden ratio past the last, so a long paste moves the
 /// layout a handful of times rather than once per row.
 const GROWTH: [usize; 10] = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89];
@@ -793,9 +752,55 @@ impl crate::app::App {
         !self.composer.assist.ghost().is_empty()
     }
 
+    pub fn set_assist(&mut self, assist: crate::assist::Assist) {
+        self.composer.set_assist(assist);
+    }
+
+    pub fn assist_wake(&self) -> std::time::Duration {
+        self.composer.assist.wake()
+    }
+
+    /// Answers that arrived since the last key: marks and the ghost redraw without one.
+    pub(crate) fn poll_assist(&mut self) {
+        if self.composer.assist.poll() {
+            self.composer.recalled = true;
+            self.sync_assist();
+            self.scheduler.request();
+        }
+    }
+
     pub(crate) fn sync_assist(&mut self) {
         let cwd = self.options.cwd.clone();
         let session_dir = self.options.session_dir.clone();
         self.composer.sync_assist(&cwd, &session_dir);
+    }
+
+    /// Tab takes a drawn suggestion; ctrl+. lists guesses for the word before the cursor.
+    pub(crate) fn assist_key(&mut self, key: &crate::keymap::SingleKey) -> bool {
+        use crate::keymap::KeyCodeValue;
+        let (row, col) = self.composer.textarea.cursor();
+        if key.ctrl && key.code == KeyCodeValue::Char('.') {
+            let line = self.composer.line_at(row);
+            self.composer.assist.toggle_guesses(&line, col);
+            return true;
+        }
+        let plain = !key.ctrl && !key.alt && !key.shift;
+        if plain && matches!(key.code, KeyCodeValue::Up | KeyCodeValue::Down) {
+            return self.composer.move_assist(key.code == KeyCodeValue::Down);
+        }
+        if key.code != KeyCodeValue::Tab || !plain {
+            return false;
+        }
+        let text = self.composer.text();
+        let at = crate::assist::At {
+            text: &text,
+            row,
+            col,
+            cwd: &self.options.cwd,
+            session_dir: &self.options.session_dir,
+            typed: true,
+        };
+        let act = self.composer.assist.tab(&at);
+        self.composer.apply(act, row)
     }
 }

@@ -85,7 +85,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     std::fs::File::create(out.join("logos.rs"))?.write_all(table.as_bytes())?;
     std::fs::File::create(out.join("grammars.packdump"))?.write_all(&grammars()?)?;
-    spell_helper(&out);
     pack_bytes(&themes()?, &out, "themes")
 }
 
@@ -124,39 +123,6 @@ fn themes() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         );
     }
     Ok(serde_json::to_vec(&all)?)
-}
-
-fn spell_helper(out: &std::path::Path) {
-    println!("cargo::rerun-if-changed=helpers/spell.m");
-    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
-        return;
-    }
-    let bin = out.join("yi-spell");
-    let Ok(status) = clang(&bin) else {
-        return;
-    };
-    if status.success() {
-        println!("cargo::rustc-env=SPELL_HELPER={}", bin.display());
-    }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the spelling helper is a separate program compiled beside this crate, not linked into yi"
-)]
-fn clang(bin: &std::path::Path) -> std::io::Result<std::process::ExitStatus> {
-    std::process::Command::new("clang")
-        .args([
-            "-fobjc-arc",
-            "-framework",
-            "AppKit",
-            "-framework",
-            "Foundation",
-            "-o",
-        ])
-        .arg(bin)
-        .arg("helpers/spell.m")
-        .status()
 }
 
 /// A linked grammar points into its set by position (`ContextId`), so a cut set renumbers every

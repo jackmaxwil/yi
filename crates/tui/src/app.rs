@@ -940,7 +940,7 @@ pub fn run_tui(
         let timeout = app
             .scheduler
             .poll_timeout(Instant::now())
-            .min(app.reveal_wake())
+            .min(app.reveal_wake().min(app.assist_wake()))
             .min(app.todo_clock.wake(Instant::now()))
             .min(
                 control
