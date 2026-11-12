@@ -748,16 +748,13 @@ pub fn view(
     lines
 }
 
-const LISTED: usize = 8;
-
 /// The open theme list under its row: the first name shown, how many, and how many exist.
 fn list_span(settings: &Settings) -> Option<(usize, usize, usize)> {
     theme_list_open(settings)?;
     let Some(Edit::Pick { options, cursor }) = &settings.edit else {
         return None;
     };
-    let start = cursor.saturating_sub(LISTED.saturating_sub(1));
-    let shown = options.len().saturating_sub(start).min(LISTED);
+    let (start, shown) = yi_tui::popup::window(*cursor, options.len());
     Some((start, shown, options.len()))
 }
 
