@@ -190,7 +190,7 @@ impl PlanEngine {
             });
         }
         let cap = self.verifier.refusal_cap();
-        super::ladder::split_pending(current, label)?;
+        super::ladder::split_pending(current, label, OpKind::Done)?;
         let red = super::ladder::red(&txn.records, &id, label, todo.attempt, cap);
         super::ladder::gate(todo, red, cap)?;
         let Some(contract) = todo.contract.clone() else {

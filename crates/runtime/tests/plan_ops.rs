@@ -5134,7 +5134,7 @@ mod contracts {
             ..at(&plan, accept)
         });
         assert!(
-            matches!(&accepted, Err(PlanOpError::Ladder(text)) if text.contains("\"land it-split-1\" is not finished")),
+            matches!(&accepted, Err(PlanOpError::Ladder(text)) if text.starts_with("accepted_by_user for \"land it\" refused: its split child \"land it-split-1\" is not finished")),
             "{accepted:?}"
         );
         assert!(matches!(

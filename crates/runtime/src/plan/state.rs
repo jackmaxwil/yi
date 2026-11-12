@@ -619,7 +619,7 @@ pub fn apply_op(
         Op::Done { label, output } => {
             let output = output.clone();
             check_terminal(label, output.as_ref())?;
-            let resolution = completion(state.plan(id)?, label, decided.resolution)?;
+            let resolution = completion(state.plan(id)?, label, decided.resolution, OpKind::Done)?;
             step_todo(
                 state.plan_mut(id)?,
                 label,
@@ -688,7 +688,7 @@ pub fn apply_op(
             let accepted = decided
                 .resolution
                 .or(Some(contract::Resolution::AcceptedByUser));
-            let resolution = completion(state.plan(id)?, label, accepted)?;
+            let resolution = completion(state.plan(id)?, label, accepted, OpKind::Accept)?;
             step_todo(
                 state.plan_mut(id)?,
                 label,
@@ -741,12 +741,13 @@ fn completion(
     plan: &Plan,
     label: &TodoLabel,
     resolution: Option<contract::Resolution>,
+    op: OpKind,
 ) -> Result<Option<contract::Resolution>, PlanOpError> {
     let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
         plan: plan.id.clone(),
         label: label.clone(),
     })?;
-    completion_of(plan, todo, resolution)
+    completion_of(plan, todo, resolution, op)
 }
 
 /// The validator itself: a worktree todo completes only by acceptance or the user's word, a
@@ -755,8 +756,9 @@ fn completion_of(
     plan: &Plan,
     todo: &Todo,
     resolution: Option<contract::Resolution>,
+    op: OpKind,
 ) -> Result<Option<contract::Resolution>, PlanOpError> {
-    super::ladder::split_pending(plan, &todo.label)?;
+    super::ladder::split_pending(plan, &todo.label, op)?;
     if super::acceptance::is_worktree(todo)
         && !matches!(
             resolution,
@@ -1004,7 +1006,7 @@ fn apply_set(plan: &mut Plan, rows: &[SetRow], keep_rest: bool) -> Result<(), Pl
                 // authors a resolution (plan section 6.5).
                 TodoStateName::Done => TodoState::Done {
                     output: None,
-                    resolution: completion_of(plan, &todo, None)?,
+                    resolution: completion_of(plan, &todo, None, OpKind::Set)?,
                 },
                 TodoStateName::Blocked => TodoState::Blocked {
                     on: BlockedOn::User,
@@ -1120,7 +1122,9 @@ fn apply_reconcile(
     }
     drop_intents(state, id, label);
     let reused = match outcome {
-        Reconciliation::Reused { .. } => completion(state.plan(id)?, label, None)?,
+        Reconciliation::Reused { .. } => {
+            completion(state.plan(id)?, label, None, OpKind::Reconcile)?
+        }
         Reconciliation::Reattached { .. } => None,
     };
     let plan = state.plan_mut(id)?;

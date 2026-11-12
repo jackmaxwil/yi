@@ -232,7 +232,7 @@ pub(super) fn spend(plan: &mut Plan, label: &TodoLabel) {
 }
 
 /// Invariant: a split parent completes only once each of its children is done or dropped.
-pub(super) fn split_pending(plan: &Plan, label: &TodoLabel) -> Result<(), PlanOpError> {
+pub(super) fn split_pending(plan: &Plan, label: &TodoLabel, op: OpKind) -> Result<(), PlanOpError> {
     let open = plan
         .todos
         .iter()
@@ -240,7 +240,7 @@ pub(super) fn split_pending(plan: &Plan, label: &TodoLabel) -> Result<(), PlanOp
     match open {
         Some(child) => {
             let detail = format!("its split child {:?} is not finished", child.label);
-            Err(refused(OpKind::Done, label, detail))
+            Err(refused(op, label, detail))
         }
         None => Ok(()),
     }
@@ -314,11 +314,11 @@ pub(super) fn split(
 mod tests {
     use super::{LADDER, SPLIT_PARENT_KEY, offers, red, rung};
     use crate::plan::state::KIND_DONE_REFUSED;
+    use crate::plan::store::draft;
     use crate::plan::table::step;
-    use serde_json::{Map, Value, json};
-    use yi_types::plan::canonical::Digest;
+    use serde_json::{Value, json};
     use yi_types::plan::doc::{BlockedOn, PlanId, Todo, TodoLabel, TodoState, TodoStateName};
-    use yi_types::plan::ledger::{AttemptId, JournalRecord, PlanOpRecord, RequestId, Seq};
+    use yi_types::plan::ledger::{AttemptId, JournalRecord, RequestId};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -375,28 +375,22 @@ mod tests {
         label: &TodoLabel,
         attempt: u32,
     ) -> Result<JournalRecord, Box<dyn std::error::Error>> {
-        Ok(JournalRecord {
-            record: PlanOpRecord {
-                plan: plan.clone(),
-                op: KIND_DONE_REFUSED.to_owned(),
-                actor: "owner".to_owned(),
-                at: 0,
-                todo: Some(label.clone()),
-                from: None,
-                to: None,
-                todos: 1,
-                extra: Map::new(),
-            },
-            seq: Seq::FIRST,
-            request_id: RequestId::new("ladder")?,
-            expected_revision: 0,
-            attempt: Some(AttemptId::new(attempt)?),
-            args: Value::Null,
-            args_hash: Digest::of(b""),
-            program_hash: None,
-            verdict: Some(json!({"outcome": "fail"})),
-            digest: Digest::of(b""),
-        })
+        let (owner, request) = ("owner".to_owned(), RequestId::new("ladder")?);
+        let at = Some(AttemptId::new(attempt)?);
+        let mut record = draft(
+            plan,
+            KIND_DONE_REFUSED,
+            owner,
+            0,
+            1,
+            Value::Null,
+            request,
+            0,
+            at,
+        );
+        record.record.todo = Some(label.clone());
+        record.verdict = Some(json!({"outcome": "fail"}));
+        Ok(record)
     }
 
     // Dies with the plan filter gone from `red`: a sub-plan todo sharing a root todo's label and
