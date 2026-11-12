@@ -188,8 +188,8 @@ fn a_block_this_build_cannot_read_reaches_every_wire_as_its_notice() -> Result<(
     Ok(())
 }
 
-/// Dies with a 400 on every later request: a failed reply is left out with its call, and the
-/// call's result must reach no wire alone, nor its text in any role; one earlier call still answers.
+/// Dies with a 400 on every later request: a result after a note answers a call already answered,
+/// and a failed reply's result answers none; each is a notice, its text in no role.
 #[test]
 fn a_result_whose_reply_failed_reaches_every_wire_as_a_notice() -> Result<(), Box<dyn Error>> {
     let result = |id: &str, text: &str| AgentMessage::ToolResult {
@@ -227,7 +227,7 @@ fn a_result_whose_reply_failed_reaches_every_wire_as_a_notice() -> Result<(), Bo
         tools: None,
         tool_choice: None,
     };
-    let notice = "[bash result omitted: the call it answers is not in this request; run the tool again for its output]";
+    let notice = "[bash result omitted: no call before it in this request still awaits it; run the tool again for its output]";
     for api in [
         "anthropic-messages",
         "openai-completions",
@@ -235,23 +235,27 @@ fn a_result_whose_reply_failed_reaches_every_wire_as_a_notice() -> Result<(), Bo
     ] {
         let model = crate::common::model("m", api, "p", "http://h", None);
         let body = wire_body(api, &model, &context);
-        assert!(
-            !body.contains("fetched page text"),
-            "{api} sent the output: {body}"
-        );
+        for output in ["fetched page text", "kept output"] {
+            assert!(!body.contains(output), "{api} sent {output}: {body}");
+        }
+        let answers = match api {
+            "anthropic-messages" => r#""tool_use_id":"kept_1""#,
+            "openai-completions" => r#""tool_call_id":"kept_1""#,
+            _ => r#""type":"function_call_output","call_id":"kept_1""#,
+        };
+        assert_eq!(body.matches(answers).count(), 1, "{api}: {body}");
         assert!(
             !body.contains("dropped_1"),
             "{api} sent the dropped call or its result: {body}"
         );
-        assert_eq!(body.matches(notice).count(), 1, "{api}: {body}");
+        assert_eq!(body.matches(notice).count(), 2, "{api}: {body}");
         let parsed: serde_json::Value = serde_json::from_str(&body)?;
         let items = (parsed.get("messages").or_else(|| parsed.get("input")))
             .and_then(serde_json::Value::as_array)
             .ok_or("no message list")?;
-        let holder = (items.iter())
-            .find(|item| item.to_string().contains(notice))
-            .ok_or("no notice")?;
-        assert_eq!(holder["role"], "user", "{api}: {body}");
+        for item in (items.iter()).filter(|item| item.to_string().contains(notice)) {
+            assert_eq!(item["role"], "user", "{api}: {body}");
+        }
     }
     Ok(())
 }

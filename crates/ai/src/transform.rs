@@ -240,7 +240,6 @@ pub fn transform_messages<'a>(
     let mut pending: Vec<(String, String)> = Vec::new();
     let mut seen_results: HashSet<String> = HashSet::new();
     let mut unmatched: Vec<Content> = Vec::new();
-    let mut sent: HashSet<String> = HashSet::new();
     let synthesize = |pending: &mut Vec<(String, String)>,
                       seen: &mut HashSet<String>,
                       unmatched: &mut Vec<Content>,
@@ -284,14 +283,15 @@ pub fn transform_messages<'a>(
                         _ => None,
                     })
                     .collect();
-                sent.extend(pending.iter().map(|(id, _)| id.clone()));
                 result.push(message);
             }
             AgentMessage::ToolResult {
                 tool_call_id,
                 tool_name,
                 ..
-            } if !sent.contains(tool_call_id) => {
+            } if seen_results.contains(tool_call_id)
+                || !pending.iter().any(|(id, _)| id == tool_call_id) =>
+            {
                 unmatched.push(unmatched_notice(tool_name));
             }
             AgentMessage::ToolResult { tool_call_id, .. } => {
@@ -313,12 +313,16 @@ pub fn transform_messages<'a>(
     result
 }
 
-/// Incident: every wire refuses a result whose call it was not sent, and dropping a failed reply
-/// drops its calls; the output stays out, so tool text never reads as the user's or the model's.
+/// Incident: every wire refuses a result that does not answer the turn just before it once, and
+/// a failed reply drops its calls; the output stays out, so tool text never reads as anyone's own.
 fn unmatched_notice(name: &str) -> Content {
+    let name: String = (name.chars())
+        .filter(|c| c.is_ascii_alphanumeric() || "_-.:".contains(*c))
+        .take(64)
+        .collect();
     Content::Text {
         text: format!(
-            "[{name} result omitted: the call it answers is not in this request; run the tool again for its output]"
+            "[{name} result omitted: no call before it in this request still awaits it; run the tool again for its output]"
         ),
         text_signature: None,
     }
