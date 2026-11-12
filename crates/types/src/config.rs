@@ -155,7 +155,7 @@ pub struct CustomModel {
     pub cost: Option<CustomCost>,
 }
 
-/// The wire names `Model::api` carries; config is strict, so any other value refuses at load.
+/// The wire names [`crate::model::Model::api`] carries; config is strict, so any other refuses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub enum CustomApi {
     #[default]
