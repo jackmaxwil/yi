@@ -48,7 +48,6 @@ pub struct UserConfig {
     pub keys: Option<std::collections::BTreeMap<String, String>>,
     pub console: Option<ConsoleConfig>,
     pub tui: Option<TuiConfig>,
-    /// `theme.dark` and `theme.light` name a file in `~/.yi/themes`. Unset, the built-in palette stays.
     pub theme: Option<ThemeConfig>,
     pub lanes: Option<crate::lane::LanesConfig>,
     pub catalog: Option<CatalogConfig>,
@@ -484,7 +483,8 @@ pub const SMOL_REL: &str = ".yi/models/smollm2-135m-instruct-q8_0.gguf";
 
 pub const SMOL_URL: &str = "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF/resolve/main/smollm2-135m-instruct-q8_0.gguf";
 
-/// `theme.dark` / `theme.light`: the omp theme file `~/.yi/themes/<name>.json` for that ground.
+/// `theme.dark` / `theme.light`: a shipped theme or `~/.yi/themes/<name>.json` for that ground;
+/// unset, the built-in palette.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThemeConfig {

@@ -42,7 +42,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
-use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
+use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::drive::{
     Control, Deadline, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
 };
@@ -70,8 +70,7 @@ pub struct ConsoleOptions {
     pub browser: Option<PathBuf>,
     pub chrome_pin: Option<crate::browser::Pinned>,
     pub home: Option<String>,
-    /// `~/.yi/themes/<name>.json` for this terminal's ground. Unset keeps the built-in palette.
-    pub theme_file: Option<PathBuf>,
+    pub theme: Option<yi_types::config::ThemeConfig>,
 }
 
 pub struct DriveOptions {
@@ -228,6 +227,7 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
     span.set("events", count);
     let _tick = yi_types::trace::span("console.tick");
     app.tick(outbound);
+    app.settle_theme_preview();
     title_tick(app);
 }
 
@@ -278,18 +278,7 @@ fn draw<B: Backend>(
 }
 
 pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
-    let loaded = yi_tui::theme_file::load(
-        detect_tier(
-            std::env::var("COLORTERM").ok().as_deref(),
-            std::env::var("TERM").ok().as_deref(),
-        ),
-        detect_dark(std::env::var("COLORFGBG").ok().as_deref()),
-        options.theme_file.as_deref(),
-    );
-    if let Some(warning) = loaded.warning {
-        eprintln!("warning: {warning}");
-    }
-    let theme = loaded.theme;
+    let theme = yi_tui::theme_file::startup(options.theme.as_ref());
     let setup = yi_types::trace::span("console.setup");
     yi_tui::highlight::prewarm();
     let (event_tx, events) = client::events();
@@ -409,8 +398,6 @@ fn step_frame<B: Backend>(
 ) -> std::io::Result<()> {
     if scheduler.should_draw(Instant::now()) {
         let start = Instant::now();
-        // A preview replaces `app.theme` between frames. The draw has to read that,
-        // or the sidebar and the settings pane stay on the palette from startup.
         let theme = app.theme;
         present(app, terminal, &theme, orb_owners, out)?;
         set_window_title(app);

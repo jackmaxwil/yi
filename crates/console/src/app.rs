@@ -75,9 +75,6 @@ struct Pending {
 pub struct App {
     pub state: ConsoleState,
     pub theme: Theme,
-    /// The palette from when a theme list opened, put back on Esc.
-    theme_restore: Option<Theme>,
-    theme_warned: bool,
     pub kitty: bool,
     pub pointer: Option<(u16, u16)>,
     pending: HashMap<RequestId, Pending>,
@@ -150,8 +147,6 @@ impl App {
         Self {
             state: ConsoleState::new(root),
             theme,
-            theme_restore: None,
-            theme_warned: false,
             kitty: false,
             pointer: None,
             pending: HashMap::new(),

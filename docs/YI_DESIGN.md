@@ -1317,8 +1317,12 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   the list and leaves the draft. Word completion defaults to auto. Autocorrect defaults off.
 - The working line names an open wait (`AgentEvent::Wait`: a provider retry, a compaction, a
   kernel boot) with its cause and a countdown, and a tool call draws while its arguments stream.
-- The palette is fixed: tier from `COLORTERM`/`TERM`, light or dark from `COLORFGBG` (default
-  dark). The orb is [`yi-orb`](../crates/orb/src/lib.rs) over kitty graphics: the `Yi` mark at rest and one
+- The palette is built in, tier from `COLORTERM`/`TERM` and light or dark from `COLORFGBG`
+  (default dark), and a theme may be laid over it: `theme.dark` / `theme.light` name a shipped
+  theme or `~/.yi/themes/<name>.json` in oh-my-pi's shape, whose `colors` keys replace the roles
+  Yi paints (text, markdown, syntax, diff, status); chrome keeps its session hue (D436), a
+  16-color terminal keeps its colors, and a 256-color one gets the nearest cube colors. The
+  console's settings pane and solo `/theme` preview a theme live and save it. The orb is [`yi-orb`](../crates/orb/src/lib.rs) over kitty graphics: the `Yi` mark at rest and one
   exact loop per agent state, left only at its exit points by a least-travel morph.
 - `yi tui --headless --keys <script> --frames <dir> [--record] [--snap]` drives the real loop on
   an in-memory screen (steps `key`, `type`, `type-ms`, `wait`, `wait-idle`, `wait-frame`, `quit`);

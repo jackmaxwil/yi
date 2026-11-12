@@ -36,6 +36,7 @@ mod reveal;
 mod run_chip;
 mod settled;
 mod streaming;
+mod theme_list;
 mod title;
 mod toolcells;
 mod tui_e2e;

@@ -111,9 +111,9 @@ fn paste_into(bottom: &mut Bottom, text: &str) {
     match bottom {
         Bottom::Approval(view, _) => view.paste(text),
         Bottom::Question(view) => view.paste(text),
-        Bottom::Theme(popup) => popup.paste(text),
         Bottom::Agents(popup) => popup.paste(text),
         Bottom::Model(popup) => popup.paste(text),
+        Bottom::Theme(picker) => picker.list.paste(text),
     }
 }
 
@@ -150,9 +150,7 @@ pub(crate) fn handle_bottom_key(
         && key.ctrl
         && !matches!(app.bottom, Some(Bottom::Approval(..)))
     {
-        if matches!(app.bottom, Some(Bottom::Theme(_))) {
-            app.restore_theme();
-        }
+        app.leave_theme_list();
         app.bottom = None;
         return;
     }
@@ -162,17 +160,20 @@ pub(crate) fn handle_bottom_key(
     let result = match &mut bottom {
         Bottom::Approval(view, _) => view.handle_key(key),
         Bottom::Question(view) => view.handle_key(key),
-        Bottom::Theme(popup) => popup.handle_key(key),
         Bottom::Agents(popup) => popup.handle_key(key),
         Bottom::Model(popup) => popup.handle_key(key),
+        Bottom::Theme(picker) => picker.list.handle_key(key),
     };
     match result {
         PopupResult::Open => {
-            if let Bottom::Theme(popup) = &bottom
-                && let Some(name) = popup.filtered().get(popup.selected)
+            if let Bottom::Theme(picker) = &mut bottom
+                && let Some(name) = picker
+                    .list
+                    .filtered()
+                    .get(picker.list.selected)
+                    .map(|name| String::from(*name))
             {
-                let name = (*name).clone();
-                app.preview_theme(&name);
+                app.preview_theme(picker, &name);
             }
             app.bottom = Some(bottom);
         }
@@ -190,7 +191,7 @@ pub(crate) fn handle_bottom_key(
                     app.select(model, effort);
                 }
             }
-            Bottom::Theme(_) => app.restore_theme(),
+            Bottom::Theme(picker) => app.close_theme_list(&picker),
             Bottom::Question(_) => {}
         },
         PopupResult::Insert(text) => match bottom {
@@ -198,7 +199,7 @@ pub(crate) fn handle_bottom_key(
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
             Bottom::Question(_) => send_message(app, cmd_tx, text),
-            Bottom::Theme(_) => app.commit_theme(text.trim()),
+            Bottom::Theme(mut picker) => app.commit_theme(&mut picker, text.trim()),
             Bottom::Agents(_) | Bottom::Model(_) => {}
         },
     }

@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
-use crate::colors::Theme;
+use crate::colors::{Over, Theme};
 
 /// A line longer than this is generated, not written, and colouring it costs
 /// more than reading it is worth.
@@ -202,20 +202,17 @@ impl Theme {
     pub fn syntax_style(&self, token: Token) -> Style {
         match token {
             Token::Plain => Style::default().fg(self.text),
-            Token::Comment => match self.over[crate::colors::Over::SyntaxComment as usize] {
-                Some(color) => Style::default().fg(color),
-                None => self.dim_style(),
-            },
-            Token::Str => Style::default().fg(self.syntax_string.unwrap_or(self.success)),
-            Token::Number => Style::default().fg(self.syntax_number.unwrap_or(self.orange)),
+            Token::Comment => self.file_or(Over::SyntaxComment, self.dim_style()),
+            Token::Str => Style::default().fg(self.pick(Over::SyntaxString, self.success)),
+            Token::Number => Style::default().fg(self.pick(Over::SyntaxNumber, self.orange)),
             Token::Keyword => Style::default()
-                .fg(self.syntax_keyword.unwrap_or(self.magenta))
+                .fg(self.pick(Over::SyntaxKeyword, self.magenta))
                 .add_modifier(Modifier::BOLD),
             Token::Type => Style::default()
-                .fg(self.syntax_type.unwrap_or(self.teal))
+                .fg(self.pick(Over::SyntaxType, self.teal))
                 .add_modifier(Modifier::BOLD),
-            Token::Function => Style::default().fg(self.syntax_function.unwrap_or(self.accent)),
-            Token::Variable => Style::default().fg(self.syntax_variable.unwrap_or(self.magenta)),
+            Token::Function => Style::default().fg(self.pick(Over::SyntaxFunction, self.accent)),
+            Token::Variable => Style::default().fg(self.pick(Over::SyntaxVariable, self.magenta)),
             Token::Deleted => Style::default().fg(self.error),
         }
     }

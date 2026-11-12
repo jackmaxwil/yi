@@ -7,12 +7,8 @@ use crate::markdown;
 use crate::wrap::wrap_line;
 
 fn thought_style(theme: &Theme) -> ratatui::style::Style {
-    match theme.over[crate::colors::Over::Thinking as usize] {
-        Some(color) => ratatui::style::Style::default()
-            .fg(color)
-            .add_modifier(Modifier::ITALIC),
-        None => theme.dim_style().add_modifier(Modifier::ITALIC),
-    }
+    let style = theme.file_or(crate::colors::Over::Thinking, theme.dim_style());
+    style.add_modifier(Modifier::ITALIC)
 }
 
 const THOUGHT_INDENT: &str = "  ";
