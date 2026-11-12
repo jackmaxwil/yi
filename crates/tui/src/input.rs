@@ -26,11 +26,8 @@ pub fn handle_terminal_event(
                 tree.paste(&text);
             } else if let Some(view) = app.plan_tree.as_mut() {
                 view.paste(&text);
-            } else if matches!(app.bottom, Some(Bottom::Command(_))) {
-                app.composer.handle_paste(&text);
-                refresh_command_list(app);
-            } else if let Some(bottom) = app.bottom.as_mut() {
-                paste_into(bottom, &text);
+            } else if app.bottom.is_some() {
+                paste_into(app, &text);
             } else if !app.composer.search_active() {
                 app.composer.handle_paste(&text);
             }
@@ -118,13 +115,19 @@ pub fn handle_terminal_event(
     }
 }
 
-fn paste_into(bottom: &mut Bottom, text: &str) {
-    match bottom {
-        Bottom::Approval(view, _) => view.paste(text),
-        Bottom::Question(view) => view.paste(text),
-        Bottom::Command(popup) | Bottom::File(popup) => popup.paste(text),
-        Bottom::Agents(popup) => popup.paste(text),
-        Bottom::Model(popup) => popup.paste(text),
+/// The command list keeps its text in the box, so a paste edits the box and the list follows it.
+fn paste_into(app: &mut App, text: &str) {
+    match app.bottom.as_mut() {
+        Some(Bottom::Approval(view, _)) => view.paste(text),
+        Some(Bottom::Question(view)) => view.paste(text),
+        Some(Bottom::File(popup)) => popup.paste(text),
+        Some(Bottom::Agents(popup)) => popup.paste(text),
+        Some(Bottom::Model(popup)) => popup.paste(text),
+        Some(Bottom::Command(_)) => {
+            app.composer.handle_paste(text);
+            refresh_command_list(app);
+        }
+        None => {}
     }
 }
 
@@ -348,17 +351,18 @@ fn command_list(query: String) -> ListPopup {
     popup
 }
 
+/// The one spelling of a verb name: Enter routes on it and Tab completes on it.
+fn command_word(head: &str) -> bool {
+    !head.is_empty()
+        && head
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+}
+
 /// The text after `/` while it is still a command name. Arguments close the list.
 fn command_token(text: &str) -> Option<&str> {
     let rest = text.strip_prefix('/')?;
-    if rest.chars().any(char::is_whitespace)
-        || !rest
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
-    {
-        return None;
-    }
-    Some(rest)
+    (rest.is_empty() || command_word(rest)).then_some(rest)
 }
 
 /// Invariant: a list opened by typing `/` starts from an empty box, so closing it empties the
@@ -440,13 +444,8 @@ fn tab_completes_slash(app: &mut App) -> bool {
 /// Invariant: `/word` is a command, a typo'd one included, and `//word` sends `/word` as a
 /// prompt. A `/usr/...` path or a `/*` comment is no word, so it still prompts.
 fn slash_line(text: String) -> Slash {
-    let word = |rest: &str| {
-        let head = rest.split(char::is_whitespace).next().unwrap_or_default();
-        !head.is_empty()
-            && head
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
-    };
+    let word =
+        |rest: &str| command_word(rest.split(char::is_whitespace).next().unwrap_or_default());
     match text.trim().strip_prefix('/') {
         Some(rest) if word(rest) => Slash::Command(rest.trim().to_owned()),
         Some(rest) if rest.strip_prefix('/').is_some_and(word) => Slash::Prompt(rest.to_owned()),

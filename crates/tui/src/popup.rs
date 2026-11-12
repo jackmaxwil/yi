@@ -55,6 +55,11 @@ impl ListPopup {
         }
     }
 
+    /// The row of the highlighted item among the rows [`BottomView::lines`] draws for items.
+    pub fn selected_row(&self) -> usize {
+        self.selected - self.selected.saturating_sub(MAX_VISIBLE - 1)
+    }
+
     /// Invariant: a query that is exactly one item's name selects that item, not a longer one
     /// it prefixes — `/plan` must not run `/plantree`, whatever order the table is in.
     pub fn filtered(&self) -> Vec<&String> {

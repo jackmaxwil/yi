@@ -473,6 +473,12 @@ fn enter_in_the_command_list_runs_the_highlighted_match() -> TestResult {
     let mut app = app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     type_text(&mut app, &tx, "/mo");
+    assert_eq!(
+        app.composer_text(),
+        "/mo",
+        "the typed name lives in the box"
+    );
+    assert!(app.bottom_open());
     enter(&mut app, &tx);
     assert!(app.bottom_open(), "/model opens the model picker");
     assert_eq!(app.composer_text(), "");
@@ -598,6 +604,7 @@ fn an_approval_replacing_the_command_list_leaves_no_stray_text() -> TestResult {
     let mut app = app();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     type_text(&mut app, &tx, "/mo");
+    assert_eq!(app.composer_text(), "/mo");
     let (reply, _answer) = std::sync::mpsc::channel();
     app.open_approval(yi_tui::AskRequest {
         title: "run it".to_owned(),
@@ -621,7 +628,14 @@ fn the_command_list_leaves_the_box_on_a_short_screen() -> TestResult {
         app.set_kitty(kitty);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         type_text(&mut app, &tx, "/");
+        for _ in 0..7 {
+            press(&mut app, &tx, KeyCode::Down, KeyModifiers::NONE);
+        }
         let rows = common::rows_sized(&mut app, 60, u16::try_from(height)?)?;
+        assert!(
+            rows.iter().any(|row| row.starts_with(" › ")),
+            "kitty {kitty}: the highlighted row is kept: {rows:#?}"
+        );
         assert!(
             rows.iter().any(|row| row.starts_with(" │/")),
             "kitty {kitty}: the box with the typed `/` is on screen: {rows:#?}"

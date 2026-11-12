@@ -382,17 +382,18 @@ pub fn layout_chat(
         })
         .saturating_add(u16::from(!on_rule));
     let mut bottom_lines = bottom_lines;
-    if command_list && let Some(lines) = bottom_lines.as_mut() {
-        let room = usize::from(total.saturating_sub(fixed).saturating_sub(composer_height));
+    if let (Some(Bottom::Command(popup)), Some(lines)) = (&app.bottom, bottom_lines.as_mut()) {
+        let room = usize::from(total.saturating_sub(fixed).saturating_sub(composer_height)).max(1);
         let existed = lines.len();
         if existed > room {
-            lines.truncate(room.saturating_sub(1));
-            if room > 0 {
-                lines.push(Line::from(format!(
-                    "[… {} of {existed} list rows · screen cap {room} rows · type to narrow]",
-                    lines.len()
-                )));
-            }
+            let keep = room - 1;
+            let from = (popup.selected_row() + 1).saturating_sub(keep).min(existed);
+            lines.drain(..from);
+            lines.truncate(keep);
+            lines.push(Line::from(format!(
+                "[… {} of {existed} list rows · screen cap {room} rows · type to narrow]",
+                lines.len()
+            )));
         }
     }
     let composer_too = app.tree.is_none()
