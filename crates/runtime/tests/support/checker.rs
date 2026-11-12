@@ -22,3 +22,20 @@ pub fn put_checker(
         nonce,
     )?)
 }
+
+/// One critical `cmd` item over a checker written into the plan's artifacts.
+pub fn cmd_contract(
+    store: &yi_runtime::plan::store::PlanStore,
+    plan: &yi_types::plan::doc::PlanId,
+    command: &str,
+    class: &str,
+) -> Result<yi_types::plan::contract::Contract, Box<dyn std::error::Error>> {
+    let manifest = checker_manifest(command, 10_000, &[], false);
+    let put = put_checker(&store.artifacts(plan), &manifest, &store.nonce())?;
+    Ok(serde_json::from_value(serde_json::json!({
+        "class": class,
+        "items": [{"id": "check", "critical": true, "weight": 100,
+                   "decider": {"cmd": {"checker": put, "timeout_ms": 10_000}}}],
+        "threshold": 1000, "min_coverage": 1000
+    }))?)
+}

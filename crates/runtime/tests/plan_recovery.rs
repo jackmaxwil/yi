@@ -554,6 +554,7 @@ fn incomplete_tail_is_preserved_and_repaired_by_policy() -> TestResult {
     ));
     let appended = rig.engine.apply(owner(Op::Append {
         todos: vec![plain("ship it")?],
+        for_task: None,
     }))?;
     assert_eq!(
         appended.plan.todos.len(),

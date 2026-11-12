@@ -72,7 +72,7 @@ pub struct UserConfig {
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
     pub open: Option<Vec<OpenApp>>,
     pub browser: Option<BrowserConfig>,
-    /// `providers`: OpenAI-compatible endpoints the user declares, each addressed `<id>/<model>`.
+    /// `providers`: endpoints the user declares, each speaking one API, addressed `<id>/<model>`.
     pub providers: Option<Providers>,
 }
 
@@ -132,11 +132,13 @@ impl Providers {
     }
 }
 
-/// Speaks OpenAI chat completions; the key is `apiKeyEnv`'s variable, else the literal `apiKey`.
+/// Speaks `api`, OpenAI chat completions when unset; the key is `apiKeyEnv`'s variable, else the
+/// literal `apiKey`, sent as a bearer token on every wire, Anthropic messages included.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomProvider {
     pub base_url: String,
+    pub api: Option<CustomApi>,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
     pub models: Vec<CustomModel>,
@@ -152,6 +154,34 @@ pub struct CustomModel {
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
     pub cost: Option<CustomCost>,
+}
+
+/// The wire names [`crate::model::Model::api`] carries; config is strict, so any other refuses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum CustomApi {
+    #[default]
+    #[serde(rename = "openai-completions")]
+    OpenAiCompletions,
+    #[serde(rename = "openai-responses")]
+    OpenAiResponses,
+    #[serde(rename = "anthropic-messages")]
+    AnthropicMessages,
+}
+
+impl CustomApi {
+    pub const ALL: [Self; 3] = [
+        Self::OpenAiCompletions,
+        Self::OpenAiResponses,
+        Self::AnthropicMessages,
+    ];
+
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::OpenAiCompletions => "openai-completions",
+            Self::OpenAiResponses => "openai-responses",
+            Self::AnthropicMessages => "anthropic-messages",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -176,6 +206,12 @@ impl CustomProvider {
     pub fn catalog(&self, id: &str) -> Vec<crate::model::Model> {
         let rate = |set: Option<&serde_json::Number>| set.cloned().unwrap_or_else(|| 0u64.into());
         let base_url = self.base_url.trim_end_matches('/').to_owned();
+        let api = self.api.unwrap_or_default();
+        let compat = match api {
+            CustomApi::OpenAiCompletions => Some(serde_json::json!({"plainMaxTokens": true})),
+            CustomApi::OpenAiResponses => None,
+            CustomApi::AnthropicMessages => Some(serde_json::json!({"bearerAuth": true})),
+        };
         (self.models.iter())
             .map(|model| {
                 let cost = model.cost.clone().unwrap_or_default();
@@ -183,7 +219,7 @@ impl CustomProvider {
                 crate::model::Model {
                     id: model.id.clone(),
                     name: model.name.clone().unwrap_or_else(|| model.id.clone()),
-                    api: "openai-completions".to_owned(),
+                    api: api.wire().to_owned(),
                     provider: id.to_owned(),
                     base_url: base_url.clone(),
                     reasoning: model.reasoning.unwrap_or(false),
@@ -202,7 +238,7 @@ impl CustomProvider {
                     },
                     context_window: model.context_window.unwrap_or(128_000),
                     max_tokens: model.max_tokens.unwrap_or(16_384),
-                    compat: Some(serde_json::json!({"plainMaxTokens": true})),
+                    compat: compat.clone(),
                     thinking_level_map: None,
                     headers: None,
                     read_timeout_secs: None,

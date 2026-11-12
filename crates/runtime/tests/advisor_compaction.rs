@@ -3,7 +3,6 @@
 
 use crate::scratch;
 use scratch::Scratch;
-
 use std::error::Error;
 use std::sync::Arc;
 
@@ -193,6 +192,7 @@ async fn a_compaction_hands_the_judge_the_summary_beside_the_directives() -> Tes
         full.contains("src/parse.rs"),
         "pull must return the whole summary, not the head: {full}"
     );
+
     Ok(())
 }
 
@@ -210,6 +210,7 @@ async fn a_compaction_review_is_budget_gated() -> TestResult {
         advisor.observe(&tool_result("bash"), 2).is_none(),
         "an exhausted hourly budget must swallow the compaction review, not overspend on it"
     );
+
     Ok(())
 }
 
@@ -225,5 +226,6 @@ fn a_storeless_compaction_audit_is_skipped_not_faked() -> TestResult {
         advisor.observe(&tool_result("bash"), 2).is_none(),
         "a session that never compacted must not trigger a compaction review"
     );
+
     Ok(())
 }

@@ -189,6 +189,15 @@ impl BottomView for ApprovalView {
 }
 
 impl App {
+    pub fn open_approval(&mut self, ask: AskRequest) {
+        let mut view = ApprovalView::new(ask.title, ask.description, ask.grants);
+        view.tool_call_id = ask.tool_call_id;
+        crate::input::close_command_list(self);
+        self.leave_theme_list();
+        self.bottom = Some(Bottom::Approval(view, ask.reply));
+        self.scheduler.request();
+    }
+
     pub(crate) fn expire_approval(&mut self, tool_call_id: &str) {
         if let Some(Bottom::Approval(view, _)) = &self.bottom
             && view.tool_call_id.as_deref() == Some(tool_call_id)

@@ -102,7 +102,14 @@ fn confirm_after(
 fn a_plan_edited_while_its_confirmation_was_asked_is_refused() -> TestResult {
     let (applied, kinds) = confirm_after("edited", |engine, plan| {
         let todos = todo("later").map(|later| vec![later]).unwrap_or_default();
-        let _appended = owner(engine, Some(plan.clone()), Op::Append { todos });
+        let _appended = owner(
+            engine,
+            Some(plan.clone()),
+            Op::Append {
+                todos,
+                for_task: None,
+            },
+        );
     })?;
     assert!(
         matches!(

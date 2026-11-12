@@ -141,7 +141,7 @@ pub enum ArgError {
 pub(super) fn known_keys(kind: OpKind) -> &'static [&'static str] {
     match kind {
         OpKind::Init => &["op", "plan", "goal", "todos"],
-        OpKind::Append => &["op", "plan", "todos"],
+        OpKind::Append => &["op", "plan", "todos", "for_task"],
         OpKind::Unblock | OpKind::Start => &["op", "plan", "label", "todo"],
         OpKind::Drop => &["op", "plan", "label", "todo", "disposition"],
         OpKind::Block => &["op", "plan", "label", "todo", "on", "note", "options"],
@@ -151,6 +151,7 @@ pub(super) fn known_keys(kind: OpKind) -> &'static [&'static str] {
         OpKind::Fail => &["op", "plan", "label", "todo", "cause", "disposition"],
         OpKind::Retry => &["op", "plan", "label", "todo", "delegation"],
         OpKind::Decompose => &["op", "plan", "label", "todo", "todos"],
+        OpKind::Split => &["op", "plan", "label", "todo", "subtasks"],
         OpKind::Supersede => &["op", "plan", "reason", "todos"],
         OpKind::Set => &["op", "plan", "goal", "list", "todos"],
         OpKind::View => &["op", "plan", "full"],
@@ -359,6 +360,7 @@ from_arg!(
     Resolve,
     yi_types::plan::op::Choice,
     yi_types::plan::op::CellId,
+    Vec<yi_types::plan::op::SplitSpec>,
     yi_types::plan::canonical::ArtifactRef,
 );
 
@@ -381,6 +383,27 @@ pub(super) fn need<T: FromArg>(
     field: &'static str,
 ) -> Result<T, ArgError> {
     opt(args, op, field)?.ok_or(ArgError::Missing { op, field })
+}
+
+/// Invariant: a subtask key nothing reads is refused, so a misspelled `contract` never lands a
+/// child on the unverified path while the journaled shape itself stays lenient.
+fn subtasks(args: &Map<String, Value>) -> Result<Vec<yi_types::plan::op::SplitSpec>, ArgError> {
+    let rows = args
+        .get("subtasks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for (at, row) in rows.enumerate() {
+        if let Some(row) = row.as_object() {
+            refuse_unknown(
+                row,
+                OpKind::Split,
+                Some(at),
+                &["title", "acceptance", "contract"],
+            )?;
+        }
+    }
+    need(args, OpKind::Split, "subtasks")
 }
 
 pub(super) fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, ArgError> {
@@ -451,6 +474,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         OpKind::Append => Op::Append {
             todos: todo_specs(args, kind)?,
+            for_task: opt(args, kind, "for_task")?,
         },
         OpKind::Drop => Op::Drop {
             label: label(args, kind)?,
@@ -487,6 +511,10 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         OpKind::Decompose => Op::Decompose {
             label: label(args, kind)?,
             todos: todo_specs(args, kind)?,
+        },
+        OpKind::Split => Op::Split {
+            label: label(args, kind)?,
+            subtasks: subtasks(args)?,
         },
         OpKind::Supersede => Op::Supersede {
             reason: need(args, kind, "reason")?,
@@ -710,7 +738,11 @@ impl PlanTool {
                 let first = match &request.op {
                     Op::Set { goal, rows, .. } => (goal.as_ref().map(|g| g.as_str().to_owned()))
                         .or_else(|| rows.first().map(|row| row.spec.label.to_string())),
-                    Op::Append { todos } | Op::Supersede { todos, .. } => {
+                    Op::Append {
+                        todos,
+                        for_task: None,
+                    }
+                    | Op::Supersede { todos, .. } => {
                         todos.first().map(|todo| todo.label.to_string())
                     }
                     _ => None,
@@ -729,7 +761,11 @@ impl PlanTool {
                             keep_rest: false,
                         }
                     }
-                    Op::Append { todos } | Op::Supersede { todos, .. } => Op::Init { goal, todos },
+                    Op::Append {
+                        todos,
+                        for_task: None,
+                    }
+                    | Op::Supersede { todos, .. } => Op::Init { goal, todos },
                     other => other,
                 };
                 said.push(if matches!(request.op, Op::Set { goal: Some(_), .. }) {
@@ -839,7 +875,7 @@ const SHOWN_OPS: [&str; 3] = ["set", "view", "accepted_by_user"];
 
 pub const DESCRIPTION: &str = "The plan ledger. op=set writes a goal and its todos as rows, each with the state it should reach; rows it does not name stay as they are. A markdown checklist in `list` (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. Batch with real work; never call it alone. Full guide (states, contracts, delegation, blocking, every field): read(\"yi://tools/plan\") before your first set.";
 
-pub const GUIDE: &str = "The plan ledger. op=set writes the plan: a goal and its todos as rows, each with the state it should reach; send set again with the rows that change, and rows it does not name stay as they are. A row's contract and delegation declare it: done runs its contract first, blocked asks the user, failed records its cause, dropped removes it, pending or running reopens a failed or blocked row, and a row's own todos are the sub-steps it splits into; the engine starts, verifies and accepts delegated rows. A row it could not move says why in a note line of the reply, and the rest lands. A markdown checklist list (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. A todo is a unit of decision, not of iteration. Batch with real work; never call it alone.";
+pub const GUIDE: &str = "The plan ledger. op=set writes the plan: a goal and its todos as rows, each with the state it should reach; send set again with the rows that change, and rows it does not name stay as they are. A row's contract and delegation declare it: done runs its contract first, blocked asks the user, failed records its cause, dropped removes it, pending or running reopens a failed or blocked row, and a row's own todos are the sub-steps it splits into; the engine starts, verifies and accepts delegated rows. A row it could not move says why in a note line of the reply, and the rest lands. A markdown checklist list (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. One red verdict short of plan.done_refusal_cap on an attempt, done is refused until a structural change: {\"op\":\"split\",\"label\":L,\"subtasks\":[{\"title\",\"acceptance\",\"contract\"}]} or an append with for_task L. At the cap the todo blocks on a question, and only the user's reply buys another claim. A todo is a unit of decision, not of iteration. Batch with real work; never call it alone.";
 
 const CHILD_DESCRIPTION: &str = "The plan that dispatched you, read-only: op=view. When your work is done, end your turn with your answer; the engine takes it as your work and accepts or refuses it.";
 

@@ -19,7 +19,7 @@ itself carries no rules, and there the gate announces a skip.
 """
 import fnmatch, re, subprocess, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, base_commit, fail, git, scratch_repo
+from _common import ROOT, base_commit, fail, git, may_skip, scratch_repo
 
 RULES = ROOT / "scripts/mirror"
 
@@ -151,7 +151,7 @@ def selfcheck():
 def main():
     if "--selfcheck" in sys.argv:
         return selfcheck()
-    if not (RULES / "deny.txt").is_file():
+    if may_skip():
         return print("skip public_surface (no scripts/mirror: this tree is the mirror)")
     deny = [re.compile(p) for p in rule_lines(RULES / "deny.txt")]
     if "--stdin" in sys.argv:

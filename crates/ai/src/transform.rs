@@ -1,7 +1,9 @@
 use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet};
 
-use yi_types::message::{AgentMessage, Content, StopReason, UNREAD_CONTENT, UserContent};
+use yi_types::message::{
+    AgentMessage, Attribution, Content, HostSource, StopReason, UNREAD_CONTENT, UserContent,
+};
 use yi_types::model::{Model, SYSTEM_BLOCK_SEPARATOR};
 
 /// The assembled system prompt for a wire that takes one string: each block separator
@@ -72,8 +74,8 @@ pub fn normalize_anthropic_tool_call_id(id: &str) -> String {
         .collect()
 }
 
-/// Cross-model replay: content content downgrades, tool-call id
-/// normalization, dropped errored/aborted assistants, synthetic results for orphaned calls.
+/// Cross-model replay: content downgrades, tool-call id normalization, dropped errored/aborted
+/// assistants, a notice for each result left without its call, synthetic results for orphaned calls.
 pub fn transform_messages<'a>(
     messages: &'a [AgentMessage],
     model: &Model,
@@ -237,8 +239,10 @@ pub fn transform_messages<'a>(
     let mut result: Vec<Cow<'a, AgentMessage>> = Vec::new();
     let mut pending: Vec<(String, String)> = Vec::new();
     let mut seen_results: HashSet<String> = HashSet::new();
+    let mut unmatched: Vec<Content> = Vec::new();
     let synthesize = |pending: &mut Vec<(String, String)>,
                       seen: &mut HashSet<String>,
+                      unmatched: &mut Vec<Content>,
                       result: &mut Vec<Cow<'a, AgentMessage>>| {
         for (id, name) in pending.drain(..) {
             if seen.contains(&id) {
@@ -259,12 +263,19 @@ pub fn transform_messages<'a>(
             }));
         }
         seen.clear();
+        if !unmatched.is_empty() {
+            result.push(Cow::Owned(AgentMessage::User {
+                content: UserContent::Blocks(std::mem::take(unmatched)),
+                timestamp: 0,
+                attribution: Attribution::Host(HostSource::Notice),
+            }));
+        }
     };
 
     for message in transformed {
         match message.as_ref() {
             AgentMessage::Assistant { content, .. } => {
-                synthesize(&mut pending, &mut seen_results, &mut result);
+                synthesize(&mut pending, &mut seen_results, &mut unmatched, &mut result);
                 pending = content
                     .iter()
                     .filter_map(|block| match block {
@@ -274,23 +285,47 @@ pub fn transform_messages<'a>(
                     .collect();
                 result.push(message);
             }
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                ..
+            } if seen_results.contains(tool_call_id)
+                || !pending.iter().any(|(id, _)| id == tool_call_id) =>
+            {
+                unmatched.push(unmatched_notice(tool_name));
+            }
             AgentMessage::ToolResult { tool_call_id, .. } => {
                 seen_results.insert(tool_call_id.clone());
                 result.push(message);
             }
             AgentMessage::User { .. } => {
-                synthesize(&mut pending, &mut seen_results, &mut result);
+                synthesize(&mut pending, &mut seen_results, &mut unmatched, &mut result);
                 result.push(message);
             }
             _ => result.push(message),
         }
     }
-    synthesize(&mut pending, &mut seen_results, &mut result);
+    synthesize(&mut pending, &mut seen_results, &mut unmatched, &mut result);
     omit_refused_images(&mut result);
     if model.api == "anthropic-messages" || model.id.contains("claude") {
         keep_newest_images(&mut result);
     }
     result
+}
+
+/// Incident: every wire refuses a result that does not answer the turn just before it once, and
+/// a failed reply drops its calls; the output stays out, so tool text never reads as anyone's own.
+fn unmatched_notice(name: &str) -> Content {
+    let name: String = (name.chars())
+        .filter(|c| c.is_ascii_alphanumeric() || "_-.:".contains(*c))
+        .take(64)
+        .collect();
+    Content::Text {
+        text: format!(
+            "[{name} result omitted: no call before it in this request still awaits it; run the tool again for its output]"
+        ),
+        text_signature: None,
+    }
 }
 
 // Invariant: Claude's vision limits (API docs, 2026-09). Past 20 images every image in the

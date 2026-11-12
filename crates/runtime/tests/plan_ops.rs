@@ -26,7 +26,7 @@
 //! | `product_repair_passes_under_unchanged_criteria` | T1 | The red-then-green pair: the first product fails the frozen checker and `done` is refused with a recorded verdict; the product is repaired and the same frozen checker passes it. Every verdict in the run carries the same contract and criteria digest and a different output digest, which is the whole claim, and the todo's refusal counter still reads 1 after the pass. | The criteria being frozen at `start` and the refusal leaving the todo where it was. Let the contract be rewritten between attempts and the fixture still goes green while proving nothing, which is the specification failure this pair exists to make visible. Fixture: `fixtures/plans/contracts/writer-cmd-red-then-green.json`. |
 //! | `inline_task_output_validates_product_not_sidecar` | T0 | An inline todo's contract runs against the product itself, not against a note, a summary or a sidecar file the same turn wrote. The inline floor is the writer or reader floor of its declared role; running the work inline is not an exemption from it. | The output artifact being the one the token names. Let an inline todo nominate any artifact and the cheapest passing move is to write a sidecar that satisfies the schema, which is the reward-hacking shape the floors exist against. |
 //! | `the_third_refusal_blocks_the_todo_on_user_as_a_recorded_transition` | T0 | Three refused verdicts on one todo step it to `Blocked { on: User }` as its own committed transition with its own record, so the human inbox learns about it from the journal and not from a counter someone has to read. Stale and infrastructure abstentions do not count toward the three. | The counter bump being an explicit event and the cap being a transition rather than a return value. Make the cap a refusal text and a model retries forever; count stale verdicts and a slow checker walks a healthy todo into the inbox. |
-//! | `a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler` | T0 | The section 6.3 cap counts the refused verdicts of one attempt, not of the todo: two refusals, a `fail` and a `retry`, then two more, leave the todo running with four journaled refusals and no `block`. `todo.refusals` is the lifetime event counter and is never what the cap reads, so `RETRY_CAP` is the only durable bound on a scheduler that retries a failed todo (D212). | The `attempt` filter in `refused_verdicts`. Drop it and the third refusal of a todo's life parks every retrying shape in the human inbox, whichever attempt it belongs to. |
+//! | `a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler` | T0 | The section 6.3 cap counts the refused verdicts of one attempt, not of the todo: two refusals, a `fail` and a `retry`, then two more, leave the todo running with four journaled refusals and no `block`. `todo.refusals` is the lifetime event counter and is never what the cap reads, so `RETRY_CAP` is the only durable bound on a scheduler that retries a failed todo (D212). | The `attempt` filter in `ladder::red`. Drop it and the third refusal of a todo's life parks every retrying shape in the human inbox, whichever attempt it belongs to. |
 //! | `accept_records_accepted_by_user_never_verified_done` | T1 | The user's acceptance is its own op: refused to the owner, confirmed through `authority::submit` as the CLI and the console do, recorded as `accepted_by_user` with the citation as its actor, and landing `Done { AcceptedByUser }` with no `pass` verdict anywhere. | `check_actor` refusing the owner and `Actor::User` being minted only by the confirmed path. Let the owner accept and a model closes what its checker refused; write `VerifiedDone` here and the report cannot tell a checked todo from a waved-through one. |
 //! | `a_stated_only_todo_needs_an_item_or_a_user` | T0 | A todo whose only requirement is a stated acceptance is refused `done` on the owner's word; it completes once a decidable item is added and passes, or once a user accepts it. | `needs_resolution` counting a stated-only delegation. Drop it and "it works" is a contract again, the failure D77 was retired for. |
 //! | `a_retry_swapping_in_an_uncontracted_worktree_delegation_is_refused` | T0 | A `retry` that swaps a worktree delegation onto a todo with no contract is refused; the same swap onto a contracted todo lands. Every declaring op refuses the shape at parse (`TodoSpec`'s `try_from`, pinned in `plan/tool.rs`), and `retry` is the one op that changes a delegation without carrying the contract beside it. | `check_contracted` in `table.rs`. Drop it and the shape is declarable through `retry` alone and dead there, which is what both dogfood owners wrote. |
@@ -74,6 +74,7 @@ use yi_types::plan::doc::{
     AgentId, BlockedOn, Check, Delegation, GoalText, OutputSchema, PlanId, PlanState, RetryCount,
     SPAWN_CAP, SpawnSpec, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName, TouchCount,
 };
+use yi_types::plan::op::SplitSpec;
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -460,6 +461,7 @@ fn a_transient_spawn_failure_is_tried_again_by_the_next_op() -> TestResult {
         &out.plan.id,
         Op::Append {
             todos: vec![spec("write the notes")?],
+            for_task: None,
         },
     ))?;
     assert_eq!(out.spawned.len(), 1, "the next op tries the start again");
@@ -756,6 +758,7 @@ fn mutation_is_owner_gated_and_unblock_is_open_to_user_and_host() -> TestResult 
     };
     let refused = engine_may(Op::Append {
         todos: vec![spec("engine job")?],
+        for_task: None,
     });
     assert!(
         matches!(refused, Err(PlanOpError::NotOwner { .. })),
@@ -1004,6 +1007,7 @@ fn apply_refuses_while_the_store_lease_is_held() -> TestResult {
     let held = store.lease()?;
     let refused = engine.apply(owner(Op::Append {
         todos: vec![spec("second job")?],
+        for_task: None,
     }));
     assert!(matches!(
         refused,
@@ -1012,6 +1016,7 @@ fn apply_refuses_while_the_store_lease_is_held() -> TestResult {
     drop(held);
     engine.apply(owner(Op::Append {
         todos: vec![spec("second job")?],
+        for_task: None,
     }))?;
     Ok(())
 }
@@ -1232,6 +1237,7 @@ fn a_plan_whose_last_todo_failed_stays_reachable_unnamed() -> TestResult {
     assert_eq!(finished.plan.state, PlanState::Done, "view still shows it");
     let refused = engine.apply(owner(Op::Append {
         todos: vec![spec("late job")?],
+        for_task: None,
     }));
     assert!(
         matches!(refused, Err(PlanOpError::NoPlan)),
@@ -1687,6 +1693,7 @@ fn a_pending_spawn_intent_refuses_a_second_start() -> TestResult {
     );
     engine.apply(owner(Op::Append {
         todos: vec![spec("later job")?],
+        for_task: None,
     }))?;
     assert_eq!(
         refusals()?,
@@ -1939,6 +1946,21 @@ mod refusals {
         let child = Actor::Child(yi_types::plan::doc::AgentId::new("cut")?);
         assert_eq!(ops(child), r#"["view"]"#);
         assert!(!ops(Actor::Owner).contains("\"submit\""));
+        Ok(())
+    }
+
+    // Dies with the key check in `tool::subtasks`: a misspelled `contract` lands the child on
+    // the unverified path, since the journaled subtask shape ignores keys it does not know.
+    #[test]
+    fn a_split_subtask_key_nothing_reads_is_refused() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let subtask = serde_json::json!({"title": "t", "acceptance": "a", "contarct": {}});
+        let args = serde_json::json!({"op": "split", "label": "task", "subtasks": [subtask]});
+        let text = refusal(&tool, args);
+        assert!(
+            text.contains(r#"split todos[0] does not take "contarct""#),
+            "{text}"
+        );
         Ok(())
     }
 
@@ -2199,6 +2221,15 @@ mod contracts {
         hook: Option<yi_runtime::plan::ops::VerifyHook>,
         verifier: Verifier,
     ) -> Result<Rig, Box<dyn Error>> {
+        rig_with(name, hook, verifier, None)
+    }
+
+    fn rig_with(
+        name: &str,
+        hook: Option<yi_runtime::plan::ops::VerifyHook>,
+        verifier: Verifier,
+        words: Option<yi_session::SharedSession>,
+    ) -> Result<Rig, Box<dyn Error>> {
         let temp = Scratch::new(name)?;
         let store = PlanStore::open(temp.join("plans"))?;
         let ws = temp.join("ws");
@@ -2211,6 +2242,9 @@ mod contracts {
             .with_verifier(verifier);
         if let Some(hook) = hook {
             engine = engine.with_verify_hook(hook);
+        }
+        if let Some(words) = words {
+            engine = engine.with_owner_words(Arc::new(move || Some(Arc::clone(&words))));
         }
         Ok(Rig {
             _temp: temp,
@@ -2294,20 +2328,7 @@ mod contracts {
     }
 
     /// A contract built here, not from a fixture: one critical cmd item over a manifest.
-    fn cmd_contract(
-        store: &PlanStore,
-        plan: &PlanId,
-        command: &str,
-        class: &str,
-    ) -> Result<Contract, Box<dyn Error>> {
-        let put = put_checker(store, plan, command)?;
-        Ok(serde_json::from_value(json!({
-            "class": class,
-            "items": [{"id": "check", "critical": true, "weight": 100,
-                       "decider": {"cmd": {"checker": put, "timeout_ms": 10_000}}}],
-            "threshold": 1000, "min_coverage": 1000
-        }))?)
-    }
+    use crate::checker::cmd_contract;
 
     /// The id `init` allocates for the shared goal, so artifacts can be staged before it.
     fn planned() -> Result<PlanId, Box<dyn Error>> {
@@ -2643,6 +2664,7 @@ mod contracts {
             &plan,
             Op::Append {
                 todos: vec![shaped.clone()],
+                for_task: None,
             },
         ));
         assert!(
@@ -2688,6 +2710,7 @@ mod contracts {
             &plan,
             Op::Append {
                 todos: vec![judged_spec],
+                for_task: None,
             },
         ));
         assert!(
@@ -2698,8 +2721,13 @@ mod contracts {
         let behavioral = cmd_contract(&rig.store, &plan, "true", "writer")?;
         let mut ok = spec("prove it")?;
         ok.contract = Some(behavioral);
-        rig.engine
-            .apply(at(&plan, Op::Append { todos: vec![ok] }))?;
+        rig.engine.apply(at(
+            &plan,
+            Op::Append {
+                todos: vec![ok],
+                for_task: None,
+            },
+        ))?;
         Ok(())
     }
 
@@ -3231,6 +3259,9 @@ mod contracts {
         assert_eq!(opened.plan.id, plan);
         start(&rig.engine, &plan, "land it")?;
         for attempt in 1..=3 {
+            if attempt == 3 {
+                narrow(&rig, &plan, "land it")?;
+            }
             rig.serve
                 .set("local://out.txt", Some(&format!("product {attempt}")));
             let verdict = refused(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
@@ -3273,6 +3304,9 @@ mod contracts {
         assert_eq!(opened.plan.id, plan);
         start(&rig.engine, &plan, "land it")?;
         for attempt in 1..=3 {
+            if attempt == 3 {
+                narrow(&rig, &plan, "land it")?;
+            }
             rig.serve
                 .set("local://out.txt", Some(&format!("product {attempt}")));
             let verdict = refused(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
@@ -3302,7 +3336,7 @@ mod contracts {
         Ok(())
     }
 
-    // Dies with the `attempt` filter in `refused_verdicts`: count the todo's lifetime refusals
+    // Dies with the `attempt` filter in `ladder::red`: count the todo's lifetime refusals
     // and every retrying scheduler walks a healthy todo into the human inbox instead of RETRY_CAP.
     #[test]
     fn a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler() -> TestResult {
@@ -4026,6 +4060,7 @@ mod contracts {
             &opened.plan.id,
             Op::Append {
                 todos: vec![spec("write the notes")?],
+                for_task: None,
             },
         ))?;
         assert_eq!(
@@ -4761,6 +4796,461 @@ mod contracts {
             view.notices.first().map(String::as_str),
             Some("the engine left \"alpha\" running: its verdict was abstain")
         );
+        Ok(())
+    }
+    /// One refused verdict on a fresh product, so the claim runs its check instead of replaying.
+    fn red_claim(rig: &Rig, plan: &PlanId, task: &str) -> TestResult {
+        let product = format!("product {}", kinds(&rig.store, plan)?.len());
+        rig.serve.set("local://out.txt", Some(&product));
+        let verdict = refused(done(&rig.engine, plan, task, Some("local://out.txt")))?;
+        assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+        Ok(())
+    }
+
+    fn checks_run(rig: &Rig, plan: &PlanId) -> Result<usize, Box<dyn Error>> {
+        let all = kinds(&rig.store, plan)?;
+        Ok(all
+            .iter()
+            .filter(|kind| *kind == "verification_requested")
+            .count())
+    }
+
+    fn narrow(rig: &Rig, plan: &PlanId, task: &str) -> Result<Outcome, Box<dyn Error>> {
+        let support = spec(&format!("narrow {task} {}", kinds(&rig.store, plan)?.len()))?;
+        let op = Op::Append {
+            todos: vec![support],
+            for_task: Some(label(task)?),
+        };
+        Ok(rig.engine.apply(at(plan, op))?)
+    }
+
+    fn split_into(task: &str, titles: &[&str]) -> Result<Op, Box<dyn Error>> {
+        let subtasks = titles.iter().map(|title| SplitSpec {
+            title: (*title).to_owned(),
+            acceptance: format!("{title} holds"),
+            contract: None,
+        });
+        Ok(Op::Split {
+            label: label(task)?,
+            subtasks: subtasks.collect(),
+        })
+    }
+
+    fn gated(result: Result<Outcome, PlanOpError>) -> Result<String, Box<dyn Error>> {
+        match result {
+            Err(PlanOpError::Ladder(text)) if text.contains("refused: before its check") => {
+                Ok(text)
+            }
+            other => Err(format!("expected the ladder's gate, got {other:?}").into()),
+        }
+    }
+
+    fn readmitted(todo: &Todo) -> bool {
+        todo.extra.get("readmit") == Some(&serde_json::Value::Bool(true))
+    }
+
+    fn ladder_refused(result: Result<Outcome, Box<dyn Error>>) -> Result<String, Box<dyn Error>> {
+        match result.map_err(|error| error.downcast::<PlanOpError>()) {
+            Err(Ok(error)) if matches!(*error, PlanOpError::Ladder(_)) => Ok(error.to_string()),
+            other => Err(format!("expected a ladder refusal, got {other:?}").into()),
+        }
+    }
+
+    // Dies with the gate in `prepare` gone: the third claim runs its check like the first two.
+    #[test]
+    fn two_reds_refuse_the_next_claim_unchecked_until_a_targeted_append() -> TestResult {
+        let rig = rig("yi-ladder-append", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(
+            &rig.engine,
+            vec![contracted("land it", contract)?, spec("other")?],
+        )?;
+        start(&rig.engine, &plan, "land it")?;
+        let early = ladder_refused(narrow(&rig, &plan, "land it"))?;
+        assert!(early.contains("buys no claim at red 0 of 3"), "{early}");
+        assert_eq!(
+            rig.store.read(&plan)?.todos.len(),
+            2,
+            "a refused append adds nothing"
+        );
+        red_claim(&rig, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        let ran = checks_run(&rig, &plan)?;
+        let demand = gated(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+        assert!(
+            demand.contains(r#"`{"op": "append", "for_task": "land it""#),
+            "{demand}"
+        );
+        assert_eq!(checks_run(&rig, &plan)?, ran, "the gate runs no check");
+        let narrowed = narrow(&rig, &plan, "land it")?;
+        let readmits = |name| {
+            narrowed
+                .plan
+                .todos
+                .iter()
+                .any(|t| t.label.as_str() == name && readmitted(t))
+        };
+        assert_eq!((readmits("land it"), readmits("other")), (true, false));
+        red_claim(&rig, &plan, "land it")?;
+        assert_eq!(
+            checks_run(&rig, &plan)?,
+            ran + 1,
+            "the readmitted claim ran its check"
+        );
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(!readmitted(&todo), "the claim spent its readmission");
+        assert!(
+            matches!(
+                todo.state,
+                TodoState::Blocked {
+                    on: BlockedOn::User,
+                    ..
+                }
+            ),
+            "{todo:?}"
+        );
+        Ok(())
+    }
+
+    /// The rig with the owner's transcript wired, so an ask is answered by what the user types.
+    fn rig_heard(name: &str) -> Result<(Rig, yi_session::SharedSession), Box<dyn Error>> {
+        let words = crate::todo_mirror::memory_store();
+        let rig = rig_with(name, None, Verifier::new(20_000), Some(Arc::clone(&words)))?;
+        Ok((rig, words))
+    }
+
+    fn say(words: &yi_session::SharedSession, text: &str) -> TestResult {
+        let message = yi_runtime::session::user_input(text);
+        Ok(yi_session::lock_session(words)
+            .append_message("main", message)
+            .map(drop)?)
+    }
+
+    /// Red, red, a targeted append, red: the cap's block, with its question asked.
+    fn to_the_cap(rig: &Rig, plan: &PlanId) -> TestResult {
+        start(&rig.engine, plan, "land it")?;
+        red_claim(rig, plan, "land it")?;
+        red_claim(rig, plan, "land it")?;
+        narrow(rig, plan, "land it")?;
+        red_claim(rig, plan, "land it")?;
+        let todo = todo_of(&rig.store, plan, "land it")?;
+        assert!(
+            matches!(
+                todo.state,
+                TodoState::Blocked {
+                    on: BlockedOn::User,
+                    ..
+                }
+            ),
+            "{todo:?}"
+        );
+        assert_eq!(
+            todo.ask.as_ref().map(|ask| ask.options.len()),
+            Some(3),
+            "{todo:?}"
+        );
+        Ok(())
+    }
+
+    fn unblock(rig: &Rig, plan: &PlanId) -> Result<Outcome, Box<dyn Error>> {
+        let op = Op::Unblock {
+            label: label("land it")?,
+            answer: None,
+        };
+        Ok(rig.engine.apply(at(plan, op))?)
+    }
+
+    // Dies with the answer test in `ladder::admit`, or with the cap's block asking nothing:
+    // the user replies and the todo still sits at red 3 with every `done` refused.
+    #[test]
+    fn the_users_reply_to_the_cap_question_readmits_one_claim_and_nothing_else_does() -> TestResult
+    {
+        let (rig, words) = rig_heard("yi-ladder-user")?;
+        let plan = planned()?;
+        say(&words, "land the widget")?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        to_the_cap(&rig, &plan)?;
+        let split =
+            split_into("land it", &["part"]).and_then(|op| Ok(rig.engine.apply(at(&plan, op))?));
+        for refused in [
+            ladder_refused(narrow(&rig, &plan, "land it"))?,
+            ladder_refused(split)?,
+        ] {
+            assert!(
+                refused.contains("red 3 of 3: only the user's reply"),
+                "{refused}"
+            );
+        }
+        let early = unblock(&rig, &plan).map_err(|error| error.to_string());
+        assert!(
+            matches!(&early, Err(text) if text.contains("only an unblock after their reply")),
+            "{early:?}"
+        );
+        say(&words, "1, try it once more")?;
+        let unblocked = unblock(&rig, &plan)?;
+        let todo = unblocked.plan.todo(&label("land it")?).ok_or("todo")?;
+        assert!(readmitted(todo), "the reply readmits: {todo:?}");
+        let answer = todo
+            .ask
+            .as_ref()
+            .and_then(|ask| ask.answer.as_ref())
+            .ok_or("answer")?;
+        assert_eq!(answer.option.as_ref().map(|id| id.as_str()), Some("again"));
+        start(&rig.engine, &plan, "land it")?;
+        let ran = checks_run(&rig, &plan)?;
+        red_claim(&rig, &plan, "land it")?;
+        assert_eq!(
+            checks_run(&rig, &plan)?,
+            ran + 1,
+            "one claim runs its check"
+        );
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(!readmitted(&todo) && todo.ask.as_ref().is_some_and(|ask| ask.answer.is_none()));
+        Ok(())
+    }
+
+    // Dies with the carry in `ladder::red`: a `fail` and `retry` after the user's one claim open
+    // a fresh attempt whose claims run free.
+    #[test]
+    fn a_retry_after_the_cap_carries_its_count_and_buys_no_fresh_check() -> TestResult {
+        let (rig, words) = rig_heard("yi-ladder-retry")?;
+        let plan = planned()?;
+        say(&words, "land the widget")?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        to_the_cap(&rig, &plan)?;
+        say(&words, "try it once more")?;
+        unblock(&rig, &plan)?;
+        start(&rig.engine, &plan, "land it")?;
+        let fail = Op::Fail {
+            label: label("land it")?,
+            cause: "start over".to_owned(),
+            disposition: None,
+        };
+        rig.engine.apply(at(&plan, fail))?;
+        let retry = Op::Retry {
+            label: label("land it")?,
+            delegation: None,
+        };
+        rig.engine.apply(at(&plan, retry))?;
+        start(&rig.engine, &plan, "land it")?;
+        let ran = checks_run(&rig, &plan)?;
+        red_claim(&rig, &plan, "land it")?;
+        assert_eq!(
+            checks_run(&rig, &plan)?,
+            ran + 1,
+            "only the readmitted claim ran"
+        );
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(
+            matches!(&todo.state, TodoState::Blocked { note, .. } if note.contains("3 refused")),
+            "{todo:?}"
+        );
+        Ok(())
+    }
+
+    // Dies with a literal 3 at any of the lever's call sites in done.rs: cap 2 gates the second
+    // claim and blocks on the second red, cap 4 lets three claims run.
+    #[test]
+    fn the_refusal_cap_moves_where_both_gated_rungs_fall() -> TestResult {
+        for cap in [2, 4] {
+            let rig = rig_verified(
+                &format!("yi-ladder-cap-{cap}"),
+                None,
+                Verifier::new(20_000).with_refusal_cap(cap),
+            )?;
+            let plan = planned()?;
+            let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+            init(&rig.engine, vec![contracted("land it", contract)?])?;
+            start(&rig.engine, &plan, "land it")?;
+            for _ in 1..cap {
+                red_claim(&rig, &plan, "land it")?;
+            }
+            let demand = gated(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+            assert!(
+                demand.contains(&format!("red {} of {cap}", cap - 1)),
+                "{demand}"
+            );
+            narrow(&rig, &plan, "land it")?;
+            red_claim(&rig, &plan, "land it")?;
+            let todo = todo_of(&rig.store, &plan, "land it")?;
+            let note = format!("{cap} refused verdicts");
+            assert!(
+                matches!(&todo.state, TodoState::Blocked { note: said, .. } if said.contains(&note)),
+                "cap {cap}: {todo:?}"
+            );
+        }
+        Ok(())
+    }
+
+    // Dies with the call shape gone from the structural rung's demand, or one the tool cannot
+    // parse: the refusal is the only place a model is shown `split`.
+    #[test]
+    fn the_gate_names_a_split_call_the_tool_accepts() -> TestResult {
+        let rig = rig("yi-ladder-shape", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        start(&rig.engine, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        let demand = gated(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+        let call = demand
+            .split('`')
+            .find(|part| part.starts_with("{\"op\": \"split\""))
+            .ok_or("no split call")?;
+        let args: serde_json::Map<String, serde_json::Value> = serde_json::from_str(call)?;
+        let tool = yi_runtime::plan::tool::PlanTool::new(Arc::clone(&rig.engine), Actor::Owner);
+        let output =
+            yi_tools::Tool::execute(&tool, args, &yi_tools::ToolContext::new(rig.ws.clone()));
+        assert!(!output.is_error, "{output:?}");
+        assert!(todo_of(&rig.store, &plan, "land it-split-1").is_ok());
+        Ok(())
+    }
+
+    // Dies with the split hold back at its call sites instead of the shared completion
+    // validator: `accepted_by_user` lands a split parent done over an open child.
+    #[test]
+    fn accepting_a_split_parent_waits_for_its_children_too() -> TestResult {
+        let rig = rig("yi-ladder-accept", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        start(&rig.engine, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        rig.engine
+            .apply(at(&plan, split_into("land it", &["part"])?))?;
+        let accept = Op::Accept {
+            label: label("land it")?,
+            note: "good enough".to_owned(),
+            output: None,
+        };
+        let user = Actor::User("user://2".parse::<Url>()?);
+        let accepted = rig.engine.apply(OpRequest {
+            actor: user,
+            ..at(&plan, accept)
+        });
+        assert!(
+            matches!(&accepted, Err(PlanOpError::Ladder(text)) if text.starts_with("accepted_by_user for \"land it\" refused: its split child \"land it-split-1\" is not finished")),
+            "{accepted:?}"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "land it")?.state,
+            TodoState::Running { .. }
+        ));
+        Ok(())
+    }
+
+    // Dies with `offers` gone from the gate or from `admit`: a red split child is told to split,
+    // and the split it sends is refused only once it applies.
+    #[test]
+    fn a_red_split_child_is_offered_the_targeted_append_alone() -> TestResult {
+        let rig = rig("yi-ladder-child", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract.clone())?])?;
+        start(&rig.engine, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        let subtask = SplitSpec {
+            title: "part".to_owned(),
+            acceptance: "it holds".to_owned(),
+            contract: Some(contract),
+        };
+        let split = Op::Split {
+            label: label("land it")?,
+            subtasks: vec![subtask],
+        };
+        rig.engine.apply(at(&plan, split))?;
+        let child = "land it-split-1";
+        start(&rig.engine, &plan, child)?;
+        red_claim(&rig, &plan, child)?;
+        red_claim(&rig, &plan, child)?;
+        let demand = gated(done(&rig.engine, &plan, child, Some("local://out.txt")))?;
+        assert!(
+            demand.contains(r#""op": "append""#) && !demand.contains(r#""op": "split""#),
+            "{demand}"
+        );
+        let again =
+            split_into(child, &["smaller"]).and_then(|op| Ok(rig.engine.apply(at(&plan, op))?));
+        let refused = ladder_refused(again)?;
+        assert!(
+            refused.contains("buys no claim at red 2 of 3")
+                && !refused.contains(r#""op": "split""#),
+            "{refused}"
+        );
+        assert!(!readmitted(&todo_of(&rig.store, &plan, child)?));
+        Ok(())
+    }
+
+    // Dies with a streak reset in `ladder::split`, or with `split_pending` gone from `prepare`:
+    // the parent claims done at once and the user's rung is never reached.
+    #[test]
+    fn a_split_keeps_the_streak_and_holds_its_parent_until_its_children_finish() -> TestResult {
+        let rig = rig("yi-ladder-split", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        start(&rig.engine, &plan, "land it")?;
+        let apply =
+            |op: Op| -> Result<Outcome, Box<dyn Error>> { Ok(rig.engine.apply(at(&plan, op))?) };
+        red_claim(&rig, &plan, "land it")?;
+        let early = ladder_refused(apply(split_into("land it", &["part"])?))?;
+        assert!(early.contains("red 1 of 3"), "{early}");
+        red_claim(&rig, &plan, "land it")?;
+        let wide = ladder_refused(apply(split_into("land it", &["a", "b", "c", "d", "e"])?))?;
+        assert!(wide.contains("5 subtasks; a split takes 1 to 4"), "{wide}");
+        let split = apply(split_into("land it", &["parse", "emit"])?)?;
+        let parent = split.plan.todo(&label("land it")?).ok_or("parent")?;
+        assert!(readmitted(parent));
+        assert_eq!(
+            parent.after,
+            [label("land it-split-1")?, label("land it-split-2")?]
+        );
+        let child = split.plan.todo(&label("land it-split-1")?).ok_or("child")?;
+        assert_eq!(child.extra.get("split_parent"), Some(&json!("land it")));
+        assert_eq!(
+            child.note.as_ref().map(|note| note.as_str()),
+            Some("parse\n\nAcceptance: parse holds")
+        );
+        let again = ladder_refused(apply(split_into("land it", &["more"])?))?;
+        assert!(again.contains("split once already"), "{again}");
+        let ran = checks_run(&rig, &plan)?;
+        let held = done(&rig.engine, &plan, "land it", Some("local://out.txt"));
+        assert!(
+            matches!(&held, Err(PlanOpError::Ladder(text)) if text.contains("\"land it-split-1\" is not finished")),
+            "{held:?}"
+        );
+        for child in ["land it-split-1", "land it-split-2"] {
+            start(&rig.engine, &plan, child)?;
+            done(&rig.engine, &plan, child, None)?;
+        }
+        red_claim(&rig, &plan, "land it")?;
+        assert_eq!(checks_run(&rig, &plan)?, ran + 1);
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(
+            matches!(
+                todo.state,
+                TodoState::Blocked {
+                    on: BlockedOn::User,
+                    ..
+                }
+            ),
+            "the split reset no red: {todo:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn append_without_target_preserves_legacy_wire_shape() -> TestResult {
+        let legacy = json!({"op":"append", "todos":[{"label":"legacy row"}]});
+        let parsed: Op = serde_json::from_value(legacy.clone())?;
+        assert!(matches!(&parsed, Op::Append { for_task: None, .. }));
+        assert_eq!(serde_json::to_value(&parsed)?, legacy);
+        assert_eq!(parsed.args()?, json!({"todos":[{"label":"legacy row"}]}));
         Ok(())
     }
 }

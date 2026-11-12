@@ -149,6 +149,7 @@ fn append(label: &str, request_id: &str) -> Result<OpRequest, Box<dyn Error>> {
     request(
         Op::Append {
             todos: vec![spec(label)?],
+            for_task: None,
         },
         request_id,
     )
@@ -1197,6 +1198,7 @@ fn a_same_length_rewrite_with_its_mtime_restored_reads_the_new_plan() -> TestRes
         &id,
         Op::Append {
             todos: vec![spec("cut b")?],
+            for_task: None,
         },
     ))?;
     let b = std::fs::read(&path)?;
@@ -1206,6 +1208,7 @@ fn a_same_length_rewrite_with_its_mtime_restored_reads_the_new_plan() -> TestRes
         &id,
         Op::Append {
             todos: vec![spec("cut c")?],
+            for_task: None,
         },
     ))?;
     let c = std::fs::read(&path)?;

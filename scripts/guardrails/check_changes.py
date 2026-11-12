@@ -27,7 +27,7 @@ scripts/record_changes.py adds `version:` and `decisions:` when it records the f
 diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
 import functools, os, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, fail, fork, git, no_fork, row_key, scratch_repo, table_rows
+from _common import ROOT, fail, fork, git, may_skip, no_fork, row_key, scratch_repo, table_rows
 
 DIR = "docs/changes"
 NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$")
@@ -397,6 +397,9 @@ def ledger_cases():
     arch = "docs/ARCHITECTURE.md"
     history = [(at(f"{m}^", arch), at(tip, arch)) for m, tip in (("aa93a221b^{commit}^0", "398b811c7"), ("c42e30f01^{commit}^0", "3e410a078"))]
     if any(None in pair for pair in history):
+        if may_skip():
+            print("skip change history fixture (public mirror omits source commits; run in unfiltered source checkout)")
+            return bad
         return bad + ["the #1890 and #1870 commits are missing; fetch main's full history"]
     return bad + real_row_cases(history)
 

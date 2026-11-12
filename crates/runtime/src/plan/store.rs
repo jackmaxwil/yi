@@ -901,6 +901,7 @@ mod tests {
                 children: Vec::new(),
                 cites: Default::default(),
             }],
+            for_task: None,
         }));
         assert!(
             matches!(
@@ -925,6 +926,7 @@ mod tests {
                 children: Vec::new(),
                 cites: Default::default(),
             }],
+            for_task: None,
         }))?;
         assert_eq!(landed.plan.todos.len(), 2, "once regenerated, work resumes");
         Ok(())
