@@ -76,7 +76,7 @@ fn a_peer_that_never_answers_costs_no_wait_and_dies_at_the_deadline() {
 fn a_peer_that_cannot_start_leaves_spelling_absent() {
     let mut speller = Speller::spawn(yi_tools::command("/nonexistent/yi-spell"));
     let _ = speller.ask(Ask::Check, "blorp", Instant::now());
-    let until = Instant::now() + DEADLINE;
+    let until = Instant::now() + DEADLINE / 3;
     while speller.alive() && Instant::now() < until {
         speller.poll(Instant::now());
         std::thread::sleep(Duration::from_millis(5));
