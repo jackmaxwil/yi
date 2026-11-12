@@ -778,7 +778,7 @@ impl PlanEngine {
             resolution: txn.resolution,
             ..Decided::default()
         };
-        super::done::admit(txn, plan, op, &mut decided)?;
+        super::done::admit(txn, plan, op, &mut decided, self.verifier.refusal_cap())?;
         if let Op::Decompose { label, .. } = op
             && plan.tier == yi_types::plan::doc::PlanTier::Root
         {

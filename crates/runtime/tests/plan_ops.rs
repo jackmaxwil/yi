@@ -4879,7 +4879,10 @@ mod contracts {
         red_claim(&rig, &plan, "land it")?;
         let ran = checks_run(&rig, &plan)?;
         let demand = gated(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
-        assert!(demand.contains("`split` it, or `append`"), "{demand}");
+        assert!(
+            demand.contains(r#"`{"op": "append", "for_task": "land it""#),
+            "{demand}"
+        );
         assert_eq!(checks_run(&rig, &plan)?, ran, "the gate runs no check");
         let narrowed = narrow(&rig, &plan, "land it")?;
         let readmits = |name| {
@@ -4911,73 +4914,46 @@ mod contracts {
         Ok(())
     }
 
-    // Dies with the `By::User` exit taken off the user's rung, or with the actor test in
-    // `ladder::admit`: the user's unblock leaves a red-3 todo that no `done` can ever clear.
-    #[test]
-    fn the_users_unblock_of_the_cap_block_readmits_one_claim_and_nothing_else_does() -> TestResult {
-        let rig = rig("yi-ladder-user", None)?;
-        let plan = planned()?;
-        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
-        init(&rig.engine, vec![contracted("land it", contract)?])?;
-        start(&rig.engine, &plan, "land it")?;
-        red_claim(&rig, &plan, "land it")?;
-        red_claim(&rig, &plan, "land it")?;
-        narrow(&rig, &plan, "land it")?;
-        red_claim(&rig, &plan, "land it")?;
-        let blocked = todo_of(&rig.store, &plan, "land it")?;
-        assert!(blocked.ask.is_none(), "the cap's block carries no ask");
-        for refused in [
-            ladder_refused(narrow(&rig, &plan, "land it"))?,
-            ladder_refused(
-                split_into("land it", &["part"])
-                    .and_then(|op| Ok(rig.engine.apply(at(&plan, op))?)),
-            )?,
-        ] {
-            assert!(
-                refused.contains("red 3 of 3: stop and ask the user"),
-                "{refused}"
-            );
-        }
-        let unblock = || -> Result<Op, Box<dyn Error>> {
-            Ok(Op::Unblock {
-                label: label("land it")?,
-                answer: None,
-            })
+    /// The rig with the owner's transcript wired, so an ask is answered by what the user types.
+    fn rig_heard(name: &str) -> Result<(Rig, yi_session::SharedSession), Box<dyn Error>> {
+        let temp = Scratch::new(name)?;
+        let store = PlanStore::open(temp.join("plans"))?;
+        let ws = temp.join("ws");
+        std::fs::create_dir_all(&ws)?;
+        let serve = Arc::new(Serve::default());
+        let words = crate::todo_mirror::memory_store();
+        let said = Arc::clone(&words);
+        let engine = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
+            .with_width(width(4)?)
+            .with_output_resolve(serve.clone())
+            .with_cwd(ws.clone())
+            .with_verifier(Verifier::new(20_000))
+            .with_owner_words(Arc::new(move || Some(Arc::clone(&said))));
+        let rig = Rig {
+            _temp: temp,
+            store,
+            serve,
+            engine: Arc::new(engine),
+            ws,
         };
-        rig.engine.apply(at(&plan, unblock()?))?;
-        start(&rig.engine, &plan, "land it")?;
-        let demand = gated(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
-        assert!(
-            demand.contains("ask the user"),
-            "the owner's own unblock buys nothing: {demand}"
-        );
-        let block = Op::Block {
-            label: label("land it")?,
-            on: BlockedOn::User,
-            note: "may I try again?".to_owned(),
-            ask: None,
-        };
-        rig.engine.apply(at(&plan, block))?;
-        let user = Actor::User("user://5".parse::<Url>()?);
-        let unblocked = rig.engine.apply(OpRequest {
-            actor: user,
-            ..at(&plan, unblock()?)
-        })?;
-        assert!(
-            unblocked
-                .plan
-                .todo(&label("land it")?)
-                .is_some_and(readmitted)
-        );
-        start(&rig.engine, &plan, "land it")?;
-        let ran = checks_run(&rig, &plan)?;
-        red_claim(&rig, &plan, "land it")?;
-        assert_eq!(
-            checks_run(&rig, &plan)?,
-            ran + 1,
-            "one claim runs its check"
-        );
-        let todo = todo_of(&rig.store, &plan, "land it")?;
+        Ok((rig, words))
+    }
+
+    fn say(words: &yi_session::SharedSession, text: &str) -> TestResult {
+        let message = yi_runtime::session::user_input(text);
+        Ok(yi_session::lock_session(words)
+            .append_message("main", message)
+            .map(drop)?)
+    }
+
+    /// Red, red, a targeted append, red: the cap's block, with its question asked.
+    fn to_the_cap(rig: &Rig, plan: &PlanId) -> TestResult {
+        start(&rig.engine, plan, "land it")?;
+        red_claim(rig, plan, "land it")?;
+        red_claim(rig, plan, "land it")?;
+        narrow(rig, plan, "land it")?;
+        red_claim(rig, plan, "land it")?;
+        let todo = todo_of(&rig.store, plan, "land it")?;
         assert!(
             matches!(
                 todo.state,
@@ -4988,6 +4964,168 @@ mod contracts {
             ),
             "{todo:?}"
         );
+        assert_eq!(
+            todo.ask.as_ref().map(|ask| ask.options.len()),
+            Some(3),
+            "{todo:?}"
+        );
+        Ok(())
+    }
+
+    fn unblock(rig: &Rig, plan: &PlanId) -> Result<Outcome, Box<dyn Error>> {
+        let op = Op::Unblock {
+            label: label("land it")?,
+            answer: None,
+        };
+        Ok(rig.engine.apply(at(plan, op))?)
+    }
+
+    // Dies with the answer test in `ladder::admit`, or with the cap's block asking nothing:
+    // the user replies and the todo still sits at red 3 with every `done` refused.
+    #[test]
+    fn the_users_reply_to_the_cap_question_readmits_one_claim_and_nothing_else_does() -> TestResult
+    {
+        let (rig, words) = rig_heard("yi-ladder-user")?;
+        let plan = planned()?;
+        say(&words, "land the widget")?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        to_the_cap(&rig, &plan)?;
+        let split =
+            split_into("land it", &["part"]).and_then(|op| Ok(rig.engine.apply(at(&plan, op))?));
+        for refused in [
+            ladder_refused(narrow(&rig, &plan, "land it"))?,
+            ladder_refused(split)?,
+        ] {
+            assert!(
+                refused.contains("red 3 of 3: only the user's reply"),
+                "{refused}"
+            );
+        }
+        let early = unblock(&rig, &plan).map_err(|error| error.to_string());
+        assert!(
+            matches!(&early, Err(text) if text.contains("only an unblock after their reply")),
+            "{early:?}"
+        );
+        say(&words, "1, try it once more")?;
+        let unblocked = unblock(&rig, &plan)?;
+        let todo = unblocked.plan.todo(&label("land it")?).ok_or("todo")?;
+        assert!(readmitted(todo), "the reply readmits: {todo:?}");
+        let answer = todo
+            .ask
+            .as_ref()
+            .and_then(|ask| ask.answer.as_ref())
+            .ok_or("answer")?;
+        assert_eq!(answer.option.as_ref().map(|id| id.as_str()), Some("again"));
+        start(&rig.engine, &plan, "land it")?;
+        let ran = checks_run(&rig, &plan)?;
+        red_claim(&rig, &plan, "land it")?;
+        assert_eq!(
+            checks_run(&rig, &plan)?,
+            ran + 1,
+            "one claim runs its check"
+        );
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(!readmitted(&todo) && todo.ask.as_ref().is_some_and(|ask| ask.answer.is_none()));
+        Ok(())
+    }
+
+    // Dies with the carry in `ladder::red`: a `fail` and `retry` after the user's one claim open
+    // a fresh attempt whose claims run free.
+    #[test]
+    fn a_retry_after_the_cap_carries_its_count_and_buys_no_fresh_check() -> TestResult {
+        let (rig, words) = rig_heard("yi-ladder-retry")?;
+        let plan = planned()?;
+        say(&words, "land the widget")?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        to_the_cap(&rig, &plan)?;
+        say(&words, "try it once more")?;
+        unblock(&rig, &plan)?;
+        start(&rig.engine, &plan, "land it")?;
+        let fail = Op::Fail {
+            label: label("land it")?,
+            cause: "start over".to_owned(),
+            disposition: None,
+        };
+        rig.engine.apply(at(&plan, fail))?;
+        let retry = Op::Retry {
+            label: label("land it")?,
+            delegation: None,
+        };
+        rig.engine.apply(at(&plan, retry))?;
+        start(&rig.engine, &plan, "land it")?;
+        let ran = checks_run(&rig, &plan)?;
+        red_claim(&rig, &plan, "land it")?;
+        assert_eq!(
+            checks_run(&rig, &plan)?,
+            ran + 1,
+            "only the readmitted claim ran"
+        );
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(
+            matches!(&todo.state, TodoState::Blocked { note, .. } if note.contains("3 refused")),
+            "{todo:?}"
+        );
+        Ok(())
+    }
+
+    // Dies with a literal 3 at any of the lever's call sites in done.rs: cap 2 gates the second
+    // claim and blocks on the second red, cap 4 lets three claims run.
+    #[test]
+    fn the_refusal_cap_moves_where_both_gated_rungs_fall() -> TestResult {
+        for cap in [2, 4] {
+            let rig = rig_verified(
+                &format!("yi-ladder-cap-{cap}"),
+                None,
+                Verifier::new(20_000).with_refusal_cap(cap),
+            )?;
+            let plan = planned()?;
+            let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+            init(&rig.engine, vec![contracted("land it", contract)?])?;
+            start(&rig.engine, &plan, "land it")?;
+            for _ in 1..cap {
+                red_claim(&rig, &plan, "land it")?;
+            }
+            let demand = gated(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+            assert!(
+                demand.contains(&format!("red {} of {cap}", cap - 1)),
+                "{demand}"
+            );
+            narrow(&rig, &plan, "land it")?;
+            red_claim(&rig, &plan, "land it")?;
+            let todo = todo_of(&rig.store, &plan, "land it")?;
+            let note = format!("{cap} refused verdicts");
+            assert!(
+                matches!(&todo.state, TodoState::Blocked { note: said, .. } if said.contains(&note)),
+                "cap {cap}: {todo:?}"
+            );
+        }
+        Ok(())
+    }
+
+    // Dies with the call shape gone from the structural rung's demand, or one the tool cannot
+    // parse: the refusal is the only place a model is shown `split`.
+    #[test]
+    fn the_gate_names_a_split_call_the_tool_accepts() -> TestResult {
+        let rig = rig("yi-ladder-shape", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("land it", contract)?])?;
+        start(&rig.engine, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        red_claim(&rig, &plan, "land it")?;
+        let demand = gated(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+        let call = demand
+            .split('`')
+            .find(|part| part.starts_with("{\"op\": \"split\""))
+            .ok_or("no split call")?;
+        let args: serde_json::Map<String, serde_json::Value> = serde_json::from_str(call)?;
+        let tool = yi_runtime::plan::tool::PlanTool::new(Arc::clone(&rig.engine), Actor::Owner);
+        let output =
+            yi_tools::Tool::execute(&tool, args, &yi_tools::ToolContext::new(rig.ws.clone()));
+        assert!(!output.is_error, "{output:?}");
+        assert!(todo_of(&rig.store, &plan, "land it-split-1").is_ok());
         Ok(())
     }
 

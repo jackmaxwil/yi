@@ -189,13 +189,10 @@ impl PlanEngine {
                 label: label.clone(),
             });
         }
-        let cap = crate::levers::get().plan_done_refusal_cap;
+        let cap = self.verifier.refusal_cap();
         super::ladder::split_pending(current, label)?;
-        super::ladder::gate(
-            todo,
-            super::ladder::red(&txn.records, label, todo.attempt),
-            cap,
-        )?;
+        let red = super::ladder::red(&txn.records, &id, label, todo.attempt, cap);
+        super::ladder::gate(todo, red, cap)?;
         let Some(contract) = todo.contract.clone() else {
             return Ok(Phase1::Plain(Box::new(
                 self.settle(&mut txn, &id, &root, op)?,
@@ -636,8 +633,9 @@ impl PlanEngine {
         self.emit(&committed);
         // The cap counts refused verdicts on this attempt: a refused transition, a stale
         // token and an abstention are not verdicts on the product.
-        let refused = super::ladder::red(&txn.records, label, prepared.token.attempt);
-        let refusal_cap = crate::levers::get().plan_done_refusal_cap;
+        let refusal_cap = self.verifier.refusal_cap();
+        let attempt = prepared.token.attempt;
+        let refused = super::ladder::red(&txn.records, &prepared.id, label, attempt, refusal_cap);
         let capped = super::ladder::rung(refused, refusal_cap).blocks
             && txn
                 .state
@@ -654,8 +652,9 @@ impl PlanEngine {
                 label: label.clone(),
                 on: BlockedOn::User,
                 note,
-                ask: None,
+                ask: Some(Box::new(super::ladder::cap_ask()?)),
             };
+            let block = self.ask_default(block, Some(&prepared.id))?;
             self.transact(txn, &prepared.id, &prepared.root, &block)?;
         }
         self.store.checkpoint_family(&txn.state)?;
@@ -704,6 +703,7 @@ pub(super) fn admit(
     plan: &Plan,
     op: &Op,
     decided: &mut Decided,
+    cap: u32,
 ) -> Result<(), PlanOpError> {
     match op {
         Op::Submit { label, .. } => {
@@ -725,8 +725,7 @@ pub(super) fn admit(
         }
         _ => {}
     }
-    let cap = crate::levers::get().plan_done_refusal_cap;
-    decided.readmit = super::ladder::admit(&txn.records, plan, &txn.principal, op, cap)?;
+    decided.readmit = super::ladder::admit(&txn.records, plan, op, cap)?;
     Ok(())
 }
 

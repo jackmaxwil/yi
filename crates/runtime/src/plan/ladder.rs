@@ -1,12 +1,15 @@
 //! The red ladder (design section 13.1): the refused verdicts on a todo's attempt pick a rung,
 //! and the rung says whether `done` runs its check and which op, by whom, buys one more claim.
 
-use serde_json::Value;
-use yi_types::plan::doc::{Note, Plan, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
+use std::collections::BTreeMap;
+
+use serde_json::{Map, Value};
+use yi_types::plan::ask::{Ask, AskOption};
+use yi_types::plan::doc::{Note, Plan, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
 use yi_types::plan::ledger::{AttemptId, JournalRecord};
 use yi_types::plan::op::{Op, SplitSpec};
 
-use super::ops::{Actor, PlanOpError};
+use super::ops::PlanOpError;
 use super::state::{Decided, KIND_DONE_REFUSED};
 use super::table::{OpKind, op_name, validate_plan};
 
@@ -35,13 +38,15 @@ pub(super) const LADDER: [Rung; 3] = [
     },
     Rung {
         demand: Some(
-            "make a structural change first: `split` it, or `append` todos with `for_task` naming it",
+            "make a structural change first: `{\"op\": \"split\", \"label\": LABEL, \"subtasks\": [{\"title\": \"one part\", \"acceptance\": \"how you know it holds\"}]}` (1 to 4 subtasks, each may carry a `contract`), or `{\"op\": \"append\", \"for_task\": LABEL, \"todos\": [...]}`",
         ),
         exits: &[(OpKind::Split, By::Anyone), (OpKind::Append, By::Anyone)],
         blocks: false,
     },
     Rung {
-        demand: Some("stop and ask the user; only their `unblock` buys another claim"),
+        demand: Some(
+            "only the user's reply to a question buys another claim: when it is blocked on one, `unblock` it after they answer; otherwise `block` it on the user with `options` first",
+        ),
         exits: &[(OpKind::Unblock, By::User)],
         blocks: true,
     },
@@ -58,24 +63,73 @@ pub(super) fn rung(red: u32, cap: u32) -> &'static Rung {
     }
 }
 
-/// The `done_refused` records on this attempt whose verdict decided something about the product:
-/// an abstention is not one, and a `retry` opens a fresh count (D212).
-pub(super) fn red(records: &[JournalRecord], label: &TodoLabel, attempt: AttemptId) -> u32 {
-    let count = records
-        .iter()
-        .filter(|record| {
-            record.record.op == KIND_DONE_REFUSED
-                && record.record.todo.as_ref() == Some(label)
-                && record.attempt == Some(attempt)
-                && record
-                    .verdict
-                    .as_ref()
-                    .and_then(|verdict| verdict.get("outcome"))
-                    .and_then(Value::as_str)
-                    != Some("abstain")
+/// The decided `done_refused` verdicts on this todo's attempt: a `retry` opens a fresh count
+/// (D212) unless the attempt it ends reached the cap, whose count the next attempt carries.
+pub(super) fn red(
+    records: &[JournalRecord],
+    plan: &PlanId,
+    label: &TodoLabel,
+    attempt: AttemptId,
+    cap: u32,
+) -> u32 {
+    let mut per_attempt: BTreeMap<u32, u32> = BTreeMap::new();
+    for record in records.iter().filter(|record| {
+        record.record.op == KIND_DONE_REFUSED
+            && &record.record.plan == plan
+            && record.record.todo.as_ref() == Some(label)
+            && record
+                .verdict
+                .as_ref()
+                .and_then(|verdict| verdict.get("outcome"))
+                .and_then(Value::as_str)
+                != Some("abstain")
+    }) {
+        if let Some(at) = record.attempt {
+            let count = per_attempt.entry(at.get()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+    let mut carried = 0;
+    for at in 1..attempt.get() {
+        let red = per_attempt
+            .get(&at)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(carried);
+        carried = if red >= cap { red } else { 0 };
+    }
+    let own = per_attempt.get(&attempt.get()).copied().unwrap_or(0);
+    own.saturating_add(carried)
+}
+
+/// The question the cap's block asks, so the user's reply is what `unblock` carries.
+pub(super) fn cap_ask() -> Result<Ask, PlanOpError> {
+    let option = |(id, label): (&str, &str)| -> Result<AskOption, PlanOpError> {
+        Ok(AskOption {
+            id: id
+                .to_owned()
+                .try_into()
+                .map_err(|e: yi_types::plan::ask::AskError| PlanOpError::Ladder(e.to_string()))?,
+            label: TodoLabel::new(label)?,
+            preview: None,
+            extra: Map::new(),
         })
-        .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
+    };
+    let options = [
+        ("again", "Try it once more"),
+        ("accept", "Accept it as it is"),
+        ("drop", "Drop it"),
+    ];
+    let options = options
+        .into_iter()
+        .map(option)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ask::new(options).map_err(|error| PlanOpError::Ladder(error.to_string()))
+}
+
+fn with_label(demand: &str, label: &TodoLabel) -> String {
+    let quoted = serde_json::to_string(label.as_str()).unwrap_or_default();
+    demand.replace("LABEL", &quoted)
 }
 
 fn refused(op: OpKind, label: &TodoLabel, detail: impl std::fmt::Display) -> PlanOpError {
@@ -89,6 +143,7 @@ fn split_from(todo: &Todo) -> Option<&str> {
 pub(super) fn gate(todo: &Todo, red: u32, cap: u32) -> Result<(), PlanOpError> {
     match rung(red, cap).demand {
         Some(demand) if todo.extra.get(READMIT_KEY) != Some(&Value::Bool(true)) => {
+            let demand = with_label(demand, &todo.label);
             let detail = format!("before its check at red {red} of {cap}: {demand}");
             Err(refused(OpKind::Done, &todo.label, detail))
         }
@@ -101,7 +156,6 @@ pub(super) fn gate(todo: &Todo, red: u32, cap: u32) -> Result<(), PlanOpError> {
 pub(super) fn admit(
     records: &[JournalRecord],
     plan: &Plan,
-    actor: &Actor,
     op: &Op,
     cap: u32,
 ) -> Result<bool, PlanOpError> {
@@ -111,16 +165,14 @@ pub(super) fn admit(
             for_task: Some(label),
             ..
         } => (label, false),
-        Op::Unblock { label, answer } => {
-            (label, matches!(actor, Actor::User(_)) || answer.is_some())
-        }
+        Op::Unblock { label, answer } => (label, answer.is_some()),
         _ => return Ok(false),
     };
     let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
         plan: plan.id.clone(),
         label: label.clone(),
     })?;
-    let red = red(records, label, todo.attempt);
+    let red = red(records, &plan.id, label, todo.attempt, cap);
     let rung = rung(red, cap);
     let opens =
         (rung.exits.iter()).any(|(kind, by)| *kind == op.kind() && (*by == By::Anyone || by_user));

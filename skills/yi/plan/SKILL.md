@@ -95,7 +95,7 @@ Two red verdicts on one attempt stop the task's next `done` before its
 check: change the structure first, with `{"op": "split", "label": L,
 "subtasks": [{"title", "acceptance", "contract"}]}` (one to four children,
 each done before L) or an `append` whose `for_task` names L. The third red
-blocks L on the user, and only their unblock buys another claim.
+blocks L on a question, and only the user's reply buys another claim.
 
 ## Delegation
 

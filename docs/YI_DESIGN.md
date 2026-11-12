@@ -991,9 +991,10 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - `TodoState { Pending, Running{by}, Blocked{on, note}, Done{output, resolution},
   Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Channel{address, filter?}, Other }`,
   `PlanState { Active, Done, Superseded{by}, Abandoned, Other }`.
-- `OpKind`, 24 kinds; the `plan` tool schema shows the first 16 (`MODEL_OPS`): `set, init, append,
+- `OpKind`, 24 kinds; the `plan` tool schema shows three (`SHOWN_OPS`: `set, view,
+  accepted_by_user`), a call's key may name the first 16 (`MODEL_OPS`): `set, init, append,
   drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view,
-  accepted_by_user`. The rest parse on every surface: `split` adds one to four children
+  accepted_by_user`, and every kind parses as `{"op": …}`. `split` adds one to four children
   (`<label>-split-<n>`, its parent in `extra.split_parent`, after the parent's prerequisites and before the
   parent) and moves no state; a parent splits once, a child never, and the parent's `done` waits
   for each child to be done or dropped.
@@ -1029,9 +1030,12 @@ field still decodes so an old contract keeps its frozen digest.
   refused verdicts on the attempt pick a rung of the red ladder (`plan/ladder.rs::LADDER`) under
   `plan.done_refusal_cap` (default 3): below cap − 1 a `done` runs its check; at cap − 1 it is
   refused before the check until a `split` of the todo or an `append` whose `for_task` names it;
-  the cap-th derives `block{on: User}`, and only the user's `unblock` (as `Actor::User`, or
-  carrying an answer to an ask) readmits. A readmission buys one claim, spent by the next
-  `verification_requested`; a `split` or targeted `append` that would buy none is refused.
+  the cap-th derives `block{on: User}` with a stock three-option ask, and only an `unblock`
+  carrying the user's reply to an ask readmits. A readmission buys one claim, spent by the next
+  `verification_requested`; a `split` or targeted `append` that would buy none is refused. A
+  `retry` opens a fresh count unless the attempt it ends reached the cap, whose count carries
+  over. A split child without a contract completes on the caller's word, so a split buys its
+  parent one cheap claim, once.
 - `start` refuses a `judge` item and names the deciders that run (`cmd`, `schema`, `example`);
   the variant decodes so old journals replay, and a started one abstains `no judge`.
 - A legacy contract's retired `covers` globs are inert; its cmd items run at done.
