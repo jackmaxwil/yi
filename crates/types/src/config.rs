@@ -71,7 +71,7 @@ pub struct UserConfig {
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
     pub open: Option<Vec<OpenApp>>,
     pub browser: Option<BrowserConfig>,
-    /// `providers`: OpenAI-compatible endpoints the user declares, each addressed `<id>/<model>`.
+    /// `providers`: endpoints the user declares, each speaking one API, addressed `<id>/<model>`.
     pub providers: Option<Providers>,
 }
 
@@ -167,6 +167,22 @@ pub enum CustomApi {
     AnthropicMessages,
 }
 
+impl CustomApi {
+    pub const ALL: [Self; 3] = [
+        Self::OpenAiCompletions,
+        Self::OpenAiResponses,
+        Self::AnthropicMessages,
+    ];
+
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::OpenAiCompletions => "openai-completions",
+            Self::OpenAiResponses => "openai-responses",
+            Self::AnthropicMessages => "anthropic-messages",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CustomInput {
@@ -189,16 +205,11 @@ impl CustomProvider {
     pub fn catalog(&self, id: &str) -> Vec<crate::model::Model> {
         let rate = |set: Option<&serde_json::Number>| set.cloned().unwrap_or_else(|| 0u64.into());
         let base_url = self.base_url.trim_end_matches('/').to_owned();
-        let (api, compat) = match self.api.unwrap_or_default() {
-            CustomApi::OpenAiCompletions => (
-                "openai-completions",
-                Some(serde_json::json!({"plainMaxTokens": true})),
-            ),
-            CustomApi::OpenAiResponses => ("openai-responses", None),
-            CustomApi::AnthropicMessages => (
-                "anthropic-messages",
-                Some(serde_json::json!({"bearerAuth": true})),
-            ),
+        let api = self.api.unwrap_or_default();
+        let compat = match api {
+            CustomApi::OpenAiCompletions => Some(serde_json::json!({"plainMaxTokens": true})),
+            CustomApi::OpenAiResponses => None,
+            CustomApi::AnthropicMessages => Some(serde_json::json!({"bearerAuth": true})),
         };
         (self.models.iter())
             .map(|model| {
@@ -207,7 +218,7 @@ impl CustomProvider {
                 crate::model::Model {
                     id: model.id.clone(),
                     name: model.name.clone().unwrap_or_else(|| model.id.clone()),
-                    api: api.to_owned(),
+                    api: api.wire().to_owned(),
                     provider: id.to_owned(),
                     base_url: base_url.clone(),
                     reasoning: model.reasoning.unwrap_or(false),

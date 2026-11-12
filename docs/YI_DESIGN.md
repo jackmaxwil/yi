@@ -275,14 +275,17 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   `api`: `openai-completions` (unset), `openai-responses` or `anthropic-messages`, any other value
   refused at load; an id a built-in provider, `laya` or `faux` holds refuses at load. They
   merge after the cache, so no refresh rewrites or drops them, and no refresh ever fetches one.
-  Requests go through that api's adapter at `baseUrl`: completions with plain `max_tokens`
-  (`compat.plainMaxTokens`) and none of OpenAI's own fields, Messages with the key as a bearer
-  token (`compat.bearerAuth`) instead of `x-api-key`, as every other wire sends it. Key:
+  Requests go through that api's adapter at `baseUrl`, which each appends its own path to:
+  `/chat/completions` and `/responses` (so a base ends in `/v1`), `/v1/messages` (so it does not);
+  completions with plain `max_tokens` (`compat.plainMaxTokens`) and none of OpenAI's own fields,
+  Messages with the key as a bearer token (`compat.bearerAuth`) instead of `x-api-key`, as the
+  OpenAI wires send it. Key:
   `apiKeyEnv`'s variable, else `apiKey` (a literal placeholder that is not a secret), else a token
   in the yi-oauth store under
   `~/.yi/providers/tokens`; none is a missing-credential refusal naming the variable. A
   real key belongs in the variable, never in `config.json`. The block is read once per process: an
-  edit takes hold on restart. `yi doctor` has a `providers` row naming each and where its key resolved.
+  edit takes hold on restart. `yi doctor` has a `providers` row naming each, its api and where
+  its key resolved.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s

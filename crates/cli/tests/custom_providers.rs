@@ -223,6 +223,7 @@ fn a_literal_api_key_is_the_bearer() -> TestResult {
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().unwrap_or_default();
     assert!(detail.starts_with("localgw 1 model(s)"), "{row}");
+    assert!(detail.contains(" over openai-completions, "), "{row}");
     assert!(detail.ends_with("key from apiKey"), "{row}");
     Ok(())
 }
