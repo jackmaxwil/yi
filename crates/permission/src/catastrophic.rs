@@ -4,8 +4,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 mod alias;
-pub use alias::links;
-use alias::{Aliases, reads_alias};
+use alias::Aliases;
+pub use alias::{Links, command_reads_alias, links};
 
 /// Credential stores, protected recursively: destroying one private key inside
 /// ~/.ssh is as damaging as destroying the directory. yi's own provider logins, OAuth profiles
@@ -450,7 +450,17 @@ impl ReadGate {
     /// A walk's entry, whose ancestors the walk judged on its way in: the identity `meta` read
     /// without following it. Its spelling adds nothing, since every guarded directory has one.
     pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
-        denied_file(&self.ids, meta) || self.aliases.names(&self.stores, meta).is_some()
+        denied_file(&self.ids, meta) || self.is_store_alias(meta)
+    }
+
+    /// Whether `meta` is a file with two names refused as a store file, or as one maybe.
+    pub fn is_store_alias(&self, meta: Option<&fs::Metadata>) -> bool {
+        self.aliases.names(&self.stores, meta).is_some()
+    }
+
+    /// Why this gate's store scan stopped short, once a hard-linked file made it run.
+    pub fn store_scan_cut(&self) -> Option<String> {
+        self.aliases.cut()
     }
 
     /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
@@ -784,7 +794,6 @@ pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -
             }
         })
         .map(|(_, path)| path.to_string_lossy().into_owned())
-        .or_else(|| reads_alias(command, context, &stores))
 }
 
 /// A path as the kernel resolves an open: every link and `..` taken, a missing tail as spelled.

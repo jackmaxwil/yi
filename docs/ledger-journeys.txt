@@ -63,7 +63,8 @@ permission modes/rules/holds, deterministic auto | `decide::auto_reads_a_command
 permission modes/rules/holds, deterministic auto | `safety::a_flag_that_runs_or_writes_is_not_read_only`
 permission modes/rules/holds, deterministic auto | `open::a_hard_link_to_a_key_file_is_refused`
 permission modes/rules/holds, deterministic auto | `open::a_store_scan_reads_to_its_cap_and_names_it_past_that`
-permission modes/rules/holds, deterministic auto | `decide::recursive_search_cannot_walk_to_a_hard_linked_credential`
+permission modes/rules/holds, deterministic auto | `decide::a_key_with_a_name_outside_the_stores_makes_every_command_ask`
+permission modes/rules/holds, deterministic auto | `permission_scope::a_hard_linked_key_keeps_an_allowed_search_contained`
 model auto-review M7/M8 | `auto_review::a_reviewer_denial_carries_its_evidence_and_a_request_number`
 model auto-review M7/M8 | `auto_review::an_approved_request_lets_the_identical_call_through_once`
 bash reduce (launch set) | `tools::bash_output_is_reduced_and_recoverable`

@@ -2,16 +2,27 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use super::{CatastrophicContext, FileId, SEPARATORS, expand, file_id};
+use super::{CatastrophicContext, FileId, SEPARATORS, expand, file_id, stores};
+
+/// How many directory entries name one file.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Links(u64);
+
+impl Links {
+    #[must_use]
+    pub fn shared(self) -> bool {
+        self.0 > 1
+    }
+}
 
 #[cfg(unix)]
-pub fn links(meta: &fs::Metadata) -> u64 {
-    std::os::unix::fs::MetadataExt::nlink(meta)
+pub fn links(meta: &fs::Metadata) -> Links {
+    Links(std::os::unix::fs::MetadataExt::nlink(meta))
 }
 
 #[cfg(not(unix))]
-pub fn links(_meta: &fs::Metadata) -> u64 {
-    1
+pub fn links(_meta: &fs::Metadata) -> Links {
+    Links(1)
 }
 
 /// Store entries one scan reads before it stops and every hard-linked read asks; the stores on
@@ -21,8 +32,8 @@ const STORE_SCAN_CAP: usize = 10_000;
 /// A store file's first name found, its link count, and how many of its names the stores hold.
 struct StoreFile {
     path: PathBuf,
-    links: u64,
-    names: u64,
+    links: Links,
+    names: Links,
 }
 
 type StoreFiles = std::collections::HashMap<FileId, StoreFile>;
@@ -59,9 +70,9 @@ fn scan_stores(stores: &[PathBuf]) -> Result<StoreFiles, Unscanned> {
             let file = files.entry(id).or_insert(StoreFile {
                 path,
                 links,
-                names: 0,
+                names: Links(0),
             });
-            file.names = file.names.saturating_add(1);
+            file.names = Links(file.names.0.saturating_add(1));
         }
     };
     let (mut pending, mut walked, mut entries) =
@@ -113,7 +124,7 @@ impl Aliases {
 
     /// Why `meta`, a file with more than one name, may be a store file under another name.
     pub(super) fn names(&self, stores: &[PathBuf], meta: Option<&fs::Metadata>) -> Option<String> {
-        let meta = meta.filter(|meta| meta.is_file() && links(meta) > 1)?;
+        let meta = meta.filter(|meta| meta.is_file() && links(meta).shared())?;
         match self.scan(stores) {
             Ok(files) => (file_id(meta).and_then(|id| files.get(&id)))
                 .map(|file| format!("another name for {}", file.path.display())),
@@ -121,64 +132,34 @@ impl Aliases {
         }
     }
 
-    /// A store file with a name outside every store, which a glob or recursive search can reach.
+    /// A store file with a name outside every store; a cut scan claims none, since every
+    /// path that has two names still asks through [`Aliases::names`].
     fn outside(&self, stores: &[PathBuf]) -> Option<String> {
-        match self.scan(stores) {
-            Ok(files) => (files.values())
-                .filter(|file| file.links > file.names)
-                .map(|file| &file.path)
-                .min()
-                .map(|path| format!("{} has a hard link outside the stores, which a glob or a recursive search can reach", path.display())),
-            Err(why) => Some(why.to_string()),
-        }
+        let files = self.scan(stores).as_ref().ok()?;
+        (files.values())
+            .filter(|file| file.links > file.names)
+            .map(|file| &file.path)
+            .min()
+            .map(|path| format!("{} has a hard link outside the stores, which the sandbox cannot see, so every command may read it", path.display()))
+    }
+
+    pub(super) fn cut(&self) -> Option<String> {
+        self.0.get()?.as_ref().err().map(Unscanned::to_string)
     }
 }
 
-const SEARCHERS: [&str; 3] = ["rg", "ag", "ack"];
-
-/// A program that reads a whole tree: rg, ag and ack always, grep with a recursive flag.
-fn searches_recursively(command: &str) -> bool {
-    let words: Vec<&str> = (command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c)))
-        .map(|word| word.trim_matches(['"', '\'']))
-        .collect();
-    let named = |names: &[&str]| {
-        (words.iter()).any(|word| names.contains(&word.rsplit('/').next().unwrap_or(word)))
-    };
-    let recursive = |word: &&str| {
-        word.ends_with("recursive")
-            || word.ends_with("recurse")
-            || (word.strip_prefix('-'))
-                .is_some_and(|flags| !flags.starts_with('-') && flags.contains(['r', 'R']))
-    };
-    named(&SEARCHERS) || (named(&["grep", "egrep", "fgrep"]) && words.iter().any(recursive))
-}
-
-fn shell_glob(word: &str) -> bool {
-    word.contains(['*', '?'])
-        || (word.contains('[') && word.contains(']'))
-        || (word.contains('{') && word.contains('}'))
-        || ["@(", "+(", "!("].iter().any(|form| word.contains(form))
-}
-
-/// A path argument that is a store file by another name, or a glob or recursive search while
-/// any store file has a name outside the stores; the target tree is never walked.
-pub(super) fn reads_alias(
-    command: &str,
-    context: &CatastrophicContext,
-    stores: &[PathBuf],
-) -> Option<String> {
-    let aliases = Aliases::default();
-    let words: Vec<String> = (command.split_whitespace().skip(1))
-        .map(|word| word.replace(['\'', '"', '\\'], ""))
-        .collect();
-    if (searches_recursively(command) || words.iter().any(|word| shell_glob(word)))
-        && let Some(why) = aliases.outside(stores)
-    {
-        return Some(why);
-    }
-    (words.iter().filter(|word| !word.starts_with('-'))).find_map(|word| {
-        let path = expand(word, context);
-        let why = aliases.names(stores, fs::metadata(&path).ok().as_ref())?;
-        Some(format!("{} is {why}", path.display()))
-    })
+/// Invariant: every command asks while a store file has a name outside the stores, as the
+/// sandbox matches the name opened; a cut scan leaves only a named two-name path asking.
+pub fn command_reads_alias(command: &str, context: &CatastrophicContext) -> Option<String> {
+    let (stores, aliases) = (stores(context), Aliases::default());
+    let words =
+        command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c) || "<>".contains(c));
+    (words.map(|word| word.replace(['\'', '"', '\\'], "")))
+        .filter(|word| !word.is_empty() && !word.starts_with('-'))
+        .find_map(|word| {
+            let path = expand(&word, context);
+            let why = aliases.names(&stores, fs::metadata(&path).ok().as_ref())?;
+            Some(format!("{} is {why}", path.display()))
+        })
+        .or_else(|| aliases.outside(&stores))
 }

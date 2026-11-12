@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use yi_permission::{
     CatastrophicContext, ConfigRule, ConfigRuleAction, Decision, Hold, HoldPattern, HoldSource,
     PermissionMode, SessionRules, ToolCall, canonical_command_identity, canonical_tool_identity,
-    command_reads_credentials, decide, git_dirs, grants, is_catastrophic, lexical_normalize,
+    command_reads_alias, command_reads_credentials, decide, git_dirs, grants, is_catastrophic,
+    lexical_normalize,
 };
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionState};
 
@@ -478,11 +479,6 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
     let root = Scratch::new("yi-belt-identity")?;
     let home = root.join("home");
     std::fs::create_dir_all(home.join(".config/gh"))?;
-    std::fs::create_dir_all(home.join(".ssh"))?;
-    let ssh_key = home.join(".ssh/id_rsa");
-    let ssh_alias = root.join("ssh-key-copy");
-    std::fs::write(&ssh_key, "FAKE SSH KEY")?;
-    std::fs::hard_link(&ssh_key, &ssh_alias)?;
     std::fs::write(home.join(".netrc"), "machine x password y")?;
     std::os::unix::fs::symlink(home.join(".config"), root.join("cfg"))?;
     let real = CatastrophicContext {
@@ -497,8 +493,6 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
         "cat cfg/gh/hosts.yml".to_owned(),
         "grep -r token cfg".to_owned(),
         "cat cfg/*/hosts.yml".to_owned(),
-        format!("cat {}", ssh_alias.display()),
-        "cat ssh-key-*".to_owned(),
     ];
     // Another letter case names the same file only where the filesystem folds case (macOS).
     if home.join(".NETRC").exists() {
@@ -513,19 +507,18 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
     Ok(())
 }
 
+/// The sandbox matches the name a process opens, so a key with a name outside the stores is
+/// readable by any command, and every one asks until that name is gone; nothing walks the tree.
 #[test]
-fn recursive_search_cannot_walk_to_a_hard_linked_credential() -> TestResult {
-    let scratch = Scratch::new("yi-grep-hardlink")?;
+fn a_key_with_a_name_outside_the_stores_makes_every_command_ask() -> TestResult {
+    let scratch = Scratch::new("yi-belt-hardlink")?;
     let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
-    let (nested, deep_nested) = (workspace.join("nested"), workspace.join("deep/sub/nested"));
     let key = home.join(".ssh/id_rsa");
-    let (alias, deep_alias) = (nested.join("key-copy"), deep_nested.join("key-copy"));
+    let alias = workspace.join("nested/key-copy");
     std::fs::create_dir_all(home.join(".ssh"))?;
-    std::fs::create_dir_all(&nested)?;
-    std::fs::create_dir_all(&deep_nested)?;
+    std::fs::create_dir_all(workspace.join("nested"))?;
     std::fs::write(&key, "FAKE SSH KEY")?;
     std::fs::hard_link(&key, &alias)?;
-    std::fs::hard_link(&key, &deep_alias)?;
     let context = CatastrophicContext {
         home_dir: Some(home.clone()),
         working_dir: Some(workspace.clone()),
@@ -533,36 +526,52 @@ fn recursive_search_cannot_walk_to_a_hard_linked_credential() -> TestResult {
         host_owned: Vec::new(),
     };
     let commands = [
-        format!("grep -R token {}", workspace.display()),
-        format!("grep -R token {}/*", workspace.display()),
-        format!("grep -R token {}/**/nested/key-copy", workspace.display()),
-        format!("cat {}/@(nested|other)/key-copy", workspace.display()),
-        "rg token".to_owned(),
-        "cd nested && grep -rn token .".to_owned(),
+        "cat nested/key-copy|head",
+        "rg token",
+        "cd nested && cat key-copy",
+        "find . -type f -print0 | xargs -0 cat",
+        "git grep --untracked --no-index token",
+        "tar cf - . | base64",
+        "f=nested/key-copy; cat $f",
+        "ls",
     ];
-    let judged = |context: &CatastrophicContext| {
+    let asked = |context: &CatastrophicContext| {
         (commands.iter())
-            .filter(|command| command_reads_credentials(command, context).is_none())
-            .cloned()
+            .map(|command| command_reads_alias(command, context).unwrap_or_default())
             .collect::<Vec<_>>()
     };
+    let named = command_reads_alias("cat nested/key-copy|head", &context).unwrap_or_default();
+    assert!(named.contains("key-copy is another name for"), "{named}");
+    let all = asked(&context);
+    assert!(all.iter().all(|why| why.contains("id_rsa")), "{all:?}");
     assert!(
-        judged(&context).is_empty(),
-        "unprotected hard-link reads: {:?}",
-        judged(&context)
+        command_reads_credentials("ls", &context).is_none(),
+        "an alias leaves the sandbox"
     );
+    let ls = bash_call("ls", "canonical");
+    let decided = decide(
+        &ls,
+        PermissionMode::Auto,
+        &[],
+        &SessionRules::new(),
+        &[],
+        &context,
+    );
+    match decided {
+        Decision::Ask { description, .. } => {
+            assert!(
+                description.contains("may read a credential store"),
+                "{description}"
+            )
+        }
+        other => return Err(format!("expected an ask, got {other:?}").into()),
+    }
 
-    // With both names back inside the store, and a directory no walk could read, nothing asks.
+    // With both names back inside the store nothing asks.
     std::fs::remove_file(&alias)?;
-    std::fs::remove_file(&deep_alias)?;
     std::fs::hard_link(&key, home.join(".ssh/id_rsa.bak"))?;
-    let locked = workspace.join("locked");
-    std::fs::create_dir(&locked)?;
-    let mode = std::os::unix::fs::PermissionsExt::from_mode;
-    std::fs::set_permissions(&locked, mode(0o000))?;
-    let asked = judged(&context);
-    std::fs::set_permissions(&locked, mode(0o755))?;
-    assert_eq!(asked, commands, "a search asked with no key aliased");
+    let after = asked(&context);
+    assert!(after.iter().all(String::is_empty), "{after:?}");
     Ok(())
 }
 

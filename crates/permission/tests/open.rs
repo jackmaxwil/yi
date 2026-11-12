@@ -6,7 +6,7 @@ use std::error::Error;
 use std::io;
 use std::path::PathBuf;
 
-use yi_permission::{CatastrophicContext, ReadGate, command_reads_credentials};
+use yi_permission::{CatastrophicContext, ReadGate, command_reads_alias};
 
 use crate::scratch::Scratch;
 
@@ -253,20 +253,52 @@ fn a_store_scan_reads_to_its_cap_and_names_it_past_that() -> TestResult {
     for n in 1..9_999 {
         std::fs::write(ssh.join(format!("known_{n}")), "")?;
     }
-    let judged = |command: &str| command_reads_credentials(command, &context).unwrap_or_default();
+    let judged = |command: &str| command_reads_alias(command, &context).unwrap_or_default();
     let refusals = || {
         let opened = ReadGate::new(&context).open(&alias, &[]).err();
         let opened = opened.map(|error| error.to_string()).unwrap_or_default();
-        [judged("cat key-copy"), judged("rg token"), opened]
+        [judged("cat key-copy"), opened, judged("rg token")]
     };
 
     let at_cap = refusals();
     let named = |why: &String| why.contains("id_rsa") && !why.contains("STORE_SCAN_CAP");
     assert!(at_cap.iter().all(named), "{at_cap:?}");
     std::fs::write(ssh.join("known_9999"), "")?;
-    let past_cap = refusals();
-    let cut = |why: &String| why.contains("more than 10000 entries (STORE_SCAN_CAP)");
-    assert!(past_cap.iter().all(cut), "{past_cap:?}");
+    let [named_read, opened, search] = refusals();
+    let cut = "more than 10000 entries (STORE_SCAN_CAP)";
+    assert!(
+        named_read.contains(cut) && opened.contains(cut),
+        "{named_read} / {opened}"
+    );
+    // A cut scan names no alias, so only a path with two names asks.
+    assert_eq!(search, "", "a cut scan made rg ask");
+    Ok(())
+}
+
+/// A store that cannot be read is named where a two-name file is refused; it never gates rg.
+#[test]
+fn an_unreadable_store_is_named_and_asks_only_for_a_two_name_path() -> TestResult {
+    let (scratch, context) = keyed("yi-gate-store-loop")?;
+    // A link to itself fails with ELOOP for root too, as a chmod fixture would not.
+    std::os::unix::fs::symlink(".aws", scratch.join("home/.aws"))?;
+    let (own, twin) = (
+        scratch.join("workspace/own"),
+        scratch.join("workspace/twin"),
+    );
+    std::fs::write(&own, "ordinary\n")?;
+    std::fs::hard_link(&own, &twin)?;
+    std::fs::write(scratch.join("workspace/single"), "ordinary\n")?;
+    let judged = |command: &str| command_reads_alias(command, &context).unwrap_or_default();
+    let opened = ReadGate::new(&context).open(&twin, &[]).err();
+    let opened = opened.map(|error| error.to_string()).unwrap_or_default();
+
+    let unread = format!("{} could not be read", scratch.join("home/.aws").display());
+    for why in [judged("cat twin"), opened] {
+        assert!(why.contains(&unread), "{why}");
+    }
+    assert_eq!([judged("rg token"), judged("jq '.[]' single")], ["", ""]);
+    let single = ReadGate::new(&context).open(&scratch.join("workspace/single"), &[]);
+    assert_eq!(io::read_to_string(single?)?, "ordinary\n");
     Ok(())
 }
 

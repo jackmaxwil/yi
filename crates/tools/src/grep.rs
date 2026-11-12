@@ -209,6 +209,7 @@ struct Collected {
     collection_capped: bool,
     binary_skipped: usize,
     refused: usize,
+    cut: Option<String>,
     documents_searched: usize,
     documents_unsearched: Vec<String>,
     walled: crate::builtins::Walked,
@@ -403,6 +404,7 @@ fn collect(
         collection_capped,
         binary_skipped,
         refused,
+        cut: gate.store_scan_cut(),
         documents_searched,
         documents_unsearched,
         walled,
@@ -879,12 +881,8 @@ fn cut_notices(collected: &Collected, context_asked: usize, context: &ToolContex
         ));
     }
     if !collected.documents_unsearched.is_empty() {
-        let named: Vec<&str> = collected
-            .documents_unsearched
-            .iter()
-            .take(3)
-            .map(String::as_str)
-            .collect();
+        let unsearched = &collected.documents_unsearched;
+        let named: Vec<&str> = unsearched.iter().take(3).map(String::as_str).collect();
         rows.push(format!(
             "[{} document(s) not searched: {}{} — a search converts {DOCUMENTS_CONVERTED_PER_SEARCH}; read one to convert it]",
             collected.documents_unsearched.len(),
@@ -899,8 +897,10 @@ fn cut_notices(collected: &Collected, context_asked: usize, context: &ToolContex
         ));
     }
     if collected.refused > 0 {
+        let cut = (collected.cut.as_ref()).map_or_else(String::new, |cut| format!("; and {cut}"));
         let why = "a key store, a device or the workspace .git is not opened by any call";
-        rows.push(format!("[{} file(s) refused: {why}]", collected.refused));
+        let n = collected.refused;
+        rows.push(format!("[{n} file(s) refused: {why}{cut}]"));
     }
     rows
 }

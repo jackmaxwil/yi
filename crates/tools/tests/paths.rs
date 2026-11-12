@@ -492,3 +492,29 @@ fn a_walk_never_enters_a_walled_tree_by_another_name() -> TestResult {
     );
     Ok(())
 }
+
+/// While the store scan is cut, grep's refusal row says why each hard-linked file was skipped.
+#[cfg(unix)]
+#[test]
+fn grep_names_an_unreadable_store_beside_the_hard_linked_files_it_skipped() -> TestResult {
+    let scratch = Scratch::new("yi-paths-store-loop")?;
+    let (home, project) = (scratch.join("home"), scratch.join("project"));
+    fs::create_dir_all(&home)?;
+    fs::create_dir_all(&project)?;
+    std::os::unix::fs::symlink(".aws", home.join(".aws"))?;
+    fs::write(project.join("own"), "MARKER one\n")?;
+    fs::hard_link(project.join("own"), project.join("twin"))?;
+    fs::write(project.join("single"), "MARKER two\n")?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let found = grep(&ToolContext::new(project), &[("pattern", "MARKER")]);
+    let row = format!(
+        "[2 file(s) refused: a key store, a device or the workspace .git is not opened by any call; and {} could not be read",
+        home.join(".aws").display()
+    );
+    assert!(
+        found.contains("MARKER two") && found.contains(&row),
+        "{found}"
+    );
+    Ok(())
+}

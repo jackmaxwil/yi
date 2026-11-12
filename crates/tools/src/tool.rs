@@ -399,7 +399,7 @@ fn replace(
         file.write_all(content)
     };
     let fell_back = |file: &std::fs::File| in_place(file).map(|()| Some(IN_PLACE));
-    if yi_permission::links(&meta) > 1 {
+    if yi_permission::links(&meta).shared() {
         return in_place(file).map(|()| None);
     }
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
