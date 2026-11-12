@@ -219,6 +219,8 @@ pub enum PlanOpError {
     },
     #[error("no verified completion for {:?}", label.as_str())]
     NoVerifiedCompletion { label: TodoLabel },
+    #[error("{0}")]
+    Ladder(String),
     #[error(
         "done for {label:?} names unserved product {url}: resolved, but its bytes are not here to adjudicate"
     )]
@@ -776,7 +778,7 @@ impl PlanEngine {
             resolution: txn.resolution,
             ..Decided::default()
         };
-        super::done::admit(txn, plan, op, &mut decided)?;
+        super::done::admit(txn, plan, op, &mut decided, self.verifier.refusal_cap())?;
         if let Op::Decompose { label, .. } = op
             && plan.tier == yi_types::plan::doc::PlanTier::Root
         {
@@ -817,9 +819,7 @@ impl PlanEngine {
                         _ => None,
                     })
                     .collect(),
-                subplan: decided.subplan.clone(),
-                resolution: decided.resolution,
-                contract_hash: decided.contract_hash,
+                ..decided.clone()
             };
             let rehearsed = state::apply_op(&mut dry, id, op, &rehearsal)?;
             for plan in dry.plans.values() {

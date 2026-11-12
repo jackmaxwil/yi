@@ -322,6 +322,98 @@ async fn plan_op(
         .await
 }
 
+// Dies with the gate in `prepare` or `split_pending` gone, or with a streak reset in the split:
+// each turns one of the refusals below into a check that ran, or the last red into no block.
+#[tokio::test]
+async fn a_plan_op_caller_climbs_the_red_ladder_through_a_split() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-ladder")?;
+    let workspace = dir.join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let store = PlanStore::open(dir.join("plans"))?;
+    let goal = "climb the red ladder";
+    let plan = PlanId::slug(goal)?;
+    let red = serde_json::to_value(crate::checker::cmd_contract(
+        &store, &plan, "exit 1", "inline",
+    )?)?;
+    let green = serde_json::to_value(crate::checker::cmd_contract(
+        &store, &plan, "true", "inline",
+    )?)?;
+    let engine =
+        Arc::new(PlanEngine::new(store.clone(), Arc::new(NoChildren)).with_cwd(workspace.clone()));
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
+    let calls = std::cell::Cell::new(0);
+    let op = |op: &str, args: serde_json::Value| {
+        calls.set(calls.get() + 1);
+        let request = format!("ladder-{}", calls.get());
+        plan_op(
+            &registry,
+            serde_json::json!({"request_id": request, "op": op, "args": args}),
+        )
+    };
+    let message = |reply: &serde_json::Map<String, serde_json::Value>| {
+        reply["refusal"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let todos = serde_json::json!([{"label": "land it", "contract": red}]);
+    assert_eq!(
+        op("init", serde_json::json!({"goal": goal, "todos": todos})).await?["ok"],
+        true
+    );
+    assert_eq!(
+        op("start", serde_json::json!({"label": "land it"})).await?["ok"],
+        true
+    );
+    for claim in 1..=3 {
+        std::fs::write(workspace.join("product"), format!("claim {claim}"))?;
+        let reply = op("done", serde_json::json!({"label": "land it"})).await?;
+        let expected = if claim < 3 {
+            "refused for"
+        } else {
+            "refused: before its check at red 2 of 3"
+        };
+        assert!(
+            message(&reply).contains(expected),
+            "claim {claim}: {reply:?}"
+        );
+    }
+    let subtask =
+        serde_json::json!({"title": "parse", "acceptance": "it parses", "contract": green});
+    let split = op(
+        "split",
+        serde_json::json!({"label": "land it", "subtasks": [subtask]}),
+    )
+    .await?;
+    assert_eq!(split["ok"], true, "{split:?}");
+    let held = op("done", serde_json::json!({"label": "land it"})).await?;
+    assert!(
+        message(&held).contains(r#"split child "land it-split-1" is not finished"#),
+        "{held:?}"
+    );
+    for verb in ["start", "done"] {
+        let reply = op(verb, serde_json::json!({"label": "land it-split-1"})).await?;
+        assert_eq!(reply["ok"], true, "{verb}: {reply:?}");
+    }
+    let last = op("done", serde_json::json!({"label": "land it"})).await?;
+    assert!(
+        message(&last).contains("done refused for \"land it\""),
+        "{last:?}"
+    );
+    let todo = store
+        .read(&plan)?
+        .todo(&TodoLabel::new("land it")?)
+        .cloned()
+        .ok_or("todo")?;
+    assert!(
+        matches!(&todo.state, TodoState::Blocked { note, .. } if note.contains("3 refused verdicts")),
+        "the third red asks the user: {:?}",
+        todo.state
+    );
+    Ok(())
+}
+
 /// A child spawned for a todo: its agent id is the todo's own label.
 pub(crate) struct Named;
 

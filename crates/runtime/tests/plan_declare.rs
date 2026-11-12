@@ -348,6 +348,7 @@ fn an_op_waits_out_a_short_lease_hold() -> TestResult {
                 children: Vec::new(),
                 cites: Default::default(),
             }],
+            for_task: None,
         },
         request_id: None,
         expected_revision: None,

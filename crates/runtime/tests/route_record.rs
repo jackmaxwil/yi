@@ -1,6 +1,5 @@
 use crate::scratch;
 use scratch::Scratch;
-
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
@@ -96,5 +95,6 @@ fn the_route_record_carries_every_prefilter_score_component() -> TestResult {
         5,
         "score is the sum the bounds are compared against: {row}"
     );
+
     Ok(())
 }

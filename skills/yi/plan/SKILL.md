@@ -91,6 +91,12 @@ why in a `note:` line of the reply, and the rest lands. `plan view` reads
 it. The todo tool stays the day-to-day list; a plan task may mirror a
 todo, and the plan steps it.
 
+Two red verdicts on one attempt stop the task's next `done` before its
+check: change the structure first, with `{"op": "split", "label": L,
+"subtasks": [{"title", "acceptance", "contract"}]}` (one to four children,
+each done before L) or an `append` whose `for_task` names L. The third red
+blocks L on a question, and only the user's reply buys another claim.
+
 ## Delegation
 
 A child brief is the task's title, acceptance and check verbatim, the

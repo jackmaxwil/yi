@@ -929,7 +929,16 @@ fn act_verified(case: &mut Case, passes: bool) -> Result<(), TestCaseError> {
             ),
             Bump::Fresh,
         )?,
-        None => case.apply(owner(None, Op::Append { todos: vec![spec] }), Bump::Touch)?,
+        None => case.apply(
+            owner(
+                None,
+                Op::Append {
+                    todos: vec![spec],
+                    for_task: None,
+                },
+            ),
+            Bump::Touch,
+        )?,
     };
     if inserted.is_err() {
         return Ok(());
@@ -1075,6 +1084,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     None,
                     Op::Append {
                         todos: todo_specs(case, id.as_ref(), specs)?,
+                        for_task: None,
                     },
                 ),
                 Bump::Touch,
@@ -1093,7 +1103,16 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     cites: Default::default(),
                 });
             }
-            let _refused = case.apply(owner(None, Op::Append { todos }), Bump::Touch)?;
+            let _refused = case.apply(
+                owner(
+                    None,
+                    Op::Append {
+                        todos,
+                        for_task: None,
+                    },
+                ),
+                Bump::Touch,
+            )?;
         }
         Action::Drop {
             target,
@@ -1345,6 +1364,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                 None,
                 Op::Append {
                     todos: todo_specs(case, None, specs)?,
+                    for_task: None,
                 },
             ));
             case.crash.fail_sync.store(false, Ordering::SeqCst);

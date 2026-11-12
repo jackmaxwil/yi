@@ -12,7 +12,7 @@ use yi_types::plan::contract::{
     VerificationToken,
 };
 use yi_types::plan::doc::{BlockedOn, Plan, PlanId, TodoLabel, TodoState, TouchCount};
-use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, RequestId};
+use yi_types::plan::ledger::{EffectId, JournalRecord, RequestId};
 
 use super::acceptance::{Contracted, verification};
 use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Txn};
@@ -189,6 +189,10 @@ impl PlanEngine {
                 label: label.clone(),
             });
         }
+        let cap = self.verifier.refusal_cap();
+        super::ladder::split_pending(current, label, OpKind::Done)?;
+        let red = super::ladder::red(&txn.records, &id, label, todo.attempt, cap);
+        super::ladder::gate(todo, red, cap)?;
         let Some(contract) = todo.contract.clone() else {
             return Ok(Phase1::Plain(Box::new(
                 self.settle(&mut txn, &id, &root, op)?,
@@ -629,9 +633,10 @@ impl PlanEngine {
         self.emit(&committed);
         // The cap counts refused verdicts on this attempt: a refused transition, a stale
         // token and an abstention are not verdicts on the product.
-        let refused = refused_verdicts(&txn.records, label, prepared.token.attempt);
-        let refusal_cap = crate::levers::get().plan_done_refusal_cap;
-        let capped = refused >= refusal_cap
+        let refusal_cap = self.verifier.refusal_cap();
+        let attempt = prepared.token.attempt;
+        let refused = super::ladder::red(&txn.records, &prepared.id, label, attempt, refusal_cap);
+        let capped = super::ladder::rung(refused, refusal_cap).blocks
             && txn
                 .state
                 .plan(&prepared.id)?
@@ -647,8 +652,9 @@ impl PlanEngine {
                 label: label.clone(),
                 on: BlockedOn::User,
                 note,
-                ask: None,
+                ask: Some(Box::new(super::ladder::cap_ask()?)),
             };
+            let block = self.ask_default(block, Some(&prepared.id))?;
             self.transact(txn, &prepared.id, &prepared.root, &block)?;
         }
         self.store.checkpoint_family(&txn.state)?;
@@ -690,26 +696,6 @@ impl Drop for Workspace {
     }
 }
 
-/// The `done_refused` records on this todo's attempt whose verdict decided something about the
-/// product: an abstention is not one.
-fn refused_verdicts(records: &[JournalRecord], label: &TodoLabel, attempt: AttemptId) -> u32 {
-    let count = records
-        .iter()
-        .filter(|record| {
-            record.record.op == KIND_DONE_REFUSED
-                && record.record.todo.as_ref() == Some(label)
-                && record.attempt == Some(attempt)
-                && record
-                    .verdict
-                    .as_ref()
-                    .and_then(|verdict| verdict.get("outcome"))
-                    .and_then(Value::as_str)
-                    != Some("abstain")
-        })
-        .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
-}
-
 /// Administrative completions (plan sections 3.6 and 5.6), checked before any effect: a `submit`
 /// is the running agent's own or the engine's for it; an `accept` lands as `AcceptedByUser`.
 pub(super) fn admit(
@@ -717,6 +703,7 @@ pub(super) fn admit(
     plan: &Plan,
     op: &Op,
     decided: &mut Decided,
+    cap: u32,
 ) -> Result<(), PlanOpError> {
     match op {
         Op::Submit { label, .. } => {
@@ -738,6 +725,7 @@ pub(super) fn admit(
         }
         _ => {}
     }
+    decided.readmit = super::ladder::admit(&txn.records, plan, op, cap)?;
     Ok(())
 }
 

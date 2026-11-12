@@ -109,7 +109,7 @@ impl PlanEngine {
         let asked = Asked::new();
         let specs: Vec<&mut TodoSpec> = match &mut op {
             Op::Init { todos, .. }
-            | Op::Append { todos }
+            | Op::Append { todos, .. }
             | Op::Decompose { todos, .. }
             | Op::Supersede { todos, .. } => todos.iter_mut().collect(),
             Op::Set { rows, .. } => rows.iter_mut().map(|row| &mut row.spec).collect(),
@@ -153,6 +153,7 @@ impl PlanEngine {
                 | Op::Drop { .. }
                 | Op::Supersede { .. }
                 | Op::Set { .. }
+                | Op::Split { .. }
         ) && matches!(plan.tier, PlanTier::Root);
         let Some(asked) = declares.then(|| self.asked(&txn.asked)).flatten() else {
             return;
