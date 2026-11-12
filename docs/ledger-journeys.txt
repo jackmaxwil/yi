@@ -748,3 +748,4 @@ host-written memory (one file per fact, hook index) | `session_faux::learn_start
 host-written memory (one file per fact, hook index) | `input::learn_is_sent_as_a_prompt_that_opens_its_skill` (T0)
 tool results left without their call | `build_params_conformance::a_result_whose_reply_failed_reaches_every_wire_as_a_notice` (T0)
 custom providers | `custom_providers::a_declared_api_picks_the_wire_and_its_key_is_the_bearer` (T2)
+TUI | `tui_drive::queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highlighted_command` (T2)

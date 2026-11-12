@@ -26,8 +26,8 @@ pub fn handle_terminal_event(
                 tree.paste(&text);
             } else if let Some(view) = app.plan_tree.as_mut() {
                 view.paste(&text);
-            } else if let Some(bottom) = app.bottom.as_mut() {
-                paste_into(bottom, &text);
+            } else if app.bottom.is_some() {
+                paste_into(app, &text);
             } else if !app.composer.search_active() {
                 app.composer.handle_paste(&text);
             }
@@ -57,6 +57,11 @@ pub fn handle_terminal_event(
                 handle_plan_tree_key(app, &key);
                 return;
             }
+            if matches!(app.bottom, Some(Bottom::Command(_))) && types_into_box(&key) {
+                edit_composer(app, &key, key_event);
+                refresh_command_list(app);
+                return;
+            }
             if app.bottom.is_some() {
                 handle_bottom_key(app, cmd_tx, &key);
                 app.open_questions();
@@ -82,6 +87,11 @@ pub fn handle_terminal_event(
             match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
                 Some(action) => handle_action(app, cmd_tx, action),
                 None => {
+                    let filled = key.code == KeyCodeValue::Tab
+                        && !key.ctrl
+                        && !key.alt
+                        && !key.shift
+                        && tab_completes_slash(app);
                     if key.code == KeyCodeValue::PageDown
                         && app.follow() != yi_types::config::FollowMode::Slide
                     {
@@ -91,20 +101,12 @@ pub fn handle_terminal_event(
                         && !key.alt
                         && app.composer.is_empty()
                     {
-                        app.bottom = Some(Bottom::Command(ListPopup::new(
-                            '/',
-                            SLASH_COMMANDS.iter().map(|s| (*s).to_owned()).collect(),
-                        )));
+                        app.composer.textarea.insert_str("/");
+                        app.bottom = Some(Bottom::Command(command_list(String::new())));
                     } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
                         app.bottom = Some(Bottom::File(file_picker(&app.options.cwd)));
-                    } else if key.code == KeyCodeValue::Backspace
-                        && !key.ctrl
-                        && !key.alt
-                        && !key_event.modifiers.contains(KeyModifiers::SUPER)
-                    {
-                        app.composer.backspace();
-                    } else {
-                        app.composer.input(key_event);
+                    } else if !filled {
+                        edit_composer(app, &key, key_event);
                     }
                 }
             }
@@ -113,13 +115,19 @@ pub fn handle_terminal_event(
     }
 }
 
-fn paste_into(bottom: &mut Bottom, text: &str) {
-    match bottom {
-        Bottom::Approval(view, _) => view.paste(text),
-        Bottom::Question(view) => view.paste(text),
-        Bottom::Command(popup) | Bottom::File(popup) => popup.paste(text),
-        Bottom::Agents(popup) => popup.paste(text),
-        Bottom::Model(popup) => popup.paste(text),
+/// The command list keeps its text in the box, so a paste edits the box and the list follows it.
+fn paste_into(app: &mut App, text: &str) {
+    match app.bottom.as_mut() {
+        Some(Bottom::Approval(view, _)) => view.paste(text),
+        Some(Bottom::Question(view)) => view.paste(text),
+        Some(Bottom::File(popup)) => popup.paste(text),
+        Some(Bottom::Agents(popup)) => popup.paste(text),
+        Some(Bottom::Model(popup)) => popup.paste(text),
+        Some(Bottom::Command(_)) => {
+            app.composer.handle_paste(text);
+            refresh_command_list(app);
+        }
+        None => {}
     }
 }
 
@@ -167,11 +175,27 @@ pub(crate) fn handle_bottom_key(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
     key: &SingleKey,
 ) {
-    if key.code == KeyCodeValue::Char('c')
+    let in_list = matches!(app.bottom, Some(Bottom::Command(_)));
+    if (key.code == KeyCodeValue::Char('c')
         && key.ctrl
-        && !matches!(app.bottom, Some(Bottom::Approval(..)))
+        && !matches!(app.bottom, Some(Bottom::Approval(..))))
+        || (key.code == KeyCodeValue::Esc && in_list)
     {
+        close_command_list(app);
         app.bottom = None;
+        return;
+    }
+    if let Some(Bottom::Command(popup)) = &app.bottom
+        && key.code == KeyCodeValue::Tab
+    {
+        let name = popup
+            .filtered()
+            .get(popup.selected)
+            .map(|name| (*name).clone());
+        if let (Some(name), false) = (name, key.ctrl || key.alt || key.shift) {
+            app.composer.set_text(&format!("/{name} "));
+            app.bottom = None;
+        }
         return;
     }
     let Some(mut bottom) = app.bottom.take() else {
@@ -203,7 +227,10 @@ pub(crate) fn handle_bottom_key(
             Bottom::Command(_) | Bottom::File(_) | Bottom::Question(_) => {}
         },
         PopupResult::Insert(text) => match bottom {
-            Bottom::Command(_) => submit_line(app, cmd_tx, text),
+            Bottom::Command(_) => {
+                app.composer.set_text("");
+                submit_line(app, cmd_tx, text);
+            }
             Bottom::File(_) => {
                 app.composer
                     .textarea
@@ -311,16 +338,114 @@ enum Slash {
     Prompt(String),
 }
 
+fn command_list(query: String) -> ListPopup {
+    let mut popup = ListPopup::new(
+        '/',
+        SLASH_COMMANDS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
+    );
+    popup.query = query;
+    popup.show_query = false;
+    popup
+}
+
+/// The one spelling of a verb name: Enter routes on it and Tab completes on it.
+fn command_word(head: &str) -> bool {
+    !head.is_empty()
+        && head
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+}
+
+/// The text after `/` while it is still a command name. Arguments close the list.
+fn command_token(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('/')?;
+    (rest.is_empty() || command_word(rest)).then_some(rest)
+}
+
+/// Invariant: a list opened by typing `/` starts from an empty box, so closing it empties the
+/// box again; a list Tab opened sits over a draft and leaves it.
+pub(crate) fn close_command_list(app: &mut App) {
+    if matches!(&app.bottom, Some(Bottom::Command(popup)) if !popup.keep_draft) {
+        app.composer.set_text("");
+    }
+}
+
+/// The list follows the composer. A line that is no longer a command name closes it.
+fn refresh_command_list(app: &mut App) {
+    let text = app.composer.text();
+    let close = {
+        let Some(Bottom::Command(popup)) = app.bottom.as_mut() else {
+            return;
+        };
+        match command_token(&text) {
+            None => true,
+            Some(token) => {
+                if popup.query != token {
+                    popup.query = token.to_owned();
+                    popup.selected = 0;
+                }
+                popup.filtered().is_empty()
+            }
+        }
+    };
+    if close {
+        app.bottom = None;
+    }
+}
+
+/// Every key but these five edits the box; these go to the list's own key table.
+fn types_into_box(key: &SingleKey) -> bool {
+    let list_key = matches!(
+        key.code,
+        KeyCodeValue::Esc | KeyCodeValue::Up | KeyCodeValue::Down | KeyCodeValue::Enter
+    ) || key.code == KeyCodeValue::Tab
+        || (key.ctrl && key.code == KeyCodeValue::Char('c'));
+    !list_key
+}
+
+fn edit_composer(app: &mut App, key: &SingleKey, key_event: ratatui::crossterm::event::KeyEvent) {
+    let plain_backspace = key.code == KeyCodeValue::Backspace
+        && !key.ctrl
+        && !key.alt
+        && !key_event.modifiers.contains(KeyModifiers::SUPER);
+    if plain_backspace {
+        app.composer.backspace();
+    } else {
+        app.composer.input(key_event);
+    }
+}
+
+/// Tab on a `/name` draft fills the one matching command and leaves a space for arguments.
+/// Several matches open the list above the composer and leave the draft where it is.
+fn tab_completes_slash(app: &mut App) -> bool {
+    let text = app.composer.text();
+    let Some(token) = command_token(&text) else {
+        return false;
+    };
+    let mut popup = command_list(token.to_owned());
+    popup.keep_draft = true;
+    let matches = popup.filtered();
+    match matches.as_slice() {
+        [] => return false,
+        [only] => {
+            let line = format!("/{only} ");
+            app.composer.set_text(&line);
+            return true;
+        }
+        _ => {}
+    }
+    app.bottom = Some(Bottom::Command(popup));
+    true
+}
+
 /// Invariant: `/word` is a command, a typo'd one included, and `//word` sends `/word` as a
 /// prompt. A `/usr/...` path or a `/*` comment is no word, so it still prompts.
 fn slash_line(text: String) -> Slash {
-    let word = |rest: &str| {
-        let head = rest.split(char::is_whitespace).next().unwrap_or_default();
-        !head.is_empty()
-            && head
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
-    };
+    let word =
+        |rest: &str| command_word(rest.split(char::is_whitespace).next().unwrap_or_default());
     match text.trim().strip_prefix('/') {
         Some(rest) if word(rest) => Slash::Command(rest.trim().to_owned()),
         Some(rest) if rest.strip_prefix('/').is_some_and(word) => Slash::Prompt(rest.to_owned()),
@@ -347,7 +472,7 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
                 format!("{command} {args}")
             });
         }
-        "lanes" | "land" | "discard" | "pr" | "base" => {
+        "lanes" | "land" | "discard" | "pr" | "base" | "queue" => {
             app.pending_slash = Some(line.trim().to_owned());
         }
         _ => app.commit_cell(&Cell::Notice {

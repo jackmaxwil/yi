@@ -316,20 +316,26 @@ fn a_pasted_tab_and_escape_are_drawn_as_cells_not_sent_to_the_terminal() -> Test
     Ok(())
 }
 
-/// Dies with a paste into an open `/` popup landing in the composer hidden behind it: the popup
-/// kept an empty query and the text sent with the next prompt.
+/// Dies with a paste into an open `/` list missing the bordered box: the text belongs in the
+/// composer, which stays on screen above the matches.
 #[test]
-fn a_paste_with_a_popup_open_fills_the_popup_not_the_composer() -> TestResult {
-    // The second is a triple-click copy: CRLF between the lines and a newline after the last,
-    // which left two spaces inside the query and one after it.
-    for pasted in ["mod\nel", "mod\r\nel\n"] {
+fn a_paste_with_a_command_list_open_fills_the_composer() -> TestResult {
+    for (pasted, text, tail) in [("mod\nel", "/mod\nel", 0), ("mod\r\nel\n", "/mod\nel\n", 1)] {
         let mut app = app();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         type_text(&mut app, &tx, "/");
         paste(&mut app, &tx, pasted);
-        assert_eq!(app.composer_text(), "");
+        assert_eq!(app.composer_text(), text, "{pasted:?}");
         let rows = common::live_rows(&mut app)?;
-        assert!(has_row(&rows, " /mod el█"), "{pasted:?}: {rows:#?}");
+        let first = rows
+            .iter()
+            .position(|row| *row == format!(" │{:<76}│", "/mod"))
+            .ok_or_else(|| format!("{pasted:?}: no /mod row: {rows:#?}"))?;
+        let want = [format!(" │{:<76}│", "el"), format!(" │{:<76}│", "")];
+        assert_eq!(rows.get(first + 1), want.first(), "{pasted:?}: {rows:#?}");
+        if tail == 1 {
+            assert_eq!(rows.get(first + 2), want.get(1), "{pasted:?}: {rows:#?}");
+        }
     }
     Ok(())
 }
@@ -453,5 +459,229 @@ fn a_double_slash_typed_in_the_popup_is_a_prompt() -> TestResult {
     );
     let rows = transcript(&app);
     assert!(!rows.contains("unknown command"), "{rows}");
+    Ok(())
+}
+
+fn enter(app: &mut App, tx: &UnboundedSender<Command>) {
+    press(app, tx, KeyCode::Enter, KeyModifiers::NONE);
+}
+
+/// Dies with Enter in the `/` list submitting the typed `/mo` as a command of that name, which
+/// answers "unknown command"; the highlighted match is what runs.
+#[test]
+fn enter_in_the_command_list_runs_the_highlighted_match() -> TestResult {
+    let mut app = app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/mo");
+    assert_eq!(
+        app.composer_text(),
+        "/mo",
+        "the typed name lives in the box"
+    );
+    assert!(app.bottom_open());
+    enter(&mut app, &tx);
+    assert!(app.bottom_open(), "/model opens the model picker");
+    assert_eq!(app.composer_text(), "");
+    assert!(sent(&mut rx).is_empty());
+    assert!(!transcript(&app).contains("unknown command"));
+    Ok(())
+}
+
+/// Dies with Esc leaving the `/` the list opened with in the box, so the next word was a command.
+#[test]
+fn escape_closes_the_command_list_and_empties_the_box() -> TestResult {
+    let mut app = app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/pl");
+    assert_eq!(
+        app.composer_text(),
+        "/pl",
+        "the typed name lives in the box"
+    );
+    assert!(app.bottom_open());
+    press(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!app.bottom_open());
+    assert_eq!(app.composer_text(), "");
+    type_text(&mut app, &tx, "hello");
+    enter(&mut app, &tx);
+    assert_eq!(sent(&mut rx), ["prompt hello"]);
+    Ok(())
+}
+
+/// Dies with Tab dropping the list's highlight: it fills the highlighted name, not the typed prefix.
+#[test]
+fn tab_in_the_command_list_fills_the_highlighted_name_for_arguments() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/p");
+    press(&mut app, &tx, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, &tx, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.composer_text(), "/plantree ");
+    assert!(!app.bottom_open(), "arguments are typed in the box");
+    Ok(())
+}
+
+/// Dies with Tab on a pasted `/name` draft, where no list is open, doing nothing: one match fills
+/// in place, several open the list and keep the draft.
+#[test]
+fn tab_on_a_slash_draft_fills_one_match_and_lists_several() -> TestResult {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut one = app();
+    paste(&mut one, &tx, "/mod");
+    press(&mut one, &tx, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(one.composer_text(), "/model ");
+    assert!(!one.bottom_open());
+    let mut several = app();
+    paste(&mut several, &tx, "/p");
+    press(&mut several, &tx, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(several.composer_text(), "/p");
+    assert!(several.bottom_open(), "several matches open the list");
+    Ok(())
+}
+
+/// Dies with the list replacing the box: the matches sit above a box that holds the typed text,
+/// painted at a pane that does not start at the screen's origin.
+#[test]
+fn the_command_list_sits_above_the_box_at_a_nonzero_offset() -> TestResult {
+    use ratatui::layout::Rect;
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/mo");
+    let backend = common::VT100Backend::with_scrollback(80, 40, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    terminal.set_viewport_area(Rect::new(0, 0, 80, 40));
+    let area = Rect::new(7, 5, 60, 30);
+    let mut scroll = 0;
+    terminal.draw(|frame| {
+        let _ = yi_tui::render::paint_pane(&mut app, None, frame.buffer_mut(), area, &mut scroll);
+    })?;
+    let rows: Vec<String> = (0..40)
+        .map(|row| terminal.backend().row_text(row))
+        .collect();
+    let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
+    let list = at("model").ok_or_else(|| format!("no match row: {rows:#?}"))?;
+    let draft = at("│/mo").ok_or_else(|| format!("no draft row: {rows:#?}"))?;
+    assert!(list < draft, "matches above the box: {rows:#?}");
+    assert!(rows.get(list).is_some_and(|row| row.starts_with("       ")));
+    Ok(())
+}
+
+/// Dies with Esc and Ctrl-C throwing away a draft the list was opened over: Tab on a pasted `/p`
+/// opens the list, and closing it must leave the draft.
+#[test]
+fn closing_a_tab_opened_list_keeps_the_draft() -> TestResult {
+    for close in [
+        (KeyCode::Esc, KeyModifiers::NONE),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL),
+    ] {
+        let mut app = app();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        paste(&mut app, &tx, "/p");
+        press(&mut app, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        assert!(app.bottom_open());
+        press(&mut app, &tx, close.0, close.1);
+        assert!(!app.bottom_open());
+        assert_eq!(app.composer_text(), "/p", "{close:?}");
+    }
+    Ok(())
+}
+
+/// Dies with Shift-Tab filling the highlighted command like a plain Tab.
+#[test]
+fn a_modified_tab_in_the_command_list_does_not_fill() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/p");
+    press(&mut app, &tx, KeyCode::Tab, KeyModifiers::SHIFT);
+    assert_eq!(app.composer_text(), "/p");
+    assert!(app.bottom_open());
+    Ok(())
+}
+
+/// Dies with the list's `/` text left in the box when an approval card replaces the list.
+#[test]
+fn an_approval_replacing_the_command_list_leaves_no_stray_text() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/mo");
+    assert_eq!(app.composer_text(), "/mo");
+    let (reply, _answer) = std::sync::mpsc::channel();
+    app.open_approval(yi_tui::AskRequest {
+        title: "run it".to_owned(),
+        description: String::new(),
+        grants: Vec::new(),
+        tool_call_id: None,
+        reply,
+    });
+    assert_eq!(app.composer_text(), "");
+    Ok(())
+}
+
+/// Dies with the list taller than the screen: the box that holds the typed text was pushed off,
+/// so the text was invisible. On kitty the orb's five rows sit above the list too.
+#[test]
+fn the_command_list_leaves_the_box_on_a_short_screen() -> TestResult {
+    for (kitty, height, kept) in [(false, 9, true), (true, 15, true), (true, 9, false)] {
+        let mut app = app();
+        app.set_width(60);
+        app.set_rows(height);
+        app.set_kitty(kitty);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        type_text(&mut app, &tx, "/");
+        for _ in 0..7 {
+            press(&mut app, &tx, KeyCode::Down, KeyModifiers::NONE);
+        }
+        let rows = common::rows_sized(&mut app, 60, u16::try_from(height)?)?;
+        assert!(
+            !kept || rows.iter().any(|row| row.starts_with(" › ")),
+            "kitty {kitty}: the highlighted row is kept: {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with(" │/")),
+            "kitty {kitty}: the box with the typed `/` is on screen: {rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("[… ") && row.contains("screen cap")),
+            "kitty {kitty}: the cut is named: {rows:#?}"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with the console's pane painter handing the layout an unbounded height: the list never
+/// trimmed there and the box vanished on a short pane.
+#[test]
+fn the_command_list_leaves_the_box_in_a_short_pane() -> TestResult {
+    use ratatui::layout::Rect;
+    for (kitty, height) in [(false, 9u16), (true, 15), (true, 9)] {
+        let mut app = app();
+        app.set_kitty(kitty);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        type_text(&mut app, &tx, "/");
+        let backend = common::VT100Backend::with_scrollback(80, 40, 200);
+        let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+        terminal.set_viewport_area(Rect::new(0, 0, 80, 40));
+        let area = Rect::new(7, 5, 60, height);
+        let mut scroll = 0;
+        terminal.draw(|frame| {
+            let _ =
+                yi_tui::render::paint_pane(&mut app, None, frame.buffer_mut(), area, &mut scroll);
+        })?;
+        let rows: Vec<String> = (0..40)
+            .map(|row| terminal.backend().row_text(row))
+            .collect();
+        let inside = &rows[usize::from(area.top())..usize::from(area.bottom())];
+        assert!(
+            inside.iter().any(|row| row.contains("│/")),
+            "kitty {kitty} height {height}: the box is in the pane: {inside:#?}"
+        );
+        assert!(
+            inside
+                .iter()
+                .any(|row| row.contains("[… ") && row.contains("screen cap")),
+            "kitty {kitty} height {height}: the cut is named: {inside:#?}"
+        );
+    }
     Ok(())
 }

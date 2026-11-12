@@ -198,7 +198,11 @@ pub(crate) fn slash_off_thread(
 ) {
     let session = Arc::clone(session);
     let reply_tx = reply_tx.clone();
+    // Incident: a verb that starts a turn (`/queue` on an idle session) spawns it, and a plain
+    // thread has no runtime, so it panicked with "there is no reactor running".
+    let runtime = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
+        let _entered = runtime.enter();
         let (command, args) = yi_runtime::slash::split(&line);
         let text = yi_runtime::slash::run(&session, command, args)
             .unwrap_or_else(|| format!("unknown command: /{command}"));
