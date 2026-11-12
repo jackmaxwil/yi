@@ -372,7 +372,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn queue_during_a_turn_waits_until_that_turn_ends()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = Arc::new(ProviderStream::new(None));
