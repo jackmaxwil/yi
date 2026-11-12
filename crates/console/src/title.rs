@@ -1,4 +1,6 @@
 use crate::App;
+use crate::model::SessionStatus::{self, Blocked, DoneUnseen, Idle, Unknown, Working};
+use yi_tui::motion::TabMark;
 
 /// The scenes the title may draw, by weight, and the seed that picks one.
 pub struct TitleOptions {
@@ -42,6 +44,61 @@ impl TitleOptions {
     }
 }
 
+fn focused_row(app: &App) -> Option<&crate::model::SessionRow> {
+    let id = app.state.focused_pane()?.session()?;
+    app.state.sessions.get(id)
+}
+
+fn focused_status(app: &App) -> Option<SessionStatus> {
+    focused_row(app).map(|row| row.status)
+}
+
+fn format_window_title(
+    label: &str,
+    status: Option<SessionStatus>,
+    elapsed: std::time::Duration,
+) -> String {
+    let mark = match status {
+        Some(Working) => TabMark::Working,
+        Some(Blocked) => TabMark::Attention,
+        Some(DoneUnseen | Idle | Unknown) | None => TabMark::Ready,
+    };
+    yi_tui::motion::tab_title(label, mark, elapsed)
+}
+
+pub(crate) fn window_title(app: &App) -> String {
+    let row = focused_row(app);
+    let elapsed = app
+        .state
+        .window_title_pulse_start
+        .map_or(std::time::Duration::ZERO, |start| app.clock.since(start));
+    let label = row.map_or_else(String::new, |row| row.label());
+    format_window_title(&label, row.map(|row| row.status), elapsed)
+}
+
+/// How long until the working pulse next changes frame; `None` when the title is not pulsing.
+pub(crate) fn title_wake(app: &App) -> Option<std::time::Duration> {
+    let start = app.state.window_title_pulse_start?;
+    (focused_status(app) == Some(Working)).then_some(())?;
+    let period = yi_tui::motion::PULSE_PERIOD_MS.checked_mul(1_000_000)?;
+    let into = app.clock.since(start).as_nanos().checked_rem(period)?;
+    let left = period.saturating_sub(into);
+    Some(std::time::Duration::from_nanos(u64::try_from(left).ok()?))
+}
+
+/// Invariant: only the focused pane's session status drives the terminal title.
+pub(crate) fn title_status_tick(app: &mut App) {
+    let now = app.clock.now();
+    if focused_status(app) == Some(Working) {
+        app.state.window_title_pulse_start.get_or_insert(now);
+    } else {
+        app.state.window_title_pulse_start = None;
+    }
+    if !app.window_title.is_empty() && window_title(app) != app.window_title {
+        app.dirty = true;
+    }
+}
+
 /// The title plays from console start for `OVER`, unless the session in front has been used.
 pub(crate) fn title_playing(app: &App) -> bool {
     use crate::model::PaneContent;
@@ -74,6 +131,7 @@ pub(crate) fn title_tick(app: &mut App) {
     } else if !showing && app.state.title_frame.take().is_some() {
         app.dirty = true;
     }
+    title_status_tick(app);
 }
 
 #[cfg(test)]
@@ -83,8 +141,135 @@ mod tests {
     use crate::client;
     use crate::mouse_event;
     use ratatui::crossterm::event::Event as CtEvent;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use yi_tui::colors::{ColorTier, Theme};
+
+    fn app_with_session(
+        status: crate::model::SessionStatus,
+    ) -> Result<App, Box<dyn std::error::Error>> {
+        let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        let id = crate::model::SessionId("s-title".to_owned());
+        app.state.sessions.insert(
+            id.clone(),
+            crate::model::SessionRow {
+                id: id.clone(),
+                root: "/repo".to_owned(),
+                status,
+                attached: true,
+                name: Some("focused".to_owned()),
+                created_ms: 0,
+                last_ms: 0,
+                pinned: None,
+            },
+        );
+        let pane = app.state.focused_pane_id().ok_or("initial pane")?;
+        app.state
+            .panes
+            .get_mut(&pane)
+            .ok_or("initial pane")?
+            .content = crate::model::PaneContent::Session {
+            session: Some(id),
+            chat: None,
+        };
+        app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
+        Ok(app)
+    }
+
+    #[test]
+    fn title_format_uses_focused_status_without_changing_session_label() {
+        use crate::model::SessionStatus;
+        let plain = "Yi > focused";
+        assert_eq!(format_window_title("", None, Duration::ZERO), "Yi >");
+        assert_eq!(
+            format_window_title("focused", Some(SessionStatus::Working), Duration::ZERO),
+            "Yi ◌ focused"
+        );
+        assert_eq!(
+            format_window_title("focused", Some(SessionStatus::Blocked), Duration::ZERO),
+            "Yi ! focused"
+        );
+        for status in [
+            SessionStatus::Idle,
+            SessionStatus::Unknown,
+            SessionStatus::DoneUnseen,
+        ] {
+            assert_eq!(
+                format_window_title("focused", Some(status), Duration::ZERO),
+                plain
+            );
+        }
+    }
+
+    #[test]
+    fn working_title_pulse_changes_at_shared_period_boundaries() {
+        let markers = [
+            (0, "◌"),
+            (249, "◌"),
+            (250, "◍"),
+            (500, "◉"),
+            (750, "◍"),
+            (1_000, "◌"),
+        ];
+        for (elapsed, expected) in markers {
+            assert_eq!(
+                format_window_title(
+                    "focused",
+                    Some(crate::model::SessionStatus::Working),
+                    Duration::from_millis(elapsed),
+                ),
+                format!("Yi {expected} focused")
+            );
+        }
+    }
+
+    #[test]
+    fn focused_status_transitions_dirty_only_when_title_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut idle = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        idle.window_title = window_title(&idle);
+        idle.dirty = false;
+        title_status_tick(&mut idle);
+        assert!(!idle.dirty, "no session keeps the default title idle");
+
+        let mut app = app_with_session(crate::model::SessionStatus::Working)?;
+        title_status_tick(&mut app);
+        assert_eq!(title_wake(&app), Some(Duration::from_millis(250)));
+        app.window_title = window_title(&app);
+        app.dirty = false;
+
+        app.clock.advance(Duration::from_millis(249));
+        title_tick(&mut app);
+        assert_eq!(title_wake(&app), Some(Duration::from_millis(1)));
+        assert!(!app.dirty, "the pulse does not redraw before its boundary");
+        app.clock.advance(Duration::from_millis(1));
+        title_tick(&mut app);
+        assert_eq!(title_wake(&app), Some(Duration::from_millis(250)));
+        assert!(app.dirty, "the changed marker redraws the title");
+        assert_eq!(window_title(&app), "Yi ◍ focused");
+        crate::set_window_title(&mut app);
+        assert_eq!(
+            app.osc_out.last().map(String::as_str),
+            Some("\x1b]2;Yi ◍ focused\x07")
+        );
+        let written = app.osc_out.len();
+        crate::set_window_title(&mut app);
+        assert_eq!(app.osc_out.len(), written, "unchanged title is not resent");
+        app.dirty = false;
+
+        let id = app.state.focused_session().ok_or("focused session")?;
+        app.state.sessions.get_mut(&id).ok_or("session row")?.status =
+            crate::model::SessionStatus::Blocked;
+        title_tick(&mut app);
+        assert!(app.dirty, "a focused status transition redraws the title");
+        assert_eq!(window_title(&app), "Yi ! focused");
+        crate::set_window_title(&mut app);
+        assert_eq!(
+            app.osc_out.last().map(String::as_str),
+            Some("\x1b]2;Yi ! focused\x07")
+        );
+        assert_eq!(title_wake(&app), None, "blocked sessions do not pulse");
+        Ok(())
+    }
 
     /// Incident: asking for a frame on every loop turn drew the title at 58 fps; it now asks once
     /// a frame interval has passed on the app's own clock.

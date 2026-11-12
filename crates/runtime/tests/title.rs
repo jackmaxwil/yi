@@ -86,6 +86,30 @@ async fn a_first_turn_is_titled_by_the_model_and_the_name_is_stored() -> Result<
     Ok(())
 }
 
+/// Dies with a card-shaped reply treated as a protocol: it brought back an emoji, code and
+/// title after session naming stopped asking for that format.
+#[tokio::test]
+async fn a_card_shaped_reply_is_not_reformatted_into_a_card() -> Result<(), Box<dyn Error>> {
+    let (session, store, _root) = titled(
+        "yi-title-card-shaped",
+        faux_assistant_message(
+            vec![faux_text(
+                "<title emoji=\"🧪\" code=\"FLAKY\">Fix flaky park tests</title>",
+            )],
+            StopReason::Stop,
+        ),
+    )
+    .await?;
+    let title = yi_runtime::title::title_session(&session).await?;
+    assert_eq!(
+        title.as_deref(),
+        Some("<title emoji=\"🧪\" code=\"FLAKY\">Fix flaky park")
+    );
+    assert_ne!(title.as_deref(), Some("🧪 FLAKY: Fix flaky park tests"));
+    assert_eq!(lock_session(&store).name().as_deref(), title.as_deref());
+    Ok(())
+}
+
 /// Dies with the title's spend never booked: `complete_text` handed back the text alone, so a
 /// session's cost total stayed at the main turns' sum while a side call billed on the side.
 #[tokio::test]

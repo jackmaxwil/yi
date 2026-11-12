@@ -84,7 +84,7 @@ fn draw_frame<B>(
 ) where
     B: ratatui::backend::Backend + std::io::Write,
 {
-    if let Some(title) = app.take_title() {
+    if let Some(title) = app.refresh_title() {
         let osc = crate::term::window_title_osc(&title);
         let _ = terminal.backend_mut().write_all(osc.as_bytes());
     }
@@ -640,7 +640,6 @@ pub fn paint_pane(
     if app.take_pending_clear() {
         *scroll = 0;
     }
-    let _ = app.take_title();
     let _ = app.take_pending_repaint();
     app.set_width(usize::from(area.width));
     app.set_rows(usize::from(area.height));

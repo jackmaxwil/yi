@@ -65,6 +65,39 @@ pub fn pulse_frame(elapsed_ms: u128) -> char {
         .unwrap_or('◆')
 }
 
+/// Invariant: OSC 2 stays text-only; its four-frame pulse stays distinct from the kitty orb.
+pub fn tab_title_pulse(elapsed: Duration) -> &'static str {
+    match elapsed.as_millis() / PULSE_PERIOD_MS % 4 {
+        0 => "◌",
+        1 => "◍",
+        2 => "◉",
+        _ => "◍",
+    }
+}
+
+/// What a terminal tab says about the foreground run; the one table the solo TUI and the
+/// console both read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TabMark {
+    Working,
+    Attention,
+    Ready,
+}
+
+/// `Yi > label` ready, `Yi ! label` waiting on you, `Yi ◌ label` working; no label keeps the mark.
+pub fn tab_title(label: &str, mark: TabMark, elapsed: Duration) -> String {
+    let glyph = match mark {
+        TabMark::Working => tab_title_pulse(elapsed),
+        TabMark::Attention => "!",
+        TabMark::Ready => ">",
+    };
+    if label.is_empty() {
+        format!("Yi {glyph}")
+    } else {
+        format!("Yi {glyph} {label}")
+    }
+}
+
 /// The band's weight at `column` as an alpha in `0..=FULL`, 0 outside it — the
 /// one place a cosine becomes an integer.
 fn weight(column: f64, head: f64) -> u16 {
@@ -125,4 +158,40 @@ pub fn shimmer(text: &str, elapsed_ms: u128, theme: &Theme) -> Vec<Span<'static>
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TabMark, tab_title, tab_title_pulse};
+    use std::time::Duration;
+
+    #[test]
+    fn tab_title_pulse_changes_at_250ms_boundaries() {
+        for (millis, frame) in [
+            (0, "◌"),
+            (249, "◌"),
+            (250, "◍"),
+            (499, "◍"),
+            (500, "◉"),
+            (750, "◍"),
+            (1_000, "◌"),
+        ] {
+            assert_eq!(tab_title_pulse(Duration::from_millis(millis)), frame);
+        }
+    }
+
+    #[test]
+    fn tab_title_keeps_the_marker_when_the_label_is_empty() {
+        let at = |label, mark, ms| tab_title(label, mark, Duration::from_millis(ms));
+        assert_eq!(at("", TabMark::Ready, 0), "Yi >");
+        assert_eq!(at("Fix the gauge", TabMark::Ready, 0), "Yi > Fix the gauge");
+        assert_eq!(
+            at("Fix the gauge", TabMark::Attention, 0),
+            "Yi ! Fix the gauge"
+        );
+        assert_eq!(
+            at("Fix the gauge", TabMark::Working, 250),
+            "Yi ◍ Fix the gauge"
+        );
+    }
 }
