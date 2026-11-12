@@ -198,6 +198,77 @@ fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {
     Ok(())
 }
 
+/// The profile cannot see a hard link, so a call it holds gains nothing by leaving: a rule's
+/// allow and an approved ask both stay contained, with an alias and with a cut store scan.
+#[cfg(unix)]
+#[test]
+fn a_hard_linked_key_keeps_an_allowed_search_contained() -> TestResult {
+    let (_scratch, home, project, key) = key_store("yi-scope-hardlink")?;
+    std::fs::hard_link(&key, project.join("key-copy"))?;
+    let rule = yi_runtime::ConfigRule::new("bash", "rg *", yi_runtime::ConfigRuleAction::Allow)?;
+    let ruled = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        vec![rule],
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(sandbox(vec![project.clone()])));
+    let asks = Arc::new(Mutex::new(0_usize));
+    let seen = Arc::clone(&asks);
+    let asker: Asker = Arc::new(move |_| {
+        *seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        AskOutcome::AllowOnce
+    });
+    let asked = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        Some(asker),
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(sandbox(vec![project.clone()])));
+    let run = |broker: &PermissionBroker, id: &str| {
+        broker.decide_call(
+            "bash",
+            ToolKind::Exec,
+            true,
+            id,
+            &bash_args("rg token"),
+            None,
+        )
+    };
+    let contained = Containment::Contained { widen: Vec::new() };
+    let check = |state: &str, id: &str| {
+        let (by_rule, by_ask) = (run(&ruled, id), run(&asked, id));
+        assert!(
+            by_rule.allowed && by_ask.allowed,
+            "{state}: {}",
+            by_ask.reason
+        );
+        assert_eq!(
+            by_rule.containment, contained,
+            "{state}: {}",
+            by_rule.reason
+        );
+        assert_eq!(by_ask.containment, contained, "{state}: {}", by_ask.reason);
+    };
+    check("an outside alias", "c1");
+    // Only the alias asks: main allows `rg` outright, and a cut scan names no alias.
+    assert_eq!(
+        *asks.lock().map_err(|_| "poisoned")?,
+        1,
+        "the alias did not ask"
+    );
+    std::fs::remove_file(project.join("key-copy"))?;
+    std::os::unix::fs::symlink(".aws", home.join(".aws"))?;
+    check("a cut scan", "c2");
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 1, "a cut scan asked");
+    Ok(())
+}
+
 /// A broker over a nonexistent tree with a profile, answering by `asker`, counting the questions.
 fn counted(
     rules: Vec<yi_runtime::ConfigRule>,

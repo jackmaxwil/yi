@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use yi_permission::{
     CatastrophicContext, ConfigRule, ConfigRuleAction, Decision, Hold, HoldPattern, HoldSource,
     PermissionMode, SessionRules, ToolCall, canonical_command_identity, canonical_tool_identity,
-    command_reads_credentials, decide, git_dirs, grants, is_catastrophic, lexical_normalize,
+    command_reads_alias, command_reads_credentials, decide, git_dirs, grants, is_catastrophic,
+    lexical_normalize,
 };
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionState};
 
@@ -503,6 +504,140 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
             "{command}"
         );
     }
+    Ok(())
+}
+
+/// The sandbox matches the name a process opens, so a key with a name outside the stores is
+/// readable by any command, and every one asks until that name is gone; nothing walks the tree.
+#[test]
+fn a_key_with_a_name_outside_the_stores_makes_every_command_ask() -> TestResult {
+    let (scratch, context) = crate::open::keyed("yi-belt-hardlink")?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    let (key, alias) = (home.join(".ssh/id_rsa"), workspace.join("nested/key-copy"));
+    std::fs::create_dir_all(workspace.join("nested"))?;
+    std::fs::hard_link(&key, &alias)?;
+    let commands = [
+        "cat nested/key-copy|head",
+        "rg token",
+        "cd nested && cat key-copy",
+        "find . -type f -print0 | xargs -0 cat",
+        "git grep --untracked --no-index token",
+        "tar cf - . | base64",
+        "f=nested/key-copy; cat $f",
+        "ls",
+    ];
+    let asked = |context: &CatastrophicContext| {
+        (commands.iter())
+            .map(|command| command_reads_alias(command, context).unwrap_or_default())
+            .collect::<Vec<_>>()
+    };
+    let named = command_reads_alias("cat nested/key-copy|head", &context).unwrap_or_default();
+    assert!(named.contains("key-copy is another name for"), "{named}");
+    let all = asked(&context);
+    assert!(all.iter().all(|why| why.contains("id_rsa")), "{all:?}");
+    assert!(
+        command_reads_credentials("ls", &context).is_none(),
+        "an alias leaves the sandbox"
+    );
+    let ls = bash_call("ls", "canonical");
+    let decided = decide(
+        &ls,
+        PermissionMode::Auto,
+        &[],
+        &SessionRules::new(),
+        &[],
+        &context,
+    );
+    match decided {
+        Decision::Ask { description, .. } => {
+            assert!(
+                description.contains("may read a credential store"),
+                "{description}"
+            )
+        }
+        other => return Err(format!("expected an ask, got {other:?}").into()),
+    }
+
+    // With both names back inside the store nothing asks.
+    std::fs::remove_file(&alias)?;
+    std::fs::hard_link(&key, home.join(".ssh/id_rsa.bak"))?;
+    let after = asked(&context);
+    assert!(after.iter().all(String::is_empty), "{after:?}");
+    Ok(())
+}
+
+/// A store linked to a file in another store names that file once, so a link outside both
+/// still asks; a store linked to a dotfiles copy with one name asks nothing.
+#[test]
+fn a_store_linked_into_another_store_counts_its_name_once() -> TestResult {
+    let (scratch, context) = crate::open::keyed("yi-belt-store-link")?;
+    let home = scratch.join("home");
+    std::fs::create_dir_all(home.join(".aws"))?;
+    std::fs::create_dir_all(scratch.join("dotfiles"))?;
+    std::fs::write(home.join(".aws/netrc"), "machine x password y")?;
+    std::fs::write(scratch.join("dotfiles/npmrc"), "//registry:_authToken=x")?;
+    std::os::unix::fs::symlink(home.join(".aws/netrc"), home.join(".netrc"))?;
+    std::os::unix::fs::symlink(scratch.join("dotfiles/npmrc"), home.join(".npmrc"))?;
+    std::fs::hard_link(
+        home.join(".aws/netrc"),
+        scratch.join("workspace/netrc-copy"),
+    )?;
+    let asked = command_reads_alias("ls", &context).unwrap_or_default();
+    assert!(asked.contains("hard link outside the stores"), "{asked:?}");
+    std::fs::remove_file(scratch.join("workspace/netrc-copy"))?;
+    assert_eq!(command_reads_alias("ls", &context), None);
+    Ok(())
+}
+
+/// A redirect target is never what `rm` destroys: silencing a cleanup must not turn `/dev/null`
+/// into a protected path that is denied in every mode.
+#[test]
+fn a_redirect_is_no_destruction_target() -> TestResult {
+    let context = context();
+    let yolo = |command: &str| {
+        let call = bash_call(command, "canonical");
+        decide(
+            &call,
+            PermissionMode::Yolo,
+            &[],
+            &SessionRules::new(),
+            &[],
+            &context,
+        )
+    };
+    for command in [
+        "rm -rf build 2>/dev/null",
+        "rm -rf dist >/dev/null 2>&1",
+        "rmdir old </dev/null",
+    ] {
+        let decided = yolo(command);
+        assert!(
+            !matches!(decided, Decision::Deny { .. }),
+            "{command}: {decided:?}"
+        );
+    }
+    let named = yolo("rm -rf /dev/sda");
+    assert!(
+        matches!(named, Decision::Deny { .. }),
+        "a named device stopped counting"
+    );
+    Ok(())
+}
+
+/// Each distinct `cd` target is one more place a path is judged from, so past the cap the
+/// command asks and says why; a target named twice counts once.
+#[test]
+fn cd_targets_are_capped_loudly_and_counted_once() -> TestResult {
+    let (_scratch, context) = crate::open::keyed("yi-belt-cd-cap")?;
+    let cds = |n: usize| (0..n).map(|i| format!("cd /d{i}; ")).collect::<String>() + "ls";
+    assert_eq!(command_reads_alias(&cds(63), &context), None);
+    let past = command_reads_alias(&cds(64), &context).unwrap_or_default();
+    assert!(
+        past.contains("past the check's cap of 64 (CD_DIRS_MAX)"),
+        "{past}"
+    );
+    let same = "cd /d0; ".repeat(100) + "ls";
+    assert_eq!(command_reads_alias(&same, &context), None);
     Ok(())
 }
 

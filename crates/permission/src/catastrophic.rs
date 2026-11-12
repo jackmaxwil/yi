@@ -3,6 +3,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+mod alias;
+use alias::Aliases;
+pub use alias::{Links, command_reads_alias, links};
+
 /// Credential stores, protected recursively: destroying one private key inside
 /// ~/.ssh is as damaging as destroying the directory. yi's own provider logins, OAuth profiles
 /// and MCP OAuth tokens are keys too (#887), and so are the CLI logins egress would carry (#598),
@@ -200,6 +204,74 @@ pub fn cd_target(word: &str, after_cd: &mut bool) -> bool {
     target
 }
 
+/// Incident: each relative `cd` resolved against every dir so far, doubling them, so a chain of
+/// k cds cost 2^k resolves per word; past this a check refuses rather than skip a target.
+const CD_DIRS_MAX: usize = 64;
+
+/// Hands `judge` each path a word can name, from the cwd and every `cd` target before it, scoped
+/// or not, so it fails closed. Text only: a variable or a built path passes it.
+pub fn judge_command_paths<T>(
+    command: &str,
+    cwd: &Path,
+    mut judge: impl FnMut(&[PathBuf]) -> Option<T>,
+) -> Result<Option<T>, String> {
+    let text = command.replace("${HOME}", "~").replace("$HOME", "~");
+    let flat = text.replace(['"', '\'', '\\'], "");
+    let flat = flat.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
+    for words in [flat.map(str::to_owned).collect(), shell_words(&text)] {
+        let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
+        for word in words.iter().filter(|word| !word.is_empty()) {
+            let cd = cd_target(word, &mut after_cd);
+            let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
+            for spelled in std::iter::once(word.as_str()).chain(glued) {
+                let head: String = (spelled.split_inclusive('/'))
+                    .take_while(|part| !part.contains(['*', '?', '[']))
+                    .collect();
+                let paths: Vec<PathBuf> =
+                    dirs.iter().map(|dir| resolve_target(&head, dir)).collect();
+                if let Some(hit) = judge(&paths) {
+                    return Ok(Some(hit));
+                }
+                for path in paths.into_iter().filter(|_| cd) {
+                    if !dirs.contains(&path) {
+                        dirs.push(path);
+                    }
+                }
+                if dirs.len() > CD_DIRS_MAX {
+                    return Err(format!(
+                        "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX} (CD_DIRS_MAX); run the cds as separate calls",
+                        dirs.len()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Invariant: a quoted or escaped space, or a bare `=:@`, stays in its word, which the flat split
+/// breaks; both splits run, because this one keeps a double-quoted `$(cat key)` as one word.
+fn shell_words(text: &str) -> Vec<String> {
+    let (mut words, mut word, mut quote, mut escaped) = (Vec::new(), String::new(), None, false);
+    for c in text.chars() {
+        match (quote, c) {
+            _ if escaped => {
+                word.push(c);
+                escaped = false;
+            }
+            (None | Some('"'), '\\') => escaped = true,
+            (Some(open), _) if open == c => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, _) if c.is_whitespace() || ";|&()<>`".contains(c) => {
+                words.push(std::mem::take(&mut word));
+            }
+            _ => word.push(c),
+        }
+    }
+    words.push(word);
+    words
+}
+
 /// The next shell word, quotes dropped; none when it is empty or built by expansion.
 pub(crate) fn word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
     while chars.next_if(|next| next.is_whitespace()).is_some() {}
@@ -356,8 +428,8 @@ const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 /// What a read may not touch (D180, D323): a key, the workspace `.git` or a device, which never
 /// ends (`/dev/zero`) or waits (`/dev/tty`), and a directory a walk would carry into a key
 /// store; judged by file identity too, so letter case, a link, `/private` or a firmlink names no
-/// way in; [`ReadGate::open`] judges the file it opened, so no swapped link either (#890). Built
-/// once per call or walk: each guarded directory costs a stat.
+/// way in; [`ReadGate::open`] judges the file it opened, so no swapped link either (#890), nor a
+/// hard link to a store file, which only that open judges. Built once per call or walk.
 pub struct ReadGate {
     context: CatastrophicContext,
     stores: Vec<PathBuf>,
@@ -371,6 +443,7 @@ pub struct ReadGate {
     /// under the roots its wall holds (#971).
     spared: Vec<PathBuf>,
     hold: Option<OpenHold>,
+    aliases: Aliases,
 }
 
 pub type OpenHold = std::sync::Arc<dyn Fn() + Send + Sync>;
@@ -399,6 +472,7 @@ impl ReadGate {
             ids,
             spared: Vec::new(),
             hold: None,
+            aliases: Aliases::default(),
         }
     }
 
@@ -443,6 +517,11 @@ impl ReadGate {
     /// without following it. Its spelling adds nothing, since every guarded directory has one.
     pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
         denied_file(&self.ids, meta)
+    }
+
+    /// Why this gate's store scan stopped short, once a hard-linked file made it run.
+    pub fn store_scan_cut(&self) -> Option<String> {
+        self.aliases.cut()
     }
 
     /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
@@ -543,9 +622,16 @@ impl ReadGate {
         held();
         let (_dir, at) = beside(real)?;
         let file = no_link(options)?.open(&at)?;
-        opened_at(&file, real)
-            .then_some(file)
-            .ok_or_else(|| refused(real))
+        if !opened_at(&file, real) {
+            return Err(refused(real));
+        }
+        match self.aliases.names(&self.stores, Some(&file.metadata()?)) {
+            Some(why) => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{} is {why}; no call opens it", real.display()),
+            )),
+            None => Ok(file),
+        }
     }
 
     fn denies_spelling(&self, path: &Path) -> bool {

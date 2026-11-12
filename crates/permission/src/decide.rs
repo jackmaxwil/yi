@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use yi_types::permission::{RuleDecision, RuleKind};
 
 use crate::catastrophic::{
-    CatastrophicContext, absolute, command_reads_credentials, command_targets_catastrophic,
-    read_is_catastrophic, resolve, write_is_catastrophic,
+    CatastrophicContext, absolute, command_reads_alias, command_reads_credentials,
+    command_targets_catastrophic, read_is_catastrophic, resolve, write_is_catastrophic,
 };
 use crate::rules::{ConfigRule, ConfigRuleAction, SessionRules};
 
@@ -258,6 +258,12 @@ fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
         return ask(
             call,
             &format!("the command reads a credential store ({hit})"),
+        );
+    }
+    if let Some(hit) = command_reads_alias(command, context) {
+        return ask(
+            call,
+            &format!("the command may read a credential store ({hit})"),
         );
     }
     // Invariant: one yes reaches whatever an app can do, so a review model never answers this.

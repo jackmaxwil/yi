@@ -6,7 +6,7 @@ use std::error::Error;
 use std::io;
 use std::path::PathBuf;
 
-use yi_permission::{CatastrophicContext, ReadGate};
+use yi_permission::{CatastrophicContext, ReadGate, command_reads_alias};
 
 use crate::scratch::Scratch;
 
@@ -24,19 +24,11 @@ struct Swap {
 
 impl Swap {
     fn new(name: &str) -> Result<(Self, ReadGate), Box<dyn Error>> {
-        let scratch = Scratch::new(name)?;
-        let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
-        let (store, d) = (home.join(".ssh"), workspace.join("d"));
-        std::fs::create_dir_all(&store)?;
+        let (scratch, context) = keyed(name)?;
+        let (store, d) = (scratch.join("home/.ssh"), scratch.join("workspace/d"));
         std::fs::create_dir_all(&d)?;
-        std::fs::write(store.join("id_rsa"), KEY)?;
         std::fs::write(d.join("id_rsa"), "ordinary\n")?;
-        let gate = ReadGate::new(&CatastrophicContext {
-            home_dir: Some(home),
-            working_dir: Some(workspace),
-            workspace_git: Vec::new(),
-            host_owned: Vec::new(),
-        });
+        let gate = ReadGate::new(&context);
         Ok((
             Self {
                 _scratch: scratch,
@@ -176,6 +168,173 @@ fn a_cwd_spelled_through_a_link_and_dotdot_keeps_its_git_dir_walled() -> TestRes
         !opens(&cwd, &config),
         "read {} through the wall",
         config.display()
+    );
+    Ok(())
+}
+
+/// `home/.ssh/id_rsa` holds the key, beside an empty `workspace`.
+pub(crate) fn keyed(name: &str) -> Result<(Scratch, CatastrophicContext), Box<dyn Error>> {
+    let scratch = Scratch::new(name)?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(home.join(".ssh/id_rsa"), KEY)?;
+    let context = CatastrophicContext {
+        home_dir: Some(home),
+        working_dir: Some(workspace),
+        workspace_git: Vec::new(),
+        host_owned: Vec::new(),
+    };
+    Ok((scratch, context))
+}
+
+#[test]
+fn a_hard_link_to_a_key_file_is_refused() -> TestResult {
+    let (scratch, context) = keyed("yi-gate-hardlink")?;
+    let (key, alias) = (
+        scratch.join("home/.ssh/id_rsa"),
+        scratch.join("workspace/key-copy"),
+    );
+    std::fs::hard_link(&key, &alias)?;
+    let (own, twin) = (
+        scratch.join("workspace/own"),
+        scratch.join("workspace/twin"),
+    );
+    std::fs::write(&own, "ordinary\n")?;
+    std::fs::hard_link(&own, &twin)?;
+    let gate = ReadGate::new(&context);
+
+    let why = gate.open(&alias, &[]).err().map(|error| error.to_string());
+    let why = why.unwrap_or_default();
+    assert!(
+        why.contains("another name for"),
+        "ReadGate::open read the alias: {why}"
+    );
+    if let Ok(mut file) = gate.open_write(&alias, &[]) {
+        std::io::Write::write_all(&mut file, b"OVERWRITTEN\n")?;
+    }
+    assert_eq!(
+        std::fs::read_to_string(&key)?,
+        KEY,
+        "the alias changed the key"
+    );
+    assert_eq!(io::read_to_string(gate.open(&twin, &[])?)?, "ordinary\n");
+    Ok(())
+}
+
+/// The stores are read whole to the cap and no further, and a cut is named in the refusal.
+#[test]
+fn a_store_scan_reads_to_its_cap_and_names_it_past_that() -> TestResult {
+    let (scratch, context) = keyed("yi-gate-store-cap")?;
+    let (ssh, alias) = (
+        scratch.join("home/.ssh"),
+        scratch.join("workspace/key-copy"),
+    );
+    std::fs::hard_link(ssh.join("id_rsa"), &alias)?;
+    // Ten thousand entries with the link, whose two files a scan that followed it would add.
+    std::fs::create_dir_all(scratch.join("elsewhere"))?;
+    std::fs::write(scratch.join("elsewhere/a"), "")?;
+    std::fs::write(scratch.join("elsewhere/b"), "")?;
+    std::os::unix::fs::symlink(scratch.join("elsewhere"), ssh.join("elsewhere"))?;
+    for n in 1..9_999 {
+        std::fs::write(ssh.join(format!("known_{n}")), "")?;
+    }
+    let judged = |command: &str| command_reads_alias(command, &context).unwrap_or_default();
+    let refusals = || {
+        let opened = ReadGate::new(&context).open(&alias, &[]).err();
+        let opened = opened.map(|error| error.to_string()).unwrap_or_default();
+        [judged("cat key-copy"), opened, judged("rg token")]
+    };
+
+    let at_cap = refusals();
+    let named = |why: &String| why.contains("id_rsa") && !why.contains("STORE_SCAN_CAP");
+    assert!(at_cap.iter().all(named), "{at_cap:?}");
+    std::fs::write(ssh.join("known_9999"), "")?;
+    let [named_read, opened, search] = refusals();
+    let cut = "more than 10000 entries (STORE_SCAN_CAP)";
+    assert!(
+        named_read.contains(cut) && opened.contains(cut),
+        "{named_read} / {opened}"
+    );
+    // A cut scan names no alias, so only a path with two names asks.
+    assert_eq!(search, "", "a cut scan made rg ask");
+    Ok(())
+}
+
+/// A store that cannot be read is named where a two-name file is refused; it never gates rg.
+#[test]
+fn an_unreadable_store_is_named_and_asks_only_for_a_two_name_path() -> TestResult {
+    let (scratch, context) = keyed("yi-gate-store-loop")?;
+    // A link to itself fails with ELOOP for root too, as a chmod fixture would not.
+    std::os::unix::fs::symlink(".aws", scratch.join("home/.aws"))?;
+    let (own, twin) = (
+        scratch.join("workspace/own"),
+        scratch.join("workspace/twin"),
+    );
+    std::fs::write(&own, "ordinary\n")?;
+    std::fs::hard_link(&own, &twin)?;
+    std::fs::create_dir_all(scratch.join("workspace/nested"))?;
+    std::fs::hard_link(&own, scratch.join("workspace/nested/inner"))?;
+    std::fs::hard_link(&own, scratch.join("workspace/my key"))?;
+    std::fs::hard_link(&own, scratch.join("workspace/id@a:b=c"))?;
+    std::fs::write(scratch.join("workspace/single"), "ordinary\n")?;
+    let judged = |command: &str| command_reads_alias(command, &context).unwrap_or_default();
+    let opened = ReadGate::new(&context).open(&twin, &[]).err();
+    let opened = opened.map(|error| error.to_string()).unwrap_or_default();
+
+    let unread = format!("{} could not be read", scratch.join("home/.aws").display());
+    let spellings = [
+        "cat twin",
+        "cd nested && cat inner",
+        "cat <twin",
+        "cat < twin",
+        "head -c 1 <twin",
+        "cat <>twin",
+        "cat twin>/tmp/k",
+        "cat x>twin",
+        "echo $(cat twin)",
+        "echo `cat twin`",
+        "{ cat twin; }",
+        "cat \"twin\" 2>/dev/null",
+        "cat \"my key\"",
+        "cat 'my key'",
+        "cat my\\ key",
+        "echo \"$(cat twin)\"",
+        "cat id@a:b=c",
+    ];
+    for (spelled, why) in spellings
+        .iter()
+        .map(|c| (*c, judged(c)))
+        .chain([("open", opened)])
+    {
+        assert!(why.contains(&unread), "{spelled}: {why}");
+    }
+    assert_eq!([judged("rg token"), judged("jq '.[]' single")], ["", ""]);
+    let single = ReadGate::new(&context).open(&scratch.join("workspace/single"), &[]);
+    assert_eq!(io::read_to_string(single?)?, "ordinary\n");
+    Ok(())
+}
+
+#[test]
+fn a_hard_link_swapped_in_after_the_judgement_writes_no_key() -> TestResult {
+    let (scratch, context) = keyed("yi-gate-hardlink-swap")?;
+    let (key, target) = (
+        scratch.join("home/.ssh/id_rsa"),
+        scratch.join("workspace/copy"),
+    );
+    std::fs::write(&target, "ordinary\n")?;
+    let mut swapped = None;
+    let opened = ReadGate::new(&context).open_write_after(&target, &[], &mut || {
+        swapped =
+            Some(std::fs::remove_file(&target).and_then(|()| std::fs::hard_link(&key, &target)));
+    });
+    swapped.ok_or("the write never reached its open")??;
+    let wrote = opened.and_then(|mut file| std::io::Write::write_all(&mut file, b"OVERWRITTEN\n"));
+    assert!(wrote.is_err(), "the open wrote through a swapped hard link");
+    assert_eq!(
+        std::fs::read_to_string(&key)?,
+        KEY,
+        "the hard link changed the key"
     );
     Ok(())
 }

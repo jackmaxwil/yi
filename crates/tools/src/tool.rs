@@ -399,7 +399,7 @@ fn replace(
         file.write_all(content)
     };
     let fell_back = |file: &std::fs::File| in_place(file).map(|()| Some(IN_PLACE));
-    if links(&meta) > 1 {
+    if yi_permission::links(&meta).shared() {
         return in_place(file).map(|()| None);
     }
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
@@ -451,16 +451,6 @@ fn replace(
         let _already_gone = std::fs::remove_file(&temp);
     }
     landed
-}
-
-#[cfg(unix)]
-fn links(meta: &std::fs::Metadata) -> u64 {
-    std::os::unix::fs::MetadataExt::nlink(meta)
-}
-
-#[cfg(not(unix))]
-fn links(_meta: &std::fs::Metadata) -> u64 {
-    1
 }
 
 #[cfg(unix)]

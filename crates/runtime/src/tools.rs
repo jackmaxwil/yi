@@ -186,10 +186,6 @@ pub(crate) fn host_wall(
     walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
 }
 
-/// Incident: each relative `cd` resolved against every dir so far, doubling them, so a chain of
-/// k cds cost 2^k resolves per word; past this the check refuses rather than skip a target.
-const CD_DIRS_MAX: usize = 64;
-
 /// Refuses a command naming a root or a dir above one, but a spare, in most spellings (`~`, a glob,
 /// `..` after a `cd`, glued to a flag). Text only: `$(…)`, a variable or a built path pass it.
 fn walled_root_refusal(
@@ -198,46 +194,22 @@ fn walled_root_refusal(
     spared: &[PathBuf],
     cwd: &std::path::Path,
 ) -> Option<String> {
-    let text = command.replace(['"', '\'', '\\'], "");
-    let text = text.replace("${HOME}", "~").replace("$HOME", "~");
-    let words = text.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
-    // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
-    let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
-    for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
-        let cd_target = yi_permission::cd_target(word, &mut after_cd);
-        let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
-        for spelled in std::iter::once(word).chain(glued) {
-            let head: String = (spelled.split_inclusive('/'))
-                .take_while(|part| !part.contains(['*', '?', '[']))
-                .collect();
-            let paths: Vec<PathBuf> = (dirs.iter())
-                .map(|dir| yi_permission::resolve_target(&head, dir))
-                .collect();
-            let hit = roots.iter().find(|root| {
-                paths.iter().any(|path| {
-                    yi_tools::walled(std::slice::from_ref(path), root)
-                        || yi_tools::walled(std::slice::from_ref(*root), path)
-                            && !yi_tools::walled(spared, path)
-                })
-            });
-            if let Some(root) = hit {
-                return Some(crate::gate::outside_sandbox_refusal(root));
-            }
-            for path in paths.into_iter().filter(|_| cd_target) {
-                if !dirs.contains(&path) {
-                    dirs.push(path);
-                }
-            }
-            if dirs.len() > CD_DIRS_MAX {
-                let why = format!(
-                    "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX}; run the cds as separate calls",
-                    dirs.len()
-                );
-                return Some(crate::gate::walled_host_refusal(&why));
-            }
-        }
+    if roots.is_empty() {
+        return None;
     }
-    None
+    let judged = yi_permission::judge_command_paths(command, cwd, |paths| {
+        roots.iter().find(|root| {
+            paths.iter().any(|path| {
+                yi_tools::walled(std::slice::from_ref(path), root)
+                    || yi_tools::walled(std::slice::from_ref(*root), path)
+                        && !yi_tools::walled(spared, path)
+            })
+        })
+    });
+    match judged {
+        Ok(hit) => hit.map(|root| crate::gate::outside_sandbox_refusal(root)),
+        Err(why) => Some(crate::gate::walled_host_refusal(&why)),
+    }
 }
 
 fn bash(command: &str) -> Map<String, Value> {
@@ -948,6 +920,18 @@ mod tests {
             "cd -P /home/u/.yi/other && cat ../sessions/x.jsonl"
         ));
         assert!(!refused("cd -- /home/u/.yi/other && cat notes.txt"));
+    }
+
+    #[test]
+    fn a_quoted_or_escaped_space_keeps_a_walled_path_whole() {
+        let roots = [PathBuf::from("/home/u/my store")];
+        let refused = |command: &str| {
+            super::walled_root_refusal(command, &roots, &[], Path::new("/work")).is_some()
+        };
+        assert!(refused("cat '/home/u/my store/x'"));
+        assert!(refused("cat \"/home/u/my store\"/x"));
+        assert!(refused("cat /home/u/my\\ store/x"));
+        assert!(!refused("cat '/home/u/my notes/x'"));
     }
 
     /// Incident: a polled background job printed the app's words with no command for the fence to
