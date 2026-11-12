@@ -1,4 +1,6 @@
 ---
+version: 0.1037.0
+decisions: D591
 issue: Closes #2145, Refs #2156
 growth: +246 the store scan with its loud cap, the gate's descriptor check and the belt's every-command ask while a key has an outside name, split into catastrophic/alias.rs since catastrophic.rs may not grow past 1,000 lines; weighed and deleted: the import's three tree walks, its rg flag table, its duplicate hard-link predicate, round one's lexical searcher and glob lists (the sandbox cannot see a link, so words cannot judge it), and the tools crate's copy of `links` (-10); grep's refusal row names a cut in net-zero lines, since grep.rs is past 1,000; later rounds added the `cd` target resolution and the real-path name count, and deleted `ReadGate::is_store_alias` and the alias arms of `denies` and `denies_entry`; the alias belt and the wall's root check resolve a command's paths with one function, `judge_command_paths`, lifted from the wall with its `cd` dirs and `CD_DIRS_MAX` cap, so a redirect source and a quoted or escaped name are each judged as a word
 raise: crate permission +272, tests +429, comments +19
