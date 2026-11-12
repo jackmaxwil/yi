@@ -2,6 +2,7 @@ use yi_orb::OrbState;
 
 use super::{App, Bottom};
 use crate::cell::{TaskStatus, ToolStatus};
+use crate::motion::TabMark;
 
 impl App {
     pub fn working_label(&self) -> Option<String> {
@@ -105,5 +106,20 @@ impl App {
             Some((_, count)) => *count = count.saturating_add(1),
             None => self.turn_kinds.push((verb, 1)),
         }
+    }
+
+    /// The title to write now, or `None` while the one on screen still holds.
+    pub fn refresh_title(&mut self) -> Option<String> {
+        let mark = match self.orb_state() {
+            None => TabMark::Ready,
+            Some(OrbState::Listening) => TabMark::Attention,
+            Some(_) => TabMark::Working,
+        };
+        let elapsed = self.clock.since(self.turn_started);
+        let title = crate::motion::tab_title(&self.base_title, mark, elapsed);
+        (title != self.shown_title).then(|| {
+            self.shown_title.clone_from(&title);
+            title
+        })
     }
 }

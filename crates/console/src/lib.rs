@@ -54,7 +54,7 @@ use crate::layout::PaneId;
 use crate::model::{Link, SessionStatus};
 
 pub use title::{TitleOptions, UnknownScene};
-use title::{title_playing, title_tick};
+use title::{title_playing, title_tick, title_wake, window_title};
 
 pub struct ConsoleOptions {
     pub socket: PathBuf,
@@ -354,6 +354,7 @@ fn run_interactive(
             .min(IDLE_POLL)
             .min(chat_wake(app))
             .min(app.avatars.wake().unwrap_or(IDLE_POLL))
+            .min(title_wake(app).unwrap_or(IDLE_POLL))
             .min(
                 control
                     .as_ref()
@@ -439,11 +440,7 @@ fn present<B: Backend>(
 }
 
 fn set_window_title(app: &mut App) {
-    let title = app
-        .state
-        .focused_session()
-        .and_then(|id| app.state.sessions.get(&id))
-        .map_or_else(|| "yi".to_owned(), |row| format!("yi · {}", row.label()));
+    let title = window_title(app);
     if title != app.window_title {
         app.osc_out.push(yi_tui::term::window_title_osc(&title));
         app.window_title = title;
@@ -1143,7 +1140,7 @@ mod tests {
             .and_then(|rest| rest.strip_suffix('\u{7}'));
         assert_eq!(
             inner,
-            Some("yi · Fix bug]52;c;ZWNobyBwd25lZA== now"),
+            Some("Yi > Fix bug]52;c;ZWNobyBwd25lZA== now"),
             "{osc:?}"
         );
         Ok(())
