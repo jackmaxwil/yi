@@ -383,7 +383,10 @@ pub fn layout_chat(
         .saturating_add(u16::from(!on_rule));
     let mut bottom_lines = bottom_lines;
     if let (Some(Bottom::Command(popup)), Some(lines)) = (&app.bottom, bottom_lines.as_mut()) {
-        let room = usize::from(total.saturating_sub(fixed).saturating_sub(composer_height)).max(1);
+        // The pane painter passes an unbounded `total` so the live tail is not clipped; the
+        // screen the list must fit is `app.rows`.
+        let screen = u16::try_from(app.rows).unwrap_or(u16::MAX);
+        let room = usize::from(screen.saturating_sub(fixed).saturating_sub(composer_height)).max(1);
         let existed = lines.len();
         if existed > room {
             let keep = room - 1;
