@@ -117,9 +117,6 @@ run "$PY" scripts/guardrails/check_behavior.py
 if [ "$FAST" -eq 1 ]; then
   run echo "skip scan (--fast: pinned external scanners run in the full lane)"
   run echo "skip scan selfcheck (--fast: pinned external scanners run in the full lane)"
-elif [ ! -d scripts/scan ] && public_mirror .; then
-  run echo "skip scan (public mirror omits scripts/scan; run full check in unfiltered source checkout)"
-  run echo "skip scan selfcheck (public mirror omits scripts/scan; run full check in unfiltered source checkout)"
 else
   run "$PY" scripts/guardrails/check_scan.py
   run "$PY" scripts/guardrails/check_scan.py --selfcheck
@@ -234,7 +231,7 @@ DIST=0
 if [ "$FAST" -eq 1 ]; then
   run echo "skip startup (--fast: hyperfine is most of the run)"
 elif [ -n "${CI:-}" ]; then
-  run echo "skip startup (D68: a shared runner cannot measure a 6 ms budget)"
+  run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
   run echo "skip build-dist (nothing on a CI host reads target/dist/yi)"
 else
   run scripts/build_dist.sh
