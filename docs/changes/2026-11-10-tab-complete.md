@@ -1,5 +1,6 @@
 ---
-ledger+: TUI | Tab fills a command name and leaves a space for its arguments
+issue: Refs #2142
+ledger+: TUI | Tab fills the highlighted slash command into the bordered box with a trailing space, and Enter in the `/` list still runs the highlighted match
 ---
 
-In the `/` command list, Tab writes the highlighted command into the bordered text box and leaves a trailing space for arguments. The list sits above that box, and the box stays on screen. Enter still runs the line. A draft that is only `/` plus a command prefix does the same: one match is filled in place, and several matches open the list above the box.
+In the `/` command list the typed name lives in the bordered text box, with the matches above it. Tab writes the highlighted command there and leaves a trailing space for arguments. Enter runs the highlighted match, so `/mo` Enter runs `/model`. Esc and Ctrl-C close the list and empty the box, as before. A draft that is `/` plus a command prefix does the same on Tab: one match is filled in place, several open the list.

@@ -67,24 +67,6 @@ impl ListPopup {
         }
         found
     }
-
-    /// Tab fills the highlighted command and leaves a space for arguments.
-    /// A line that already has arguments stays as typed, and a file list does not use this.
-    pub fn complete_tab(&mut self) -> bool {
-        if self.prefix != '/' || self.query.contains(' ') {
-            return false;
-        }
-        let Some(item) = self
-            .filtered()
-            .get(self.selected)
-            .map(|item| (*item).clone())
-        else {
-            return false;
-        };
-        self.query = format!("{item} ");
-        self.selected = 0;
-        true
-    }
 }
 
 impl BottomView for ListPopup {
@@ -147,10 +129,6 @@ impl BottomView for ListPopup {
                 }
                 PopupResult::Open
             }
-            KeyCodeValue::Tab if self.prefix == '/' => {
-                let _filled = self.complete_tab();
-                PopupResult::Open
-            }
             KeyCodeValue::Enter | KeyCodeValue::Tab => {
                 // Completing to the selected item would drop the arguments.
                 let typo = key.code == KeyCodeValue::Enter && count == 0;
@@ -190,53 +168,3 @@ pub fn walk_files(root: &std::path::Path, cap: usize) -> Vec<String> {
 
 /// One ignore engine, shared with the `glob` and `grep` tools.
 pub use yi_runtime::Ignore;
-
-#[cfg(test)]
-mod tests {
-    use super::{BottomView, ListPopup, PopupResult};
-    use crate::keymap::{KeyCodeValue, SingleKey};
-
-    fn key(code: KeyCodeValue) -> SingleKey {
-        SingleKey {
-            code,
-            ctrl: false,
-            alt: false,
-            shift: false,
-        }
-    }
-
-    fn type_query(popup: &mut ListPopup, text: &str) {
-        for character in text.chars() {
-            popup.handle_key(&key(KeyCodeValue::Char(character)));
-        }
-    }
-
-    #[test]
-    fn tab_fills_the_command_and_leaves_room_for_arguments()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut popup = ListPopup::new('/', vec!["queue".to_owned(), "quit".to_owned()]);
-        type_query(&mut popup, "que");
-        assert!(matches!(
-            popup.handle_key(&key(KeyCodeValue::Tab)),
-            PopupResult::Open
-        ));
-        assert_eq!(popup.query, "queue ");
-        type_query(&mut popup, "one more");
-        let PopupResult::Insert(line) = popup.handle_key(&key(KeyCodeValue::Enter)) else {
-            return Err("Enter did not insert the typed command".into());
-        };
-        assert_eq!(line, "/queue one more");
-        Ok(())
-    }
-
-    #[test]
-    fn tab_on_a_command_that_already_has_arguments_does_not_run_it() {
-        let mut popup = ListPopup::new('/', vec!["queue".to_owned()]);
-        type_query(&mut popup, "queue later");
-        assert!(matches!(
-            popup.handle_key(&key(KeyCodeValue::Tab)),
-            PopupResult::Open
-        ));
-        assert_eq!(popup.query, "queue later");
-    }
-}

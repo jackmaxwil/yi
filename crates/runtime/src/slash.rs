@@ -96,9 +96,7 @@ fn queue(session: &AgentSession, args: &str) -> String {
     if text.is_empty() {
         return "/queue needs the message to run next".to_owned();
     }
-    let running = session.status() == crate::Status::Running;
-    session.follow_up(text);
-    if running {
+    if session.follow_up_message(crate::session::task(text)) {
         "/queue: queued to run after this turn".to_owned()
     } else {
         "/queue: started".to_owned()
@@ -363,17 +361,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queue_on_an_idle_session_starts_that_message() {
+    async fn queue_on_an_idle_session_starts_that_message() -> Result<(), Box<dyn std::error::Error>>
+    {
         let session = idle_session();
-        let said = super::run(&session, "queue", "one more thing").expect("queue is a verb");
+        let said = super::run(&session, "queue", "one more thing").ok_or("queue is a verb")?;
         assert_eq!(said, "/queue: started");
         session.wait_idle().await;
         let asked = format!("{:?}", session.messages());
         assert!(asked.contains("one more thing"), "{asked}");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn queue_during_a_turn_waits_until_that_turn_ends() {
+    async fn queue_during_a_turn_waits_until_that_turn_ends()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = Arc::new(ProviderStream::new(None));
         let reply = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
         provider.queue_faux_timed(vec![
@@ -389,7 +390,7 @@ mod tests {
             },
             provider,
         );
-        session.prompt("start").expect("the first turn starts");
+        session.prompt("start")?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while session.status() != crate::Status::Running {
             assert!(
@@ -398,17 +399,24 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        let said = super::run(&session, "queue", "after this").expect("queue is a verb");
+        let said = super::run(&session, "queue", "after this").ok_or("queue is a verb")?;
         assert_eq!(said, "/queue: queued to run after this turn");
         session.wait_idle().await;
         let asked = format!("{:?}", session.messages());
-        assert!(asked.contains("after this"), "{asked}");
+        let at = |needle: &str| {
+            asked
+                .find(needle)
+                .ok_or(format!("{needle} missing: {asked}"))
+        };
+        assert!(at("first")? < at("after this")?, "{asked}");
+        assert!(at("after this")? < at("second")?, "{asked}");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn queue_with_no_message_starts_nothing() {
+    async fn queue_with_no_message_starts_nothing() -> Result<(), Box<dyn std::error::Error>> {
         let session = idle_session();
-        let said = super::run(&session, "queue", "  ").expect("queue is a verb");
+        let said = super::run(&session, "queue", "  ").ok_or("queue is a verb")?;
         assert_eq!(said, "/queue needs the message to run next");
         assert!(
             !format!("{:?}", session.messages()).contains("one more thing"),
@@ -416,5 +424,6 @@ mod tests {
             session.messages()
         );
         assert_eq!(session.status(), crate::Status::Idle);
+        Ok(())
     }
 }

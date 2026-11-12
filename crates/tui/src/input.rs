@@ -179,6 +179,7 @@ pub(crate) fn handle_bottom_key(
         && key.ctrl
         && !matches!(app.bottom, Some(Bottom::Approval(..)))
     {
+        close_command_list(app);
         app.bottom = None;
         return;
     }
@@ -349,6 +350,13 @@ fn command_token(text: &str) -> Option<&str> {
     Some(rest)
 }
 
+/// Invariant: the list opens only on an empty box, so closing it empties the box again.
+fn close_command_list(app: &mut App) {
+    if matches!(app.bottom, Some(Bottom::Command(_))) {
+        app.composer.set_text("");
+    }
+}
+
 /// The list follows the composer. A line that is no longer a command name closes it.
 fn refresh_command_list(app: &mut App) {
     let text = app.composer.text();
@@ -386,7 +394,7 @@ fn handle_command_list(
         return;
     };
     match key.code {
-        KeyCodeValue::Esc => {}
+        KeyCodeValue::Esc => app.composer.set_text(""),
         KeyCodeValue::Up => {
             popup.selected = popup.selected.saturating_sub(1);
             app.bottom = Some(bottom);
@@ -398,18 +406,19 @@ fn handle_command_list(
             app.bottom = Some(bottom);
         }
         KeyCodeValue::Tab => {
-            if popup.complete_tab() {
-                app.composer.set_text(&format!("/{}", popup.query));
+            if let Some(name) = popup.filtered().get(popup.selected) {
+                app.composer.set_text(&format!("/{name} "));
             }
         }
         KeyCodeValue::Enter => {
-            let text = app.composer.text();
-            let line = if text.trim().is_empty() {
-                format!("/{}", popup.query)
-            } else {
-                text
-            };
-            submit_line(app, cmd_tx, line);
+            let line = popup
+                .filtered()
+                .get(popup.selected)
+                .map(|name| format!("/{name}"));
+            if let Some(line) = line {
+                app.composer.set_text("");
+                submit_line(app, cmd_tx, line);
+            }
         }
         KeyCodeValue::Backspace => {
             app.composer.backspace();
@@ -434,17 +443,19 @@ fn handle_command_list(
 /// Several matches open the list above the composer and leave the draft where it is.
 fn tab_completes_slash(app: &mut App) -> bool {
     let text = app.composer.text();
-    let Some(query) = command_token(&text) else {
+    let Some(token) = command_token(&text) else {
         return false;
     };
-    let mut popup = command_list(query.to_owned());
-    let matches = popup.filtered().len();
-    if matches == 1 && popup.complete_tab() {
-        app.composer.set_text(&format!("/{}", popup.query));
-        return true;
-    }
-    if matches == 0 {
-        return false;
+    let popup = command_list(token.to_owned());
+    let matches = popup.filtered();
+    match matches.as_slice() {
+        [] => return false,
+        [only] => {
+            let line = format!("/{only} ");
+            app.composer.set_text(&line);
+            return true;
+        }
+        _ => {}
     }
     app.bottom = Some(Bottom::Command(popup));
     true
@@ -538,77 +549,5 @@ impl App {
             Some(_) => true,
             None => !self.composer.textarea.is_empty(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use yi_types::model::{Model, ModelCost};
-
-    use super::handle_terminal_event;
-    use crate::app::{App, TuiOptions};
-    use crate::colors::{ColorTier, Theme};
-    use crate::keymap::default_keymap;
-    use crate::render::layout_chat;
-
-    fn app() -> App {
-        let options = TuiOptions {
-            model: Model {
-                id: "faux-1".to_owned(),
-                name: "faux".to_owned(),
-                api: "faux".to_owned(),
-                provider: "faux".to_owned(),
-                base_url: "http://localhost:0".to_owned(),
-                reasoning: false,
-                input: vec!["text".to_owned()],
-                cost: ModelCost::free(),
-                context_window: 128_000,
-                max_tokens: 16_384,
-                compat: None,
-                thinking_level_map: None,
-                headers: None,
-                read_timeout_secs: None,
-            },
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-            follow: yi_types::config::FollowMode::default(),
-        };
-        App::new(
-            options,
-            Theme::new(ColorTier::TrueColor, true),
-            default_keymap(),
-            80,
-        )
-    }
-
-    fn press(app: &mut App, code: KeyCode) {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_terminal_event(
-            app,
-            &tx,
-            Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
-        );
-    }
-
-    #[test]
-    fn tab_fills_a_command_inside_the_bordered_box() {
-        let mut app = app();
-        app.set_rows(24);
-        press(&mut app, KeyCode::Char('/'));
-        assert_eq!(app.composer_text(), "/");
-        let open = layout_chat(&mut app, None, None, 24);
-        assert!(open.composer_too, "the box stays under the command list");
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.composer_text(), "/new ");
-        assert!(!app.bottom_open(), "arguments are typed in the box");
-        let filled = layout_chat(&mut app, None, None, 24);
-        assert!(!filled.composer_too);
     }
 }

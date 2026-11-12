@@ -211,7 +211,7 @@ pub struct ChatLayout {
     bottom: Option<Vec<Line<'static>>>,
     status: Option<Line<'static>>,
     composer_height: u16,
-    pub(crate) composer_too: bool,
+    composer_too: bool,
     show_working: bool,
     kitty: bool,
     pub floor: u16,

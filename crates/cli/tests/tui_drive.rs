@@ -1371,6 +1371,34 @@ fn a_typo_and_pr_answer_locally_without_a_model_turn() -> TestResult {
     Ok(())
 }
 
+/// Dies with `/queue` on an idle session panicking "there is no reactor running": the verb runs
+/// on a plain thread and spawned the turn there. `/mo` Enter runs `/model`, not the typo `/mo`.
+#[test]
+fn queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highlighted_command() -> TestResult {
+    let dir = Scratch::new("yi-tui-queue")?;
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "type /que\nkey tab\ntype say hi\nkey enter\nwait-frame 10000 /queue: started\n\
+         wait-frame 10000 \u{2503}   say hi\nwait-idle 10000\n\
+         type /mo\nkey enter\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+    let output = drive(&dir, &keys, &frames)?
+        .arg("--cwd")
+        .arg(&dir)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let all = frames_text(&frames)?;
+    assert!(!all.contains("unknown command"), "{all}");
+    assert!(!all.contains("no reactor"), "{all}");
+    Ok(())
+}
+
 /// Dies with `ctrl-x ctrl-e` parsed into a sequence nothing resolves: the config said it was
 /// bound, the key did nothing, and nothing said why.
 #[test]

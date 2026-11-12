@@ -460,3 +460,92 @@ fn a_double_slash_typed_in_the_popup_is_a_prompt() -> TestResult {
     assert!(!rows.contains("unknown command"), "{rows}");
     Ok(())
 }
+
+fn enter(app: &mut App, tx: &UnboundedSender<Command>) {
+    press(app, tx, KeyCode::Enter, KeyModifiers::NONE);
+}
+
+/// Dies with Enter in the `/` list submitting the typed `/mo` as a command of that name, which
+/// answers "unknown command"; the highlighted match is what runs.
+#[test]
+fn enter_in_the_command_list_runs_the_highlighted_match() -> TestResult {
+    let mut app = app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/mo");
+    enter(&mut app, &tx);
+    assert!(app.bottom_open(), "/model opens the model picker");
+    assert_eq!(app.composer_text(), "");
+    assert!(sent(&mut rx).is_empty());
+    assert!(!transcript(&app).contains("unknown command"));
+    Ok(())
+}
+
+/// Dies with Esc leaving the `/` the list opened with in the box, so the next word was a command.
+#[test]
+fn escape_closes_the_command_list_and_empties_the_box() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/pl");
+    press(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!app.bottom_open());
+    assert_eq!(app.composer_text(), "");
+    Ok(())
+}
+
+/// Dies with Tab dropping the list's highlight: it fills the highlighted name, not the typed prefix.
+#[test]
+fn tab_in_the_command_list_fills_the_highlighted_name_for_arguments() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/p");
+    press(&mut app, &tx, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, &tx, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.composer_text(), "/plantree ");
+    assert!(!app.bottom_open(), "arguments are typed in the box");
+    Ok(())
+}
+
+/// Dies with Tab on a pasted `/name` draft, where no list is open, doing nothing: one match fills
+/// in place, several open the list and keep the draft.
+#[test]
+fn tab_on_a_slash_draft_fills_one_match_and_lists_several() -> TestResult {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut one = app();
+    paste(&mut one, &tx, "/mod");
+    press(&mut one, &tx, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(one.composer_text(), "/model ");
+    assert!(!one.bottom_open());
+    let mut several = app();
+    paste(&mut several, &tx, "/p");
+    press(&mut several, &tx, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(several.composer_text(), "/p");
+    assert!(several.bottom_open(), "several matches open the list");
+    Ok(())
+}
+
+/// Dies with the list replacing the box: the matches sit above a box that holds the typed text,
+/// painted at a pane that does not start at the screen's origin.
+#[test]
+fn the_command_list_sits_above_the_box_at_a_nonzero_offset() -> TestResult {
+    use ratatui::layout::Rect;
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/mo");
+    let backend = common::VT100Backend::with_scrollback(80, 40, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
+    terminal.set_viewport_area(Rect::new(0, 0, 80, 40));
+    let area = Rect::new(7, 5, 60, 30);
+    let mut scroll = 0;
+    terminal.draw(|frame| {
+        let _ = yi_tui::render::paint_pane(&mut app, None, frame.buffer_mut(), area, &mut scroll);
+    })?;
+    let rows: Vec<String> = (0..40)
+        .map(|row| terminal.backend().row_text(row))
+        .collect();
+    let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
+    let list = at("model").ok_or_else(|| format!("no match row: {rows:#?}"))?;
+    let draft = at("│/mo").ok_or_else(|| format!("no draft row: {rows:#?}"))?;
+    assert!(list < draft, "matches above the box: {rows:#?}");
+    assert!(rows.get(list).is_some_and(|row| row.starts_with("       ")));
+    Ok(())
+}
