@@ -1339,7 +1339,7 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - The solo TUI's OSC 2 title is `Yi > <prompt>` while ready, `Yi ! <prompt>` while an approval
   or question waits, and `Yi` plus `◌ ◍ ◉ ◍` every 250 ms while the foreground run is live, which
   includes retries, compaction and waiting on children (`Delegating`). The label is the first 40
-  characters of the latest typed prompt; the solo TUI has no summarizer, so it shows no card.
+  characters of the latest typed prompt; the solo TUI has no summarizer, so it shows no title.
   Background jobs and child sessions that outlive the run do not keep the title pulsing.
 - `yi tui --headless --keys <script> --frames <dir> [--record] [--snap]` drives the real loop on
   an in-memory screen (steps `key`, `type`, `type-ms`, `wait`, `wait-idle`, `wait-frame`, `quit`);
@@ -1381,11 +1381,8 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   a blank row between workspaces and no headers. Sessions started in one directory share an
   accent and each keeps its own identicon, seeded by its id; a child wears its parent's accent.
   A working or blocked session's avatar plays its state loop at 15 fps in place of its identicon.
-- A session is titled once by the summarizer after its first turn (`_yi/name`). The reply is
-  omp's card: the model picks an emoji and a 1-6 character code for that session, then a
-  three-to-six word title, stored as `🧪 FLAKY: Fix flaky park tests`. The first prompt stays
-  its name until then, and the daemon's ledger keeps the title. The summarizer waits for the
-  run to end, so the card is chosen with the answer in view.
+- A session is titled once by the summarizer after its first turn (`_yi/name`); the first
+  prompt stays its name until then, and the daemon's ledger keeps the title.
 - The focused session's console OSC 2 title is `Yi >` its label while ready, `Yi !` while
   `Blocked`, and `Yi` plus the same 250 ms pulse while `Working`; both surfaces read one
   `TabMark` table. `DoneUnseen` is ready, not attention. The label is the summarizer's title.
