@@ -215,35 +215,61 @@ pub fn judge_command_paths<T>(
     cwd: &Path,
     mut judge: impl FnMut(&[PathBuf]) -> Option<T>,
 ) -> Result<Option<T>, String> {
-    let text = command.replace(['"', '\'', '\\'], "");
-    let text = text.replace("${HOME}", "~").replace("$HOME", "~");
-    let words = text.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
-    let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
-    for word in words.filter(|word| !word.is_empty()) {
-        let cd = cd_target(word, &mut after_cd);
-        let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
-        for spelled in std::iter::once(word).chain(glued) {
-            let head: String = (spelled.split_inclusive('/'))
-                .take_while(|part| !part.contains(['*', '?', '[']))
-                .collect();
-            let paths: Vec<PathBuf> = dirs.iter().map(|dir| resolve_target(&head, dir)).collect();
-            if let Some(hit) = judge(&paths) {
-                return Ok(Some(hit));
-            }
-            for path in paths.into_iter().filter(|_| cd) {
-                if !dirs.contains(&path) {
-                    dirs.push(path);
+    let text = command.replace("${HOME}", "~").replace("$HOME", "~");
+    let flat = text.replace(['"', '\'', '\\'], "");
+    let flat = flat.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
+    for words in [flat.map(str::to_owned).collect(), shell_words(&text)] {
+        let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
+        for word in words.iter().filter(|word| !word.is_empty()) {
+            let cd = cd_target(word, &mut after_cd);
+            let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
+            for spelled in std::iter::once(word.as_str()).chain(glued) {
+                let head: String = (spelled.split_inclusive('/'))
+                    .take_while(|part| !part.contains(['*', '?', '[']))
+                    .collect();
+                let paths: Vec<PathBuf> =
+                    dirs.iter().map(|dir| resolve_target(&head, dir)).collect();
+                if let Some(hit) = judge(&paths) {
+                    return Ok(Some(hit));
                 }
-            }
-            if dirs.len() > CD_DIRS_MAX {
-                return Err(format!(
-                    "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX} (CD_DIRS_MAX); run the cds as separate calls",
-                    dirs.len()
-                ));
+                for path in paths.into_iter().filter(|_| cd) {
+                    if !dirs.contains(&path) {
+                        dirs.push(path);
+                    }
+                }
+                if dirs.len() > CD_DIRS_MAX {
+                    return Err(format!(
+                        "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX} (CD_DIRS_MAX); run the cds as separate calls",
+                        dirs.len()
+                    ));
+                }
             }
         }
     }
     Ok(None)
+}
+
+/// Invariant: a quoted or escaped space, or a bare `=:@`, stays in its word, which the flat split
+/// breaks; both splits run, because this one keeps a double-quoted `$(cat key)` as one word.
+fn shell_words(text: &str) -> Vec<String> {
+    let (mut words, mut word, mut quote, mut escaped) = (Vec::new(), String::new(), None, false);
+    for c in text.chars() {
+        match (quote, c) {
+            _ if escaped => {
+                word.push(c);
+                escaped = false;
+            }
+            (None | Some('"'), '\\') => escaped = true,
+            (Some(open), _) if open == c => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, _) if c.is_whitespace() || ";|&()<>`".contains(c) => {
+                words.push(std::mem::take(&mut word));
+            }
+            _ => word.push(c),
+        }
+    }
+    words.push(word);
+    words
 }
 
 /// The next shell word, quotes dropped; none when it is empty or built by expansion.

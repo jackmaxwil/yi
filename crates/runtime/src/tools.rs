@@ -922,6 +922,18 @@ mod tests {
         assert!(!refused("cd -- /home/u/.yi/other && cat notes.txt"));
     }
 
+    #[test]
+    fn a_quoted_or_escaped_space_keeps_a_walled_path_whole() {
+        let roots = [PathBuf::from("/home/u/my store")];
+        let refused = |command: &str| {
+            super::walled_root_refusal(command, &roots, &[], Path::new("/work")).is_some()
+        };
+        assert!(refused("cat '/home/u/my store/x'"));
+        assert!(refused("cat \"/home/u/my store\"/x"));
+        assert!(refused("cat /home/u/my\\ store/x"));
+        assert!(!refused("cat '/home/u/my notes/x'"));
+    }
+
     /// Incident: a polled background job printed the app's words with no command for the fence to
     /// read, so the shell tool marks the job and the fence follows the mark.
     #[test]

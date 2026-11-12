@@ -275,6 +275,8 @@ fn an_unreadable_store_is_named_and_asks_only_for_a_two_name_path() -> TestResul
     std::fs::hard_link(&own, &twin)?;
     std::fs::create_dir_all(scratch.join("workspace/nested"))?;
     std::fs::hard_link(&own, scratch.join("workspace/nested/inner"))?;
+    std::fs::hard_link(&own, scratch.join("workspace/my key"))?;
+    std::fs::hard_link(&own, scratch.join("workspace/id@a:b=c"))?;
     std::fs::write(scratch.join("workspace/single"), "ordinary\n")?;
     let judged = |command: &str| command_reads_alias(command, &context).unwrap_or_default();
     let opened = ReadGate::new(&context).open(&twin, &[]).err();
@@ -294,6 +296,11 @@ fn an_unreadable_store_is_named_and_asks_only_for_a_two_name_path() -> TestResul
         "echo `cat twin`",
         "{ cat twin; }",
         "cat \"twin\" 2>/dev/null",
+        "cat \"my key\"",
+        "cat 'my key'",
+        "cat my\\ key",
+        "echo \"$(cat twin)\"",
+        "cat id@a:b=c",
     ];
     for (spelled, why) in spellings
         .iter()
