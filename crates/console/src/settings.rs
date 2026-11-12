@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use yi_tui::colors::Theme;
-use yi_tui::theme_file::{BUILT_IN, is_theme_row};
+use yi_tui::theme_file::{BUILT_IN, ground_id, is_theme_row};
 use yi_types::acp::AcpConfigOption;
 use yi_types::settings::{Applies, SettingKind, SettingRow, TABS, pane_edits_list};
 
@@ -734,10 +734,17 @@ pub fn view(
             Style::default().fg(theme.warning),
         ));
     }
+    let listing = theme_list_open(settings).map(|id| id == ground_id(theme.dark));
     let hint = match (&settings.edit, settings.tab) {
         (Some(Edit::Type(_)), _) => " type · enter save · empty unsets · esc cancel",
-        (Some(Edit::Pick { .. }), _) if theme_list_open(settings).is_some() => {
+        (Some(Edit::Pick { .. }), _) if listing == Some(true) => {
             " ↑↓ preview · enter save · esc restore"
+        }
+        (Some(Edit::Pick { .. }), _) if listing == Some(false) && theme.dark => {
+            " ↑↓ choose · enter saves it for a light terminal · esc cancel"
+        }
+        (Some(Edit::Pick { .. }), _) if listing == Some(false) => {
+            " ↑↓ choose · enter saves it for a dark terminal · esc cancel"
         }
         (Some(Edit::Pick { .. }), _) => " ↑↓ choose · enter save · esc cancel",
         (None, SESSION) => " ↑↓ move · ←→ tab · enter change · d make default",
@@ -1006,6 +1013,19 @@ mod theme_rows {
         );
         let last = texts.last().map(String::as_str);
         assert_eq!(last, Some(" ↑↓ preview · enter save · esc restore"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_other_grounds_list_says_it_only_saves() -> TestResult {
+        let mut settings = on_dark_theme()?;
+        settings.cursor = settings.cursor.saturating_add(1);
+        press(&mut settings, KeyCode::Enter);
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = view(&settings, &[], false, 80, 40, &theme);
+        let hint = lines.last().map(text);
+        let saves = " ↑↓ choose · enter saves it for a light terminal · esc cancel";
+        assert_eq!(hint.as_deref(), Some(saves));
         Ok(())
     }
 
