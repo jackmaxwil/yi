@@ -559,5 +559,6 @@ edited by hand.
 - [D586](adr/d586.md) - Five guardrail gates announce a skip in a checkout that has no...
 - [D587](adr/d587.md) - The red ladder
 - [D588](adr/d588.md) - a custom provider in `providers` names the wire it speaks with an optional...
+- [D589](adr/d589.md) - Yi takes theme files
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
