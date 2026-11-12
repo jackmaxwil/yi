@@ -1303,8 +1303,14 @@ fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult 
     );
     let entries = frame_entries(&frames)?;
     let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
-    let row = last.lines().next().ok_or("an empty frame")?;
-    assert_eq!(row.trim_matches(['"', ',', ' ']), "/treex[31mredy\u{2588}");
+    let row = last
+        .lines()
+        .find(|row| row.contains("/tree"))
+        .ok_or("no row holds the draft")?;
+    assert_eq!(
+        row.trim_matches(['"', ',', ' ', '\u{2502}']).trim_end(),
+        "/treex[31mredy"
+    );
     Ok(())
 }
 

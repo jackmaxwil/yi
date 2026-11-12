@@ -1,7 +1,7 @@
 ---
 issue: Closes #2142
 growth: +277 the /queue verb and its three tests are 110 runtime lines; the command list that edits the box, Tab and Enter are 167 TUI lines. Weighed for deletion: Max's duplicate popup Tab arm, its complete_tab and two popup tests, and a private-layout test were cut, and the verb reuses follow_up_message rather than a queue of its own.
-raise: comments +12, tests +216, crate runtime +110, crate tui +167
+raise: comments +12, tests +222, crate runtime +110, crate tui +167
 ledger+: TUI | `/queue <message>` runs the message after the current turn, and starts the turn on an idle session even from the TUI's own slash thread
 ---
 
