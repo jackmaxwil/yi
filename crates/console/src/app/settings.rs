@@ -88,12 +88,11 @@ impl App {
             return;
         };
         let (session, options) = self.settings_options(pane);
-        let choices = self.theme_choices();
+        self.fill_theme_choices(pane, None);
         let Some(settings) = self.settings_pane(pane) else {
             return;
         };
         settings.status = None;
-        settings.theme_choices = choices;
         let intent = crate::settings::key(settings, key, &options);
         self.dirty = true;
         self.settings_intent(outbound, pane, session, intent);
@@ -112,11 +111,10 @@ impl App {
             }
             Target::Row(row) => {
                 let (session, options) = self.settings_options(pane);
-                let choices = self.theme_choices();
+                self.fill_theme_choices(pane, Some(row));
                 let Some(settings) = self.settings_pane(pane) else {
                     return;
                 };
-                settings.theme_choices = choices;
                 let intent = crate::settings::click(settings, row, &options);
                 self.settings_intent(outbound, pane, session, intent);
             }
@@ -255,9 +253,17 @@ impl App {
 }
 
 impl App {
-    fn theme_choices(&self) -> Vec<String> {
-        let home = self.state.home.as_deref().map(std::path::Path::new);
-        yi_tui::theme_file::list(themes_dir(home).as_deref())
+    fn fill_theme_choices(&mut self, pane: PaneId, row: Option<usize>) {
+        let opens = self
+            .settings_pane(pane)
+            .is_some_and(|settings| crate::settings::opens_theme_list(settings, row));
+        if opens {
+            let home = self.state.home.as_deref().map(std::path::Path::new);
+            let choices = yi_tui::theme_file::list(themes_dir(home).as_deref());
+            if let Some(settings) = self.settings_pane(pane) {
+                settings.theme_choices = choices;
+            }
+        }
     }
 
     /// Paints `name` when row `id` names this terminal's ground; the other row only saves.

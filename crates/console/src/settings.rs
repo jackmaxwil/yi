@@ -155,6 +155,14 @@ pub(crate) fn theme_list_open(settings: &Settings) -> Option<String> {
     theme_row(settings).filter(|_| matches!(settings.edit, Some(Edit::Pick { .. })))
 }
 
+/// A key on the cursor's row (`row` None) or a press on `row` would open a theme list from closed.
+pub(crate) fn opens_theme_list(settings: &Settings, row: Option<usize>) -> bool {
+    let closed = settings.edit.is_none() || row.is_some_and(|row| row != settings.cursor);
+    let rows = settings.tab_rows();
+    let at = rows.get(row.unwrap_or(settings.cursor));
+    closed && at.is_some_and(|at| is_theme_row(&at.id))
+}
+
 /// The value a press moves a choice to: the one after the current, wrapping.
 fn stepped(picks: &[String], current: &str) -> Option<String> {
     if picks.len() < 2 {
