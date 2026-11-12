@@ -155,6 +155,14 @@ pub(crate) fn theme_list_open(settings: &Settings) -> Option<String> {
     theme_row(settings).filter(|_| matches!(settings.edit, Some(Edit::Pick { .. })))
 }
 
+/// A key on the cursor's row (`row` None) or a press on `row` would open a theme list from closed.
+pub(crate) fn opens_theme_list(settings: &Settings, row: Option<usize>) -> bool {
+    let closed = settings.edit.is_none() || row.is_some_and(|row| row != settings.cursor);
+    let rows = settings.tab_rows();
+    let at = rows.get(row.unwrap_or(settings.cursor));
+    closed && at.is_some_and(|at| is_theme_row(&at.id))
+}
+
 /// The value a press moves a choice to: the one after the current, wrapping.
 fn stepped(picks: &[String], current: &str) -> Option<String> {
     if picks.len() < 2 {
@@ -987,6 +995,23 @@ mod theme_rows {
         assert!(below > 0, "the tab has rows under the theme row");
         let more = lines.iter().map(text).find(|line| line.contains("more ·"));
         assert_eq!(more.as_deref(), Some("        … 97 more · ↑↓ to reach"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_theme_list_keeps_the_footer_and_hint_inside_a_short_pane() -> TestResult {
+        let mut settings = on_dark_theme()?;
+        press(&mut settings, KeyCode::Enter);
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = view(&settings, &[], false, 80, 20, &theme);
+        let texts: Vec<String> = lines.iter().map(text).collect();
+        assert!(
+            lines.len() <= 20,
+            "{} lines in a 20-row pane: {texts:#?}",
+            lines.len()
+        );
+        let last = texts.last().map(String::as_str);
+        assert_eq!(last, Some(" ↑↓ preview · enter save · esc restore"));
         Ok(())
     }
 

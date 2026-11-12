@@ -236,6 +236,11 @@ impl Theme {
             };
         }
         let polarity = if added { self.success } else { self.error };
+        let fill = self.from_file(if added {
+            Over::DiffAdded
+        } else {
+            Over::DiffRemoved
+        });
         match (self.tier, self.dark) {
             (ColorTier::Ansi16, _) => DiffRowStyle {
                 gutter: Style::default().add_modifier(Modifier::DIM),
@@ -244,11 +249,11 @@ impl Theme {
                 fill: None,
             },
             (ColorTier::TrueColor, true) => {
-                let bg = if added {
-                    self.pick(Over::DiffAdded, Color::Rgb(0x21, 0x3A, 0x2B))
+                let bg = fill.unwrap_or(if added {
+                    Color::Rgb(0x21, 0x3A, 0x2B)
                 } else {
-                    self.pick(Over::DiffRemoved, Color::Rgb(0x4A, 0x22, 0x1D))
-                };
+                    Color::Rgb(0x4A, 0x22, 0x1D)
+                });
                 DiffRowStyle {
                     gutter: self.dim_style().bg(bg),
                     sign: Style::default().fg(polarity).bg(bg),
@@ -257,11 +262,6 @@ impl Theme {
                 }
             }
             (ColorTier::TrueColor, false) => {
-                let fill = self.from_file(if added {
-                    Over::DiffAdded
-                } else {
-                    Over::DiffRemoved
-                });
                 let (bg, gutter_bg) = if let Some(fill) = fill {
                     (fill, fill)
                 } else if added {
@@ -279,7 +279,7 @@ impl Theme {
                 }
             }
             (ColorTier::Ansi256, true) => {
-                let bg = Color::Indexed(if added { 22 } else { 52 });
+                let bg = fill.unwrap_or(Color::Indexed(if added { 22 } else { 52 }));
                 DiffRowStyle {
                     gutter: self.dim_style().bg(bg),
                     sign: Style::default().fg(polarity).bg(bg),
@@ -288,7 +288,9 @@ impl Theme {
                 }
             }
             (ColorTier::Ansi256, false) => {
-                let (bg, gutter_bg) = if added {
+                let (bg, gutter_bg) = if let Some(fill) = fill {
+                    (fill, fill)
+                } else if added {
                     (Color::Indexed(194), Color::Indexed(157))
                 } else {
                     (Color::Indexed(224), Color::Indexed(217))
