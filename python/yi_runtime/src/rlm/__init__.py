@@ -1162,9 +1162,12 @@ async def merge_worktree(target: "str | RLMSubagent", *, check: str | None = Non
 
 
 @_public
-async def discard_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
-    """Throw an isolated child's worktree and branch away without merging."""
-    return await host_request("rlm.discard_worktree", {"target": _worktree_target(target)})
+async def discard_worktree(target: "str | RLMSubagent", force: bool = False) -> dict[str, Any]:
+    """Throw an isolated child's worktree and branch away without merging.
+
+    A tree cut with uncommitted files is discarded freely while it holds only those files;
+    `force=True` drops changes the child made on top of them."""
+    return await host_request("rlm.discard_worktree", {"target": _worktree_target(target), "force": force})
 
 
 _KERNEL_SCHEME = "kernel://"

@@ -95,6 +95,8 @@ surviving a restart.
   contained, and a cell cannot ask to leave (an `rlm.bash` job gets only the grants bash already
   holds). A step that needs the network, an install, or a write outside the tree goes through the
   bash tool, which can ask.
+  The forge is one: `fgj` reads its config under `~/.config`, which a cell cannot open. Fetch with
+  the bash tool (`fgj api repos/o/r/pulls > /tmp/prs.json`), then `json.load` the file in a cell.
 - A `%%bash` or `!` cell whose command is not read-only stops for approval in auto mode; Python,
   and `rlm.bash` inside it, do not.
 - The kernel's environment is fixed when it boots. A plugin installed later is on PATH for bash

@@ -419,7 +419,7 @@ async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> 
         .merge_worktree("kid", None)
         .err()
         .ok_or("a dirty fork was merged")?;
-    assert!(refused.contains("h.tree.merge()"), "{refused}");
+    assert!(refused.contains("rlm.tree().merge(h.tree)"), "{refused}");
     if !foldable(&rig)? {
         let why = rig
             .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
@@ -435,6 +435,51 @@ async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> 
         .await?;
     assert_eq!(reply["summary"], "merged 1 of 1", "{reply:?}");
     assert_eq!(read(&rig.repo.join("f1.txt"))?, "kid's\n");
+    rig.family.host.delete("kid")?;
+    assert!(!at.exists(), "the folded child's tree went with it");
+    Ok(())
+}
+
+async fn finished_kid_on_a_dirty_fork(rig: &Rig) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    std::fs::write(rig.repo.join("f0.txt"), "a person's\n")?;
+    let at = rig.fork("given").await?;
+    let mut asked = Map::new();
+    asked.insert("name".to_owned(), "kid".into());
+    asked.insert("role".to_owned(), "root".into());
+    asked.insert("tree".to_owned(), "given".into());
+    rig.family.host.spawn("look".to_owned(), asked)?;
+    assert!(rig.family.reaches("kid", "finished").await);
+    Ok(at)
+}
+
+/// A child that never touched its fork holds only the files its parent carried in: discarding it
+/// loses nothing, so a failed child can always be released.
+#[tokio::test]
+async fn a_dirty_fork_the_child_never_changed_discards_without_force() -> TestResult {
+    let rig = rig("given")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    rig.family.host.discard_worktree("kid", false)?;
+    assert!(!at.exists());
+    rig.family.host.delete("kid")?;
+    Ok(())
+}
+
+/// A dirty fork the child wrote to refuses a plain discard, names what drops it, and yields to force.
+#[tokio::test]
+async fn a_dirty_fork_the_child_changed_discards_only_with_force() -> TestResult {
+    let rig = rig("given")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    std::fs::write(at.join("kid.txt"), "kid's own work\n")?;
+    let refused = rig
+        .family
+        .host
+        .discard_worktree("kid", false)
+        .err()
+        .ok_or("a dirty fork the child wrote to was discarded without force")?;
+    assert!(refused.contains("force=True"), "{refused}");
+    assert!(at.exists());
+    rig.family.host.discard_worktree("kid", true)?;
+    assert!(!at.exists());
     Ok(())
 }
 

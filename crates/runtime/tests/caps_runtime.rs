@@ -54,6 +54,46 @@ fn row_of(text: &str) -> Result<Row<'_>, String> {
 }
 
 #[tokio::test]
+async fn find_models_marks_a_route_noted_as_failing_and_unmarks_it_on_recovery() -> TestResult {
+    let root = Scratch::new("yi-caps-find-models-failing")?;
+    unsafe { std::env::set_var("HOME", root.home()?) };
+    unsafe { std::env::set_var("OPENROUTER_API_KEY", "key-or") };
+    let family = support::family(
+        root.to_path_buf(),
+        root.to_path_buf(),
+        support::memory_store("root"),
+        None,
+    );
+    let first = family.host.find_models("", 1);
+    let selector = first["models"][0]["selector"]
+        .as_str()
+        .ok_or("no selector")?
+        .to_owned();
+    assert!(first["models"][0].get("failing").is_none());
+    family
+        .host
+        .note_route(&selector, Some("Connection refused"));
+    let marked = family.host.find_models("", 10_000);
+    let row = marked["models"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["selector"] == selector.as_str()))
+        .ok_or("the noted route is not listed")?;
+    assert_eq!(
+        row["failing"],
+        "its last child died on its first model call: Connection refused"
+    );
+    family.host.note_route(&selector, None);
+    let cleared = family.host.find_models("", 10_000);
+    assert!(
+        cleared["models"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().all(|row| row.get("failing").is_none())),
+        "{cleared:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn find_models_says_how_many_matches_the_limit_left_out() -> TestResult {
     let root = Scratch::new("yi-caps-find-models")?;
     unsafe { std::env::set_var("HOME", root.home()?) };

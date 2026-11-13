@@ -3527,7 +3527,8 @@ async fn a_discard_stops_what_still_runs_in_the_tree_and_says_so() -> TestResult
     let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
     let job = yi_tools::jobs::spawn_job("sleep 600", Path::new(lane), &never, None, None)?;
     let host = std::sync::Arc::clone(&family.host);
-    let reply = tokio::task::spawn_blocking(move || host.discard_worktree("writer")).await??;
+    let reply =
+        tokio::task::spawn_blocking(move || host.discard_worktree("writer", false)).await??;
     let stopped = reply["stopped"].as_str().ok_or("no stopped row")?;
     assert!(stopped.contains("sleep 600"), "{stopped}");
     assert!(

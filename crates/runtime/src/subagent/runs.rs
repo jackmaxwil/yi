@@ -216,6 +216,19 @@ impl SubagentHost {
             .err()
             .map(|error| failed(FailClass::RefusedSpawn, error));
         let (exit, error) = complete(&session, ended, start).await;
+        let selector = super::models::selector_of(&session.model());
+        match (&exit, &error) {
+            (ChildExit::Completed, _) => self.note_route(&selector, None),
+            (
+                ChildExit::Failed {
+                    class: FailClass::Provider,
+                },
+                Some(cause),
+            ) if !has_tool_blocks(&session.messages()) => {
+                self.note_route(&selector, Some(cause));
+            }
+            _ => {}
+        }
         self.conclude(&child_id, &session_name, &session, exit, error);
     }
 

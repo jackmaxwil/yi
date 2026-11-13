@@ -13,6 +13,11 @@ use super::hostgit::{candidate_of, git, git_capped};
 use super::settle::{Candidate, Quiescence};
 use super::{BranchName, LIST_BUDGET, LaneError, PLUMBING_CAP, Pool, Sha, io_error};
 
+fn tree_of_snapshot(tree: &Path) -> Option<Sha> {
+    let commit = super::warm::snapshot(tree, None).ok()?;
+    let at = format!("{}^{{tree}}", commit.as_str());
+    Sha::parse(&git(tree, &["rev-parse", &at]).ok()?)
+}
 const SCRATCH_ROWS_MAX: usize = 3;
 
 /// What git said about the parent's tree before a fork: what the child will not have.
@@ -136,6 +141,7 @@ pub struct ChildTree {
     pool: Pool,
     session: String,
     dirt: bool,
+    carried: Option<Sha>,
     _held: File,
 }
 
@@ -159,6 +165,15 @@ impl ChildTree {
     /// Committing this tree would commit a person's edits as the child's.
     pub fn carries_dirt(&self) -> bool {
         self.dirt
+    }
+
+    /// A tree cut with the parent's uncommitted files holds the same files it was handed, so
+    /// discarding it loses nothing the child wrote. An unreadable snapshot answers no.
+    pub fn unchanged_since_fork(&self) -> bool {
+        let Some(carried) = &self.carried else {
+            return false;
+        };
+        tree_of_snapshot(&self.path).is_some_and(|now| now == *carried)
     }
 
     /// What a host needs to read the candidate without the tree.
@@ -228,6 +243,7 @@ impl ChildTree {
             pool: pool.clone(),
             session: child_id.to_owned(),
             dirt: plan.dirt,
+            carried: None,
             _held: held,
         };
         let mut rows = Vec::new();
@@ -281,6 +297,10 @@ impl ChildTree {
                 "the child starts at HEAD {}; uncommitted paths not counted: {why}",
                 tree.base.short()
             ));
+        }
+        let mut tree = tree;
+        if plan.dirt {
+            tree.carried = tree_of_snapshot(tree.path());
         }
         Ok((tree, rows))
     }

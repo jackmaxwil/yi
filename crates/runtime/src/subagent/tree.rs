@@ -339,6 +339,9 @@ impl SubagentHost {
             if fold.merged {
                 merged.push(other.clone());
             }
+            if fold.conflicts.is_empty() {
+                self.mark_folded(other);
+            }
             conflicts.extend(
                 fold.conflicts
                     .into_iter()
@@ -369,6 +372,24 @@ impl SubagentHost {
             reply.insert("next".to_owned(), json!("a tree that conflicted moved nothing here: read both sides with t.diff, change one, and merge again"));
         }
         Ok(reply)
+    }
+
+    /// A finished child whose tree folded here without conflict has handed its work over: its
+    /// worktree may now be deleted, so a failed child never holds a slot for want of a disposition.
+    fn mark_folded(&self, name: &str) {
+        let Ok(mut children) = self.children.lock() else {
+            return;
+        };
+        let Ok(key) = Self::key_of(&children, name) else {
+            return;
+        };
+        if let Some(record) = children.records.get_mut(&key)
+            && record.exit.is_some()
+            && record.worktree.is_some()
+            && record.disposition.is_none()
+        {
+            record.disposition = Some(yi_types::plan::op::Choice::Discarded);
+        }
     }
 
     fn tree_rewind(&self, payload: &Map<String, Value>) -> Result<Map<String, Value>, String> {

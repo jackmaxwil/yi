@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use yi_types::message::{AgentMessage, Content};
 
-use super::{ChildActivity, ChildBuild, Standing, SubagentHost};
+use super::{ChildActivity, ChildBuild, Children, Standing, SubagentHost};
 use crate::mailbox::ParentLink;
 use crate::plan::ops::{ENGINE_AGENT, OWNER_AGENT};
 use crate::provider::resolve_model;
@@ -80,33 +80,65 @@ impl SubagentHost {
             .iter()
             .filter(|(.., reader)| *reader)
             .count();
-        let workers = children
+        let counts = |record: &&super::ChildRecord| matches!(record.standing, Standing::Worker);
+        let (mut failed, mut finished, mut running) = (0_usize, 0_usize, 0_usize);
+        for record in children.values().filter(counts) {
+            match &record.exit {
+                None => running = running.saturating_add(1),
+                Some(yi_types::subagent::ChildExit::Completed) => {
+                    finished = finished.saturating_add(1);
+                }
+                Some(_) => failed = failed.saturating_add(1),
+            }
+        }
+        let never_worked = children
             .values()
-            .filter(|record| matches!(record.standing, Standing::Worker))
-            .count()
+            .filter(counts)
+            .filter(|record| {
+                matches!(
+                    record.exit,
+                    Some(yi_types::subagent::ChildExit::Failed { .. })
+                ) && record.tool_use_count == 0
+            })
+            .count();
+        let held = running
+            .saturating_add(finished)
+            .saturating_add(failed)
+            .saturating_sub(never_worked)
             .saturating_add(children.building.len().saturating_sub(building_readers));
         let reserved = [OWNER_AGENT, ENGINE_AGENT, "host"];
         let refusal = if reserved.contains(&session_name) {
             Some(format!(
                 "\"{session_name}\" is reserved: it names the plan's owner, engine or host; pick another name"
             ))
-        } else if matches!(standing, Standing::Worker) && workers >= self.options.max_children {
+        } else if matches!(standing, Standing::Worker) && held >= self.options.max_children {
             Some(format!(
-                "RLM child limit reached ({} children retained); rlm.delete_subagent a finished child first",
+                "RLM child limit reached: {held} of {} children held ({failed} failed, {finished} finished, {running} running); rlm.delete_subagent frees a slot",
                 self.options.max_children
             ))
-        } else if children
-            .values()
-            .map(|record| &record.session_name)
-            .chain(children.building.iter().map(|(name, ..)| name))
-            .any(|name| name == session_name)
-        {
-            Some(format!(
-                "Agent session name \"{session_name}\" is already taken at depth {}",
-                self.options.depth.saturating_add(1)
-            ))
         } else {
-            None
+            children
+                .values()
+                .find(|record| record.session_name == session_name)
+                .map(|record| match &record.exit {
+                    None => "running",
+                    Some(yi_types::subagent::ChildExit::Completed) => "finished",
+                    Some(yi_types::subagent::ChildExit::Failed { .. }) => "failed",
+                    Some(_) => "closed",
+                })
+                .or_else(|| {
+                    children
+                        .building
+                        .iter()
+                        .any(|(name, ..)| name == session_name)
+                        .then_some("starting")
+                })
+                .map(|state| {
+                    format!(
+                        "Agent session name \"{session_name}\" is already taken at depth {} by a {state} child; rlm.delete_subagent(\"{session_name}\") frees it",
+                        self.options.depth.saturating_add(1)
+                    )
+                })
         };
         let lease = match refusal {
             None => self.draw(&children, session_name, ask),
@@ -144,6 +176,12 @@ impl SubagentHost {
                     .ok_or_else(|| format!("no model matches selector {selector}"))?
             }
         };
+        if let Some(refused) = super::models::loopback_refused(&model.base_url) {
+            return Err(format!(
+                "route {} is unreachable before spawning: {refused}; nothing was spawned. rlm.find_models(...) lists other routes",
+                super::models::selector_of(&model)
+            ));
+        }
         // Before a lane, a container or a lease is taken: the child would stream with no key.
         if !self.options.provider.has_credential(&model.provider) {
             return Err(yi_ai::auth::missing_message(&model.provider));
@@ -431,5 +469,22 @@ pub(super) fn parse_fork(kwargs: &Map<String, Value>) -> Result<Fork, String> {
             .map(Fork::LastN)
             .ok_or_else(|| format!("rlm.run fork turn count must be positive, got {number}")),
         Some(other) => Err(format!("rlm.run fork must be a string or number, got {other}")),
+    }
+}
+
+impl Children {
+    /// Tokens out on lease: every record still held, and every build in flight.
+    pub(crate) fn reserved(&self) -> u64 {
+        let held = self
+            .records
+            .values()
+            .filter_map(|record| record.lease.tokens);
+        held.chain(self.building.iter().map(|(_, tokens, _)| *tokens))
+            .fold(0, u64::saturating_add)
+    }
+
+    /// A build whose record is listed: its reservation is the record's from here on.
+    pub(crate) fn release_build(&mut self, name: &str) {
+        self.building.retain(|(held, _, _)| held != name);
     }
 }

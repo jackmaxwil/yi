@@ -2955,7 +2955,7 @@ async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
     std::fs::write(tree.join("spike.txt"), "throwaway\n")?;
     harness
         .host
-        .discard_worktree("spike")
+        .discard_worktree("spike", false)
         .map_err(|error| error.to_string())?;
     assert!(!repo.join("spike.txt").exists(), "nothing crosses back");
     assert!(
@@ -2967,10 +2967,84 @@ async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
     assert!(
         harness
             .host
-            .discard_worktree("spike")
+            .discard_worktree("spike", false)
             .err()
             .is_some_and(|error| error.contains("has no worktree")),
         "a second hand-back names the reason rather than half-working"
+    );
+    Ok(())
+}
+
+/// Eight children that fail on their first model call hold no slot, so a burst of spawns on a dead
+/// route cannot leave the parent unable to spawn the next one.
+#[tokio::test]
+async fn children_that_failed_before_any_tool_call_free_their_slots() -> TestResult {
+    let harness = harness_with(HarnessOptions {
+        child_errors: true,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "unused",
+        tool_command: None,
+        cwd: None,
+        wake_parent: None,
+    })?;
+    for index in 0..8 {
+        harness
+            .host
+            .spawn(
+                format!("doomed {index}"),
+                kwargs(&[("name", &format!("doomed-{index}"))]),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    for _ in 0..POLL_ATTEMPTS {
+        let members = harness.host.status()["members"].clone();
+        if members
+            .as_array()
+            .is_some_and(|rows| rows.len() == 8 && rows.iter().all(|row| row["state"] == "failed"))
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let ninth = harness
+        .host
+        .spawn("ninth".to_owned(), kwargs(&[("name", "ninth")]));
+    assert!(
+        ninth.is_ok(),
+        "failed children that never ran a tool must not fill the cap: {ninth:?}"
+    );
+    Ok(())
+}
+
+/// A child that dies on its first model call leaves its route noted as failing, which
+/// `find_models` then shows, so a parent choosing a route sees it before spending a slot.
+#[tokio::test]
+async fn a_child_that_died_on_its_first_call_leaves_its_route_noted() -> TestResult {
+    let harness = harness_with(HarnessOptions {
+        child_errors: true,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "unused",
+        tool_command: None,
+        cwd: None,
+        wake_parent: None,
+    })?;
+    let model = faux_model(128_000);
+    let route = format!("{}/{}", model.provider, model.id);
+    harness
+        .host
+        .spawn("doomed".to_owned(), kwargs(&[("name", "doomed")]))
+        .map_err(|error| error.to_string())?;
+    for _ in 0..POLL_ATTEMPTS {
+        if harness.host.failing_route(&route).is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    assert!(
+        harness.host.failing_route(&route).is_some(),
+        "{route} was not noted"
     );
     Ok(())
 }
@@ -2994,10 +3068,10 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
         .host
         .spawn("second".to_owned(), kwargs(&[("name", "twin")]));
     assert!(
-        collision
-            .err()
-            .is_some_and(|error| error.contains("\"twin\" is already taken at depth 1")),
-        "duplicate names must be rejected"
+        collision.err().is_some_and(|error| error
+            .contains("\"twin\" is already taken at depth 1 by a ")
+            && error.contains("child; rlm.delete_subagent(\"twin\") frees it")),
+        "duplicate names must be rejected, naming the holder and the call that frees it"
     );
     // Dies with the reserved names in `reserve`: `main` is the owner's inline agent.
     for word in ["main", "host"] {
@@ -3023,8 +3097,9 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
     assert!(
         overflow
             .err()
-            .is_some_and(|error| error.contains("child limit reached")),
-        "a completed child must hold its slot until closed"
+            .is_some_and(|error| error.contains("8 of 8 children held (0 failed, ")
+                && error.contains(" running); rlm.delete_subagent frees a slot")),
+        "a completed child must hold its slot until closed, and the refusal counts who holds them"
     );
 
     let deleted = harness
