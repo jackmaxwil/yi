@@ -29,6 +29,8 @@ test:
     set -euo pipefail
     . scripts/suite_home.sh test
     {{py}} scripts/test_tmp_test.py
+    {{py}} scripts/suite_home_test.py
+    {{py}} scripts/baseline_test.py
     if command -v cargo-nextest >/dev/null; then
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
@@ -41,6 +43,11 @@ test:
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
     scripts/test_tmp.sh cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
 py := `scripts/py.sh`
+
+# Does a test fail without this branch's change? Runs the nextest filterset on the fork point in a
+# throwaway worktree (a cold build in a temp dir, deleted after), then on HEAD, and prints both exits. It reports and never gates.
+baseline expr:
+    python3 scripts/baseline.py '{{expr}}'
 
 # A local inner loop, never a gate: the generated quick profiles omit tests measured at 5 s or more.
 test-quick:

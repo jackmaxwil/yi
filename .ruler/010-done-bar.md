@@ -18,6 +18,8 @@ necessary, not sufficient.
 4. Name each failure exactly; never soften an error you have not fixed. Its exact text goes in
    saved work (a PR, commit, issue or report to another agent) and to a user who asks for it.
 
+To learn whether a test fails without your change, run `just baseline '<nextest filterset>'`: it runs the fork point in a throwaway worktree, never a stash.
+
 Misdiagnosis defaults: a gate that turns red after your change was broken by
 your change — fix the code, never the baseline. That holds for the wall-clock
 gate too: `startup` scores the *minimum* of its 50 runs, which contention can
