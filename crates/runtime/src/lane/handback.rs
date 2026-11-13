@@ -343,14 +343,36 @@ impl SubagentHost {
         target: &str,
         force: bool,
     ) -> Result<Map<String, Value>, String> {
+        self.discard_within(target, force, Some(Duration::from_secs(5)))
+    }
+
+    /// The same disposition for a fold, which runs for every folded child inside one host call: a
+    /// tree whose jobs are still live is handed back rather than waited out.
+    pub(crate) fn discard_folded(&self, target: &str) -> Result<Map<String, Value>, String> {
+        self.discard_within(target, true, None)
+    }
+
+    fn discard_within(
+        &self,
+        target: &str,
+        force: bool,
+        wait: Option<Duration>,
+    ) -> Result<Map<String, Value>, String> {
         let (lane, _) = self.take_settled_worktree(target, Some(force))?;
         let stopped = yi_tools::jobs::registry().kill_under(lane.path());
         let settled_jobs = |root: &Path| quiescence_of_jobs(root).running.is_empty();
-        let until = Instant::now().checked_add(Duration::from_secs(5));
+        let until = wait.and_then(|wait| Instant::now().checked_add(wait));
         while !settled_jobs(lane.path()) && until.is_some_and(|until| Instant::now() < until) {
             std::thread::sleep(Duration::from_millis(20));
         }
         let quiescence = quiescence_of_jobs(lane.path());
+        let live = quiescence.running.len();
+        if wait.is_none() && live > 0 {
+            self.put_back_worktree(target, lane);
+            return Err(format!(
+                "{live} jobs are still running under its tree: rlm.discard_worktree(\"{target}\") once they finish"
+            ));
+        }
         let settled = match lane.settle(&quiescence, self.deadline()) {
             Ok(settled) => settled,
             Err((kept, error)) => {

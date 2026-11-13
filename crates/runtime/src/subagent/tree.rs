@@ -389,7 +389,7 @@ impl SubagentHost {
                     .and_then(|key| children.records.get(&key))
                     .is_some_and(|record| record.exit.is_some())
             });
-            if finished && let Err(why) = self.discard_worktree(name, true) {
+            if finished && let Err(why) = self.discard_folded(name) {
                 notes.push(format!(
                     "{name}: folded, and its tree was left in place: {why}"
                 ));
