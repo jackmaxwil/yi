@@ -37,6 +37,7 @@ pub mod pycell;
 pub mod question;
 pub mod reflow;
 pub mod render;
+pub mod result_paint;
 pub mod reveal;
 pub mod rows;
 pub mod status;

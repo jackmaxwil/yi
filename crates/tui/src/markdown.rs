@@ -9,7 +9,7 @@ use words::{code_hue, marked_words};
 
 mod run;
 mod settled;
-mod words;
+pub(crate) mod words;
 pub use run::{render_answer, run_chip, shell_blocks};
 pub use settled::Settled;
 

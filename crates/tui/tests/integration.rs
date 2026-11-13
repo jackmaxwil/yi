@@ -31,6 +31,7 @@ mod pane_scroll;
 mod plantree;
 mod pycell;
 mod question_card;
+mod result_paint;
 mod resume;
 mod reveal;
 mod run_chip;

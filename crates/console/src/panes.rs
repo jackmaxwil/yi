@@ -668,16 +668,17 @@ fn capped(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let indent = " ".repeat(lead.width());
-    let mut lang = language.and_then(yi_tui::highlight::lang_for);
-    let rows: Vec<Line<'static>> = text
+    let clean: Vec<String> = text
         .lines()
-        .flat_map(|line| {
-            let clean = yi_tui::transcript::show_controls(line);
-            let mut spans = vec![lead.clone()];
-            spans.extend(highlight_line(&clean, lang.as_mut(), theme, style));
-            yi_tui::wrap::wrap_line(&Line::from(spans), width, &indent)
-        })
+        .map(yi_tui::transcript::show_controls)
         .collect();
+    let lang = match language {
+        Some(language) => yi_tui::highlight::lang_for(language),
+        None => yi_tui::result_paint::sniff(&clean),
+    };
+    let mut painter = yi_tui::result_paint::Painter::new(lang);
+    let rows =
+        yi_tui::result_paint::paint_rows(&clean, &mut painter, lead, style, width, &indent, theme);
     cap_rows(rows, (cap, tail, full), noun, theme)
 }
 

@@ -726,8 +726,8 @@ def answers(finding):
 
 
 def owed_mediums(rnd):
-    """A clean round's medium findings the fixer answers: every one still holding the draft that `answers`."""
-    return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and answers(f) for f in pr_review.holding(rnd))
+    """A round's medium findings the fixer answers: every one still holding the draft that `answers`."""
+    return rnd["verdict"] != "override" and any(f["severity"] == "medium" and answers(f) for f in pr_review.holding(rnd))
 
 
 def red_lanes(repo, sha):
@@ -1436,8 +1436,7 @@ def attempt(repo, pr, ids, asked=False):
         labels.discard("autofix:failed")
     rounds = pr_review.rounds_of(notes, pr_review.authors(), number)
     rnd = round_on(rounds, pr["head"]["sha"], pr_review.holds_for(number, pr["base"]["ref"]))
-    # The owner (2026-10-05): a clean round's mediums are fixed too, since a draft leaves draft
-    # only with none left; `blocked` means a round on the head owes a findings fix.
+    # `blocked` means a round on the head owes a findings fix: a blocking verdict, or a medium that holds the draft.
     blocked = bool(rnd and (rnd["verdict"] == "blocked" or owed_mediums(rnd)))
     if blocked and pr_review.answered(forge_pr.git("log", "-1", "--format=%B", pr["head"]["sha"]), rnd["n"], number):
         blocked = False
@@ -2468,6 +2467,8 @@ def selfcheck():
     fresh = {"n": 3, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness"}]}
     if owed_mediums(fresh) or not owed_mediums(dict(fresh, n=2)) or not owed_mediums(dict(fresh, findings=[dict(fresh["findings"][0], since=2)])):
         errs.append("a fresh medium from round 3 on is owed a fix, or a round-2 or carried one is not")
+    if not owed_mediums(dict(fresh, n=2, verdict="blocked")) or owed_mediums(dict(fresh, n=2, verdict="override")):
+        errs.append("a blocked round's medium is not owed a fix, or an overridden round's is")
     tried = lambda *verdicts: [{"user": {"login": pr_review.BOT}, "created_at": "", "body": f"<!-- yi-autofix-meta pr=1 verdict={v} -->"} for v in verdicts]
     for err, notes, want in ((Missed("nothing changed"), tried(), "missed"), (Missed("nothing changed"), tried("missed", "missed"), "failed"),
                              (RuntimeError("Out of diskspace"), tried(), "deferred"), (RuntimeError("a person is next"), tried(), "failed"),
@@ -3089,7 +3090,7 @@ def selfcheck():
             errs.append(f"three moved baselines made the ratchet subject {said!r}")
     finally:
         shutil.rmtree(repo)
-    # findings_in hands a clean round's mediums to the model, and refuses one with nothing it answers.
+    # findings_in hands a blocked round's mediums to the model, and refuses one with nothing it answers.
     bare = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-bare-"))
     try:
         sh(bare, "git", "init", "-q")
@@ -3108,14 +3109,14 @@ def selfcheck():
                               {"severity": "medium", "lens": "correctness", "claim": "c", "path": "a.rs"}], "asked")):
             try:
                 findings_in(bare, {"number": 1, "title": "t", "base": {"ref": "main"}},
-                            {"n": 2, "verdict": "clean", "findings": found}, asked)
+                            {"n": 2, "verdict": "blocked", "findings": found}, asked)
                 got = "returned"
             except Asked:
                 got = "asked"
             except RuntimeError:
                 got = "refused"
             if got != want:
-                errs.append(f"a clean round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
+                errs.append(f"a blocked round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
             if got == "asked" and "baselines/" in prompts[-1]:
                 errs.append("findings_in handed the model a finding on a file the fixer may not touch")
         try:

@@ -233,8 +233,8 @@ def override_of(comments, authors, after_id, before_id=None):
     return None
 
 
-def verdict(findings, overridden):
-    if not [f for f in findings if f["severity"] == "high"]:
+def verdict(findings, overridden, n):
+    if not holding({"n": n, "findings": findings}):
         return "clean"
     return "override" if overridden else "blocked"
 
@@ -437,7 +437,7 @@ def review_diff(git, merge_base, base, sha):
 
 def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, unanswered=(), meter=None, status="", cleared=0, refused=()):
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
-    said = verdict(findings, overridden)
+    said = verdict(findings, overridden, n)
     meta = " ".join([f"pr={pr}", f"sha={sha}", f"base={base}", f"verdict={said}", f"mode={mode}"]
                     + [f"{s}={counts[s]}" for s in SEVERITIES]
                     + ([bot_meter.meta(meter.fields())] if meter else []))
@@ -1085,7 +1085,7 @@ def cmd_review(args):
             print(f"#{number}: the forge refused the round: {(answer or {}).get('message')}")
             return 1
         promote(repo, pr, rounds_of(comments(repo, number), allowed, number))
-    said = verdict(findings, None)
+    said = verdict(findings, None, n)
     print(f"#{number} round {n}: {said} ({len(findings)} finding(s), {dropped} dropped)")
     print(status)
     return job_exit(said)
@@ -1347,8 +1347,11 @@ def selfcheck():
     assert parse_round({"id": 10, "user": {"login": BOT}, "body": void}, me, 588) is None, "a void is not a round"
     assert bot_meter.spent(bot_meter.rows([{"user": {"login": BOT}, "body": void}])) == 0.05, "a void's spend is counted"
 
-    assert verdict([dict(finding, severity="medium")], None) == "clean"
-    assert verdict([finding], None) == "blocked" and verdict([finding], "why") == "override"
+    medium = dict(finding, severity="medium")
+    assert verdict([medium], None, SETTLE - 1) == "blocked" and verdict([medium], "why", 1) == "override", "a medium blocks through round 2"
+    assert verdict([medium], None, SETTLE) == "clean" and verdict([dict(medium, since=1)], None, SETTLE) == "blocked", "later only a carried medium blocks"
+    assert verdict([dict(finding, severity="low")], None, 1) == "clean"
+    assert verdict([finding], None, 1) == "blocked" and verdict([finding], "why", 1) == "override"
     assert "0 review round(s)" in ready_problems([], "abc")[0] and ready_problems(rounds[:1], "abcdef1") == [], "one clean round on the head is enough"
     assert "not the head" in ready_problems(rounds, "ffffffff")[0]
     assert "blocked" in ready_problems(rounds, "4f1c2e9a")[0]
