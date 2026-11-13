@@ -510,8 +510,8 @@ pub(crate) fn decide(
     None
 }
 
-/// Cache reads a rewrite of the prefix costs: the route's own write price (twice input for an
-/// hour cache) over its read price when the catalog prices both, else [`REWRITE_READS`].
+/// Cache reads a rewrite costs: the route's own write price (twice input on an hour cache) over
+/// its read price when the catalog prices both, else [`REWRITE_READS`], doubled on an hour cache.
 fn rewrite_reads(model: &Model, hour: bool) -> u64 {
     let write = match hour {
         true => model.cost.input.as_f64().map(|input| input * 2.0),
@@ -1279,6 +1279,8 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Seen red under the removed double count (`rewrite_reads(model) * 2`): opus's hour route at
+    /// 27 turns drops 22 results over a horizon of 27, which clears 20 reads and not 26.
     #[test]
     fn an_hour_cache_waits_twice_as_long_for_its_rewrite() -> Fallible {
         let model = opus()?;
@@ -1287,6 +1289,12 @@ pub(crate) mod tests {
         assert!(decide(&five, &Cut::default(), &model, now).is_some());
         let hour = with_usage(22, |usage| usage.cache_write1h = Some(1_000));
         assert_eq!(decide(&hour, &Cut::default(), &model, now), None);
+        let later = REPLIED + 60_000 * 26 + 1_000;
+        let hour = with_usage(27, |usage| usage.cache_write1h = Some(1_000));
+        assert_eq!(
+            decide(&hour, &Cut::default(), &model, later).map(|record| record.reason),
+            Some("breakeven".to_owned())
+        );
         Ok(())
     }
 
