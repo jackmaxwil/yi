@@ -1,9 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
-static CUSTOM_PROVIDERS: OnceLock<yi_types::config::Providers> = OnceLock::new();
-static DISCOVERED_MODELS: LazyLock<Mutex<BTreeMap<String, Arc<Vec<Model>>>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
 use tokio::sync::mpsc::Receiver;
 use yi_ai::anthropic::{self, AnthropicOptions};
 use yi_ai::auth::{AuthKind, Resolved};
@@ -17,13 +14,40 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content};
 use yi_types::model::{Effort, LlmContext, Model};
 
+static CUSTOM_PROVIDERS: OnceLock<yi_types::config::Providers> = OnceLock::new();
+static DISCOVERED_MODELS: LazyLock<Mutex<BTreeMap<String, Arc<Vec<Model>>>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static DISCOVERY_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
 /// OpenRouter's model list omits routing variants (`:exacto`, `:nitro`): one takes its base's entry.
 pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
-    resolve_in(Catalog::shared(), provider, id).or_else(|| {
-        discover_models(provider)
-            .ok()?
-            .into_iter()
-            .find(|model| model.id == id)
+    resolve_in(Catalog::shared(), provider, id).or_else(|| match discover_models(provider) {
+        Ok(models) => {
+            remember_discovery(None);
+            models.into_iter().find(|model| model.id == id)
+        }
+        Err(error) => {
+            remember_discovery(dynamic_provider(provider).then_some(error));
+            None
+        }
+    })
+}
+
+pub fn discovery_error() -> Option<String> {
+    DISCOVERY_ERROR.lock().ok().and_then(|slot| slot.clone())
+}
+
+fn remember_discovery(error: Option<String>) {
+    if let Ok(mut slot) = DISCOVERY_ERROR.lock() {
+        *slot = error;
+    }
+}
+
+fn dynamic_provider(id: &str) -> bool {
+    CUSTOM_PROVIDERS.get().is_some_and(|providers| {
+        providers
+            .iter()
+            .any(|(provider_id, provider)| provider_id == id && provider.models.is_empty())
     })
 }
 
@@ -67,25 +91,48 @@ fn discover_models(id: &str) -> Result<Vec<Model>, String> {
     if !provider.models.is_empty() {
         return Ok(provider.catalog(id));
     }
-    let mut cache = DISCOVERED_MODELS
-        .lock()
-        .map_err(|_| "model discovery cache is poisoned")?;
-    if let Some(models) = cache.get(id) {
-        return Ok(models.as_ref().clone());
+    if let Some(models) = cached_models(id)? {
+        return Ok(models);
     }
-    let authorization =
+    let bearer =
         yi_ai::auth::resolve(id).map(|credential| format!("Bearer {}", credential.secret.expose()));
-    let headers: Vec<(&str, String)> = authorization
+    let headers: Vec<(&str, String)> = bearer
         .iter()
         .map(|value| ("Authorization", value.clone()))
         .collect();
     let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
-    let response = yi_ai::request::get_json(&url, &headers, None, 8 * 1024 * 1024)?;
-    let list: yi_types::config::CustomModelList = serde_json::from_value(response)
+    let proxy = discovery_proxy();
+    let response = yi_ai::request::get_json(&url, &headers, proxy.as_ref(), 8 * 1024 * 1024)?;
+    let list = serde_json::from_value(response)
         .map_err(|error| format!("invalid model discovery response: {error}"))?;
     let models = provider.discovered_catalog(id, list);
-    cache.insert(id.to_owned(), Arc::new(models.clone()));
+    DISCOVERED_MODELS
+        .lock()
+        .map_err(|_| "model discovery cache is poisoned")?
+        .insert(id.to_owned(), Arc::new(models.clone()));
     Ok(models)
+}
+
+fn cached_models(id: &str) -> Result<Option<Vec<Model>>, String> {
+    let cache = DISCOVERED_MODELS
+        .lock()
+        .map_err(|_| "model discovery cache is poisoned")?;
+    Ok(cache.get(id).map(|models| models.as_ref().clone()))
+}
+
+fn discovery_proxy() -> Option<yi_ai::request::ProxyConfig> {
+    let var = |name: &str, fallback: &str| {
+        std::env::var(name)
+            .or_else(|_| std::env::var(fallback))
+            .ok()
+    };
+    yi_ai::request::ProxyConfig::from_values(
+        var("HTTPS_PROXY", "https_proxy").as_deref(),
+        var("HTTP_PROXY", "http_proxy").as_deref(),
+        var("NO_PROXY", "no_proxy").as_deref(),
+    )
+    .ok()
+    .flatten()
 }
 
 pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {

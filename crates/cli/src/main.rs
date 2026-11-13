@@ -130,7 +130,8 @@ fn build_session(
     let Some(model) = resolve(&args.model) else {
         return Err(Refused {
             code: 2,
-            reason: format!("unknown model {} (use provider/id)", args.model),
+            reason: yi_runtime::discovery_error()
+                .unwrap_or_else(|| format!("unknown model {} (use provider/id)", args.model)),
             class: yi_types::telemetry::ErrorClass::RefusalUnknownModel,
         });
     };

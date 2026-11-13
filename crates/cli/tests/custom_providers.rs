@@ -186,10 +186,40 @@ fn a_provider_without_models_discovers_them_on_first_use() -> TestResult {
     assert_eq!(requests.len(), 2, "{requests:?}");
     let discovery = requests.first().ok_or("no discovery request")?;
     assert!(discovery.starts_with("GET /v1/models "), "{discovery}");
+    assert!(
+        discovery
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("authorization: Bearer sk-placeholder")),
+        "{discovery}"
+    );
     let completion = requests.get(1).ok_or("no completion request")?;
     let body: Value = serde_json::from_str(completion.rsplit("\r\n").next().unwrap_or_default())?;
     assert_eq!(body["model"], "m2");
     assert_eq!(body["max_tokens"], 16000);
+    Ok(())
+}
+
+#[test]
+fn a_down_models_endpoint_is_named_instead_of_an_unknown_model() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let _ = read_request(&mut reader);
+            let answer = reply("500 Internal Server Error", "application/json", "{}");
+            let _ = reader.get_mut().write_all(answer.as_bytes());
+        }
+    });
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-down", &providers)?;
+    let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+    assert_ne!(ask.status.code(), Some(0));
+    let err = text(&ask);
+    assert!(err.contains("/v1/models"), "{err}");
+    assert!(!err.contains("unknown model"), "{err}");
     Ok(())
 }
 
