@@ -1,4 +1,5 @@
 ---
+version: 0.1042.0
 issue: Closes #2186
 cut: none scripts/forge_pr.py
 shares: #2167 it edits cmd_commit and linux_clippy for the daemon resume work, in hunks next to the ones here, so whichever lands second merges main and keeps both
