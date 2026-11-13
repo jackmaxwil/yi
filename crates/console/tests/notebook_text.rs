@@ -4,7 +4,7 @@
 use ratatui::style::Color;
 use yi_console::model::NbCell;
 use yi_console::panes::notebook_lines;
-use yi_tui::colors::{ColorTier, Over, Theme};
+use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::highlight::Token;
 
 #[test]
@@ -33,7 +33,7 @@ fn notebook_text_colours_codes_json_and_paths() {
             .any(|(text, style)| text == "FAILED" && style.fg == Some(Color::Indexed(1))),
         "{spans:?}"
     );
-    let path = theme.pick(Over::StatusPath, theme.accent);
+    let path = yi_tui::card::tool_hue(&theme, "read");
     assert!(
         spans
             .iter()

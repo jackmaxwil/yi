@@ -196,12 +196,6 @@ pub fn lang_for(name: &str) -> Option<Lang> {
     })
 }
 
-pub fn knows_extension(ext: &str) -> bool {
-    syntaxes()
-        .find_syntax_by_extension(&ext.to_ascii_lowercase())
-        .is_some()
-}
-
 pub fn lang_for_first_line(line: &str) -> Option<Lang> {
     let syntax = syntaxes().find_syntax_by_first_line(line)?;
     Some(Lang {

@@ -677,14 +677,8 @@ fn capped(
         None => yi_tui::result_paint::sniff(&clean),
     };
     let mut painter = yi_tui::result_paint::Painter::new(lang);
-    let rows: Vec<Line<'static>> = clean
-        .iter()
-        .flat_map(|line| {
-            let mut spans = vec![lead.clone()];
-            spans.extend(painter.row(line, theme, style));
-            yi_tui::wrap::wrap_line(&Line::from(spans), width, &indent)
-        })
-        .collect();
+    let rows =
+        yi_tui::result_paint::paint_rows(&clean, &mut painter, lead, style, width, &indent, theme);
     cap_rows(rows, (cap, tail, full), noun, theme)
 }
 

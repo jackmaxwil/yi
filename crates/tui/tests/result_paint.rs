@@ -3,7 +3,7 @@ use std::error::Error;
 use ratatui::style::{Color, Modifier, Style};
 use serde_json::{Value, json};
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
-use yi_tui::colors::{ColorTier, Over, Theme};
+use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::highlight::Token;
 use yi_tui::result_paint::{sniff, text_spans};
 use yi_tui::transcript::show_controls;
@@ -47,7 +47,7 @@ fn carries(spans: &[(String, Style)], text: &str, token: Token) -> bool {
 }
 
 fn pathed(spans: &[(String, Style)], text: &str) -> bool {
-    let want = theme().pick(Over::StatusPath, theme().accent);
+    let want = yi_tui::card::tool_hue(&theme(), "read");
     spans
         .iter()
         .any(|(content, style)| content == text && style.fg == Some(want))
@@ -73,10 +73,20 @@ fn painter_marks_a_path_and_its_line_in_prose() {
 }
 
 #[test]
-fn painter_leaves_urls_versions_and_slashed_words_unmarked() {
+fn painter_leaves_versions_and_slashed_words_unmarked() {
     let row = "see https://example.com/search?q=docs/guide.rs&n=2, api.example.com:443, v1.2.3, and/or 3/4 or e.g. this";
     let spans = text_spans(row, &theme(), Style::default());
-    assert_eq!(spans.len(), 1, "{spans:?}");
+    let want = yi_tui::card::tool_hue(&theme(), "read");
+    assert!(
+        !spans.iter().any(|span| span.style.fg == Some(want)),
+        "{spans:?}"
+    );
+    assert!(
+        spans.iter().any(
+            |span| span.content.starts_with("https://") && span.style.fg == Some(theme().blue5)
+        ),
+        "{spans:?}"
+    );
 }
 
 #[test]
@@ -123,6 +133,7 @@ fn search_notice_rows_are_not_parsed_as_the_file() {
         ],
     );
     assert!(!carries(&spans, "let", Token::Keyword), "{spans:?}");
+    assert!(carries(&spans, "fn", Token::Keyword), "{spans:?}");
 }
 
 #[test]
@@ -183,6 +194,27 @@ fn search_hits_and_context_are_coloured_under_their_file() {
     assert!(carries(&spans, "fn", Token::Keyword), "{spans:?}");
     assert!(
         !spans.iter().any(|(content, _)| content.contains("AB12")),
+        "{spans:?}"
+    );
+}
+
+#[test]
+fn search_context_rows_keep_the_separator_that_marks_the_hit() {
+    let spans = done(
+        "grep",
+        "fn ",
+        &[
+            "[src/paint.rs#AB12]",
+            "19-impl Palette {",
+            "20:    pub fn new() -> Self {",
+        ],
+    );
+    assert!(
+        spans.iter().any(|(content, _)| content == "  19- "),
+        "{spans:?}"
+    );
+    assert!(
+        spans.iter().any(|(content, _)| content == "  20 "),
         "{spans:?}"
     );
 }

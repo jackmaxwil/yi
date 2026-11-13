@@ -248,13 +248,8 @@ fn stream_lines(text: &str, style: Style, width: usize, theme: &Theme) -> Vec<Li
         .map(show_controls)
         .collect();
     let mut painter = crate::result_paint::Painter::new(crate::result_paint::sniff(&rows));
-    rows.iter()
-        .flat_map(|row| {
-            let mut spans = vec![Span::styled(format!("{BODY_INDENT}  "), style)];
-            spans.extend(painter.row(row, theme, style));
-            wrap_line(&Line::from(spans), width, "        ")
-        })
-        .collect::<Vec<_>>()
+    let lead = Span::styled(format!("{BODY_INDENT}  "), style);
+    crate::result_paint::paint_rows(&rows, &mut painter, lead, style, width, "        ", theme)
 }
 
 pub fn traceback_of(details: &Value) -> String {

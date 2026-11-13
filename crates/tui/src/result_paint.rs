@@ -1,7 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::colors::{Over, Theme};
+use crate::colors::Theme;
 use crate::highlight::{self, Lang};
 
 /// `show_controls` stores ESC as its control picture, so colour codes stay inert until decoded.
@@ -65,25 +65,12 @@ pub fn sniff(rows: &[String]) -> Option<Lang> {
 }
 
 pub fn text_spans(row: &str, theme: &Theme, base: Style) -> Vec<Span<'static>> {
-    let path = Style::default().fg(theme.pick(Over::StatusPath, theme.accent));
     let mut out = Vec::new();
     for (text, style) in decode(row, base) {
-        if style != base {
+        if style == base {
+            out.extend(crate::markdown::words::marked_words(&text, base, theme));
+        } else {
             out.push(Span::styled(text, style));
-            continue;
-        }
-        let mut cursor = 0;
-        for (start, end) in path_runs(&text) {
-            if let Some(plain) = text.get(cursor..start).filter(|plain| !plain.is_empty()) {
-                out.push(Span::styled(plain.to_owned(), base));
-            }
-            if let Some(found) = text.get(start..end) {
-                out.push(Span::styled(found.to_owned(), base.patch(path)));
-            }
-            cursor = end;
-        }
-        if let Some(tail) = text.get(cursor..).filter(|tail| !tail.is_empty()) {
-            out.push(Span::styled(tail.to_owned(), base));
         }
     }
     if out.is_empty() {
@@ -96,6 +83,26 @@ pub fn strip_escapes(row: &str) -> String {
     decode(row, Style::default())
         .into_iter()
         .map(|(text, _)| text)
+        .collect()
+}
+
+/// Invariant: a wrapped row's continuation is the caller's own lead width, so a row that
+/// overflows stays inside its gutter instead of restarting under the card's rail.
+pub fn paint_rows(
+    rows: &[String],
+    painter: &mut Painter,
+    lead: Span<'static>,
+    base: Style,
+    width: usize,
+    indent: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    rows.iter()
+        .flat_map(|row| {
+            let mut spans = std::vec![lead.clone()];
+            spans.extend(painter.row(row, theme, base));
+            crate::wrap::wrap_line(&Line::from(spans), width, indent)
+        })
         .collect()
 }
 
@@ -211,104 +218,7 @@ fn indexed(code: u16) -> Color {
     Color::Indexed(byte(code))
 }
 
-fn path_char(c: char) -> bool {
-    c.is_alphanumeric() || "/._-~+@:".contains(c)
-}
-
-fn path_runs(text: &str) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut start = None;
-    let mut url = false;
-    for (at, c) in text
-        .char_indices()
-        .chain(std::iter::once((text.len(), ' ')))
-    {
-        if c.is_whitespace() {
-            url = false;
-        }
-        match (start, path_char(c)) {
-            (None, true) => start = Some(at),
-            (Some(from), false) => {
-                start = None;
-                let word = text.get(from..at).unwrap_or_default();
-                url |= word.contains("://");
-                let word = word.trim_end_matches([':', '.']);
-                if !url && is_path(word) {
-                    out.push((from, from.saturating_add(word.len())));
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-fn is_path(word: &str) -> bool {
-    if word.contains("://") || word.starts_with(':') {
-        return false;
-    }
-    let (stem, line) = match word.split_once(':') {
-        Some((stem, rest)) => (
-            stem,
-            rest.split(':')
-                .all(|n| n.bytes().all(|b| b.is_ascii_digit()) && !n.is_empty()),
-        ),
-        None => (word, false),
-    };
-    if word.contains(':') && !line {
-        return false;
-    }
-    let last = stem.rsplit('/').next().unwrap_or(stem);
-    let ext = last
-        .rsplit_once('.')
-        .filter(|(name, ext)| !name.is_empty() && ext.starts_with(char::is_alphabetic))
-        .map(|(_, ext)| ext);
-    let rooted = ["/", "./", "../", "~/"]
-        .iter()
-        .any(|lead| stem.starts_with(lead))
-        && stem.len() > 2;
-    let slashed = stem.contains('/');
-    (slashed && (ext.is_some() || rooted)) || (line && ext.is_some_and(highlight::knows_extension))
-}
-
 pub(crate) fn body(
-    name: &str,
-    subject: &str,
-    preview: &[String],
-    running: bool,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    use std::hash::{Hash, Hasher};
-    type Key = (String, String, Vec<String>, bool, u64);
-    thread_local! {
-        static PAINTED: std::cell::RefCell<std::collections::HashMap<Key, Vec<Line<'static>>>> =
-            std::cell::RefCell::default();
-    }
-    let mut hasher = std::hash::DefaultHasher::new();
-    theme.hash(&mut hasher);
-    let key: Key = (
-        name.to_owned(),
-        subject.to_owned(),
-        preview.to_vec(),
-        running,
-        hasher.finish(),
-    );
-    if let Some(lines) = PAINTED.with_borrow(|painted| painted.get(&key).cloned()) {
-        return lines;
-    }
-    let lines = paint(name, subject, preview, running, theme);
-    PAINTED.with_borrow_mut(|painted| {
-        // Incident: a visible mid-file read cost 2.3 ms of syntect a frame, and the console
-        // repaints every visible card; a full table is dropped whole, not aged.
-        if painted.len() >= 256 {
-            painted.clear();
-        }
-        painted.insert(key, lines.clone());
-    });
-    lines
-}
-
-fn paint(
     name: &str,
     subject: &str,
     preview: &[String],
@@ -354,15 +264,23 @@ fn paint(
             out.push(Line::from(spans));
             continue;
         }
-        let numbered =
-            crate::rows::numbered(raw).or_else(|| searchy.then(|| context_row(raw)).flatten());
-        if !streamed && let Some((number, row)) = numbered {
+        let numbered = crate::rows::numbered(raw)
+            .map(|(number, row)| (number, ':', row))
+            .or_else(|| searchy.then(|| context_row(raw)).flatten());
+        if !streamed && let Some((number, sep, row)) = numbered {
             let at = number.parse::<u64>().ok();
             if at.is_none() || at != next {
                 painter.restart();
             }
             next = at.map(|at| at.saturating_add(1));
-            let mut spans = vec![gutter(number)];
+            // Incident: grep marks a hit `:` and the lines around it `-`, so a gutter that
+            // drops the separator paints a block of rows the matched line cannot be found in.
+            let marker = if sep == ':' {
+                gutter(number)
+            } else {
+                Span::styled(format!("{number:>4}{sep} "), dim)
+            };
+            let mut spans = std::vec![marker];
             spans.extend(painter.row(row, theme, text));
             out.push(Line::from(spans));
             continue;
@@ -406,7 +324,7 @@ fn header_path(raw: &str) -> Option<&str> {
         .then_some(path)
 }
 
-fn context_row(raw: &str) -> Option<(&str, &str)> {
+fn context_row(raw: &str) -> Option<(&str, char, &str)> {
     let (number, row) = raw.split_once('-')?;
-    (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some((number, row))
+    (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some((number, '-', row))
 }
