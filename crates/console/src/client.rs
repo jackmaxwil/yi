@@ -316,3 +316,34 @@ fn sleep_interruptible(total: Duration, shutdown: &AtomicBool) {
         remaining = remaining.saturating_sub(slice);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A console whose daemon never answers must fork one `yi serve` per outage, not one per
+    /// failed connect.
+    #[test]
+    fn one_outage_respawns_the_daemon_once() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = std::env::temp_dir().join(format!("yi-no-daemon-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let respawn: RespawnDaemon = Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let (event_tx, events) = events();
+        let (outbound, _threads) = spawn_restarting(socket, event_tx, Some(respawn));
+        let mut failed = 0;
+        while failed < 3 {
+            if let ClientEvent::Disconnected { .. } =
+                events.recv_timeout(Duration::from_secs(10))?
+            {
+                failed += 1;
+            }
+        }
+        outbound.shutdown();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "three failed connects");
+        Ok(())
+    }
+}

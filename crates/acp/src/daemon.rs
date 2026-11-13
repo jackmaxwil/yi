@@ -147,31 +147,17 @@ fn invocation_marker(socket: &std::path::Path) -> PathBuf {
     socket.with_extension("invocation")
 }
 
-fn pinned(flags: &[String]) -> Vec<&str> {
-    let mut kept = Vec::new();
-    let mut value_follows = false;
-    for flag in flags {
-        if value_follows || flag.starts_with("--yolo") || flag.starts_with("--auto") {
-            value_follows = flag == "--model";
-            kept.push(flag.as_str());
-        } else if flag.starts_with("--model") {
-            value_follows = true;
-            kept.push(flag.as_str());
-        }
-    }
-    kept
-}
-
-pub fn restart_refused(socket: &std::path::Path, flags: &[String]) -> bool {
+/// Invariant: the recorded invocation is the dead daemon's `serve_flags`, so a restart reuses
+/// it whole; a console pinning other flags, or a deliberate stop, refuses the restart.
+pub fn restart_flags(socket: &std::path::Path, flags: &[String]) -> Option<Vec<String>> {
     if stopped_marker(socket).exists() {
-        return true;
+        return None;
     }
     let Ok(recorded) = std::fs::read_to_string(invocation_marker(socket)) else {
-        return false;
+        return Some(flags.to_vec());
     };
     let recorded: Vec<String> = recorded.lines().map(str::to_owned).collect();
-    let mine = pinned(flags);
-    !mine.is_empty() && mine != pinned(&recorded)
+    (flags.is_empty() || flags == recorded.as_slice()).then_some(recorded)
 }
 
 /// Invariant: the ledger is written whole through a rename (D118), so a reader sees one
@@ -504,10 +490,7 @@ impl Supervisor {
                 if let Some(id) = id {
                     self.send_client(client, result_frame(id, json!({})));
                 }
-                let _ = std::fs::write(
-                    stopped_marker(&self.options.socket),
-                    self.options.worker_args.join("\n"),
-                );
+                let _ = std::fs::write(stopped_marker(&self.options.socket), b"");
                 let _ = self.input.send(Input::Shutdown);
             }
             "_yi/seen" => self.mark_seen(client, id, &frame),
@@ -1340,6 +1323,37 @@ mod tests {
         .unwrap_or(false);
         assert!(eof, "dropping the sink must close the client's socket");
         let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
+
+    /// A palette stop that came back, or a killed `--yolo` daemon restarted plain, would drop
+    /// the user's stop or the pinned mode for every later session on the machine.
+    #[tokio::test]
+    async fn a_stopped_daemon_stays_down_and_a_killed_one_restarts_as_recorded()
+    -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("yi-daemon-rail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        let socket = dir.join("daemon.sock");
+        let mut supervisor = supervisor_with_rows();
+        supervisor.options.socket = socket.clone();
+        supervisor.options.worker_args = vec!["--confirm".to_owned()];
+        std::fs::write(invocation_marker(&socket), "--confirm").map_err(|e| e.to_string())?;
+        supervisor
+            .handle_client_line(7, json!({"jsonrpc": "2.0", "method": "_yi/shutdown"}))
+            .await;
+        let body = std::fs::read(stopped_marker(&socket)).map_err(|e| e.to_string())?;
+        assert!(body.is_empty(), "the stop marker carries no body: {body:?}");
+        assert_eq!(
+            restart_flags(&socket, &[]),
+            None,
+            "a stopped daemon restarted"
+        );
+        std::fs::remove_file(stopped_marker(&socket)).map_err(|e| e.to_string())?;
+        let confirm = vec!["--confirm".to_owned()];
+        assert_eq!(restart_flags(&socket, &[]), Some(confirm.clone()));
+        assert_eq!(restart_flags(&socket, &confirm), Some(confirm));
+        assert_eq!(restart_flags(&socket, &["--yolo".to_owned()]), None);
+        let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 }

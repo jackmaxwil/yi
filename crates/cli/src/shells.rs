@@ -206,13 +206,13 @@ pub fn serve_flags(args: &Args) -> Vec<String> {
 }
 
 #[cfg(feature = "tui")]
-fn ensure_daemon(args: &Args, socket: &std::path::Path) {
+fn ensure_daemon(flags: &[String], socket: &std::path::Path) {
     let _span = yi_types::trace::span("console.ensure_daemon");
     if std::os::unix::net::UnixStream::connect(socket).is_ok() {
         return;
     }
     let _ = std::fs::remove_file(yi_acp::daemon::stopped_marker(socket));
-    if let Err(error) = yi_acp::daemon::spawn_detached(socket, &serve_flags(args)) {
+    if let Err(error) = yi_acp::daemon::spawn_detached(socket, flags) {
         eprintln!("yi: could not start the daemon: {error}");
         return;
     }
@@ -475,10 +475,10 @@ pub fn run_console_command(args: &Args) -> i32 {
         let args = args.clone();
         let socket = socket.clone();
         std::sync::Arc::new(move || {
-            if yi_acp::daemon::restart_refused(&socket, &serve_flags(&args)) {
+            let Some(flags) = yi_acp::daemon::restart_flags(&socket, &serve_flags(&args)) else {
                 return;
-            }
-            ensure_daemon(&args, &socket);
+            };
+            ensure_daemon(&flags, &socket);
         }) as yi_console::client::RespawnDaemon
     });
     let options = yi_console::ConsoleOptions {
@@ -519,7 +519,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         Err(code) => return code,
     };
     if !args.headless {
-        ensure_daemon(args, &options.socket);
+        ensure_daemon(&serve_flags(args), &options.socket);
     }
     if args.headless {
         let script = match load_drive_script(&args.keys, yi_console::parse_script) {
