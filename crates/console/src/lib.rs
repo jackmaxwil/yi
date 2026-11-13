@@ -72,7 +72,7 @@ pub struct ConsoleOptions {
     pub home: Option<String>,
     pub theme: Option<yi_types::config::ThemeConfig>,
     pub assist: Option<(yi_tui::assist::AssistSettings, PathBuf)>,
-    pub ensure_daemon: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    pub ensure_daemon: Option<client::RespawnDaemon>,
 }
 
 pub struct DriveOptions {
@@ -634,11 +634,7 @@ fn drive_idle(app: &App) -> bool {
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let theme = Theme::new(ColorTier::Ansi16, true);
     let (event_tx, events) = client::events();
-    let (outbound, threads) = client::spawn_restarting(
-        options.socket.clone(),
-        event_tx.clone(),
-        options.ensure_daemon.clone(),
-    );
+    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
     app.wake = Some(event_tx);
     if drive

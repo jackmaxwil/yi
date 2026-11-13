@@ -142,12 +142,15 @@ fn reader_loop(
     respawn: Option<&(dyn Fn() + Send + Sync)>,
 ) {
     let mut backoff = BACKOFF_START;
+    let mut spawn_attempted = false;
     while !shutdown.load(Ordering::SeqCst) {
         let stream = UnixStream::connect(socket).or_else(|error| {
             if let Some(respawn) = respawn
+                && !spawn_attempted
                 && !shutdown.load(Ordering::SeqCst)
                 && !no_restart.load(Ordering::SeqCst)
             {
+                spawn_attempted = true;
                 respawn();
                 return UnixStream::connect(socket);
             }
@@ -198,6 +201,7 @@ fn reader_loop(
         // at once re-dialed in a spin. Only a link that outlived the cap resets the backoff.
         if connected_at.elapsed() > BACKOFF_CAP {
             backoff = BACKOFF_START;
+            spawn_attempted = false;
         }
         sleep_interruptible(backoff, shutdown);
         backoff = (backoff * 2).min(BACKOFF_CAP);

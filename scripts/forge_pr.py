@@ -253,7 +253,8 @@ def linux_env():
         return None
     import shutil
     if not shutil.which("zig"):
-        return None
+        print("linux: zig not found -- install zig, or use musl-cross gcc / cargo-zigbuild instead")
+        raise SystemExit(1)
     env = os.environ.copy()
     env.update(CC_x86_64_unknown_linux_gnu=str(ROOT / "scripts/zigcc.sh"),
                AR_x86_64_unknown_linux_gnu=str(ROOT / "scripts/zigar.sh"),

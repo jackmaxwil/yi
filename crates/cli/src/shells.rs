@@ -211,6 +211,7 @@ fn ensure_daemon(args: &Args, socket: &std::path::Path) {
     if std::os::unix::net::UnixStream::connect(socket).is_ok() {
         return;
     }
+    let _ = std::fs::remove_file(yi_acp::daemon::stopped_marker(socket));
     if let Err(error) = yi_acp::daemon::spawn_detached(socket, &serve_flags(args)) {
         eprintln!("yi: could not start the daemon: {error}");
         return;
@@ -473,8 +474,12 @@ pub fn run_console_command(args: &Args) -> i32 {
     let ensure = (!args.headless).then(|| {
         let args = args.clone();
         let socket = socket.clone();
-        std::sync::Arc::new(move || ensure_daemon(&args, &socket))
-            as std::sync::Arc<dyn Fn() + Send + Sync>
+        std::sync::Arc::new(move || {
+            if yi_acp::daemon::restart_refused(&socket, &serve_flags(&args)) {
+                return;
+            }
+            ensure_daemon(&args, &socket);
+        }) as yi_console::client::RespawnDaemon
     });
     let options = yi_console::ConsoleOptions {
         socket,

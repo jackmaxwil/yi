@@ -139,6 +139,41 @@ fn ledger_path(socket: &std::path::Path) -> PathBuf {
     socket.with_extension("ledger.json")
 }
 
+pub fn stopped_marker(socket: &std::path::Path) -> PathBuf {
+    socket.with_extension("stopped")
+}
+
+fn invocation_marker(socket: &std::path::Path) -> PathBuf {
+    socket.with_extension("invocation")
+}
+
+fn pinned(flags: &[String]) -> Vec<&str> {
+    let mut kept = Vec::new();
+    let mut value_follows = false;
+    for flag in flags {
+        if value_follows || flag.starts_with("--yolo") || flag.starts_with("--auto") {
+            value_follows = flag == "--model";
+            kept.push(flag.as_str());
+        } else if flag.starts_with("--model") {
+            value_follows = true;
+            kept.push(flag.as_str());
+        }
+    }
+    kept
+}
+
+pub fn restart_refused(socket: &std::path::Path, flags: &[String]) -> bool {
+    if stopped_marker(socket).exists() {
+        return true;
+    }
+    let Ok(recorded) = std::fs::read_to_string(invocation_marker(socket)) else {
+        return false;
+    };
+    let recorded: Vec<String> = recorded.lines().map(str::to_owned).collect();
+    let mine = pinned(flags);
+    !mine.is_empty() && mine != pinned(&recorded)
+}
+
 /// Invariant: the ledger is written whole through a rename (D118), so a reader sees one
 /// version or none; the read is bounded because the file is a peer's to grow.
 const LEDGER_MAX_BYTES: u64 = 1 << 20;
@@ -228,6 +263,7 @@ pub(crate) struct Supervisor {
     pub(crate) swap: crate::swap::Swaps,
     pub(crate) input: mpsc::UnboundedSender<Input>,
     settings_tail: Option<tokio::task::JoinHandle<()>>,
+    cwd_from_disk: HashMap<String, Option<String>>,
 }
 pub(crate) fn error_frame(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
@@ -468,6 +504,10 @@ impl Supervisor {
                 if let Some(id) = id {
                     self.send_client(client, result_frame(id, json!({})));
                 }
+                let _ = std::fs::write(
+                    stopped_marker(&self.options.socket),
+                    self.options.worker_args.join("\n"),
+                );
                 let _ = self.input.send(Input::Shutdown);
             }
             "_yi/seen" => self.mark_seen(client, id, &frame),
@@ -514,15 +554,23 @@ impl Supervisor {
         self.forward_to_worker(&root, client, id, frame).await;
     }
 
-    fn root_of(&self, frame: &Value) -> Option<String> {
+    fn root_of(&mut self, frame: &Value) -> Option<String> {
         let session_id = frame.pointer("/params/sessionId").and_then(Value::as_str)?;
-        self.sessions
+        if let Some(root) = self
+            .sessions
             .get(session_id)
             .map(|entry| entry.root.clone())
-            .or_else(|| {
-                yi_runtime::history::session_cwd(&self.options.session_dir, session_id)
-                    .map(|cwd| cwd.to_string_lossy().into_owned())
-            })
+        {
+            return Some(root);
+        }
+        if let Some(cached) = self.cwd_from_disk.get(session_id) {
+            return cached.clone();
+        }
+        let found = yi_runtime::history::session_cwd(&self.options.session_dir, session_id)
+            .map(|cwd| cwd.to_string_lossy().into_owned());
+        self.cwd_from_disk
+            .insert(session_id.to_owned(), found.clone());
+        found
     }
 
     /// Invariant: a stored session absent from the ledger gets a row before its updates stream.
@@ -824,6 +872,11 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             return 0;
         }
         let _stale = std::fs::remove_file(&options.socket);
+        let _stopped = std::fs::remove_file(stopped_marker(&options.socket));
+        let _recorded = std::fs::write(
+            invocation_marker(&options.socket),
+            options.worker_args.join("\n"),
+        );
         let listener = match UnixListener::bind(&options.socket) {
             Ok(listener) => listener,
             Err(error) => {
@@ -841,6 +894,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
         let mut supervisor = Supervisor {
             sessions: load_ledger(&options.socket),
             woken: HashSet::new(),
+            cwd_from_disk: HashMap::new(),
             options,
             ledger,
             workers: HashMap::new(),
@@ -993,6 +1047,7 @@ mod tests {
             clients: HashMap::new(),
             sessions: HashMap::new(),
             woken: HashSet::new(),
+            cwd_from_disk: HashMap::new(),
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
