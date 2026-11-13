@@ -1434,26 +1434,6 @@ def selfcheck():
     assert not applies(probes["perf"], {"scripts/pr_review.py": {3}}, True), "a scripts-only change skips perf"
     assert applies(probes["security"], {"adapters/yi-adapter-forgejo": {3}}, False)
     assert applies(probes["correctness"], {}, False)
-    class Reached(Exception):
-        pass
-
-    def reach(*_):
-        raise Reached
-
-    saved = {name: globals()[name] for name in ("review_model", "held")}
-    real = (forge_pr.repo, forge_pr.pull_number)
-    try:
-        globals().update(review_model=lambda: "openrouter/anthropic/claude-x", held=reach)
-        forge_pr.repo, forge_pr.pull_number = (lambda: "o/r"), (lambda n: 1)
-        try:
-            cmd_review(argparse.Namespace(number=1))
-            reached = False
-        except Reached:
-            reached = True
-        assert reached, "a round must run on a model of the authors' family"
-    finally:
-        globals().update(saved)
-        forge_pr.repo, forge_pr.pull_number = real
     # A redelivered message, or a sweep racing another, must not post a round the rule does not owe.
     clean = lambda n, found=(): {"n": n, "sha": "abc1234", "verdict": "clean", "findings": [{"severity": s} for s in found]}
     assert promotes([clean(1), clean(2, ["low"])], "abc1234ff"), "a clean round with only lows promotes"
@@ -1486,7 +1466,7 @@ def selfcheck():
     def drive(notes, **flags):
         """cmd_review on PR 9 at head abcdef1ff over these comments: what it printed, and whether a round began."""
         stubs = {"comments": lambda repo, n: notes, "authors": lambda: {BOT}, "holds_for": lambda n, base: on_head,
-                 "review_model": lambda: "openrouter/z-ai/glm-5.3-flash", "read_pr": began_round}
+                 "review_model": lambda: flags.get("model", "openrouter/z-ai/glm-5.3-flash"), "read_pr": began_round}
         saved = {k: globals()[k] for k in stubs}
         saved_forge = (forge_pr.repo, forge_pr.pull_number, forge_pr.pull)
         began.clear()
@@ -1504,6 +1484,7 @@ def selfcheck():
 
     posted = lambda cid, *shown, who=BOT, **kw: {"user": {"login": who}, "id": cid, "body": render(cid, 9, "abcdef1ff", "base000", *shown, **kw)}
     blocked_note = [posted(1, [finding], 0, None, "blocking")]
+    assert drive([], model="openrouter/anthropic/claude-x")[1], "a round must run on a model of the authors' family"
     read_whole = [posted(1, [], 0, None, "blocking")]
     lost_tests = posted(1, [], 0, None, "blocking", 0, ["tests lens"])
     for again in (False, True):
