@@ -15,14 +15,14 @@ def nextest(cwd, expr, extra_env, runner):
 
 
 def main(expr, base=None, runner=subprocess.run):
-    base = base or forge_pr.git("merge-base", "origin/main", "HEAD", check=True).strip()
+    base = base or forge_pr.base_commit()[1]
     with pr_review.scratch_worktree(forge_pr.git, base, "yi-baseline-") as tree:
         print(f"baseline: {base[:9]}")
         old = nextest(tree, expr, {"CARGO_TARGET_DIR": str(tree.parent / "target")}, runner)
     print(f"head: {forge_pr.git('rev-parse', '--short', 'HEAD').strip()}")
     new = nextest(forge_pr.ROOT, expr, {}, runner)
     print(f"baseline exit {old}, head exit {new}")
-    return new
+    return 0
 
 
 if __name__ == "__main__":

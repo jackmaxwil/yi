@@ -45,7 +45,7 @@ test:
 py := `scripts/py.sh`
 
 # Does a test fail without this branch's change? Runs the nextest filterset on the fork point in a
-# throwaway worktree (a cold build in a temp dir, deleted after), then on HEAD, and prints both exits.
+# throwaway worktree (a cold build in a temp dir, deleted after), then on HEAD, and prints both exits. It reports and never gates.
 baseline expr:
     python3 scripts/baseline.py '{{expr}}'
 
