@@ -67,10 +67,17 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250)
 /// told before a child is spawned, with no key and no cost. Anything else answers `None`.
 pub(crate) fn loopback_refused(base_url: &str) -> Option<String> {
     use std::net::ToSocketAddrs;
-    let (host, port) = yi_types::url::http_loopback_host_and_port(base_url)?;
+    let (scheme, rest) = base_url.split_once("://")?;
+    let default_port = match scheme {
+        "http" => 80,
+        "https" => 443,
+        _ => return None,
+    };
+    let plain = format!("http://{rest}");
+    let (host, port) = yi_types::url::http_loopback_host_and_port(&plain)?;
     let port = match port {
         Some(port) => port.parse::<u16>().ok()?,
-        None => 80,
+        None => default_port,
     };
     if port == 0 {
         return None;
@@ -105,6 +112,15 @@ mod tests {
             refused,
             Some(format!("http://127.0.0.1:{port}/v1 refused a connection"))
         );
+        for url in [
+            format!("https://127.0.0.1:{port}/v1"),
+            format!("https://localhost:{port}/v1"),
+        ] {
+            assert_eq!(
+                loopback_refused(&url),
+                Some(format!("{url} refused a connection"))
+            );
+        }
         Ok(())
     }
 

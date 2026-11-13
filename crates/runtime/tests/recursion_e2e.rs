@@ -55,6 +55,10 @@ struct Harness {
     receivers: Arc<Mutex<std::collections::HashMap<String, HostRegistry>>>,
 }
 
+thread_local! {
+    static DEAD_ROUTE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
 type BuildHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 
 struct HarnessOptions {
@@ -201,7 +205,13 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         cwd: cwd.clone(),
         home: root.join("home"),
         lane_slots: 2,
-        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| {
+            let mut model = faux_model(128_000);
+            if let Some(url) = DEAD_ROUTE.with(|route| route.borrow().clone()) {
+                model.base_url = url;
+            }
+            (model, yi_types::model::Effort::Medium)
+        }),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut slot) = cwd_sink.lock() {
                 *slot = build.cwd.map(std::path::Path::to_path_buf);
@@ -3013,6 +3023,28 @@ async fn children_that_failed_before_any_tool_call_free_their_slots() -> TestRes
     assert!(
         ninth.is_ok(),
         "failed children that never ran a tool must not fill the cap: {ninth:?}"
+    );
+    Ok(())
+}
+
+/// A model whose `base_url` is a closed loopback port is refused at the spawn, before a slot or a
+/// worktree is taken, so a dead local proxy cannot leave a failed child behind.
+#[tokio::test]
+async fn a_spawn_on_a_closed_loopback_route_is_refused_before_a_child_exists() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    DEAD_ROUTE.with(|route| *route.borrow_mut() = Some(format!("http://127.0.0.1:{port}/v1")));
+    let harness = harness(0, 1, "unused")?;
+    let refused = harness
+        .host
+        .spawn("doomed".to_owned(), kwargs(&[("name", "doomed")]))
+        .err()
+        .ok_or("a spawn on a dead loopback route was accepted")?;
+    assert!(refused.contains("unreachable before spawning"), "{refused}");
+    assert_eq!(
+        harness.host.status()["members"].as_array().map(Vec::len),
+        Some(0)
     );
     Ok(())
 }

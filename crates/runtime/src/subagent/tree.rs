@@ -331,7 +331,7 @@ impl SubagentHost {
     fn tree_merge(&self, payload: &Map<String, Value>) -> Result<Map<String, Value>, String> {
         let ours = self.tree_path(text(payload, "tree")?)?;
         let others = strings(payload, "others")?;
-        let (mut merged, mut conflicts) = (Vec::new(), Vec::new());
+        let (mut merged, mut conflicts, mut folded) = (Vec::new(), Vec::new(), Vec::new());
         for other in &others {
             let path = self.tree_path(other)?;
             let base = self.tree_base(other, &path)?;
@@ -340,7 +340,7 @@ impl SubagentHost {
                 merged.push(other.clone());
             }
             if fold.conflicts.is_empty() {
-                self.mark_folded(other);
+                folded.push(other.clone());
             }
             conflicts.extend(
                 fold.conflicts
@@ -350,6 +350,10 @@ impl SubagentHost {
         }
         let total = others.len();
         let mut reply = Map::new();
+        let notes = self.release_folded(&folded);
+        if !notes.is_empty() {
+            reply.insert("notes".to_owned(), json!(notes));
+        }
         reply.insert("merged".to_owned(), json!(merged));
         reply.insert(
             "summary".to_owned(),
@@ -374,24 +378,24 @@ impl SubagentHost {
         Ok(reply)
     }
 
-    /// A finished child whose tree folded here without conflict has handed its work over: its
-    /// worktree may now be deleted, so a failed child never holds a slot for want of a disposition.
-    fn mark_folded(&self, name: &str) {
-        let released = self.children.lock().is_ok_and(|children| {
-            Self::key_of(&children, name)
-                .ok()
-                .and_then(|key| children.records.get(&key))
-                .is_some_and(|record| {
-                    record.exit.is_some()
-                        && record.worktree.is_some()
-                        && record.disposition.is_none()
-                        && !record.managed
-                })
-        });
-        if released {
-            self.mark_disposed(name, yi_types::plan::op::Choice::Discarded)
-                .ok();
+    /// A finished child's tree that folded here without conflict is released through discard, so
+    /// a failed child never holds a slot for want of a disposition. A refusal is a note.
+    fn release_folded(&self, folded: &[String]) -> Vec<String> {
+        let mut notes = Vec::new();
+        for name in folded {
+            let finished = self.children.lock().is_ok_and(|children| {
+                Self::key_of(&children, name)
+                    .ok()
+                    .and_then(|key| children.records.get(&key))
+                    .is_some_and(|record| record.exit.is_some())
+            });
+            if finished && let Err(why) = self.discard_worktree(name, true) {
+                notes.push(format!(
+                    "{name}: folded, and its tree was left in place: {why}"
+                ));
+            }
         }
+        notes
     }
 
     fn tree_rewind(&self, payload: &Map<String, Value>) -> Result<Map<String, Value>, String> {
