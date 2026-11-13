@@ -13,8 +13,10 @@ use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 pub(crate) const KEEP_TURNS: u64 = 5;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
 const MIN_DROPPED: u64 = 2_000;
-/// A cut rewrites the cached prefix after it, which costs as many tokens as this many cache reads.
+/// Cache reads a rewrite counts as on a route with no catalog cache prices.
 const REWRITE_READS: u64 = 10;
+/// A session's age says nothing about requests left: savings count over at most this many.
+const MAX_HORIZON_TURNS: u64 = 40;
 const MIN_RESULT_CHARS: usize = 1_200;
 /// The newest image results no cut takes: the model is still working from them.
 const KEEP_IMAGES: usize = 3;
@@ -506,8 +508,22 @@ pub(crate) fn decide(
     None
 }
 
+/// Cache reads a rewrite of the prefix costs: the route's own write over read price when the
+/// catalog prices both, else [`REWRITE_READS`].
+fn rewrite_reads(model: &Model) -> u64 {
+    match (
+        model.cost.cache_read.as_f64(),
+        model.cost.cache_write.as_f64(),
+    ) {
+        (Some(read), Some(write)) if read > 0.0 && write > read => {
+            (write / read).ceil().clamp(1.0, 1_000.0) as u64
+        }
+        _ => REWRITE_READS,
+    }
+}
+
 /// Why a cut pays now, if it does: the cache lapsed, or the tokens it saves over as many more
-/// requests as were sent so far outweigh ten reads of everything after the first cut result.
+/// requests as were sent so far (at most forty) outweigh a rewrite of everything after the cut.
 fn reason(
     messages: &[AgentMessage],
     model: &Model,
@@ -548,9 +564,10 @@ fn reason(
     let hour = replies
         .first()
         .is_some_and(|(usage, _, _)| usage.cache_write1h.unwrap_or(0) > 0);
-    let reads = REWRITE_READS * if hour { 2 } else { 1 };
+    let reads = rewrite_reads(model) * if hour { 2 } else { 1 };
+    let horizon = turns.min(MAX_HORIZON_TURNS);
     let pays = dropped >= MIN_DROPPED
-        && (!caches || dropped.saturating_mul(turns) > rewritten.saturating_mul(reads));
+        && (!caches || dropped.saturating_mul(horizon) > rewritten.saturating_mul(reads));
     pays.then_some("breakeven")
 }
 
@@ -880,6 +897,68 @@ pub(crate) mod tests {
             messages.push(result(&id, "bash", 10_000));
         }
         messages
+    }
+
+    /// Sonnet 5.5's catalog rates: a read costs a twentieth of input, a write 1.25 times it, so a
+    /// rewrite costs twenty-five reads.
+    fn sonnet() -> Result<Model, serde_json::Error> {
+        serde_json::from_value(json!({
+            "id": "claude-sonnet-5-5", "name": "Sonnet", "api": "anthropic-messages",
+            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
+            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": 64_000,
+            "cost": {"input": 2, "output": 10, "cacheRead": 0.1, "cacheWrite": 2.5}
+        }))
+    }
+
+    fn unpriced() -> Result<Model, serde_json::Error> {
+        serde_json::from_value(json!({
+            "id": "subscription", "name": "Subscription", "api": "anthropic-messages",
+            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
+            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": 64_000,
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+        }))
+    }
+
+    /// One 10,000-char result up front, then `tail` requests answered with results too small to
+    /// cut: the only cut is the first result, and everything after it is rewritten.
+    fn one_big_then_small(tail: usize) -> Vec<AgentMessage> {
+        let mut messages = bash_session(1);
+        for turn in 1..=tail {
+            let id = format!("call-{turn}");
+            let args = json!({"command": format!("cargo build -p crate{turn}")});
+            messages.push(assistant(
+                &[(id.clone(), "bash", args)],
+                60_000 * turn as u64,
+            ));
+            messages.push(result(&id, "bash", 300));
+        }
+        for message in &mut messages {
+            if let AgentMessage::Assistant { usage, .. } = message {
+                usage.cache_read = 5_000;
+            }
+        }
+        messages
+    }
+
+    /// Incident: 34 cuts in 211 Sonnet requests each rewrote the conversation. A cut that pays
+    /// at ten reads (the unpriced fallback) does not pay at this route's own twenty-five.
+    #[test]
+    fn a_cut_is_priced_by_the_routes_own_write_over_read_ratio() -> Fallible {
+        let messages = one_big_then_small(39);
+        let now = REPLIED + 60_000 * 39 + 1_000;
+        let record = decide(&messages, &Cut::default(), &unpriced()?, now).ok_or("no cut")?;
+        assert_eq!(record.reason, "breakeven");
+        assert_eq!(decide(&messages, &Cut::default(), &sonnet()?, now), None);
+        Ok(())
+    }
+
+    /// A long session has no more requests left than a young one: past forty, savings stop growing.
+    #[test]
+    fn a_long_session_does_not_make_a_cut_easier_to_pay_for() -> Fallible {
+        let messages = one_big_then_small(399);
+        let now = REPLIED + 60_000 * 399 + 1_000;
+        assert_eq!(decide(&messages, &Cut::default(), &unpriced()?, now), None);
+        Ok(())
     }
 
     /// The replay that set the rule: cutting every turn rewrote the cache each time, so the
