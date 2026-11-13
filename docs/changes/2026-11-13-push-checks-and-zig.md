@@ -1,5 +1,6 @@
 ---
 issue: Closes #2186
+cut: none scripts/forge_pr.py
 ---
 `just push` on a Mac now runs the Linux clippy step with the repo's zig wrappers as the C compiler and archiver when `zig` is installed, so `ring`'s C build finds a sysroot. Before, the step failed with `fatal error: 'assert.h' file not found` unless four variables were exported by hand. Without zig, a failed step prints the install command.
 
