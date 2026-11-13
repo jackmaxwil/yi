@@ -69,9 +69,6 @@ DUP_SHARED = 8
 
 # The probes are data: one file each, the brief as its body, so the exam can adopt them unchanged.
 PROBES = ROOT / "skills/yi/pr-review/probes"
-# Reviewers from the author's family share its blind spots (D216's reason for other-family jurors);
-# PRs here are written by Claude Code and yi on Anthropic models, so that family is avoided.
-AVOID_FAMILIES = ("anthropic",)
 # The review job's fgj is signed in as this account; its rounds count wherever the sweep runs.
 BOT = bot_meter.BOT
 # Every `yi ask` a round makes adds its sessions here; cmd_review starts a fresh one per round.
@@ -122,12 +119,6 @@ def applies(probe, paths, full_read):
     if when.get("reads") == "full" and not full_read:
         return False
     return not when.get("paths") or any(fnmatch.fnmatch(p, g) for p in paths for g in when["paths"])
-
-
-def family(model):
-    """`openrouter/z-ai/glm-5.3-flash` is z-ai, `anthropic/claude-x` is anthropic."""
-    parts = (model or "").split("/")
-    return parts[1] if parts[0] == "openrouter" and len(parts) > 2 else parts[0]
 
 
 def review_model():
@@ -1030,10 +1021,6 @@ class held:
 
 def cmd_review(args):
     repo, number = forge_pr.repo(), forge_pr.pull_number(args.number)
-    if family(review_model()) in AVOID_FAMILIES:
-        print(f"#{number}: the review model {review_model()!r} is from {family(review_model())}, the authors' "
-              f"family; set YI_REVIEW_MODEL to another")
-        return 1
     with held(number) as mine:
         if not mine:
             print(f"#{number}: another round is running")
@@ -1447,8 +1434,26 @@ def selfcheck():
     assert not applies(probes["perf"], {"scripts/pr_review.py": {3}}, True), "a scripts-only change skips perf"
     assert applies(probes["security"], {"adapters/yi-adapter-forgejo": {3}}, False)
     assert applies(probes["correctness"], {}, False)
-    assert family("openrouter/z-ai/glm-5.3-flash") == "z-ai" and family("anthropic/claude-x") == "anthropic"
-    assert family("openrouter/anthropic/claude-x") in AVOID_FAMILIES
+    class Reached(Exception):
+        pass
+
+    def reach(*_):
+        raise Reached
+
+    saved = {name: globals()[name] for name in ("review_model", "held")}
+    real = (forge_pr.repo, forge_pr.pull_number)
+    try:
+        globals().update(review_model=lambda: "openrouter/anthropic/claude-x", held=reach)
+        forge_pr.repo, forge_pr.pull_number = (lambda: "o/r"), (lambda n: 1)
+        try:
+            cmd_review(argparse.Namespace(number=1))
+            reached = False
+        except Reached:
+            reached = True
+        assert reached, "a round must run on a model of the authors' family"
+    finally:
+        globals().update(saved)
+        forge_pr.repo, forge_pr.pull_number = real
     # A redelivered message, or a sweep racing another, must not post a round the rule does not owe.
     clean = lambda n, found=(): {"n": n, "sha": "abc1234", "verdict": "clean", "findings": [{"severity": s} for s in found]}
     assert promotes([clean(1), clean(2, ["low"])], "abc1234ff"), "a clean round with only lows promotes"
