@@ -45,6 +45,7 @@ from check_changes import pending  # noqa: E402
 BASELINES = ROOT / "scripts/guardrails/baselines"
 SUBJECT_LIMIT = 72
 LINUX_TARGET = "x86_64-unknown-linux-gnu"
+PLATFORM = sys.platform
 POLL = 20
 WEB = "https://git.example.invalid"
 HOST = WEB.removeprefix("https://")
@@ -271,14 +272,15 @@ def changed_crates(text):
 def zig_env():
     import shutil
 
-    if sys.platform == "linux" or not shutil.which("zig"):
+    if PLATFORM == "linux" or not shutil.which("zig"):
         return {}
     scripts = ROOT / "scripts"
+    triple = LINUX_TARGET.replace("-", "_")
     return {
-        "ZIG_TARGET": "x86_64-linux-gnu",
-        "CC_x86_64_unknown_linux_gnu": str(scripts / "zigcc.sh"),
-        "AR_x86_64_unknown_linux_gnu": str(scripts / "zigar.sh"),
-        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": str(scripts / "zigcc.sh"),
+        "ZIG_TARGET": LINUX_TARGET.replace("-unknown", ""),
+        f"CC_{triple}": str(scripts / "zigcc.sh"),
+        f"AR_{triple}": str(scripts / "zigar.sh"),
+        f"CARGO_TARGET_{triple.upper()}_LINKER": str(scripts / "zigcc.sh"),
     }
 
 
@@ -323,12 +325,12 @@ def linux_clippy():
             return 0
         crates = changed_crates(diff)
         print(f"linux-clippy: {', '.join(crates) if crates else 'workspace'}")
-        env = {**os.environ, **zig_env()}
+        env = {**zig_env(), **os.environ}
         for command in (linux_clippy_command(crates), linux_clippy_command(crates, no_tui=True)):
             result = subprocess.run(command, cwd=ROOT, env=env, check=False)
             if result.returncode:
-                if sys.platform != "linux" and not zig_env():
-                    print("hint: a Linux C build needs a sysroot, install zig (brew install zig) and rerun")
+                if PLATFORM != "linux" and not zig_env():
+                    print("hint: if the failure above was a C build (a missing sysroot or assert.h), install zig (brew install zig) and rerun")
                 return result.returncode
         return 0
     except OSError as error:
@@ -1187,20 +1189,36 @@ def linux_clippy_selfcheck():
         code, calls, said = drive("crates/cli/src/main.rs\n", push=True, cuts=lost)
         assert code == 1 and "push: refused" in said and "cut: crates/x.rs" in said, (code, said)
         assert not [call for call in calls if call[0] == "cargo"], "a push refused for its cuts must not run clippy first"
-        with tempfile.TemporaryDirectory() as bin_dir:
-            fake = pathlib.Path(bin_dir) / "zig"
-            fake.write_text("#!/bin/sh\n")
-            fake.chmod(0o755)
-            path = os.environ["PATH"]
-            os.environ["PATH"] = bin_dir
-            try:
-                env = zig_env()
-                drive("crates/cli/src/main.rs\n")
-                passed = drive.env
-            finally:
-                os.environ["PATH"] = path
         wanted = {"ZIG_TARGET", "CC_x86_64_unknown_linux_gnu", "AR_x86_64_unknown_linux_gnu", "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"}
-        assert (sys.platform == "linux") == (env == {}) and (sys.platform == "linux" or wanted <= set(env) and wanted <= set(passed)), (env, passed)
+
+        def driven(zig, cargo=0, own=None):
+            with tempfile.TemporaryDirectory() as bin_dir:
+                if zig:
+                    fake = pathlib.Path(bin_dir) / "zig"
+                    fake.write_text("#!/bin/sh\n")
+                    fake.chmod(0o755)
+                path, platform = os.environ["PATH"], PLATFORM
+                os.environ["PATH"] = bin_dir
+                os.environ.update(own or {})
+                globals()["PLATFORM"] = "darwin"
+                try:
+                    code, _, said = drive("crates/cli/src/main.rs\n", cargo=cargo)
+                    return code, said, drive.env
+                finally:
+                    os.environ["PATH"] = path
+                    globals()["PLATFORM"] = platform
+                    for key in own or {}:
+                        os.environ.pop(key, None)
+
+        code, said, passed = driven(zig=True)
+        assert code == 0 and wanted <= set(passed), (code, passed)
+        code, said, passed = driven(zig=True, own={"ZIG_TARGET": "mine"})
+        assert passed["ZIG_TARGET"] == "mine", "a variable the developer exported must win over the repo's default"
+        code, said, passed = driven(zig=True, cargo=1)
+        assert code == 1 and "hint:" not in said, (code, said)
+        code, said, passed = driven(zig=False, cargo=1)
+        assert code == 1 and "hint:" in said and "brew install zig" in said, (code, said)
+        assert not (wanted & set(passed) - set(os.environ)), "without zig the repo exports nothing"
     finally:
         subprocess.run = real_run
         globals().update(saved)
