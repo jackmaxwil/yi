@@ -322,7 +322,7 @@ mod tests {
     use super::*;
 
     /// A console whose daemon never answers must fork one `yi serve` per outage, not one per
-    /// failed connect.
+    /// failed connect, and a link that outlived the backoff cap re-arms it for the next outage.
     #[test]
     fn one_outage_respawns_the_daemon_once() -> Result<(), Box<dyn std::error::Error>> {
         let socket = std::env::temp_dir().join(format!("yi-no-daemon-{}.sock", std::process::id()));
@@ -333,7 +333,7 @@ mod tests {
             counted.fetch_add(1, Ordering::SeqCst);
         });
         let (event_tx, events) = events();
-        let (outbound, _threads) = spawn_restarting(socket, event_tx, Some(respawn));
+        let (outbound, _threads) = spawn_restarting(socket.clone(), event_tx, Some(respawn));
         let mut failed = 0;
         while failed < 3 {
             if let ClientEvent::Disconnected { .. } =
@@ -342,8 +342,27 @@ mod tests {
                 failed += 1;
             }
         }
-        outbound.shutdown();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "three failed connects");
+        let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        let (link, _) = listener.accept()?;
+        std::thread::sleep(BACKOFF_CAP + Duration::from_millis(500));
+        drop(link);
+        drop(listener);
+        std::fs::remove_file(&socket)?;
+        let mut after = 0;
+        while after < 2 {
+            if let ClientEvent::Disconnected { .. } =
+                events.recv_timeout(Duration::from_secs(10))?
+            {
+                after += 1;
+            }
+        }
+        outbound.shutdown();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a second outage after a long link"
+        );
         Ok(())
     }
 }

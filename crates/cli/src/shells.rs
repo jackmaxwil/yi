@@ -519,7 +519,9 @@ pub fn run_console_command(args: &Args) -> i32 {
         Err(code) => return code,
     };
     if !args.headless {
-        ensure_daemon(&serve_flags(args), &options.socket);
+        let own = serve_flags(args);
+        let flags = yi_acp::daemon::restart_flags(&options.socket, &own).unwrap_or(own);
+        ensure_daemon(&flags, &options.socket);
     }
     if args.headless {
         let script = match load_drive_script(&args.keys, yi_console::parse_script) {
