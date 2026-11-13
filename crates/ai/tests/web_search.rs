@@ -446,3 +446,38 @@ fn a_stalled_request_write_hits_the_request_timeout() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies when OpenRouter sends a citation without an excerpt and the whole answer is thrown away;
+/// its documented annotation schema adds `content` only if available.
+#[test]
+fn a_citation_without_an_excerpt_keeps_the_answer() -> TestResult {
+    let mut body: Value = serde_json::from_str(DEEPSEEK_RESPONSE)?;
+    body["choices"][0]["message"]["annotations"] = json!([{
+        "type": "url_citation",
+        "url_citation": {
+            "url": "https://www.example.com/nested-without-content",
+            "title": "Nested without content",
+            "start_index": 100,
+            "end_index": 120
+        }
+    }]);
+    let (response, _) = call(
+        &request(5)?,
+        "200 OK",
+        &body.to_string(),
+        "deepseek/deepseek-v4-flash",
+        None,
+        None,
+    )?;
+    let response = response?;
+    let [citation] = response.citations.as_slice() else {
+        return Err("expected exactly the one citation sent".into());
+    };
+    assert_eq!(citation.title, "Nested without content");
+    assert_eq!(
+        citation.url.as_str(),
+        "https://www.example.com/nested-without-content"
+    );
+    assert_eq!(citation.excerpt, "");
+    Ok(())
+}

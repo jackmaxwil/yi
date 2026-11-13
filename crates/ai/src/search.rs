@@ -358,7 +358,7 @@ impl OpenRouterSearch {
                     Ok(SearchCitation {
                         title: text("title")?.to_owned(),
                         url: SearchUrl::new(text("url")?),
-                        excerpt: text("content")?.to_owned(),
+                        excerpt: text("content").unwrap_or_default().to_owned(),
                     })
                 })
                 .collect::<Result<Vec<_>, SearchError>>()?;
