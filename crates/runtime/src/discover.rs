@@ -21,7 +21,6 @@ enum Discovery {
     },
     Ready {
         models: Arc<Vec<Model>>,
-        at: Instant,
     },
     Failed {
         error: String,
@@ -136,7 +135,7 @@ fn discover_models(id: &str) -> Result<Arc<Vec<Model>>, String> {
                     .unwrap_or_else(PoisonError::into_inner);
                 continue;
             }
-            Memory::Stale | Memory::Miss => {
+            Memory::Miss => {
                 let last = match cache.get(id) {
                     Some(Discovery::Ready { models, .. }) => Some(Arc::clone(models)),
                     Some(Discovery::Failed { last, .. }) | Some(Discovery::Pending { last }) => {
@@ -162,7 +161,6 @@ fn discover_models(id: &str) -> Result<Arc<Vec<Model>>, String> {
     let found = match &outcome {
         Ok(models) => Discovery::Ready {
             models: Arc::clone(models),
-            at: Instant::now(),
         },
         Err(error) => Discovery::Failed {
             error: error.clone(),
@@ -209,17 +207,13 @@ fn fetch_models(
 
 enum Memory {
     Fresh(Result<Arc<Vec<Model>>, String>),
-    Stale,
     Pending,
     Miss,
 }
 
 fn remembered(found: Option<&Discovery>) -> Memory {
     match found {
-        Some(Discovery::Ready { models, at }) if at.elapsed() < DISCOVERY_TTL => {
-            Memory::Fresh(Ok(Arc::clone(models)))
-        }
-        Some(Discovery::Ready { .. }) => Memory::Stale,
+        Some(Discovery::Ready { models, .. }) => Memory::Fresh(Ok(Arc::clone(models))),
         Some(Discovery::Failed { error, at, .. }) if at.elapsed() < DISCOVERY_TTL => {
             Memory::Fresh(Err(error.clone()))
         }
@@ -294,9 +288,6 @@ mod tests {
             id.to_owned(),
             Discovery::Ready {
                 models: Arc::new(Vec::new()),
-                at: Instant::now()
-                    .checked_sub(Duration::from_secs(31))
-                    .unwrap_or_else(Instant::now),
             },
         );
         drop(cache);
