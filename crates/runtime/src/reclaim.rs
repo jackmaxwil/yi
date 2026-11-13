@@ -831,14 +831,34 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    fn model(
+        (id, name, max_tokens): (&str, &str, u64),
+        [input, output, cache_read, cache_write]: [f64; 4],
+    ) -> Result<Model, serde_json::Error> {
+        serde_json::from_value(json!({
+            "id": id, "name": name, "api": "anthropic-messages",
+            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
+            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": max_tokens,
+            "cost": {"input": input, "output": output, "cacheRead": cache_read, "cacheWrite": cache_write}
+        }))
+    }
+
     /// Opus 5.5's catalog rates: a read costs a tenth of input, a write 1.25 times it.
     fn opus() -> Result<Model, serde_json::Error> {
-        serde_json::from_value(json!({
-            "id": "claude-opus-5-5", "name": "Opus", "api": "anthropic-messages",
-            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
-            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": 128_000,
-            "cost": {"input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25}
-        }))
+        model(("claude-opus-5-5", "Opus", 128_000), [5.0, 25.0, 0.5, 6.25])
+    }
+
+    /// Sonnet 5.5's catalog rates: a read costs a twentieth of input, a write 1.25 times it, so a
+    /// rewrite costs twenty-five reads.
+    fn sonnet() -> Result<Model, serde_json::Error> {
+        model(
+            ("claude-sonnet-5-5", "Sonnet", 64_000),
+            [2.0, 10.0, 0.1, 2.5],
+        )
+    }
+
+    fn unpriced() -> Result<Model, serde_json::Error> {
+        model(("subscription", "Subscription", 64_000), [0.0; 4])
     }
 
     /// A reply's time as Pi's own writer stamps it (`v4-golden.jsonl`); `at` counts from it.
@@ -881,57 +901,34 @@ pub(crate) mod tests {
         }
     }
 
+    /// Requests `turns`, each a bash call answered with `chars` chars, a minute apart.
+    fn calls(turns: std::ops::Range<usize>, chars: usize, messages: &mut Vec<AgentMessage>) {
+        for turn in turns {
+            let id = format!("call-{turn}");
+            let args = json!({"command": format!("cargo build -p crate{turn}")});
+            messages.push(assistant(
+                &[(id.clone(), "bash", args)],
+                60_000 * turn as u64,
+            ));
+            messages.push(result(&id, "bash", chars));
+        }
+    }
+
     /// `turns` requests, each a bash call answered with 10,000 chars, a minute apart.
     fn bash_session(turns: usize) -> Vec<AgentMessage> {
         let mut messages = vec![AgentMessage::user_input(
             UserContent::Text("fix the build".to_owned()),
             0,
         )];
-        for turn in 0..turns {
-            let id = format!("call-{turn}");
-            let args = json!({"command": format!("cargo build -p crate{turn}")});
-            messages.push(assistant(
-                &[(id.clone(), "bash", args)],
-                60_000 * turn as u64,
-            ));
-            messages.push(result(&id, "bash", 10_000));
-        }
+        calls(0..turns, 10_000, &mut messages);
         messages
-    }
-
-    /// Sonnet 5.5's catalog rates: a read costs a twentieth of input, a write 1.25 times it, so a
-    /// rewrite costs twenty-five reads.
-    fn sonnet() -> Result<Model, serde_json::Error> {
-        serde_json::from_value(json!({
-            "id": "claude-sonnet-5-5", "name": "Sonnet", "api": "anthropic-messages",
-            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
-            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": 64_000,
-            "cost": {"input": 2, "output": 10, "cacheRead": 0.1, "cacheWrite": 2.5}
-        }))
-    }
-
-    fn unpriced() -> Result<Model, serde_json::Error> {
-        serde_json::from_value(json!({
-            "id": "subscription", "name": "Subscription", "api": "anthropic-messages",
-            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
-            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": 64_000,
-            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
-        }))
     }
 
     /// One 10,000-char result up front, then `tail` requests answered with results too small to
     /// cut: the only cut is the first result, and everything after it is rewritten.
     fn one_big_then_small(tail: usize) -> Vec<AgentMessage> {
         let mut messages = bash_session(1);
-        for turn in 1..=tail {
-            let id = format!("call-{turn}");
-            let args = json!({"command": format!("cargo build -p crate{turn}")});
-            messages.push(assistant(
-                &[(id.clone(), "bash", args)],
-                60_000 * turn as u64,
-            ));
-            messages.push(result(&id, "bash", 300));
-        }
+        calls(1..tail + 1, 300, &mut messages);
         for message in &mut messages {
             if let AgentMessage::Assistant { usage, .. } = message {
                 usage.cache_read = 5_000;
