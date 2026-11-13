@@ -1,4 +1,6 @@
 ---
+version: 0.1043.0
+decisions: D596
 issue: Closes #2199
 cut: none scripts/pr_review.py
 decision: a review round runs on any model family, so `just pr review` no longer refuses the authors' family (`anthropic`) and `AVOID_FAMILIES` and `family()` are deleted | the owner directed that review models should not block on being from the same family, and the refusal stopped a round from running in a session whose own model is Anthropic | restore `AVOID_FAMILIES = ("anthropic",)`, `family()` and the refusal at the top of `cmd_review`

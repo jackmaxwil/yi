@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.1042.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.1043.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -354,6 +354,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D596 | a review round runs on any model family, so `just pr review` no longer refuses the authors' family (`anthropic`) and `AVOID_FAMILIES` and `family()` are deleted | the owner directed that review models should not block on being from the same family, and the refusal stopped a round from running in a session whose own model is Anthropic | restore `AVOID_FAMILIES = ("anthropic",)`, `family()` and the refusal at the top of `cmd_review` |
 | D595 | tool results are coloured from a fresh parse at every break in the shown text (the first row, a line-number gap, an elision row, a clipped row, a parse error) instead of left plain when the parse cannot be sure | most reads start mid-file and every search hit is lifted out of its file, so the plain rule left nearly every result uncoloured | reversible by restoring the line-1 check in the tool card body |
 | D594 | Esc and Ctrl-C close a completion list and keep the draft, superseding #2149's "Esc and Ctrl-C close the list and empty the box, as before" | with the draft always in the box, keeping it is the one rule a typed list and a Tab-opened list share, where #2149 emptied the one and kept the other; coordinator's call for this PR, 2026-11-12 | make `Composer::dismiss_assist` clear the text when a typed list closes |
 | D593 | Spelling is Apple's NSSpellChecker, reached by a long-lived `/usr/bin/osascript -l JavaScript` peer that yi-tools spawns through its `command` constructor (design §9) and speaks one ASCII-escaped JSON object a line with a request id; the composer only asks and polls a non-blocking cache, a peer that misses a 3 s deadline, desyncs or cannot start leaves spelling absent, and nothing is downloaded, compiled or shipped beside `yi`. Off macOS there is no checker and completion has the user's own prompt words only, in solo and the console alike; a headless drive installs neither, so its frames never depend on the machine. A late or dead peer turns spelling off for the session and says so in one notice row, and the curl is written only where the terminal advertises true color, a plain underline elsewhere | owner 2026-11-11: "Can we use NSSpellChecker … so we dont need to download model?"; Rust cannot call AppKit without unsafe FFI, and a helper compiled in build.rs would need release packaging, a target-arch build and a path found from `current_exe`, where osascript ships on every Mac; measured on this Mac, 61 ms to the first answer and 1.8 ms check, 2.5 ms complete, 3.7 ms guesses at the median | delete crates/tools/src/spell.rs and `Assist`'s engine; typos and Apple completion then stay off |
