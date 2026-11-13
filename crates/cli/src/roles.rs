@@ -6,7 +6,11 @@ pub(crate) fn role_model(role: &str, spec: Option<String>, instead: &str) -> Opt
     match crate::resolve(&spec) {
         Ok(model) => Some(model),
         Err(error) => {
-            eprintln!("warning: {role} model {spec}: {error}; {instead}");
+            if error.starts_with("unknown model") {
+                eprintln!("warning: unknown {role} model {spec}; {instead}");
+            } else {
+                eprintln!("warning: {role} model {spec}: {error}; {instead}");
+            }
             None
         }
     }

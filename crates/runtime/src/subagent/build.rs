@@ -140,13 +140,7 @@ impl SubagentHost {
                 let (provider, id) = selector.split_once('/').ok_or_else(|| {
                     format!("model selector must be provider/model, got {selector}")
                 })?;
-                select_model(provider, id).map_err(|error| {
-                    if error.starts_with("unknown model") {
-                        format!("no model matches selector {selector}")
-                    } else {
-                        error
-                    }
-                })?
+                select_model(provider, id)?
             }
         };
         // Before a lane, a container or a lease is taken: the child would stream with no key.

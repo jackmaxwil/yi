@@ -278,6 +278,53 @@ fn a_model_list_includes_a_discovered_model() -> TestResult {
 }
 
 #[test]
+fn a_model_list_without_a_data_array_is_named() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let _ = read_request(&mut reader);
+            let answer = reply("200 OK", "application/json", r#"{"models":[{"id":"m2"}]}"#);
+            let _ = reader.get_mut().write_all(answer.as_bytes());
+        }
+    });
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-shape", &providers)?;
+    let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+    assert_ne!(ask.status.code(), Some(0));
+    let err = text(&ask);
+    assert!(err.contains("no data array"), "{err}");
+    assert!(!err.contains("unknown model"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_discovery_get_goes_through_https_proxy() -> TestResult {
+    let (port, seen) = fake_gateway()?;
+    let providers = json!({"localgw": {
+        "baseUrl": "http://127.0.0.1:9/v1",
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-proxy-ok", &providers)?;
+    let proxy = format!("http://127.0.0.1:{port}");
+    let ask = home.yi(
+        &["ask", "--here", "--model", "localgw/m2", "hi"],
+        &[("HTTPS_PROXY", &proxy)],
+    )?;
+    assert_eq!(ask.status.code(), Some(0), "{}", text(&ask));
+    let requests = seen.lock().map_err(|_| "fake lock")?.clone();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("/v1/models")),
+        "{requests:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_undialable_proxy_is_named_before_discovery() -> TestResult {
     let providers = json!({"localgw": {
         "baseUrl": "http://127.0.0.1:9/v1",

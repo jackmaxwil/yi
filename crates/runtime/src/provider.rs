@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::Receiver;
@@ -18,11 +18,19 @@ use yi_types::model::{Effort, LlmContext, Model};
 static CUSTOM_PROVIDERS: OnceLock<yi_types::config::Providers> = OnceLock::new();
 static DISCOVERED_MODELS: LazyLock<Mutex<BTreeMap<String, Discovery>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
-const FAILED_DISCOVERY_RETRY: Duration = Duration::from_secs(30);
+static DISCOVERY_WAKE: LazyLock<Condvar> = LazyLock::new(Condvar::new);
+const DISCOVERY_TTL: Duration = Duration::from_secs(30);
 
 enum Discovery {
-    Ready(Arc<Vec<Model>>),
-    Failed { error: String, at: Instant },
+    Pending,
+    Ready {
+        models: Arc<Vec<Model>>,
+        at: Instant,
+    },
+    Failed {
+        error: String,
+        at: Instant,
+    },
 }
 
 /// OpenRouter's model list omits routing variants (`:exacto`, `:nitro`): one takes its base's entry.
@@ -119,20 +127,45 @@ fn discover_models(id: &str) -> Result<Arc<Vec<Model>>, String> {
     if !provider.models.is_empty() {
         return Ok(Arc::new(provider.catalog(id)));
     }
-    if let Some(outcome) = cached(id) {
-        return outcome;
+    loop {
+        let mut cache = DISCOVERED_MODELS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match cache.get(id) {
+            Some(Discovery::Ready { models, at }) if at.elapsed() < DISCOVERY_TTL => {
+                return Ok(Arc::clone(models));
+            }
+            Some(Discovery::Failed { error, at }) if at.elapsed() < DISCOVERY_TTL => {
+                return Err(error.clone());
+            }
+            Some(Discovery::Pending) => {
+                let _waiting = DISCOVERY_WAKE
+                    .wait(cache)
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            _ => {
+                cache.insert(id.to_owned(), Discovery::Pending);
+                break;
+            }
+        }
     }
     let outcome = fetch_models(id, provider).map(Arc::new);
-    if let Ok(mut cache) = DISCOVERED_MODELS.lock() {
-        let found = match &outcome {
-            Ok(models) => Discovery::Ready(Arc::clone(models)),
-            Err(error) => Discovery::Failed {
-                error: error.clone(),
-                at: Instant::now(),
-            },
-        };
-        cache.insert(id.to_owned(), found);
-    }
+    let found = match &outcome {
+        Ok(models) => Discovery::Ready {
+            models: Arc::clone(models),
+            at: Instant::now(),
+        },
+        Err(error) => Discovery::Failed {
+            error: error.clone(),
+            at: Instant::now(),
+        },
+    };
+    DISCOVERED_MODELS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(id.to_owned(), found);
+    DISCOVERY_WAKE.notify_all();
     outcome
 }
 
@@ -158,7 +191,11 @@ fn fetch_models(
             .filter_map(|value| serde_json::from_value(value.clone()).ok())
             .collect(),
     };
-    Ok(provider.discovered_catalog(id, list))
+    let models = provider.discovered_catalog(id, list);
+    if models.is_empty() && !data.is_empty() {
+        return Err(format!("{url}: model list named no usable model"));
+    }
+    Ok(models)
 }
 
 fn cached(id: &str) -> Option<Result<Arc<Vec<Model>>, String>> {
@@ -166,9 +203,11 @@ fn cached(id: &str) -> Option<Result<Arc<Vec<Model>>, String>> {
         return None;
     };
     match cache.get(id)? {
-        Discovery::Ready(models) => Some(Ok(Arc::clone(models))),
-        Discovery::Failed { at, .. } if at.elapsed() >= FAILED_DISCOVERY_RETRY => None,
-        Discovery::Failed { error, .. } => Some(Err(error.clone())),
+        Discovery::Ready { models, at } if at.elapsed() < DISCOVERY_TTL => {
+            Some(Ok(Arc::clone(models)))
+        }
+        Discovery::Failed { error, at } if at.elapsed() < DISCOVERY_TTL => Some(Err(error.clone())),
+        _ => None,
     }
 }
 
@@ -1293,5 +1332,40 @@ mod tests {
         let (provider, _) = answer_in(0);
         let mut stream = provider.faux_stream();
         assert_eq!(arrived(&mut stream), 7);
+    }
+
+    #[test]
+    fn a_failed_discovery_is_replayed_until_it_ages_out() {
+        let id = "ttl-probe";
+        let mut cache = DISCOVERED_MODELS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        cache.insert(
+            id.to_owned(),
+            Discovery::Failed {
+                error: "down".to_owned(),
+                at: Instant::now(),
+            },
+        );
+        drop(cache);
+        let message = match cached(id) {
+            Some(Err(error)) => error,
+            _ => String::new(),
+        };
+        assert_eq!(message, "down");
+        let mut cache = DISCOVERED_MODELS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        cache.insert(
+            id.to_owned(),
+            Discovery::Failed {
+                error: "down".to_owned(),
+                at: Instant::now()
+                    .checked_sub(Duration::from_secs(31))
+                    .unwrap_or_else(Instant::now),
+            },
+        );
+        drop(cache);
+        assert!(cached(id).is_none(), "an aged failure is fetched again");
     }
 }
