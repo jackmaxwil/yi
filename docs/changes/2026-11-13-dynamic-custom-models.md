@@ -1,8 +1,8 @@
 ---
 issue: Closes #2201
 decision: Custom providers with no explicit models discover their OpenAI-compatible model list on first use | Static model lists remain offline and unchanged, while an unavailable dynamic provider does not delay unrelated startup | Configure explicit models or restore the previous catalog-only resolver
-growth: +393 weighed fetching inside every catalog lookup and a process-global error slot; one shared fetch serves a listing, a stale list still resolves, and a failed refresh keeps that list
-raise: crate cli +7, crate runtime +339, crate types +47, tests +319
+growth: +414 weighed fetching inside every catalog lookup and a process-global error slot; discovery lives beside the provider stream so that file can stay under its ceiling
+raise: crate cli +7, crate runtime +360, crate types +47, tests +323
 ledger~: custom providers | declares an endpoint and its models | declares an endpoint and, with an empty or omitted model list, discovers its models from `/models` on first use
 ---
 
