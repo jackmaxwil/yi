@@ -908,7 +908,7 @@ pub fn kernel_cell_note(
         SandboxRefusal::Scopes(_) => "this".to_owned(),
     };
     Some(format!(
-        "next: the sandbox refused {what} ({CONTAINED}); the kernel and its bash() jobs run inside it and cannot leave it, so do not retry: fetch what the cell needs with the bash tool (it can ask), write the result under the working tree or /tmp, and load that file in the cell; if the cell itself needs the path or the network, say which and ask the user"
+        "next: the sandbox refused {what} ({CONTAINED}); the kernel and its bash() jobs run inside it and cannot leave it, so do not retry; say what needs the network or that path and ask the user"
     ))
 }
 

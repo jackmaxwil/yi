@@ -211,8 +211,6 @@ pub struct SubagentHost {
     /// Invariant: a reap pin names `history://<child>`, and a child's file lives
     /// under a `sub-*` directory no session repo scans, so it is kept by name here.
     pub(crate) reaped: trail::Kept,
-    /// Routes whose last child died on its first model call, with when and why.
-    pub(crate) routes: Mutex<std::collections::HashMap<String, (std::time::Instant, String)>>,
     pub(crate) mail: Mutex<crate::mail::Desk>,
     /// Lock order: `mail`, then `children`, then `grant`, then a session store.
     pub(crate) grant: Mutex<crate::lease::Grant>,
@@ -322,7 +320,6 @@ impl SubagentHost {
             deadline: Mutex::new(None),
             children: Mutex::new(Children::default()),
             reaped: trail::Kept::default(),
-            routes: Mutex::default(),
             mail: Mutex::default(),
             grant: Mutex::default(),
             finished: Mutex::new(None),

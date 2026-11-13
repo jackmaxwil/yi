@@ -404,15 +404,8 @@ async fn a_discard_removes_a_free_tree_and_a_childs_is_refused() -> TestResult {
 #[tokio::test]
 async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> TestResult {
     let rig = rig("given")?;
-    std::fs::write(rig.repo.join("f0.txt"), "a person's\n")?;
-    let at = rig.fork("given").await?;
-    let mut asked = Map::new();
-    asked.insert("name".to_owned(), "kid".into());
-    asked.insert("role".to_owned(), "root".into());
-    asked.insert("tree".to_owned(), "given".into());
-    rig.family.host.spawn("look".to_owned(), asked)?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
     assert_eq!(rig.family.host.cwd_of("kid"), Some(at.clone()));
-    assert!(rig.family.reaches("kid", "finished").await);
     let refused = rig
         .family
         .host
@@ -471,14 +464,17 @@ async fn a_dirty_fork_the_child_changed_discards_only_with_force() -> TestResult
     let at = finished_kid_on_a_dirty_fork(&rig).await?;
     std::fs::write(at.join("kid.txt"), "kid's own work\n")?;
     let refused = rig
-        .family
-        .host
-        .discard_worktree("kid", false)
+        .ask("rlm.discard_worktree", json!({"target": "kid"}))
+        .await
         .err()
         .ok_or("a dirty fork the child wrote to was discarded without force")?;
     assert!(refused.contains("force=True"), "{refused}");
     assert!(at.exists());
-    rig.family.host.discard_worktree("kid", true)?;
+    rig.ask(
+        "rlm.discard_worktree",
+        json!({"target": "kid", "force": true}),
+    )
+    .await?;
     assert!(!at.exists());
     Ok(())
 }

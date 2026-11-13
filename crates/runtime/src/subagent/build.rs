@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use yi_types::message::{AgentMessage, Content};
 
 use super::{ChildActivity, ChildBuild, Children, Standing, SubagentHost};
+use crate::family::{MemberState, read_exit};
 use crate::mailbox::ParentLink;
 use crate::plan::ops::{ENGINE_AGENT, OWNER_AGENT};
 use crate::provider::resolve_model;
@@ -83,13 +84,15 @@ impl SubagentHost {
         let counts = |record: &&super::ChildRecord| matches!(record.standing, Standing::Worker);
         let (mut failed, mut finished, mut running) = (0_usize, 0_usize, 0_usize);
         for record in children.values().filter(counts) {
-            match &record.exit {
-                None => running = running.saturating_add(1),
-                Some(yi_types::subagent::ChildExit::Completed) => {
-                    finished = finished.saturating_add(1);
-                }
-                Some(_) => failed = failed.saturating_add(1),
-            }
+            let bucket = match read_exit(record.exit).state {
+                MemberState::Queued | MemberState::Running => &mut running,
+                MemberState::Finished => &mut finished,
+                MemberState::Failed
+                | MemberState::NeedsYou
+                | MemberState::Stuck
+                | MemberState::RepossessionPending => &mut failed,
+            };
+            *bucket = bucket.saturating_add(1);
         }
         let never_worked = children
             .values()
@@ -120,12 +123,7 @@ impl SubagentHost {
             children
                 .values()
                 .find(|record| record.session_name == session_name)
-                .map(|record| match &record.exit {
-                    None => "running",
-                    Some(yi_types::subagent::ChildExit::Completed) => "finished",
-                    Some(yi_types::subagent::ChildExit::Failed { .. }) => "failed",
-                    Some(_) => "closed",
-                })
+                .map(|record| read_exit(record.exit).verb)
                 .or_else(|| {
                     children
                         .building

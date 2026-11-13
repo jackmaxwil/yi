@@ -377,18 +377,20 @@ impl SubagentHost {
     /// A finished child whose tree folded here without conflict has handed its work over: its
     /// worktree may now be deleted, so a failed child never holds a slot for want of a disposition.
     fn mark_folded(&self, name: &str) {
-        let Ok(mut children) = self.children.lock() else {
-            return;
-        };
-        let Ok(key) = Self::key_of(&children, name) else {
-            return;
-        };
-        if let Some(record) = children.records.get_mut(&key)
-            && record.exit.is_some()
-            && record.worktree.is_some()
-            && record.disposition.is_none()
-        {
-            record.disposition = Some(yi_types::plan::op::Choice::Discarded);
+        let released = self.children.lock().is_ok_and(|children| {
+            Self::key_of(&children, name)
+                .ok()
+                .and_then(|key| children.records.get(&key))
+                .is_some_and(|record| {
+                    record.exit.is_some()
+                        && record.worktree.is_some()
+                        && record.disposition.is_none()
+                        && !record.managed
+                })
+        });
+        if released {
+            self.mark_disposed(name, yi_types::plan::op::Choice::Discarded)
+                .ok();
         }
     }
 

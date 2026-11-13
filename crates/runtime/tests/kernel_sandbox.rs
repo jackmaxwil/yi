@@ -1034,9 +1034,7 @@ async fn a_kernel_cell_the_sandbox_refused_names_the_sandbox() -> TestResult {
     kernel.dispose().await;
     let (code, note, result) = &notes[0];
     assert!(
-        note.contains("the sandbox refused")
-            && note.contains("cannot leave it")
-            && note.contains("fetch what the cell needs with the bash tool"),
+        note.contains("the sandbox refused") && note.contains("cannot leave it"),
         "{code}: {note}\n{result:?}"
     );
     assert!(!note.contains("asks"), "{note}");

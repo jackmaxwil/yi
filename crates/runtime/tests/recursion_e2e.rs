@@ -3017,38 +3017,6 @@ async fn children_that_failed_before_any_tool_call_free_their_slots() -> TestRes
     Ok(())
 }
 
-/// A child that dies on its first model call leaves its route noted as failing, which
-/// `find_models` then shows, so a parent choosing a route sees it before spending a slot.
-#[tokio::test]
-async fn a_child_that_died_on_its_first_call_leaves_its_route_noted() -> TestResult {
-    let harness = harness_with(HarnessOptions {
-        child_errors: true,
-        depth: 0,
-        max_depth: 1,
-        child_answer: "unused",
-        tool_command: None,
-        cwd: None,
-        wake_parent: None,
-    })?;
-    let model = faux_model(128_000);
-    let route = format!("{}/{}", model.provider, model.id);
-    harness
-        .host
-        .spawn("doomed".to_owned(), kwargs(&[("name", "doomed")]))
-        .map_err(|error| error.to_string())?;
-    for _ in 0..POLL_ATTEMPTS {
-        if harness.host.failing_route(&route).is_some() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-    }
-    assert!(
-        harness.host.failing_route(&route).is_some(),
-        "{route} was not noted"
-    );
-    Ok(())
-}
-
 #[tokio::test]
 async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
     let at_limit = harness(1, 1, "unused")?;

@@ -13,10 +13,13 @@ use super::hostgit::{candidate_of, git, git_capped};
 use super::settle::{Candidate, Quiescence};
 use super::{BranchName, LIST_BUDGET, LaneError, PLUMBING_CAP, Pool, Sha, io_error};
 
-fn tree_of_snapshot(tree: &Path) -> Option<Sha> {
-    let commit = super::warm::snapshot(tree, None).ok()?;
+fn tree_of(repo: &Path, commit: &Sha) -> Option<Sha> {
     let at = format!("{}^{{tree}}", commit.as_str());
-    Sha::parse(&git(tree, &["rev-parse", &at]).ok()?)
+    Sha::parse(&git(repo, &["rev-parse", &at]).ok()?)
+}
+
+fn tree_of_snapshot(tree: &Path) -> Option<Sha> {
+    tree_of(tree, &super::warm::snapshot(tree, None).ok()?)
 }
 const SCRATCH_ROWS_MAX: usize = 3;
 
@@ -250,13 +253,17 @@ impl ChildTree {
         let copied = state
             .as_ref()
             .filter(|_| plan.at.is_none() && !parent.join(".gitmodules").exists());
+        let pinned = if plan.dirt {
+            Some(super::warm::snapshot(parent, None)?)
+        } else {
+            None
+        };
         let cloned =
             copied.is_some_and(|state| cheap_copy(parent, &tree, state, plan.dirt).is_ok());
         if !cloned {
             tree.plain_checkout()?;
-            if plan.dirt {
-                let files = super::warm::snapshot(parent, None)?;
-                super::tree::rewind(tree.path(), &files, &[])?;
+            if let Some(files) = &pinned {
+                super::tree::rewind(tree.path(), files, &[])?;
             }
         }
         let ignored = state
@@ -299,9 +306,7 @@ impl ChildTree {
             ));
         }
         let mut tree = tree;
-        if plan.dirt {
-            tree.carried = tree_of_snapshot(tree.path());
-        }
+        tree.carried = pinned.as_ref().and_then(|files| tree_of(parent, files));
         Ok((tree, rows))
     }
 
