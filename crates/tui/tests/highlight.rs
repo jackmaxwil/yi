@@ -519,28 +519,19 @@ fn a_read_body_is_highlighted_from_its_own_path() -> TestResult {
     Ok(())
 }
 
-/// A grep hit is one line lifted out of its file, possibly from inside a
-/// string or a comment; colouring it from a guess is worse than leaving it dim.
+/// A search hit is a line lifted out of its file, so it is coloured by that file's language
+/// from a fresh parse, and the path heading its group is styled as a path.
 #[test]
-fn a_grep_hit_is_left_plain() -> TestResult {
+fn a_grep_hit_is_coloured_from_its_own_path() -> TestResult {
     let spans = tool_spans("grep", "total", &["src/lib.rs:1:let total = 1;"]);
-    assert!(!carries(&spans, "let", Token::Keyword), "{spans:?}");
+    assert!(carries(&spans, "let", Token::Keyword), "{spans:?}");
     Ok(())
 }
 
-/// The card paints a ground under body rows; plain means no colour or weight of its own.
-fn plain(spans: &[(String, Style)], text: &str) -> bool {
-    let base = Style::default().fg(theme().text);
-    spans.iter().any(|(content, style)| {
-        content == text && style.fg == base.fg && style.add_modifier.is_empty()
-    })
-}
-
-/// A read with `ranges` prints two windows and says what it skipped between
-/// them. Carrying the parse over the gap paints real code as comment, and
-/// restarting it guesses at a scope the reader never saw open.
+/// A read with `ranges` prints two windows and says what it skipped between them. Carrying
+/// the parse over the gap paints real code as comment, so the second window parses afresh.
 #[test]
-fn a_skipped_range_stops_the_highlighting() -> TestResult {
+fn a_skipped_range_restarts_the_highlighting() -> TestResult {
     let spans = tool_spans(
         "read",
         "src/lib.rs",
@@ -550,14 +541,14 @@ fn a_skipped_range_stops_the_highlighting() -> TestResult {
             "10:let total = 1;",
         ],
     );
-    assert!(plain(&spans, "let total = 1;"), "{spans:?}");
+    assert!(carries(&spans, "let", Token::Keyword), "{spans:?}");
     Ok(())
 }
 
-/// A long read reaches the transcript as head and tail with a marker between,
-/// so the rows under it are not the rows the parse just walked.
+/// A long read reaches the transcript as head and tail with a marker between, so the tail
+/// must not resume inside the docstring the head left open.
 #[test]
-fn an_elided_tail_is_left_plain() -> TestResult {
+fn an_elided_tail_restarts_the_highlighting() -> TestResult {
     let spans = tool_spans(
         "read",
         "report.py",
@@ -569,17 +560,17 @@ fn an_elided_tail_is_left_plain() -> TestResult {
         ],
     );
     assert!(carries(&spans, "import", Token::Keyword), "{spans:?}");
-    assert!(plain(&spans, "for x in y"), "{spans:?}");
+    assert!(carries(&spans, "for", Token::Keyword), "{spans:?}");
     Ok(())
 }
 
-/// The read tool clips an over-wide row, so a quote that closed on that line
-/// never reached the parse the rows below it would resume from.
+/// The read tool clips an over-wide row, so a quote that closed on that line never reached
+/// the parse; the row below it starts a fresh one rather than staying inside the string.
 #[test]
-fn a_clipped_row_stops_the_highlighting() -> TestResult {
+fn a_clipped_row_restarts_the_highlighting() -> TestResult {
     let wide = format!("1:const B: &str = \"{}\u{2026}", "a".repeat(512));
     let spans = tool_spans("read", "src/lib.rs", &[&wide, "2:let total = 1;"]);
-    assert!(plain(&spans, "let total = 1;"), "{spans:?}");
+    assert!(carries(&spans, "let", Token::Keyword), "{spans:?}");
     Ok(())
 }
 

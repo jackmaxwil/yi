@@ -196,6 +196,28 @@ pub fn lang_for(name: &str) -> Option<Lang> {
     })
 }
 
+pub fn knows_extension(ext: &str) -> bool {
+    syntaxes()
+        .find_syntax_by_extension(&ext.to_ascii_lowercase())
+        .is_some()
+}
+
+pub fn lang_for_first_line(line: &str) -> Option<Lang> {
+    let syntax = syntaxes().find_syntax_by_first_line(line)?;
+    Some(Lang {
+        state: ParseState::new(syntax),
+        stack: ScopeStack::new(),
+        poisoned: false,
+        infer: INFERRED.contains(&syntax.name.as_str()),
+    })
+}
+
+impl Lang {
+    pub fn poisoned(&self) -> bool {
+        self.poisoned
+    }
+}
+
 impl Theme {
     /// Foreground and bold only: a background would fight the diff tint it
     /// renders inside, and terminals render italic and underline least alike.

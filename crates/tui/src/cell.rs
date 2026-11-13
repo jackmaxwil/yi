@@ -549,65 +549,9 @@ impl ToolCell {
     /// Typed, not a raw dump: a read hangs off a line-number gutter and a search
     /// groups hits under each path rather than repeating it ten times.
     fn body(&self, theme: &Theme) -> Vec<Line<'static>> {
-        let dim = theme.dim_style();
-        let text = Style::default().fg(theme.text);
-        let mut out = Vec::new();
-        let mut last_path: Option<String> = None;
-        let searchy = self.name == "grep";
-        let anchored = matches!(self.name.as_str(), "read" | "edit");
-        // A patch routes to `diffview`, which colours from its own header; this is the plain
-        // numbered dump a read prints, its path in the summary since `details` lacks it.
-        let subject = anchored
-            .then(|| subject_of(&self.name, &self.summary))
-            .filter(|subject| !subject.is_empty());
-        let mut lang = subject.and_then(crate::highlight::lang_for);
-        let mut expect = 1_u64;
-        for raw in &self.preview {
-            let row = if searchy {
-                crate::rows::grep_row(raw)
-            } else {
-                None
-            };
-            if let Some((path, number, body)) = row {
-                if last_path.as_deref() != Some(path) {
-                    out.push(Line::from(Span::styled(path.to_owned(), dim)));
-                    last_path = Some(path.to_owned());
-                }
-                out.push(Line::from(vec![
-                    Span::styled(format!("{number:>4} "), dim),
-                    Span::styled(body.to_owned(), text),
-                ]));
-                continue;
-            }
-            match crate::rows::numbered(raw) {
-                Some((number, body)) => {
-                    let mut spans = vec![Span::styled(format!("{number:>4} "), dim)];
-                    // The parse describes only the rows fed to it from line 1, so a preview
-                    // opening mid-file leaves it describing text the reader never saw.
-                    if number.parse::<u64>().ok() != Some(expect) {
-                        lang = None;
-                    }
-                    match lang.as_mut() {
-                        Some(lang) => {
-                            spans.extend(crate::highlight::spans(body, lang, theme, text));
-                        }
-                        None => spans.push(Span::styled(body.to_owned(), text)),
-                    }
-                    // An over-wide row arrives clipped, so its tail, and any quote or block
-                    // comment closing in it, never reached the parse the next rows resume from.
-                    if body.ends_with('\u{2026}') {
-                        lang = None;
-                    }
-                    expect = expect.saturating_add(1);
-                    out.push(Line::from(spans));
-                }
-                // The hashline header repeats the path the head line already
-                // names, and the verb line is the digest above it.
-                None if anchored && !raw.starts_with('…') => {}
-                None => out.push(Line::from(Span::styled(raw.to_owned(), dim))),
-            }
-        }
-        out
+        let running = self.status == ToolStatus::Running;
+        let subject = subject_of(&self.name, &self.summary);
+        crate::result_paint::body(&self.name, subject, &self.preview, running, theme)
     }
 
     pub fn summary_of(name: &str, argument: &str) -> String {
@@ -644,8 +588,11 @@ impl ToolCell {
                 .find(|line| !line.trim().is_empty())
         };
         if failed {
-            return first()
-                .map(|line| crate::transcript::show_controls(crate::rows::strip_hashline(line)));
+            return first().map(|line| {
+                crate::result_paint::strip_escapes(&crate::transcript::show_controls(
+                    crate::rows::strip_hashline(line),
+                ))
+            });
         }
         // Invariant: a typed detail decides the digest wherever the result carries one; the text
         // is read only where none exists, so rewording it moves only those rows.
@@ -690,7 +637,8 @@ impl ToolCell {
             "web_search" => crate::transcript::search_digest(details)?,
             _ => first()?.to_owned(),
         };
-        let digest = crate::transcript::show_controls(digest.trim());
+        let digest =
+            crate::result_paint::strip_escapes(&crate::transcript::show_controls(digest.trim()));
         (!digest.is_empty()).then_some(digest)
     }
 }
