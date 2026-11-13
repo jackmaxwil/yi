@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
+static CUSTOM_PROVIDERS: OnceLock<yi_types::config::Providers> = OnceLock::new();
+static DISCOVERED_MODELS: LazyLock<Mutex<BTreeMap<String, Arc<Vec<Model>>>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
 use tokio::sync::mpsc::Receiver;
 use yi_ai::anthropic::{self, AnthropicOptions};
 use yi_ai::auth::{AuthKind, Resolved};
@@ -16,7 +19,12 @@ use yi_types::model::{Effort, LlmContext, Model};
 
 /// OpenRouter's model list omits routing variants (`:exacto`, `:nitro`): one takes its base's entry.
 pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
-    resolve_in(Catalog::shared(), provider, id)
+    resolve_in(Catalog::shared(), provider, id).or_else(|| {
+        discover_models(provider)
+            .ok()?
+            .into_iter()
+            .find(|model| model.id == id)
+    })
 }
 
 /// A Cursor id is taken on trust only until the account's model list has been fetched: with a
@@ -34,7 +42,50 @@ fn resolve_in(catalog: &Catalog, provider: &str, id: &str) -> Option<Model> {
 }
 
 pub fn available_models() -> Vec<Model> {
-    Catalog::shared().models()
+    let mut models = Catalog::shared().models();
+    if let Some(providers) = CUSTOM_PROVIDERS.get() {
+        for (id, provider) in providers.iter() {
+            if provider.models.is_empty()
+                && let Ok(discovered) = discover_models(id)
+            {
+                models.extend(discovered);
+            }
+        }
+    }
+    models
+}
+
+fn discover_models(id: &str) -> Result<Vec<Model>, String> {
+    let providers = CUSTOM_PROVIDERS
+        .get()
+        .ok_or("custom providers are not configured")?;
+    let provider = providers
+        .iter()
+        .find(|(provider_id, _)| *provider_id == id)
+        .map(|(_, provider)| provider)
+        .ok_or("unknown custom provider")?;
+    if !provider.models.is_empty() {
+        return Ok(provider.catalog(id));
+    }
+    let mut cache = DISCOVERED_MODELS
+        .lock()
+        .map_err(|_| "model discovery cache is poisoned")?;
+    if let Some(models) = cache.get(id) {
+        return Ok(models.as_ref().clone());
+    }
+    let authorization =
+        yi_ai::auth::resolve(id).map(|credential| format!("Bearer {}", credential.secret.expose()));
+    let headers: Vec<(&str, String)> = authorization
+        .iter()
+        .map(|value| ("Authorization", value.clone()))
+        .collect();
+    let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
+    let response = yi_ai::request::get_json(&url, &headers, None, 8 * 1024 * 1024)?;
+    let list: yi_types::config::CustomModelList = serde_json::from_value(response)
+        .map_err(|error| format!("invalid model discovery response: {error}"))?;
+    let models = provider.discovered_catalog(id, list);
+    cache.insert(id.to_owned(), Arc::new(models.clone()));
+    Ok(models)
 }
 
 pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {
@@ -43,6 +94,7 @@ pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {
 
 /// The config's `providers`, installed before the first model lookup or credential resolve.
 pub fn set_custom_providers(providers: &yi_types::config::Providers) {
+    let _ = CUSTOM_PROVIDERS.set(providers.clone());
     Catalog::set_custom(
         (providers.iter())
             .flat_map(|(id, provider)| provider.catalog(id))

@@ -40,6 +40,8 @@ const RESPONSES: &str = concat!(
     "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n",
 );
 
+const DISCOVERY: &str = r#"{"data":[{"id":"m2","object":"model","context_window":64000,"max_tokens":16000,"capabilities":{"image_input":true}}]}"#;
+
 /// Answers each request in the shape of the wire its path names and keeps each request whole.
 fn fake_gateway() -> std::io::Result<(u16, Seen)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -51,14 +53,16 @@ fn fake_gateway() -> std::io::Result<(u16, Seen)> {
             let mut reader = BufReader::new(stream);
             let request = read_request(&mut reader);
             let line = request.lines().next().unwrap_or_default();
-            let body = if line.contains("/messages ") {
-                MESSAGES
+            let (content_type, body) = if line.contains("/models ") {
+                ("application/json", DISCOVERY)
+            } else if line.contains("/messages ") {
+                ("text/event-stream", MESSAGES)
             } else if line.contains("/responses ") {
-                RESPONSES
+                ("text/event-stream", RESPONSES)
             } else {
-                ANSWER
+                ("text/event-stream", ANSWER)
             };
-            let answer = reply("200 OK", "text/event-stream", body);
+            let answer = reply("200 OK", content_type, body);
             let _ = reader.get_mut().write_all(answer.as_bytes());
             if let Ok(mut all) = kept.lock() {
                 all.push(request);
@@ -164,6 +168,31 @@ fn a_declared_provider_streams_through_its_own_base_url_and_key() -> TestResult 
     Ok(())
 }
 
+#[test]
+fn a_provider_without_models_discovers_them_on_first_use() -> TestResult {
+    let (port, seen) = fake_gateway()?;
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover", &providers)?;
+    let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+    assert_eq!(ask.status.code(), Some(0), "{}", text(&ask));
+    assert!(
+        String::from_utf8_lossy(&ask.stdout).contains("pong"),
+        "{}",
+        text(&ask)
+    );
+    let requests = seen.lock().map_err(|_| "fake lock")?.clone();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let discovery = requests.first().ok_or("no discovery request")?;
+    assert!(discovery.starts_with("GET /v1/models "), "{discovery}");
+    let completion = requests.get(1).ok_or("no completion request")?;
+    let body: Value = serde_json::from_str(completion.rsplit("\r\n").next().unwrap_or_default())?;
+    assert_eq!(body["model"], "m2");
+    assert_eq!(body["max_tokens"], 16000);
+    Ok(())
+}
+
 /// Dies with the request sent to `/chat/completions` whatever `api` says, or a bearer-only Messages
 /// gateway answering 401 because the key went as `x-api-key`.
 #[test]
@@ -222,7 +251,7 @@ fn a_literal_api_key_is_the_bearer() -> TestResult {
     let row = providers_row(&home, &[])?;
     assert_eq!(row["status"], "ok", "{row}");
     let detail = row["detail"].as_str().unwrap_or_default();
-    assert!(detail.starts_with("localgw 1 model(s)"), "{row}");
+    assert!(detail.starts_with("localgw 1 model at"), "{row}");
     assert!(detail.contains(" over openai-completions, "), "{row}");
     assert!(detail.ends_with("key from apiKey"), "{row}");
     Ok(())

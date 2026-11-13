@@ -198,9 +198,13 @@ fn custom_providers(site: &Site) -> Finding {
                 None => "no key (set apiKeyEnv)".to_owned(),
             }
         };
+        let models = match provider.models.len() {
+            0 => "dynamic models".to_owned(),
+            1 => "1 model".to_owned(),
+            count => format!("{count} models"),
+        };
         rows.push(format!(
-            "{id} {} model(s) at {} over {}, {from}",
-            provider.models.len(),
+            "{id} {models} at {} over {}, {from}",
             provider.base_url,
             provider.api.unwrap_or_default().wire()
         ));
