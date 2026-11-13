@@ -3,11 +3,13 @@ use yi_types::model::Model;
 /// §5: an unset role falls back to the primary; an unknown one warns, naming what happens instead.
 pub(crate) fn role_model(role: &str, spec: Option<String>, instead: &str) -> Option<Model> {
     let spec = spec?;
-    let resolved = crate::resolve(&spec);
-    if resolved.is_none() {
-        eprintln!("warning: unknown {role} model {spec}; {instead}");
+    match crate::resolve(&spec) {
+        Ok(model) => Some(model),
+        Err(error) => {
+            eprintln!("warning: {role} model {spec}: {error}; {instead}");
+            None
+        }
     }
-    resolved
 }
 
 /// Naming `models.advisor` is what turns the LLM reviewer on (D28/D50).
@@ -96,7 +98,7 @@ mod tests {
     fn web_search_validation_waits_for_credential_and_role_gates() -> TestResult {
         let search = super::build_web_search(
             Some("faux/faux-1".to_owned()),
-            || crate::resolve("faux/faux-1"),
+            || crate::resolve("faux/faux-1").ok(),
             Some(String::new()),
             None,
             None,

@@ -91,7 +91,7 @@ fn short(name: &str) -> &str {
 fn candidates() -> Vec<(String, String, String, bool)> {
     let mut rows = Vec::new();
     for (provider, model, title, _) in PROVIDERS {
-        let Some(found) = crate::resolve(model) else { continue };
+        let Ok(found) = crate::resolve(model) else { continue };
         let has = yi_runtime::auth::api_key(provider).is_some();
         rows.push((provider.to_owned(), model.to_owned(), format!("{} on {title} ({})", short(&found.name), if has { "key found" } else { "needs a key" }), has));
     }

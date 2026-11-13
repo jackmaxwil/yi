@@ -7,7 +7,7 @@ use yi_runtime::session_store::{
     CreateOptions, EntryOrder, EntryQuery, ForkPosition, ForkScope, JsonlRepo, LogOptions,
     SessionRepo, SharedSession, lock_session,
 };
-use yi_runtime::{AgentSession, Status, available_models, resolve_model};
+use yi_runtime::{AgentSession, Status, listed_models, select_model};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::model::Model;
@@ -352,22 +352,18 @@ impl RpcState {
             Command::SetModel => {
                 let provider = text_arg("provider");
                 let model_id = text_arg("modelId");
-                match resolve_model(provider, model_id) {
-                    Some(model) => {
+                match select_model(provider, model_id) {
+                    Ok(model) => {
                         self.session.set_model(model.clone());
                         data_frame(id, "set_model", json!(model))
                     }
-                    None => error_frame(
-                        id,
-                        "set_model",
-                        &format!("unknown model {provider}/{model_id}"),
-                    ),
+                    Err(error) => error_frame(id, "set_model", &error),
                 }
             }
             Command::GetAvailableModels => data_frame(
                 id,
                 "get_available_models",
-                json!({"models": available_models()}),
+                json!({"models": listed_models()}),
             ),
             Command::SetThinkingLevel => match text_arg("level").parse() {
                 Ok(effort) => {

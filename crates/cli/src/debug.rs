@@ -45,9 +45,12 @@ fn select(args: &Args, rest: &[&str]) -> i32 {
     let Some((file, command)) = rest.split_first() else {
         return usage();
     };
-    let Some(model) = crate::resolve(&args.model) else {
-        eprintln!("yi debug select: unknown model {}", args.model);
-        return 2;
+    let model = match crate::resolve(&args.model) {
+        Ok(model) => model,
+        Err(error) => {
+            eprintln!("yi debug select: {error}");
+            return 2;
+        }
     };
     let Ok(output) = std::fs::read_to_string(file) else {
         eprintln!("yi debug select: cannot read {file}");

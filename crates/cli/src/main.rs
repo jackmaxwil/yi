@@ -39,18 +39,20 @@ use user_config::{
     reload_config,
 };
 
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
+use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::model::Model;
 
 use yi_runtime::faux::faux_model;
 
-fn resolve(spec: &str) -> Option<Model> {
-    let (provider, id) = spec.split_once('/')?;
+fn resolve(spec: &str) -> Result<Model, String> {
+    let Some((provider, id)) = spec.split_once('/') else {
+        return Err(format!("unknown model {spec} (use provider/id)"));
+    };
     if provider == "faux" {
-        return Some(faux_model());
+        return Ok(faux_model());
     }
-    resolve_model(provider, id)
+    yi_runtime::select_model(provider, id)
 }
 
 fn render_text(event: &AgentEvent) -> Option<String> {
@@ -74,16 +76,8 @@ fn work_dir(lane: Option<std::path::PathBuf>, args: &Args) -> std::path::PathBuf
     lane.unwrap_or_else(|| effective_cwd(args))
 }
 
-fn env_either(upper: &str, lower: &str) -> Option<String> {
-    std::env::var(upper).or_else(|_| std::env::var(lower)).ok()
-}
-
 fn proxy_from_env() -> Result<Option<yi_runtime::ProxyConfig>, String> {
-    yi_runtime::ProxyConfig::from_values(
-        env_either("HTTPS_PROXY", "https_proxy").as_deref(),
-        env_either("HTTP_PROXY", "http_proxy").as_deref(),
-        env_either("NO_PROXY", "no_proxy").as_deref(),
-    )
+    yi_runtime::proxy_from_env()
 }
 
 /// Incident: the ACP builder mapped a refusal to "exit code 2" and the TUI showed the user
@@ -127,14 +121,11 @@ fn build_session(
             class: yi_types::telemetry::ErrorClass::RefusalConfig,
         });
     }
-    let Some(model) = resolve(&args.model) else {
-        return Err(Refused {
-            code: 2,
-            reason: yi_runtime::discovery_error()
-                .unwrap_or_else(|| format!("unknown model {} (use provider/id)", args.model)),
-            class: yi_types::telemetry::ErrorClass::RefusalUnknownModel,
-        });
-    };
+    let model = resolve(&args.model).map_err(|reason| Refused {
+        code: 2,
+        reason,
+        class: yi_types::telemetry::ErrorClass::RefusalUnknownModel,
+    })?;
     // `--faux` scripts whatever model is named, which keeps its id and catalog facts on
     // screen; the host starts no request of its own below, while a scripted tool call still
     // runs (#943).
@@ -601,7 +592,7 @@ fn print_json(value: &serde_json::Value) {
 /// Flags apply after `attach_store` or `--continue --model X` silently keeps the old model.
 fn repin(args: &Args, session: &AgentSession) {
     if args.model_pinned
-        && let Some(model) = resolve(&args.model)
+        && let Ok(model) = resolve(&args.model)
     {
         session.set_model(model);
     }
@@ -946,11 +937,13 @@ fn run_acp(args: &Args) -> i32 {
         defaults: std::sync::Arc::new(move || {
             reload_config();
             let args = refreshed(&defaults_args);
-            resolve(&args.model).map(|model| yi_acp::SessionDefaults {
-                model,
-                effort: args.thinking.unwrap_or_default(),
-                mode: args.mode,
-            })
+            resolve(&args.model)
+                .ok()
+                .map(|model| yi_acp::SessionDefaults {
+                    model,
+                    effort: args.thinking.unwrap_or_default(),
+                    mode: args.mode,
+                })
         }),
     };
     yi_acp::run_acp(options, runtime)
