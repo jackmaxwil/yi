@@ -107,6 +107,9 @@ pub(crate) fn loopback_refused(base_url: &str) -> Option<String> {
         }
         _ => (authority, if scheme == "https" { 443 } else { 80 }),
     };
+    if port == 0 {
+        return None;
+    }
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     if !matches!(bare, "127.0.0.1" | "localhost" | "::1") {
         return None;
@@ -149,5 +152,6 @@ mod tests {
         assert_eq!(loopback_refused("https://openrouter.ai/api/v1"), None);
         assert_eq!(loopback_refused("not a url"), None);
         assert_eq!(loopback_refused(""), None);
+        assert_eq!(loopback_refused("http://localhost:0"), None);
     }
 }

@@ -1,6 +1,6 @@
 ---
 issue: Refs #2168, #2169, #2170, #2171
-raise: crate runtime +203, tests +194, comments +7
+raise: crate runtime +207, tests +195, comments +7
 cut: none crates/runtime/src/lane/handback.rs
 cut: none crates/runtime/src/subagent/build.rs
 cut: none crates/runtime/tests/recursion_e2e.rs
