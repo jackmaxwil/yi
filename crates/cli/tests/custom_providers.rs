@@ -302,6 +302,32 @@ fn a_model_list_without_a_data_array_is_named() -> TestResult {
 }
 
 #[test]
+fn a_model_list_with_no_usable_model_is_named() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let _ = read_request(&mut reader);
+            let body = r#"{"data":[{"id":"m2","context_window":0,"max_tokens":0}]}"#;
+            let _ = reader
+                .get_mut()
+                .write_all(reply("200 OK", "application/json", body).as_bytes());
+        }
+    });
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-empty", &providers)?;
+    let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+    assert_ne!(ask.status.code(), Some(0));
+    let err = text(&ask);
+    assert!(err.contains("no usable model"), "{err}");
+    assert!(!err.contains("unknown model"), "{err}");
+    Ok(())
+}
+
+#[test]
 fn a_discovery_get_goes_through_https_proxy() -> TestResult {
     let (port, seen) = fake_gateway()?;
     let providers = json!({"localgw": {

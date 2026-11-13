@@ -131,20 +131,15 @@ fn discover_models(id: &str) -> Result<Arc<Vec<Model>>, String> {
         let mut cache = DISCOVERED_MODELS
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        match cache.get(id) {
-            Some(Discovery::Ready { models, at }) if at.elapsed() < DISCOVERY_TTL => {
-                return Ok(Arc::clone(models));
-            }
-            Some(Discovery::Failed { error, at }) if at.elapsed() < DISCOVERY_TTL => {
-                return Err(error.clone());
-            }
-            Some(Discovery::Pending) => {
+        match remembered(cache.get(id)) {
+            Memory::Fresh(result) => return result,
+            Memory::Pending => {
                 let _waiting = DISCOVERY_WAKE
                     .wait(cache)
                     .unwrap_or_else(PoisonError::into_inner);
                 continue;
             }
-            _ => {
+            Memory::Stale(_) | Memory::Refresh | Memory::Miss => {
                 cache.insert(id.to_owned(), Discovery::Pending);
                 break;
             }
@@ -198,16 +193,37 @@ fn fetch_models(
     Ok(models)
 }
 
+enum Memory {
+    Fresh(Result<Arc<Vec<Model>>, String>),
+    Stale(Arc<Vec<Model>>),
+    Refresh,
+    Pending,
+    Miss,
+}
+
+fn remembered(found: Option<&Discovery>) -> Memory {
+    match found {
+        Some(Discovery::Ready { models, at }) if at.elapsed() < DISCOVERY_TTL => {
+            Memory::Fresh(Ok(Arc::clone(models)))
+        }
+        Some(Discovery::Ready { models, .. }) => Memory::Stale(Arc::clone(models)),
+        Some(Discovery::Failed { error, at }) if at.elapsed() < DISCOVERY_TTL => {
+            Memory::Fresh(Err(error.clone()))
+        }
+        Some(Discovery::Failed { .. }) => Memory::Refresh,
+        Some(Discovery::Pending) => Memory::Pending,
+        None => Memory::Miss,
+    }
+}
+
 fn cached(id: &str) -> Option<Result<Arc<Vec<Model>>, String>> {
     let Ok(cache) = DISCOVERED_MODELS.lock() else {
         return None;
     };
-    match cache.get(id)? {
-        Discovery::Ready { models, at } if at.elapsed() < DISCOVERY_TTL => {
-            Some(Ok(Arc::clone(models)))
-        }
-        Discovery::Failed { error, at } if at.elapsed() < DISCOVERY_TTL => Some(Err(error.clone())),
-        _ => None,
+    match remembered(cache.get(id)) {
+        Memory::Fresh(result) => Some(result),
+        Memory::Stale(models) => Some(Ok(models)),
+        Memory::Refresh | Memory::Pending | Memory::Miss => None,
     }
 }
 
@@ -1367,5 +1383,19 @@ mod tests {
         );
         drop(cache);
         assert!(cached(id).is_none(), "an aged failure is fetched again");
+        let mut cache = DISCOVERED_MODELS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        cache.insert(
+            id.to_owned(),
+            Discovery::Ready {
+                models: Arc::new(Vec::new()),
+                at: Instant::now()
+                    .checked_sub(Duration::from_secs(31))
+                    .unwrap_or_else(Instant::now),
+            },
+        );
+        drop(cache);
+        assert!(cached(id).is_some(), "a stale list still resolves");
     }
 }
