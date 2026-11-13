@@ -29,6 +29,7 @@ test:
     set -euo pipefail
     . scripts/suite_home.sh test
     {{py}} scripts/test_tmp_test.py
+    {{py}} scripts/suite_home_test.py
     if command -v cargo-nextest >/dev/null; then
       # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
       profile=local
@@ -41,6 +42,24 @@ test:
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
     scripts/test_tmp.sh cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
 py := `scripts/py.sh`
+
+# Does a test fail without this branch's change? Runs the nextest filterset on the fork point in a
+# throwaway worktree, then on HEAD, and prints both exits. Never touches the tree or the stash.
+baseline expr:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    base=$(git merge-base origin/main HEAD)
+    here=$(pwd)
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/yi-baseline.XXXXXX")
+    trap 'git worktree remove --force "$dir" >/dev/null 2>&1' EXIT
+    git worktree add -q --detach "$dir" "$base" || exit 1
+    echo "baseline: ${base:0:9}"
+    (cd "$dir" && CARGO_TARGET_DIR="$here/target/baseline" scripts/wt_home.sh cargo nextest run --no-fail-fast -E '{{expr}}')
+    old=$?
+    echo "head: $(git rev-parse --short HEAD)"
+    scripts/wt_home.sh cargo nextest run --no-fail-fast -E '{{expr}}'
+    new=$?
+    echo "baseline exit $old, head exit $new"
 
 # A local inner loop, never a gate: the generated quick profiles omit tests measured at 5 s or more.
 test-quick:
