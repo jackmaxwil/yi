@@ -241,20 +241,15 @@ fn gutter_lines(code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn stream_lines(text: &str, style: Style, width: usize) -> Vec<Line<'static>> {
-    text.trim_end_matches('\n')
+fn stream_lines(text: &str, style: Style, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let rows: Vec<String> = text
+        .trim_end_matches('\n')
         .lines()
-        .flat_map(|row| {
-            wrap_line(
-                &Line::from(Span::styled(
-                    format!("{BODY_INDENT}  {}", show_controls(row)),
-                    style,
-                )),
-                width,
-                "        ",
-            )
-        })
-        .collect()
+        .map(show_controls)
+        .collect();
+    let mut painter = crate::result_paint::Painter::new(crate::result_paint::sniff(&rows));
+    let lead = Span::styled(format!("{BODY_INDENT}  "), style);
+    crate::result_paint::paint_rows(&rows, &mut painter, lead, style, width, "        ", theme)
 }
 
 pub fn traceback_of(details: &Value) -> String {
@@ -513,7 +508,7 @@ pub fn lines(
         let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text, 5, 5).join("\n"));
         let shown = bounded.as_deref().unwrap_or(&text);
         if !text.trim().is_empty() {
-            out.extend(stream_lines(shown, style, inner));
+            out.extend(stream_lines(shown, style, inner, theme));
         }
     }
     card(out)

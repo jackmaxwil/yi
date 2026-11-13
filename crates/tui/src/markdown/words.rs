@@ -55,7 +55,7 @@ const KNOWN_EXTENSIONS: [&str; 44] = [
     "xml", "yaml", "yml", "zsh",
 ];
 
-pub(super) fn marked_words(text: &str, style: Style, theme: &Theme) -> Vec<Span<'static>> {
+pub(crate) fn marked_words(text: &str, style: Style, theme: &Theme) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut plain = String::new();
     for piece in text.split_inclusive(char::is_whitespace) {

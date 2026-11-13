@@ -765,3 +765,6 @@ terminal tab title | `motion::tests::tab_title_keeps_the_marker_when_the_label_i
 tool results left without their call | `build_params_conformance::a_result_whose_reply_failed_reaches_every_wire_as_a_notice` (T0)
 custom providers | `custom_providers::a_declared_api_picks_the_wire_and_its_key_is_the_bearer` (T2)
 TUI | `tui_drive::queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highlighted_command` (T2)
+TUI | `result_paint::read_from_the_middle_of_a_file_is_coloured` (T0)
+TUI | `result_paint::shell_colour_codes_render_as_colour` (T0)
+console notebook pane | `notebook_text::notebook_text_colours_codes_json_and_paths` (T0)
