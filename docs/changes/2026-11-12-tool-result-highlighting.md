@@ -1,4 +1,6 @@
 ---
+version: 0.1040.0
+decisions: D595
 issue: #2163
 growth: +291 one result painter shared by tool cards, the solo notebook and the console notebook; weighed keeping the old plain-when-unsure body in cell.rs (62 lines deleted for it) and a hand-rolled painter per surface, which is three copies of the escape decoder and path scanner
 decision: tool results are coloured from a fresh parse at every break in the shown text (the first row, a line-number gap, an elision row, a clipped row, a parse error) instead of left plain when the parse cannot be sure | most reads start mid-file and every search hit is lifted out of its file, so the plain rule left nearly every result uncoloured | reversible by restoring the line-1 check in the tool card body
