@@ -1325,31 +1325,28 @@ fn prompting_a_session_after_the_daemon_was_killed_resumes_and_answers() -> Test
 }
 
 /// The console's own restart hook, not a test-supplied one: killing `yi serve` under a live
-/// `yi console` must bring a daemon back on its socket, or panes strand on unknown sessionIds.
+/// `yi console` must bring a daemon back on its socket in its recorded mode, or panes strand
+/// on unknown sessionIds and later sessions silently lose the pinned `--confirm`.
 #[test]
 fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult {
     let dir = Scratch::new("yi-console-respawn")?;
-    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home)?;
+    let (mut daemon, socket) =
+        spawn_daemon_with(&dir, &home, &["--model", "faux/faux-1", "--confirm"])?;
     let ledger = socket.with_extension("ledger.json");
+    let invocation = socket.with_extension("invocation");
+    let recorded = std::fs::read_to_string(&invocation)?;
+    assert!(
+        recorded.lines().any(|flag| flag == "--confirm"),
+        "the first daemon did not record --confirm: {recorded:?}"
+    );
     let before = std::fs::read_to_string(&ledger).unwrap_or_default();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the console's restart hook only runs on an interactive run, which needs a real pty"
-    )]
-    let mut pty = Command::new("python3")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../scripts/tui_pty.py"
-        ))
-        .args(["--seconds", "60", "--binary"])
-        .arg(crate::yi_bin::yi_command(&dir.home()?).get_program())
-        .arg("--home")
-        .arg(dir.join("home"))
+    let yi = crate::yi_bin::yi_command(&home);
+    let mut pty = crate::pty::pty_command(Path::new(yi.get_program()), &home, &dir)
         .args(["--", "console", "--socket"])
         .arg(&socket)
-        .current_dir(&*dir)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
         .spawn()?;
     let outcome = (|| -> TestResult {
         wait_until(Instant::now() + Duration::from_secs(20), || {
@@ -1360,6 +1357,11 @@ fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult
         wait_until(Instant::now() + Duration::from_secs(20), || {
             Ok(UnixStream::connect(&socket).is_ok())
         })?;
+        let replaced = std::fs::read_to_string(&invocation)?;
+        assert_eq!(
+            replaced, recorded,
+            "the replacement daemon dropped the dead daemon's recorded invocation"
+        );
         let mut client = DaemonClient::connect(&socket)?;
         client.request("s", "_yi/shutdown", json!({}))?;
         Ok(())

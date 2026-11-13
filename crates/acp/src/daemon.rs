@@ -147,6 +147,10 @@ fn invocation_marker(socket: &std::path::Path) -> PathBuf {
     socket.with_extension("invocation")
 }
 
+pub fn record_invocation(socket: &std::path::Path, worker_args: &[String]) -> std::io::Result<()> {
+    std::fs::write(invocation_marker(socket), worker_args.join("\n"))
+}
+
 /// Invariant: the recorded invocation is the dead daemon's `serve_flags`, so a restart reuses
 /// it whole; a console pinning other flags, or a deliberate stop, refuses the restart.
 pub fn restart_flags(socket: &std::path::Path, flags: &[String]) -> Option<Vec<String>> {
@@ -856,10 +860,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
         }
         let _stale = std::fs::remove_file(&options.socket);
         let _stopped = std::fs::remove_file(stopped_marker(&options.socket));
-        let _recorded = std::fs::write(
-            invocation_marker(&options.socket),
-            options.worker_args.join("\n"),
-        );
+        let _recorded = record_invocation(&options.socket, &options.worker_args);
         let listener = match UnixListener::bind(&options.socket) {
             Ok(listener) => listener,
             Err(error) => {
@@ -1337,7 +1338,7 @@ mod tests {
         let mut supervisor = supervisor_with_rows();
         supervisor.options.socket = socket.clone();
         supervisor.options.worker_args = vec!["--confirm".to_owned()];
-        std::fs::write(invocation_marker(&socket), "--confirm").map_err(|e| e.to_string())?;
+        record_invocation(&socket, &supervisor.options.worker_args).map_err(|e| e.to_string())?;
         supervisor
             .handle_client_line(7, json!({"jsonrpc": "2.0", "method": "_yi/shutdown"}))
             .await;
