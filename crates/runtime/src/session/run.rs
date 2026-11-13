@@ -339,7 +339,7 @@ fn abandon_admit(shared: &Shared, prompt: AgentMessage) {
     shared.idle.notify_waiters();
 }
 
-/// Incident: [`crate::lane::LaneHandle::land`], adapter supervisors and background slash
+/// Incident: [`crate::lane::land::LaneHandle::land`], adapter supervisors and background slash
 /// threads run outside tokio, so [`tokio::spawn`] panicked when an idle session woke (`daemon.worker.log`).
 pub(super) fn reactor(shared: &Shared) -> Option<tokio::runtime::Handle> {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
