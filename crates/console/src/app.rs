@@ -116,7 +116,7 @@ pub struct App {
     seq: HashMap<SessionId, Option<EventSeq>>,
     /// Sessions whose resume brought a `_yi/replay`: a resume without one is an old daemon.
     pub(crate) replayed: std::collections::HashSet<SessionId>,
-    /// The first ctrl+c anywhere; a second inside the window stops the daemon and quits.
+    /// The first ctrl+c anywhere; a second inside the window quits and leaves the daemon running.
     quit_at: Option<Instant>,
     /// When `_yi/shutdown` went out; the daemon hanging up or two seconds ends the console.
     shutdown_at: Option<Instant>,
@@ -293,6 +293,7 @@ impl App {
     }
 
     fn stop_daemon_and_quit(&mut self, outbound: &Outbound) {
+        outbound.stop_restarting();
         if !self.connected() {
             self.state.quit = true;
             return;
@@ -565,25 +566,7 @@ impl App {
                     self.mark_seen(outbound, &session);
                 }
             }
-            RequestKind::Resume(session) => {
-                if let Some(row) = self.state.sessions.get_mut(&session) {
-                    row.attached = true;
-                }
-                if let Some(replayed_to) = result
-                    .pointer("/_meta/yi/replayedTo")
-                    .and_then(Value::as_u64)
-                {
-                    self.resume_offsets.insert(session.clone(), replayed_to);
-                }
-                self.absorb_result(&session, &result);
-                if !self.replayed.contains(&session) {
-                    self.note(
-                        "the daemon is an older yi and streams nothing this pane can draw — \
-                         restart it: pkill -f 'yi serve', then run yi again",
-                    );
-                }
-                self.mark_seen(outbound, &session);
-            }
+            RequestKind::Resume(session) => self.finish_resume(outbound, session, &result),
             RequestKind::Prompt => {
                 self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
             }
@@ -591,115 +574,6 @@ impl App {
             RequestKind::Cancel | RequestKind::Seen => {}
         }
         self.dirty = true;
-    }
-
-    fn merge_worker_list(&mut self, result: &Value) {
-        let Some(sessions) = result.get("sessions").and_then(Value::as_array) else {
-            return;
-        };
-        let root = self.state.root.clone();
-        for entry in sessions {
-            let Some(id) = entry.get("sessionId").and_then(Value::as_str) else {
-                continue;
-            };
-            let id = SessionId(id.to_owned());
-            let attached = entry
-                .pointer("/_meta/yi/attached")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let status = self
-                .state
-                .sessions
-                .get(&id)
-                .map_or(SessionStatus::Unknown, |row| row.status);
-            self.state.upsert_row(SessionRow {
-                id,
-                root: root.clone(),
-                status,
-                attached,
-                name: entry
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                created_ms: entry
-                    .pointer("/_meta/yi/createdAt")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                last_ms: 0,
-                pinned: None,
-            });
-        }
-    }
-
-    fn merge_daemon_list(&mut self, result: &Value) {
-        let Some(sessions) = result.get("sessions").and_then(Value::as_array) else {
-            return;
-        };
-        let listed: std::collections::HashSet<&str> = sessions
-            .iter()
-            .filter_map(|entry| entry.get("sessionId").and_then(Value::as_str))
-            .collect();
-        for (id, row) in &mut self.state.sessions {
-            if !listed.contains(id.0.as_str()) {
-                row.pinned = None;
-            }
-        }
-        for entry in sessions {
-            let Some(id) = entry.get("sessionId").and_then(Value::as_str) else {
-                continue;
-            };
-            let id = SessionId(id.to_owned());
-            let pinned = entry.pointer("/_meta/yi/pinnedMs").and_then(Value::as_u64);
-            if let Some(row) = self.state.sessions.get_mut(&id) {
-                row.pinned = pinned;
-            }
-            let name = entry
-                .get("title")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let last_ms = entry
-                .pointer("/_meta/yi/lastEventMs")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            // A session on screen streams its own state; the ledger covers
-            // the ones nobody is attached to, and names whichever it can.
-            if self.state.session_visible(&id) {
-                if let Some(row) = self.state.sessions.get_mut(&id) {
-                    row.name = name.or(row.name.take());
-                    row.last_ms = row.last_ms.max(last_ms);
-                }
-                continue;
-            }
-            let unseen = entry
-                .pointer("/_meta/yi/unseen")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let status = entry
-                .pointer("/_meta/yi/lastState")
-                .and_then(Value::as_str)
-                .map_or(SessionStatus::Unknown, |state| {
-                    SessionStatus::from_ledger(state, unseen)
-                });
-            let attached = entry
-                .pointer("/_meta/yi/attached")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let root = entry
-                .get("cwd")
-                .and_then(Value::as_str)
-                .unwrap_or(&self.state.root)
-                .to_owned();
-            self.state.upsert_row(SessionRow {
-                id,
-                root,
-                status,
-                attached,
-                name,
-                created_ms: 0,
-                last_ms,
-                pinned,
-            });
-        }
     }
 
     fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
@@ -1047,10 +921,11 @@ impl App {
                 .quit_at
                 .is_some_and(|at| now.saturating_duration_since(at) < QUIT_WINDOW)
             {
-                return self.stop_daemon_and_quit(outbound);
+                self.state.quit = true;
+                return;
             }
             self.quit_at = Some(now);
-            self.note("ctrl+c again stops the daemon and quits · ⌥q leaves it running");
+            self.note("ctrl+c again quits and leaves the daemon running");
             if on_chat {
                 self.chat_event(CtEvent::Key(key));
             }
@@ -1101,7 +976,6 @@ mod navigator;
 mod notebook;
 pub mod port;
 mod review;
-#[cfg(test)]
 mod rows;
 mod settings;
 pub(crate) mod snap;

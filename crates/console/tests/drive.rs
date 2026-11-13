@@ -695,6 +695,7 @@ fn run_console(
             home: Some(drive_home().display().to_string()),
             theme: None,
             assist: None,
+            ensure_daemon: None,
         },
         DriveOptions {
             script: steps,
@@ -742,6 +743,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             home: Some(drive_home().display().to_string()),
             theme: None,
             assist: None,
+            ensure_daemon: None,
         },
         DriveOptions {
             script: steps,
@@ -2909,14 +2911,12 @@ fn a_lone_chat_pane_wears_no_frame() -> TestResult {
 }
 
 /// ctrl+c is the solo vocabulary: a drafted prompt clears, an idle composer warns, and a
-/// second press inside the window asks the daemon to stop and quits the console.
+/// second press inside the window quits the console while leaving the daemon running.
 #[test]
-fn ctrl_c_clears_the_draft_then_warns_then_stops_the_daemon() -> TestResult {
-    let mut fixture = session_fixture();
-    fixture.push(Step::Expect("_yi/shutdown", seen_ok));
+fn ctrl_c_clears_the_draft_then_warns_then_leaves_the_daemon_running() -> TestResult {
     run(
         "ctrl-c",
-        fixture,
+        session_fixture(),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
@@ -2925,7 +2925,7 @@ fn ctrl_c_clears_the_draft_then_warns_then_stops_the_daemon() -> TestResult {
          key ctrl-c\n\
          wait-frame 3000 !draft text\n\
          key ctrl-c\n\
-         wait-frame 3000 stops the daemon\n\
+         wait-frame 3000 leaves the daemon running\n\
          key ctrl-c\n\
          wait-frame 3000 the console quit before this frame\n",
     )
@@ -2944,9 +2944,11 @@ fn stopping_the_daemon_quits_without_a_disconnect_banner() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         key ctrl-c\n\
-         wait-frame 3000 stops the daemon\n\
-         key ctrl-c\n\
+         key alt-/\n\
+         wait-frame 3000 actions\n\
+         type stop the daemon\n\
+         wait-frame 3000 ▸ stop the daemon and quit\n\
+         key enter\n\
          wait-frame 3000 the console quit before this frame\n",
     )?;
     assert!(
@@ -2956,7 +2958,7 @@ fn stopping_the_daemon_quits_without_a_disconnect_banner() -> TestResult {
     Ok(())
 }
 
-/// Dies with ctrl+c on an open `/` popup arming the daemon-stop note while the popup stayed:
+/// Dies with ctrl+c on an open `/` popup arming the quit note while the popup stayed:
 /// the popup took the key and ignored it, and the console counted it as the first of two.
 #[test]
 fn ctrl_c_closes_an_open_popup_without_arming_the_quit() -> TestResult {
@@ -2970,13 +2972,13 @@ fn ctrl_c_closes_an_open_popup_without_arming_the_quit() -> TestResult {
          wait-frame 3000 plantree\n\
          key ctrl-c\n\
          wait-frame 3000 !plantree\n\
-         wait-frame 3000 !stops the daemon\n\
+         wait-frame 3000 !leaves the daemon running\n\
          quit\n",
     )
 }
 
 /// With focus off the chat a drafted box is not this key's business: the draft stays and the
-/// press is the first of the two that stop the daemon.
+/// press is the first of the two that quit the console.
 #[test]
 fn ctrl_c_off_the_chat_arms_the_quit_and_keeps_the_draft() -> TestResult {
     run(
@@ -2988,19 +2990,18 @@ fn ctrl_c_off_the_chat_arms_the_quit_and_keeps_the_draft() -> TestResult {
          type draft text\n\
          key tab\n\
          key ctrl-c\n\
-         wait-frame 3000 stops the daemon\n\
+         wait-frame 3000 leaves the daemon running\n\
          wait-frame 3000 draft text\n\
          quit\n",
     )
 }
 
 /// Dies with ctrl+c forwarded into a pending approval, which ignores it: the press armed no
-/// quit, so a second one could not stop the daemon while the approval waited.
+/// quit, so a second one could not quit the console while the approval waited.
 #[test]
-fn ctrl_c_over_a_pending_approval_still_stops_the_daemon() -> TestResult {
+fn ctrl_c_over_a_pending_approval_still_quits_without_stopping_the_daemon() -> TestResult {
     let mut fixture = session_fixture();
     fixture.push(Step::Push(permission_request));
-    fixture.push(Step::Expect("_yi/shutdown", seen_ok));
     run(
         "ctrl-c-approval",
         fixture,
@@ -3009,7 +3010,7 @@ fn ctrl_c_over_a_pending_approval_still_stops_the_daemon() -> TestResult {
          wait-frame 5000 replayed world\n\
          wait-frame 5000 rm -rf target\n\
          key ctrl-c\n\
-         wait-frame 3000 stops the daemon\n\
+         wait-frame 3000 leaves the daemon running\n\
          key ctrl-c\n\
          wait-frame 3000 the console quit before this frame\n",
     )

@@ -233,8 +233,11 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     };
     admit(&parts.shared, &mut status);
     drop(status);
-    launch(parts.clone(), prompt, None);
-    Delivery::Woken
+    if launch(parts.clone(), prompt, None) {
+        Delivery::Woken
+    } else {
+        Delivery::Inboxed
+    }
 }
 
 pub(super) fn kick(parts: &RunParts) {
@@ -247,7 +250,7 @@ pub(super) fn kick(parts: &RunParts) {
     if let Some(prompt) = owed(&parts.shared, true, false) {
         admit(&parts.shared, &mut status);
         drop(status);
-        launch(parts.clone(), prompt, None);
+        let _prompt_requeued_if_detached = launch(parts.clone(), prompt, None);
     }
 }
 
@@ -284,7 +287,7 @@ pub(super) fn follow(parts: &RunParts, message: AgentMessage, news: Option<Still
     if let Some(prompt) = owed(&parts.shared, true, false) {
         admit(&parts.shared, &mut status);
         drop(status);
-        launch(parts.clone(), prompt, None);
+        let _prompt_requeued_if_detached = launch(parts.clone(), prompt, None);
     }
     false
 }
@@ -303,8 +306,11 @@ pub(super) fn spawn_run(
         }
         admit(&parts.shared, &mut status);
     }
-    launch(parts, prompt, requested);
-    Ok(())
+    if launch(parts, prompt, requested) {
+        Ok(())
+    } else {
+        Err(SessionError::Detached)
+    }
 }
 
 /// Invariant: every run is counted under the status lock that admits it.
@@ -316,14 +322,48 @@ fn admit(shared: &Shared, status: &mut Status) {
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
-fn launch(parts: RunParts, prompt: AgentMessage, requested: Option<u64>) {
+/// Incident: an admit that never spawned left Running and a spent run count, so later
+/// prompts saw Busy while the dropped message was gone.
+fn abandon_admit(shared: &Shared, prompt: AgentMessage) {
+    if let Ok(mut status) = shared.status.lock() {
+        *status = Status::Idle;
+    }
+    let _ = shared.runs.fetch_update(
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+        |n| Some(n.saturating_sub(1)),
+    );
+    if let Ok(mut queue) = shared.steer.lock() {
+        queue.push_front(Queued::new(prompt, true, None));
+    }
+    shared.idle.notify_waiters();
+}
+
+/// Incident: [`crate::lane::LaneHandle::land`], adapter supervisors and background slash
+/// threads run outside tokio, so [`tokio::spawn`] panicked when an idle session woke (`daemon.worker.log`).
+pub(super) fn reactor(shared: &Shared) -> Option<tokio::runtime::Handle> {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if let Ok(mut slot) = shared.reactor.lock() {
+            slot.get_or_insert_with(|| handle.clone());
+        }
+        return Some(handle);
+    }
+    shared.reactor.lock().ok().and_then(|slot| slot.clone())
+}
+
+fn launch(parts: RunParts, prompt: AgentMessage, requested: Option<u64>) -> bool {
     // Incident: nothing cleared the session-wide signal, so the first abort aborted every
     // later turn. Reading the epoch at admission still stops one hit before the spawn.
     let admitted_epoch = requested.unwrap_or_else(|| parts.shared.signal.epoch());
-    tokio::spawn(async move {
+    let Some(handle) = reactor(&parts.shared) else {
+        abandon_admit(&parts.shared, prompt);
+        return false;
+    };
+    handle.spawn(async move {
         let ended_clean = run_once(&parts, prompt, admitted_epoch).await;
         settle(parts, ended_clean).await;
     });
+    true
 }
 
 /// Every way a run ends comes here: an early stop, an error, an abort or the loop's own end.
@@ -353,7 +393,7 @@ async fn settle(parts: RunParts, ended_clean: bool) {
         let _hook_failure_never_fails_a_turn = tokio::task::spawn_blocking(move || hook()).await;
     }
     if let Some(prompt) = next {
-        launch(parts, prompt, None);
+        let _prompt_requeued_if_detached = launch(parts, prompt, None);
     }
 }
 

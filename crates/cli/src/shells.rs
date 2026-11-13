@@ -469,8 +469,15 @@ pub fn run_console_command(args: &Args) -> i32 {
     } else {
         None
     };
+    let socket = daemon_socket(args);
+    let ensure = (!args.headless).then(|| {
+        let args = args.clone();
+        let socket = socket.clone();
+        std::sync::Arc::new(move || ensure_daemon(&args, &socket))
+            as std::sync::Arc<dyn Fn() + Send + Sync>
+    });
     let options = yi_console::ConsoleOptions {
-        socket: daemon_socket(args),
+        socket,
         root: effective_cwd(args).display().to_string(),
         autostart: !args.headless,
         auto_side: config()
@@ -500,6 +507,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         chrome_pin: chrome_pin(),
         home: std::env::var("HOME").ok(),
         theme: config().theme.clone(),
+        ensure_daemon: ensure,
     };
     let control = match control(args) {
         Ok(control) => control,

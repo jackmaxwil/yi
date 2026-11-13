@@ -235,6 +235,32 @@ def cmd_ratchet(args):
     return 0
 
 
+def read_body(arg):
+    path = pathlib.Path(arg)
+    try:
+        return path.read_text().strip() if path.is_file() else arg.strip()
+    except OSError:
+        return arg.strip()
+
+
+def dirty_tree():
+    return [line for line in git("status", "--porcelain", "--untracked-files=all").splitlines()
+            if not line[3:].startswith(".yi/plans/")]
+
+
+def linux_env():
+    if sys.platform != "darwin" or "CC_x86_64_unknown_linux_gnu" in os.environ:
+        return None
+    import shutil
+    if not shutil.which("zig"):
+        return None
+    env = os.environ.copy()
+    env.update(CC_x86_64_unknown_linux_gnu=str(ROOT / "scripts/zigcc.sh"),
+               AR_x86_64_unknown_linux_gnu=str(ROOT / "scripts/zigar.sh"),
+               ZIG_TARGET="x86_64-linux-gnu")
+    return env
+
+
 def cmd_commit(args):
     from check_commit_style import subject_errors
 
@@ -255,7 +281,7 @@ def cmd_commit(args):
         return 1 if left else 0
     message = ["-m", args.subject.strip()]
     if args.body:
-        message += ["-m", pathlib.Path(args.body).read_text().strip()]
+        message += ["-m", read_body(args.body)]
     out = subprocess.run(("git", "-C", str(ROOT), "commit", "-q", *message, *(("--", *args.paths) if args.paths else ())), check=False)
     if out.returncode != 0:
         return out.returncode
@@ -302,8 +328,9 @@ def linux_clippy():
             return 0
         crates = changed_crates(diff)
         print(f"linux-clippy: {', '.join(crates) if crates else 'workspace'}")
+        env = linux_env()
         for command in (linux_clippy_command(crates), linux_clippy_command(crates, no_tui=True)):
-            result = subprocess.run(command, cwd=ROOT, check=False)
+            result = subprocess.run(command, cwd=ROOT, env=env, check=False)
             if result.returncode:
                 return result.returncode
         return 0
@@ -314,7 +341,7 @@ def linux_clippy():
 
 def cmd_push(args):
     name = branch()
-    if git("status", "--porcelain"):
+    if dirty_tree():
         print("push: the tree is dirty — just commit first")
         return 1
     if linux_clippy():
@@ -377,7 +404,7 @@ def dedupe_counted(body, counted):
 
 
 def compose_body(args):
-    body = pathlib.Path(args.body).read_text().strip() if args.body else ""
+    body = read_body(args.body) if args.body else ""
     cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
     if cites:
         body = ", ".join(cites) + ("\n\n" + body if body else "")
@@ -438,7 +465,7 @@ def cmd_edit(args):
             return 1
         payload["title"] = args.title
     if args.body:
-        body = pathlib.Path(args.body).read_text().strip()
+        body = read_body(args.body)
         errs = check_problems(payload.get("title", pull(args.number)["title"]), body)
         if errs:
             for err in errs:
@@ -1190,6 +1217,15 @@ def commit_selfcheck():
             with contextlib.redirect_stdout(io.StringIO()):
                 done = cmd_commit(parse(["commit", "Add the staged file"]))
             assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "b.txt", "no paths named commits what is staged"
+            long_prose = " inline prose " * 30
+            (pathlib.Path(scratch) / "d.txt").write_text("d\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add with inline body", "--body", long_prose, "d.txt"]))
+            assert done == 0 and "inline prose" in git("log", "-1", "--format=%b"), "inline --body text was rejected as a filename"
+            plans = pathlib.Path(scratch) / ".yi/plans/demo"
+            plans.mkdir(parents=True)
+            (plans / "ops.jsonl").write_text("{}\n")
+            assert not dirty_tree(), "untracked .yi/plans dirtied the push check"
         finally:
             globals().update(saved)
             for name in names:

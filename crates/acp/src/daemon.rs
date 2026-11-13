@@ -14,6 +14,7 @@ use yi_types::mail::Envelope;
 use crate::negotiate;
 
 mod mail;
+mod settings;
 use mail::SUPERVISOR;
 
 pub struct DaemonOptions {
@@ -265,6 +266,7 @@ impl Supervisor {
             .pointer("/params/sessionId")
             .and_then(Value::as_str)
             .unwrap_or("");
+        let _adopted = self.ensure_session(frame);
         match self.sessions.get_mut(session_id) {
             Some(entry) => {
                 entry.unseen = 0;
@@ -290,6 +292,8 @@ impl Supervisor {
             self.sessions
                 .entry(session_id.to_owned())
                 .or_insert_with(|| SessionEntry::new(cwd.to_owned(), None));
+        } else {
+            let _adopted = self.ensure_session(frame);
         }
         let Some(entry) = self.sessions.get_mut(session_id) else {
             return self.send_client(client, error_frame(id, -32602, "unknown sessionId"));
@@ -471,29 +475,43 @@ impl Supervisor {
             "_yi/settings" | "_yi/set_default" => self.settings(client, id, &method, &frame),
             "_yi/open" => self.open(client, id, &frame),
             "_yi/worker_replace" => self.replace(client, id, &frame).await,
-            _ => {
-                let Some(root) = self.root_of(&frame) else {
-                    if let Some(id) = id {
-                        self.send_client(client, error_frame(id, -32602, "unknown sessionId"));
-                    }
-                    return;
-                };
-                if let Some(session_id) = frame
-                    .pointer("/params/sessionId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    && let Some(entry) = self.sessions.get_mut(&session_id)
-                {
-                    entry.attached.insert(client);
-                    if entry.name.is_none() && method == "session/prompt" {
-                        entry.name = prompt_title(&frame);
-                        self.persist();
-                    }
-                    self.flush_parked(&session_id, client);
-                }
-                self.forward_to_worker(&root, client, id, frame).await;
-            }
+            _ => self.route_session_frame(client, id, &method, frame).await,
         }
+    }
+
+    async fn route_session_frame(
+        &mut self,
+        client: ClientId,
+        id: Option<Value>,
+        method: &str,
+        frame: Value,
+    ) {
+        let Some(root) = self.ensure_session(&frame) else {
+            if let Some(id) = id {
+                self.send_client(client, error_frame(id, -32602, "unknown sessionId"));
+            }
+            return;
+        };
+        if let Err(error) = self.worker_for(&root).await {
+            if let Some(id) = id {
+                self.send_client(client, error_frame(id, -32603, &error));
+            }
+            return;
+        }
+        if let Some(session_id) = frame
+            .pointer("/params/sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            && let Some(entry) = self.sessions.get_mut(&session_id)
+        {
+            entry.attached.insert(client);
+            if entry.name.is_none() && method == "session/prompt" {
+                entry.name = prompt_title(&frame);
+                self.persist();
+            }
+            self.flush_parked(&session_id, client);
+        }
+        self.forward_to_worker(&root, client, id, frame).await;
     }
 
     fn root_of(&self, frame: &Value) -> Option<String> {
@@ -501,6 +519,23 @@ impl Supervisor {
         self.sessions
             .get(session_id)
             .map(|entry| entry.root.clone())
+            .or_else(|| {
+                yi_runtime::history::session_cwd(&self.options.session_dir, session_id)
+                    .map(|cwd| cwd.to_string_lossy().into_owned())
+            })
+    }
+
+    /// Invariant: a stored session absent from the ledger gets a row before its updates stream.
+    fn ensure_session(&mut self, frame: &Value) -> Option<String> {
+        let root = self.root_of(frame)?;
+        if let Some(id) = frame.pointer("/params/sessionId").and_then(Value::as_str)
+            && !self.sessions.contains_key(id)
+        {
+            self.sessions
+                .insert(id.to_owned(), SessionEntry::new(root.clone(), None));
+            self.persist();
+        }
+        Some(root)
     }
 
     async fn forward_response_to_worker(&mut self, root: &str, frame: Value) {
@@ -717,72 +752,6 @@ impl Supervisor {
         self.abandon_swap(&root, "the worker exited");
     }
 
-    /// The daemon answers for the config, not a worker: a worker holds the copy it started on.
-    /// The read and fsync run off the routing loop, which every client and worker waits on.
-    fn settings(&mut self, client: ClientId, id: Option<Value>, method: &str, frame: &Value) {
-        let Some(id) = id else { return };
-        let home = self.options.home.clone();
-        let save = method == "_yi/set_default";
-        let setting = frame
-            .pointer("/params/id")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let value = frame.pointer("/params/value").cloned();
-        let input = self.input.clone();
-        // Incident: saves ran side by side, so a press could overwrite the newer one it raced.
-        let before = self.settings_tail.take();
-        let task = tokio::spawn(async move {
-            if let Some(before) = before {
-                let _ = before.await;
-            }
-            let _ = tokio::task::spawn_blocking(move || {
-                let answer = match (save, setting, value) {
-                    (false, _, _) => yi_runtime::settings::current(&home),
-                    (true, Some(setting), Some(value)) => {
-                        yi_runtime::settings::save(&home, &setting, value)
-                    }
-                    (true, _, _) => Err("a save names an id and a value; null unsets".to_owned()),
-                };
-                let line = match answer {
-                    Ok(rows) => result_frame(id, json!({"rows": rows})),
-                    Err(why) => error_frame(id, -32602, &why),
-                };
-                let _ = input.send(Input::Answer(client, line));
-            })
-            .await;
-        });
-        self.settings_tail = Some(task);
-    }
-
-    /// A message opened in an app the person listed: the daemon runs it, since the console never
-    /// spawns, and only an app named in config.json can run.
-    fn open(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
-        let Some(id) = id else { return };
-        let home = self.options.home.clone();
-        let name = frame
-            .pointer("/params/name")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-        let text = frame
-            .pointer("/params/text")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-        let input = self.input.clone();
-        tokio::task::spawn_blocking(move || {
-            let opened = yi_runtime::settings::open(&home, &name, &text).and_then(|argv| {
-                spawn_app(&argv).map_err(|error| format!("{name}: {error}"))?;
-                Ok(argv)
-            });
-            let line = match opened {
-                Ok(argv) => result_frame(id, json!({"argv": argv})),
-                Err(why) => error_frame(id, -32602, &why),
-            };
-            let _ = input.send(Input::Answer(client, line));
-        });
-    }
-
     fn handle_client_closed(&mut self, client: ClientId) {
         self.clients.remove(&client);
         for entry in self.sessions.values_mut() {
@@ -826,26 +795,6 @@ fn spawn_client(stream: UnixStream, client: ClientId, input: mpsc::UnboundedSend
         }
         let _ = input.send(Input::ClientClosed(client));
     });
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "an Open in app is one the person named in config.json; nothing else can be run"
-)]
-fn spawn_app(argv: &[String]) -> std::io::Result<()> {
-    use std::os::unix::process::CommandExt;
-    let (program, args) = argv.split_first().ok_or(std::io::ErrorKind::InvalidInput)?;
-    let mut child = std::process::Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()?;
-    // Invariant: a dropped Child is never reaped, so each launch would leave a zombie in the
-    // long-lived daemon; a thread waits it out without holding the reply.
-    std::thread::spawn(move || child.wait());
-    Ok(())
 }
 
 #[expect(

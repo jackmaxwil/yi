@@ -31,6 +31,7 @@ pub enum ClientEvent {
 pub struct Outbound {
     lines: SyncSender<String>,
     shutdown: Arc<AtomicBool>,
+    no_restart: Arc<AtomicBool>,
 }
 
 impl Outbound {
@@ -44,9 +45,14 @@ impl Outbound {
         }
     }
 
+    pub fn stop_restarting(&self) {
+        self.no_restart.store(true, Ordering::SeqCst);
+    }
+
     /// Two-phase shutdown, phase one: stop reconnecting and unblock both IO
     /// threads.
     pub fn shutdown(&self) {
+        self.no_restart.store(true, Ordering::SeqCst);
         self.shutdown.store(true, Ordering::SeqCst);
     }
 }
@@ -60,21 +66,40 @@ pub fn events() -> (SyncSender<ClientEvent>, Receiver<ClientEvent>) {
     std::sync::mpsc::sync_channel::<ClientEvent>(4096)
 }
 
+pub type RespawnDaemon = Arc<dyn Fn() + Send + Sync>;
+
 /// Spawn the IO threads; the bounded event queue backpressures the
 /// socket when the UI lags, never growing a queue.
 pub fn spawn(socket: PathBuf, event_tx: SyncSender<ClientEvent>) -> (Outbound, ClientThreads) {
+    spawn_restarting(socket, event_tx, None)
+}
+
+pub fn spawn_restarting(
+    socket: PathBuf,
+    event_tx: SyncSender<ClientEvent>,
+    respawn: Option<RespawnDaemon>,
+) -> (Outbound, ClientThreads) {
     let (line_tx, line_rx) = std::sync::mpsc::sync_channel::<String>(64);
     let (stream_tx, stream_rx) = std::sync::mpsc::channel::<UnixStream>();
     let shutdown = Arc::new(AtomicBool::new(false));
+    let no_restart = Arc::new(AtomicBool::new(false));
 
     let outbound = Outbound {
         lines: line_tx,
         shutdown: Arc::clone(&shutdown),
+        no_restart: Arc::clone(&no_restart),
     };
 
     let reader_shutdown = Arc::clone(&shutdown);
     let reader = std::thread::spawn(move || {
-        reader_loop(&socket, &event_tx, &stream_tx, &reader_shutdown);
+        reader_loop(
+            &socket,
+            &event_tx,
+            &stream_tx,
+            &reader_shutdown,
+            &no_restart,
+            respawn.as_deref(),
+        );
     });
 
     let writer_shutdown = Arc::clone(&shutdown);
@@ -113,10 +138,22 @@ fn reader_loop(
     events: &SyncSender<ClientEvent>,
     streams: &std::sync::mpsc::Sender<UnixStream>,
     shutdown: &AtomicBool,
+    no_restart: &AtomicBool,
+    respawn: Option<&(dyn Fn() + Send + Sync)>,
 ) {
     let mut backoff = BACKOFF_START;
     while !shutdown.load(Ordering::SeqCst) {
-        let stream = match UnixStream::connect(socket) {
+        let stream = UnixStream::connect(socket).or_else(|error| {
+            if let Some(respawn) = respawn
+                && !shutdown.load(Ordering::SeqCst)
+                && !no_restart.load(Ordering::SeqCst)
+            {
+                respawn();
+                return UnixStream::connect(socket);
+            }
+            Err(error)
+        });
+        let stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
                 if events

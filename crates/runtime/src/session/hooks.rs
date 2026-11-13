@@ -562,8 +562,22 @@ impl AgentSession {
         let Some(kernel) = self.kernel_service() else {
             return;
         };
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::spawn(async move { kernel.dispose().await });
+        match super::run::reactor(&self.shared) {
+            Some(handle) => {
+                handle.spawn(async move { kernel.dispose().await });
+            }
+            None => {
+                // Incident: a session built off-runtime still owns an IPython Child; a throwaway
+                // runtime disposes it so retire never skips the pump.
+                std::thread::spawn(move || {
+                    if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        runtime.block_on(kernel.dispose());
+                    }
+                });
+            }
         }
     }
 
