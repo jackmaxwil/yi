@@ -446,3 +446,47 @@ fn a_stalled_request_write_hits_the_request_timeout() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies when OpenRouter sends a citation without an excerpt, or flat rather than nested, and the
+/// whole answer is thrown away; both shapes are in its documented annotation schema.
+#[test]
+fn citations_survive_a_missing_excerpt_and_a_flat_annotation() -> TestResult {
+    let mut body: Value = serde_json::from_str(DEEPSEEK_RESPONSE)?;
+    body["choices"][0]["message"]["annotations"] = json!([
+        {
+            "type": "url_citation",
+            "url_citation": {
+                "url": "https://www.example.com/nested-without-content",
+                "title": "Nested without content",
+                "start_index": 100,
+                "end_index": 120
+            }
+        },
+        {
+            "type": "url_citation",
+            "url": "https://www.example.com/flat",
+            "title": "Flat"
+        }
+    ]);
+    let (response, _) = call(
+        &request(5)?,
+        "200 OK",
+        &body.to_string(),
+        "deepseek/deepseek-v4-flash",
+        None,
+        None,
+    )?;
+    let response = response?;
+    let [nested, flat] = response.citations.as_slice() else {
+        return Err("expected exactly the two citations sent".into());
+    };
+    assert_eq!(nested.title, "Nested without content");
+    assert_eq!(
+        nested.url.as_str(),
+        "https://www.example.com/nested-without-content"
+    );
+    assert_eq!(nested.excerpt, "");
+    assert_eq!(flat.title, "Flat");
+    assert_eq!(flat.url.as_str(), "https://www.example.com/flat");
+    Ok(())
+}

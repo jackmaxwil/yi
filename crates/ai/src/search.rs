@@ -347,9 +347,7 @@ impl OpenRouterSearch {
                     annotation.get("type").and_then(Value::as_str) == Some("url_citation")
                 })
                 .map(|annotation| {
-                    let source = annotation.get("url_citation").ok_or_else(|| {
-                        SearchError::Protocol("url_citation is missing".to_owned())
-                    })?;
+                    let source = annotation.get("url_citation").unwrap_or(annotation);
                     let text = |field: &str| {
                         source.get(field).and_then(Value::as_str).ok_or_else(|| {
                             SearchError::Protocol(format!("url_citation.{field} is missing"))
@@ -358,7 +356,7 @@ impl OpenRouterSearch {
                     Ok(SearchCitation {
                         title: text("title")?.to_owned(),
                         url: SearchUrl::new(text("url")?),
-                        excerpt: text("content")?.to_owned(),
+                        excerpt: text("content").unwrap_or_default().to_owned(),
                     })
                 })
                 .collect::<Result<Vec<_>, SearchError>>()?;
