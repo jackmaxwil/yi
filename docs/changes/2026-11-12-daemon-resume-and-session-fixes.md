@@ -5,6 +5,10 @@ ledger~: TUI | the daemon that second press stops ends the console when it hangs
 ledger+: daemon (ACP-router supervisor + worker/root) | a killed daemon is restarted by a connected console's reader loop and any request naming a stored session spawns its root's worker and loads the session from disk without needing a fresh `session/resume` first (`serve_daemon::prompting_a_session_after_the_daemon_was_killed_resumes_and_answers`, T2)
 growth: +219 daemon resume, reactor handle for plain-thread wakes with abandon_admit on detach, closed-set so ensure_loaded does not revive a closed session, plan start on contracted running, shadow-snapshot .git, and forge/wt_home lane fixes; weighed deleting the settings seam move back into daemon.rs (keeps file_size/fn_size under cap) and collapsing ensure_loaded into open_later call sites (leaves every prompt/control path without a single load point)
 raise: crate acp +63, crate cli +8, crate console +79, crate runtime +61, crate tools +8, tests +382, comments +8
+cut: none crates/console/src/app.rs
+cut: none crates/console/tests/drive.rs
+cut: none crates/runtime/src/session/run.rs
+cut: none scripts/forge_pr.py
 ---
 
 Double Ctrl+C in the console now quits the console and leaves the daemon and its workers running, matching `⌥q`; stopping the daemon stays in the command palette (`stop the daemon and quit`).
