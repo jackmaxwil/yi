@@ -1,5 +1,8 @@
 ---
 issue: Closes #2172
+cut: none docs/FORGE.md
+cut: none scripts/pr_autofix.py
+cut: none scripts/pr_review.py
 ---
 A review round with a medium finding that holds the draft is now `blocked`, not `clean`. #2165 merged
 with five open medium findings, one of them a broken sentence that went into the changelog: the round
