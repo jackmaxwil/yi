@@ -22,7 +22,9 @@ static DISCOVERY_WAKE: LazyLock<Condvar> = LazyLock::new(Condvar::new);
 const DISCOVERY_TTL: Duration = Duration::from_secs(30);
 
 enum Discovery {
-    Pending,
+    Pending {
+        last: Option<Arc<Vec<Model>>>,
+    },
     Ready {
         models: Arc<Vec<Model>>,
         at: Instant,
@@ -30,6 +32,7 @@ enum Discovery {
     Failed {
         error: String,
         at: Instant,
+        last: Option<Arc<Vec<Model>>>,
     },
 }
 
@@ -139,13 +142,29 @@ fn discover_models(id: &str) -> Result<Arc<Vec<Model>>, String> {
                     .unwrap_or_else(PoisonError::into_inner);
                 continue;
             }
-            Memory::Stale(_) | Memory::Refresh | Memory::Miss => {
-                cache.insert(id.to_owned(), Discovery::Pending);
+            Memory::Stale | Memory::Miss => {
+                let last = match cache.get(id) {
+                    Some(Discovery::Ready { models, .. }) => Some(Arc::clone(models)),
+                    Some(Discovery::Failed { last, .. }) | Some(Discovery::Pending { last }) => {
+                        last.clone()
+                    }
+                    None => None,
+                };
+                cache.insert(id.to_owned(), Discovery::Pending { last });
                 break;
             }
         }
     }
     let outcome = fetch_models(id, provider).map(Arc::new);
+    let last = {
+        let cache = DISCOVERED_MODELS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match cache.get(id) {
+            Some(Discovery::Pending { last }) => last.clone(),
+            _ => None,
+        }
+    };
     let found = match &outcome {
         Ok(models) => Discovery::Ready {
             models: Arc::clone(models),
@@ -154,6 +173,7 @@ fn discover_models(id: &str) -> Result<Arc<Vec<Model>>, String> {
         Err(error) => Discovery::Failed {
             error: error.clone(),
             at: Instant::now(),
+            last,
         },
     };
     DISCOVERED_MODELS
@@ -195,8 +215,7 @@ fn fetch_models(
 
 enum Memory {
     Fresh(Result<Arc<Vec<Model>>, String>),
-    Stale(Arc<Vec<Model>>),
-    Refresh,
+    Stale,
     Pending,
     Miss,
 }
@@ -206,12 +225,12 @@ fn remembered(found: Option<&Discovery>) -> Memory {
         Some(Discovery::Ready { models, at }) if at.elapsed() < DISCOVERY_TTL => {
             Memory::Fresh(Ok(Arc::clone(models)))
         }
-        Some(Discovery::Ready { models, .. }) => Memory::Stale(Arc::clone(models)),
-        Some(Discovery::Failed { error, at }) if at.elapsed() < DISCOVERY_TTL => {
+        Some(Discovery::Ready { .. }) => Memory::Stale,
+        Some(Discovery::Failed { error, at, .. }) if at.elapsed() < DISCOVERY_TTL => {
             Memory::Fresh(Err(error.clone()))
         }
-        Some(Discovery::Failed { .. }) => Memory::Refresh,
-        Some(Discovery::Pending) => Memory::Pending,
+        Some(Discovery::Failed { .. }) => Memory::Miss,
+        Some(Discovery::Pending { .. }) => Memory::Pending,
         None => Memory::Miss,
     }
 }
@@ -220,10 +239,18 @@ fn cached(id: &str) -> Option<Result<Arc<Vec<Model>>, String>> {
     let Ok(cache) = DISCOVERED_MODELS.lock() else {
         return None;
     };
-    match remembered(cache.get(id)) {
-        Memory::Fresh(result) => Some(result),
-        Memory::Stale(models) => Some(Ok(models)),
-        Memory::Refresh | Memory::Pending | Memory::Miss => None,
+    match cache.get(id)? {
+        Discovery::Ready { models, .. }
+        | Discovery::Pending { last: Some(models) }
+        | Discovery::Failed {
+            last: Some(models), ..
+        } => Some(Ok(Arc::clone(models))),
+        Discovery::Failed {
+            error,
+            at,
+            last: None,
+        } if at.elapsed() < DISCOVERY_TTL => Some(Err(error.clone())),
+        _ => None,
     }
 }
 
@@ -1361,6 +1388,7 @@ mod tests {
             Discovery::Failed {
                 error: "down".to_owned(),
                 at: Instant::now(),
+                last: None,
             },
         );
         drop(cache);
@@ -1379,6 +1407,7 @@ mod tests {
                 at: Instant::now()
                     .checked_sub(Duration::from_secs(31))
                     .unwrap_or_else(Instant::now),
+                last: None,
             },
         );
         drop(cache);
@@ -1397,5 +1426,73 @@ mod tests {
         );
         drop(cache);
         assert!(cached(id).is_some(), "a stale list still resolves");
+    }
+
+    #[test]
+    fn two_callers_share_one_models_fetch() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&hits);
+        let release = std::sync::Arc::new(AtomicBool::new(false));
+        let opened = std::sync::Arc::clone(&release);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut stream = stream;
+                let mut got = Vec::new();
+                let mut byte = [0u8; 1];
+                while got.windows(4).last() != Some(b"\r\n\r\n") && got.len() < 4096 {
+                    if stream.read(&mut byte).ok() != Some(1) {
+                        break;
+                    }
+                    got.push(byte[0]);
+                }
+                while !opened.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let body = r#"{"data":[{"id":"m2"}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        let raw = format!(
+            r#"{{"providers":{{"sharegw":{{"baseUrl":"http://127.0.0.1:{port}/v1","models":[]}}}}}}"#
+        );
+        let (config, _) = yi_types::config::parse(&raw).unwrap();
+        set_custom_providers(config.providers.as_ref().unwrap());
+        let (send_first, first) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send_first.send(dynamic_model_count("sharegw"));
+        });
+        for _ in 0..100 {
+            if hits.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (send_second, second) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send_second.send(dynamic_model_count("sharegw"));
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a second caller opened its own fetch"
+        );
+        release.store(true, Ordering::SeqCst);
+        let left = first.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let right = second
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!((left, right), (1, 1));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 }
