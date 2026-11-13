@@ -13,8 +13,12 @@ use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 pub(crate) const KEEP_TURNS: u64 = 5;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
 const MIN_DROPPED: u64 = 2_000;
-/// A cut rewrites the cached prefix after it, which costs as many tokens as this many cache reads.
+/// Cache reads a rewrite counts as on a route with no catalog cache prices.
 const REWRITE_READS: u64 = 10;
+/// A session's age says nothing about requests left: savings count over at most this many.
+const MAX_HORIZON_TURNS: u64 = 40;
+/// A route priced above this many reads per write is treated as this.
+const MAX_REWRITE_READS: f64 = 1_000.0;
 const MIN_RESULT_CHARS: usize = 1_200;
 /// The newest image results no cut takes: the model is still working from them.
 const KEEP_IMAGES: usize = 3;
@@ -506,8 +510,23 @@ pub(crate) fn decide(
     None
 }
 
+/// Cache reads a rewrite costs: the route's own write price (twice input on an hour cache) over
+/// its read price when the catalog prices both, else [`REWRITE_READS`], doubled on an hour cache.
+fn rewrite_reads(model: &Model, hour: bool) -> u64 {
+    let write = match hour {
+        true => model.cost.input.as_f64().map(|input| input * 2.0),
+        false => model.cost.cache_write.as_f64(),
+    };
+    match (model.cost.cache_read.as_f64(), write) {
+        (Some(read), Some(write)) if read > 0.0 && write > read => {
+            (write / read).ceil().min(MAX_REWRITE_READS) as u64
+        }
+        _ => REWRITE_READS * if hour { 2 } else { 1 },
+    }
+}
+
 /// Why a cut pays now, if it does: the cache lapsed, or the tokens it saves over as many more
-/// requests as were sent so far outweigh ten reads of everything after the first cut result.
+/// requests as were sent so far (at most forty) outweigh a rewrite of everything after the cut.
 fn reason(
     messages: &[AgentMessage],
     model: &Model,
@@ -544,13 +563,13 @@ fn reason(
     if lapsed {
         return (dropped >= MIN_DROPPED).then_some("expired");
     }
-    // An hour-cache write costs twice a five-minute one.
     let hour = replies
         .first()
         .is_some_and(|(usage, _, _)| usage.cache_write1h.unwrap_or(0) > 0);
-    let reads = REWRITE_READS * if hour { 2 } else { 1 };
+    let reads = rewrite_reads(model, hour);
+    let horizon = turns.min(MAX_HORIZON_TURNS);
     let pays = dropped >= MIN_DROPPED
-        && (!caches || dropped.saturating_mul(turns) > rewritten.saturating_mul(reads));
+        && (!caches || dropped.saturating_mul(horizon) > rewritten.saturating_mul(reads));
     pays.then_some("breakeven")
 }
 
@@ -814,14 +833,34 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    fn model(
+        (id, name, max_tokens): (&str, &str, u64),
+        [input, output, cache_read, cache_write]: [f64; 4],
+    ) -> Result<Model, serde_json::Error> {
+        serde_json::from_value(json!({
+            "id": id, "name": name, "api": "anthropic-messages",
+            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
+            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": max_tokens,
+            "cost": {"input": input, "output": output, "cacheRead": cache_read, "cacheWrite": cache_write}
+        }))
+    }
+
     /// Opus 5.5's catalog rates: a read costs a tenth of input, a write 1.25 times it.
     fn opus() -> Result<Model, serde_json::Error> {
-        serde_json::from_value(json!({
-            "id": "claude-opus-5-5", "name": "Opus", "api": "anthropic-messages",
-            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
-            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": 128_000,
-            "cost": {"input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25}
-        }))
+        model(("claude-opus-5-5", "Opus", 128_000), [5.0, 25.0, 0.5, 6.25])
+    }
+
+    /// Sonnet 5.5's catalog rates: a read costs a twentieth of input, a write 1.25 times it, so a
+    /// rewrite costs twenty-five reads.
+    fn sonnet() -> Result<Model, serde_json::Error> {
+        model(
+            ("claude-sonnet-5-5", "Sonnet", 64_000),
+            [2.0, 10.0, 0.1, 2.5],
+        )
+    }
+
+    fn unpriced() -> Result<Model, serde_json::Error> {
+        model(("subscription", "Subscription", 64_000), [0.0; 4])
     }
 
     /// A reply's time as Pi's own writer stamps it (`v4-golden.jsonl`); `at` counts from it.
@@ -864,22 +903,57 @@ pub(crate) mod tests {
         }
     }
 
-    /// `turns` requests, each a bash call answered with 10,000 chars, a minute apart.
-    fn bash_session(turns: usize) -> Vec<AgentMessage> {
-        let mut messages = vec![AgentMessage::user_input(
-            UserContent::Text("fix the build".to_owned()),
-            0,
-        )];
-        for turn in 0..turns {
+    /// Requests `turns`, each a bash call answered with `chars` chars, a minute apart.
+    fn calls(turns: std::ops::Range<usize>, chars: usize, messages: &mut Vec<AgentMessage>) {
+        for turn in turns {
             let id = format!("call-{turn}");
             let args = json!({"command": format!("cargo build -p crate{turn}")});
             messages.push(assistant(
                 &[(id.clone(), "bash", args)],
                 60_000 * turn as u64,
             ));
-            messages.push(result(&id, "bash", 10_000));
+            messages.push(result(&id, "bash", chars));
         }
+    }
+
+    /// `turns` requests, each a bash call answered with 10,000 chars, a minute apart.
+    fn bash_session(turns: usize) -> Vec<AgentMessage> {
+        let mut messages = vec![AgentMessage::user_input(
+            UserContent::Text("fix the build".to_owned()),
+            0,
+        )];
+        calls(0..turns, 10_000, &mut messages);
         messages
+    }
+
+    /// One 10,000-char result up front, then `tail` requests answered with results too small to
+    /// cut: the only cut is the first result, and everything after it is rewritten.
+    fn one_big_then_small(tail: usize) -> Vec<AgentMessage> {
+        let mut messages = bash_session(1);
+        calls(1..tail + 1, 300, &mut messages);
+        set_usage(&mut messages, |usage| usage.cache_read = 5_000);
+        messages
+    }
+
+    /// Incident: 34 cuts in 211 Sonnet requests each rewrote the conversation. A cut that pays
+    /// at ten reads (the unpriced fallback) does not pay at this route's own twenty-five.
+    #[test]
+    fn a_cut_is_priced_by_the_routes_own_write_over_read_ratio() -> Fallible {
+        let messages = one_big_then_small(39);
+        let now = REPLIED + 60_000 * 39 + 1_000;
+        let record = decide(&messages, &Cut::default(), &unpriced()?, now).ok_or("no cut")?;
+        assert_eq!(record.reason, "breakeven");
+        assert_eq!(decide(&messages, &Cut::default(), &sonnet()?, now), None);
+        Ok(())
+    }
+
+    /// A long session has no more requests left than a young one: past forty, savings stop growing.
+    #[test]
+    fn a_long_session_does_not_make_a_cut_easier_to_pay_for() -> Fallible {
+        let messages = one_big_then_small(399);
+        let now = REPLIED + 60_000 * 399 + 1_000;
+        assert_eq!(decide(&messages, &Cut::default(), &unpriced()?, now), None);
+        Ok(())
     }
 
     /// The replay that set the rule: cutting every turn rewrote the cache each time, so the
@@ -1151,13 +1225,17 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn with_usage(turns: usize, set: impl Fn(&mut yi_types::message::Usage)) -> Vec<AgentMessage> {
-        let mut messages = bash_session(turns);
-        for message in &mut messages {
+    fn set_usage(messages: &mut [AgentMessage], set: impl Fn(&mut yi_types::message::Usage)) {
+        for message in messages {
             if let AgentMessage::Assistant { usage, .. } = message {
                 set(usage);
             }
         }
+    }
+
+    fn with_usage(turns: usize, set: impl Fn(&mut yi_types::message::Usage)) -> Vec<AgentMessage> {
+        let mut messages = bash_session(turns);
+        set_usage(&mut messages, set);
         messages
     }
 
@@ -1201,6 +1279,8 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Seen red under the removed double count (`rewrite_reads(model) * 2`): opus's hour route at
+    /// 27 turns drops 22 results over a horizon of 27, which clears 20 reads and not 26.
     #[test]
     fn an_hour_cache_waits_twice_as_long_for_its_rewrite() -> Fallible {
         let model = opus()?;
@@ -1209,6 +1289,12 @@ pub(crate) mod tests {
         assert!(decide(&five, &Cut::default(), &model, now).is_some());
         let hour = with_usage(22, |usage| usage.cache_write1h = Some(1_000));
         assert_eq!(decide(&hour, &Cut::default(), &model, now), None);
+        let later = REPLIED + 60_000 * 26 + 1_000;
+        let hour = with_usage(27, |usage| usage.cache_write1h = Some(1_000));
+        assert_eq!(
+            decide(&hour, &Cut::default(), &model, later).map(|record| record.reason),
+            Some("breakeven".to_owned())
+        );
         Ok(())
     }
 
