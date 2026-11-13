@@ -1055,9 +1055,7 @@ mod tests {
             3 + caps,
             "gear, closers, dock and key caps"
         );
-        let (cell_w, cell_h) = crate::chrome::cell_pixels();
-        let gear_transmit = format!("s={},v={},a=t,i=8000", cell_w * 4, cell_h * 3);
-        assert!(out.contains(&gear_transmit), "{out:?}");
+        assert!(out.contains("s=32,v=48,a=t,i=8000"), "{out:?}");
         assert!(out.contains("a=p,i=8000,p=1,q=2,C=1,c=4,r=3"), "{out:?}");
         let hits = app.hits.as_ref();
         let gear = hits.and_then(|hits| hits.gear).ok_or("no gear")?;
