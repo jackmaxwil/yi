@@ -5,6 +5,9 @@ raise: tests +333
 raise: crate tui +383
 raise: crate console +7
 decision: tool results are coloured from a fresh parse at every break in the shown text (the first row, a line-number gap, an elision row, a clipped row, a parse error) instead of left plain when the parse cannot be sure | most reads start mid-file and every search hit is lifted out of its file, so the plain rule left nearly every result uncoloured | reversible by restoring the line-1 check in the tool card body
+cut: crates/tui/src/cell.rs | if number.parse::<u64>().ok() != Some(expect) { | colour restarts at a line-number gap instead of stopping; the decision line above revises the rule
+cut: none crates/tui/src/pycell.rs
+cut: crates/tui/tests/highlight.rs | fn a_grep_hit_is_left_plain() -> TestResult { | a search hit is now coloured by its file's language; its test asserts the restart rule instead
 ledger+: TUI | every tool result is coloured: a read or edit by its file's language from any line it starts on, search hits and their context rows by each file's language under the file's path, a streaming write by its path and a streaming cell as Python, other output by what it holds (JSON, a diff, a shebang), the colour codes a program printed as colour, and file paths, `path:line` included, in the status-path colour; the console and solo notebooks paint cell output the same way
 ---
 Tool results are coloured wherever they appear. A read that starts in the middle of a file, the
