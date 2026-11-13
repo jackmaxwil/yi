@@ -1323,3 +1323,50 @@ fn prompting_a_session_after_the_daemon_was_killed_resumes_and_answers() -> Test
     let _ = daemon.wait();
     outcome
 }
+
+/// The console's own restart hook, not a test-supplied one: killing `yi serve` under a live
+/// `yi console` must bring a daemon back on its socket, or panes strand on unknown sessionIds.
+#[test]
+fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult {
+    let dir = Scratch::new("yi-console-respawn")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let ledger = socket.with_extension("ledger.json");
+    let before = std::fs::read_to_string(&ledger).unwrap_or_default();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the console's restart hook only runs on an interactive run, which needs a real pty"
+    )]
+    let mut pty = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/tui_pty.py"
+        ))
+        .args(["--seconds", "60", "--binary"])
+        .arg(crate::yi_bin::yi_command(&dir.home()?).get_program())
+        .arg("--home")
+        .arg(dir.join("home"))
+        .args(["--", "console", "--socket"])
+        .arg(&socket)
+        .current_dir(&*dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()?;
+    let outcome = (|| -> TestResult {
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(std::fs::read_to_string(&ledger).unwrap_or_default() != before)
+        })?;
+        daemon.kill()?;
+        let _ = daemon.wait();
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(UnixStream::connect(&socket).is_ok())
+        })?;
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("s", "_yi/shutdown", json!({}))?;
+        Ok(())
+    })();
+    let _ = pty.kill();
+    let _ = pty.wait();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
