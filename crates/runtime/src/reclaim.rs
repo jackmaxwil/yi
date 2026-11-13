@@ -17,6 +17,8 @@ const MIN_DROPPED: u64 = 2_000;
 const REWRITE_READS: u64 = 10;
 /// A session's age says nothing about requests left: savings count over at most this many.
 const MAX_HORIZON_TURNS: u64 = 40;
+/// A route priced above this many reads per write is treated as this.
+const MAX_REWRITE_READS: f64 = 1_000.0;
 const MIN_RESULT_CHARS: usize = 1_200;
 /// The newest image results no cut takes: the model is still working from them.
 const KEEP_IMAGES: usize = 3;
@@ -508,17 +510,18 @@ pub(crate) fn decide(
     None
 }
 
-/// Cache reads a rewrite of the prefix costs: the route's own write over read price when the
-/// catalog prices both, else [`REWRITE_READS`].
-fn rewrite_reads(model: &Model) -> u64 {
-    match (
-        model.cost.cache_read.as_f64(),
-        model.cost.cache_write.as_f64(),
-    ) {
+/// Cache reads a rewrite of the prefix costs: the route's own write price (twice input for an
+/// hour cache) over its read price when the catalog prices both, else [`REWRITE_READS`].
+fn rewrite_reads(model: &Model, hour: bool) -> u64 {
+    let write = match hour {
+        true => model.cost.input.as_f64().map(|input| input * 2.0),
+        false => model.cost.cache_write.as_f64(),
+    };
+    match (model.cost.cache_read.as_f64(), write) {
         (Some(read), Some(write)) if read > 0.0 && write > read => {
-            (write / read).ceil().clamp(1.0, 1_000.0) as u64
+            (write / read).ceil().min(MAX_REWRITE_READS) as u64
         }
-        _ => REWRITE_READS,
+        _ => REWRITE_READS * if hour { 2 } else { 1 },
     }
 }
 
@@ -560,11 +563,10 @@ fn reason(
     if lapsed {
         return (dropped >= MIN_DROPPED).then_some("expired");
     }
-    // An hour-cache write costs twice a five-minute one.
     let hour = replies
         .first()
         .is_some_and(|(usage, _, _)| usage.cache_write1h.unwrap_or(0) > 0);
-    let reads = rewrite_reads(model) * if hour { 2 } else { 1 };
+    let reads = rewrite_reads(model, hour);
     let horizon = turns.min(MAX_HORIZON_TURNS);
     let pays = dropped >= MIN_DROPPED
         && (!caches || dropped.saturating_mul(horizon) > rewritten.saturating_mul(reads));
@@ -929,11 +931,7 @@ pub(crate) mod tests {
     fn one_big_then_small(tail: usize) -> Vec<AgentMessage> {
         let mut messages = bash_session(1);
         calls(1..tail + 1, 300, &mut messages);
-        for message in &mut messages {
-            if let AgentMessage::Assistant { usage, .. } = message {
-                usage.cache_read = 5_000;
-            }
-        }
+        set_usage(&mut messages, |usage| usage.cache_read = 5_000);
         messages
     }
 
@@ -1227,13 +1225,17 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn with_usage(turns: usize, set: impl Fn(&mut yi_types::message::Usage)) -> Vec<AgentMessage> {
-        let mut messages = bash_session(turns);
-        for message in &mut messages {
+    fn set_usage(messages: &mut [AgentMessage], set: impl Fn(&mut yi_types::message::Usage)) {
+        for message in messages {
             if let AgentMessage::Assistant { usage, .. } = message {
                 set(usage);
             }
         }
+    }
+
+    fn with_usage(turns: usize, set: impl Fn(&mut yi_types::message::Usage)) -> Vec<AgentMessage> {
+        let mut messages = bash_session(turns);
+        set_usage(&mut messages, set);
         messages
     }
 
