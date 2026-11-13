@@ -198,6 +198,10 @@ fn a_provider_without_models_discovers_them_on_first_use() -> TestResult {
     let body: Value = serde_json::from_str(completion.rsplit("\r\n").next().unwrap_or_default())?;
     assert_eq!(body["model"], "m2");
     assert_eq!(body["max_tokens"], 16000);
+    let row = providers_row(&home, &[("YI_KERNEL_PYTHON", "/nonexistent/python3")])?;
+    assert_eq!(row["status"], "ok", "{row}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("1 dynamic models"), "{row}");
     Ok(())
 }
 
@@ -274,50 +278,19 @@ fn a_model_list_includes_a_discovered_model() -> TestResult {
 }
 
 #[test]
-fn a_discovery_get_goes_through_https_proxy() -> TestResult {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let seen: Seen = Arc::default();
-    let kept = Arc::clone(&seen);
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut reader = BufReader::new(stream);
-            let request = read_request(&mut reader);
-            let models = request
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .contains("/models");
-            let (kind, body) = if models {
-                ("application/json", DISCOVERY)
-            } else {
-                ("text/event-stream", ANSWER)
-            };
-            let _ = reader
-                .get_mut()
-                .write_all(reply("200 OK", kind, body).as_bytes());
-            if let Ok(mut all) = kept.lock() {
-                all.push(request);
-            }
-        }
-    });
+fn an_undialable_proxy_is_named_before_discovery() -> TestResult {
     let providers = json!({"localgw": {
         "baseUrl": "http://127.0.0.1:9/v1",
         "apiKey": "sk-placeholder", "models": []}});
     let home = Home::new("discover-proxy", &providers)?;
-    let proxy = format!("http://127.0.0.1:{port}");
     let ask = home.yi(
         &["ask", "--here", "--model", "localgw/m2", "hi"],
-        &[("HTTPS_PROXY", &proxy)],
+        &[("HTTPS_PROXY", "socks5://127.0.0.1:1")],
     )?;
-    assert_eq!(ask.status.code(), Some(0), "{}", text(&ask));
-    let requests = seen.lock().map_err(|_| "fake lock")?.clone();
-    assert!(
-        requests
-            .iter()
-            .any(|request| request.contains("/v1/models")),
-        "{requests:?}"
-    );
+    assert_ne!(ask.status.code(), Some(0));
+    let err = text(&ask);
+    assert!(err.contains("SOCKS proxies are not supported"), "{err}");
+    assert!(!err.contains("unknown model"), "{err}");
     Ok(())
 }
 

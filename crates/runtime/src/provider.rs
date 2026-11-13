@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::Receiver;
 use yi_ai::anthropic::{self, AnthropicOptions};
@@ -17,21 +18,20 @@ use yi_types::model::{Effort, LlmContext, Model};
 static CUSTOM_PROVIDERS: OnceLock<yi_types::config::Providers> = OnceLock::new();
 static DISCOVERED_MODELS: LazyLock<Mutex<BTreeMap<String, Discovery>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
-static DISCOVERY_STARTED: LazyLock<Mutex<BTreeSet<String>>> =
-    LazyLock::new(|| Mutex::new(BTreeSet::new()));
+const FAILED_DISCOVERY_RETRY: Duration = Duration::from_secs(30);
 
 enum Discovery {
     Ready(Arc<Vec<Model>>),
-    Failed(String),
+    Failed { error: String, at: Instant },
 }
 
 /// OpenRouter's model list omits routing variants (`:exacto`, `:nitro`): one takes its base's entry.
 pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
     resolve_in(Catalog::shared(), provider, id).or_else(|| {
-        let Ok(Some(Ok(models))) = cached(provider) else {
+        let Some(Ok(models)) = cached(provider) else {
             return None;
         };
-        models.into_iter().find(|model| model.id == id)
+        models.iter().find(|model| model.id == id).cloned()
     })
 }
 
@@ -43,8 +43,9 @@ pub fn select_model(provider: &str, id: &str) -> Result<Model, String> {
         return Err(format!("unknown model {provider}/{id} (use provider/id)"));
     }
     discover_models(provider)?
-        .into_iter()
+        .iter()
         .find(|model| model.id == id)
+        .cloned()
         .ok_or_else(|| format!("unknown model {provider}/{id} (use provider/id)"))
 }
 
@@ -76,25 +77,16 @@ pub fn available_models() -> Vec<Model> {
         return models;
     };
     for (id, provider) in providers.iter() {
-        if !provider.models.is_empty() {
-            continue;
-        }
-        warm(id);
-        if let Ok(Some(Ok(discovered))) = cached(id) {
-            models.extend(discovered);
+        if provider.models.is_empty()
+            && let Ok(discovered) = discover_models(id)
+        {
+            models.extend(discovered.iter().cloned());
         }
     }
     models
 }
 
 pub fn listed_models() -> Vec<Model> {
-    if let Some(providers) = CUSTOM_PROVIDERS.get() {
-        for (id, provider) in providers.iter() {
-            if provider.models.is_empty() {
-                let _ = discover_models(id);
-            }
-        }
-    }
     available_models()
 }
 
@@ -115,7 +107,7 @@ pub fn proxy_from_env() -> Result<Option<yi_ai::request::ProxyConfig>, String> {
     )
 }
 
-fn discover_models(id: &str) -> Result<Vec<Model>, String> {
+fn discover_models(id: &str) -> Result<Arc<Vec<Model>>, String> {
     let providers = CUSTOM_PROVIDERS
         .get()
         .ok_or("custom providers are not configured")?;
@@ -125,16 +117,19 @@ fn discover_models(id: &str) -> Result<Vec<Model>, String> {
         .map(|(_, provider)| provider)
         .ok_or("unknown custom provider")?;
     if !provider.models.is_empty() {
-        return Ok(provider.catalog(id));
+        return Ok(Arc::new(provider.catalog(id)));
     }
-    if let Some(outcome) = cached(id)? {
+    if let Some(outcome) = cached(id) {
         return outcome;
     }
-    let outcome = fetch_models(id, provider);
+    let outcome = fetch_models(id, provider).map(Arc::new);
     if let Ok(mut cache) = DISCOVERED_MODELS.lock() {
         let found = match &outcome {
-            Ok(models) => Discovery::Ready(Arc::new(models.clone())),
-            Err(error) => Discovery::Failed(error.clone()),
+            Ok(models) => Discovery::Ready(Arc::clone(models)),
+            Err(error) => Discovery::Failed {
+                error: error.clone(),
+                at: Instant::now(),
+            },
         };
         cache.insert(id.to_owned(), found);
     }
@@ -154,45 +149,27 @@ fn fetch_models(
         .collect();
     let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
     let response = yi_ai::request::get_json(&url, &headers, proxy.as_ref(), 8 * 1024 * 1024)?;
-    let data = response
-        .get("data")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let Some(data) = response.get("data").and_then(serde_json::Value::as_array) else {
+        return Err(format!("{url}: model list has no data array"));
+    };
     let list = yi_types::config::CustomModelList {
         data: data
-            .into_iter()
-            .filter_map(|value| serde_json::from_value(value).ok())
+            .iter()
+            .filter_map(|value| serde_json::from_value(value.clone()).ok())
             .collect(),
     };
     Ok(provider.discovered_catalog(id, list))
 }
 
-fn cached(id: &str) -> Result<Option<Result<Vec<Model>, String>>, String> {
-    let cache = DISCOVERED_MODELS
-        .lock()
-        .map_err(|_| "model discovery cache is poisoned")?;
-    Ok(cache.get(id).map(|found| match found {
-        Discovery::Ready(models) => Ok(models.as_ref().clone()),
-        Discovery::Failed(error) => Err(error.clone()),
-    }))
-}
-
-fn warm(id: &str) {
-    if cached(id).ok().flatten().is_some() {
-        return;
-    }
-    let Ok(mut started) = DISCOVERY_STARTED.lock() else {
-        return;
+fn cached(id: &str) -> Option<Result<Arc<Vec<Model>>, String>> {
+    let Ok(cache) = DISCOVERED_MODELS.lock() else {
+        return None;
     };
-    if !started.insert(id.to_owned()) {
-        return;
+    match cache.get(id)? {
+        Discovery::Ready(models) => Some(Ok(Arc::clone(models))),
+        Discovery::Failed { at, .. } if at.elapsed() >= FAILED_DISCOVERY_RETRY => None,
+        Discovery::Failed { error, .. } => Some(Err(error.clone())),
     }
-    drop(started);
-    let id = id.to_owned();
-    std::thread::spawn(move || {
-        let _ = discover_models(&id);
-    });
 }
 
 pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {

@@ -119,14 +119,17 @@ impl AgentSession {
                 Entry::ModelChange {
                     provider, model_id, ..
                 } => {
-                    let Some(model) = crate::provider::resolve_model(provider, model_id) else {
-                        record_store_error(
-                            &self.shared,
-                            &yi_session::SessionError::InvalidPayload(format!(
-                                "the ledger switched to {provider}/{model_id}, which the catalog no longer resolves"
-                            )),
-                        );
-                        continue;
+                    let model = match crate::provider::select_model(provider, model_id) {
+                        Ok(model) => model,
+                        Err(error) => {
+                            record_store_error(
+                                &self.shared,
+                                &yi_session::SessionError::InvalidPayload(format!(
+                                    "the ledger switched to {provider}/{model_id}, which the catalog no longer resolves: {error}"
+                                )),
+                            );
+                            continue;
+                        }
                     };
                     if let Ok(mut slot) = self.shared.model.lock() {
                         *slot = model;
