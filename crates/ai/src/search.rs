@@ -347,7 +347,9 @@ impl OpenRouterSearch {
                     annotation.get("type").and_then(Value::as_str) == Some("url_citation")
                 })
                 .map(|annotation| {
-                    let source = annotation.get("url_citation").unwrap_or(annotation);
+                    let source = annotation.get("url_citation").ok_or_else(|| {
+                        SearchError::Protocol("url_citation is missing".to_owned())
+                    })?;
                     let text = |field: &str| {
                         source.get(field).and_then(Value::as_str).ok_or_else(|| {
                             SearchError::Protocol(format!("url_citation.{field} is missing"))
