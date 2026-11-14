@@ -2975,7 +2975,7 @@ async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dy
 /// A git on PATH ahead of the real one, running `script` before it: the host runs no hook, so a
 /// shim is what slows it. nextest gives each test its own process, so it reaches no other test.
 fn shim_git(rig: &Rig, script: &str) -> TestResult {
-    crate::support::shim_git(&rig.root, script)
+    crate::support::shim_git(&rig.root.join("shim"), script)
 }
 
 /// The first `verb` of the rig takes two seconds and leaves `git-ran`.

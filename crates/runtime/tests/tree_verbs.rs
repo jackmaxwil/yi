@@ -100,7 +100,8 @@ fn read_version_as(rig: &Rig, version: &str, merge: MergeTree) -> Result<(), Box
     let script = format!(
         "[ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\ncase \"$*\" in *merge-tree*) {answer};; esac"
     );
-    support::shim_git(rig.repo.parent().ok_or("no scratch root")?, &script)
+    let shim = rig.repo.parent().ok_or("no scratch root")?.join("shim");
+    support::shim_git(&shim, &script)
 }
 
 fn read(path: &Path) -> Result<String, Box<dyn Error>> {
@@ -470,6 +471,30 @@ async fn a_fold_leaves_a_tree_with_a_live_job_in_place_for_the_named_release() -
     assert!(
         !at.exists(),
         "the named release kept a tree whose jobs had finished"
+    );
+    Ok(())
+}
+
+/// Dies with the fold handing back a tree whose job the kill reaches: a plain background command
+/// dies inside the grace, so the tree goes with no note and no slot held.
+#[tokio::test]
+async fn a_fold_discards_a_tree_whose_job_the_kill_reaches() -> TestResult {
+    let rig = rig("fold-killed-job")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    if !foldable(&rig)? {
+        return Ok(());
+    }
+    std::fs::write(at.join("f1.txt"), "kid's\n")?;
+    let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+    yi_tools::jobs::spawn_job("sleep 3", &at, &never, None, None)?;
+    let reply = rig
+        .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
+        .await?;
+    assert_eq!(reply["summary"], "merged 1 of 1", "{reply:?}");
+    assert_eq!(reply.get("notes"), None, "{reply:?}");
+    assert!(
+        !at.exists(),
+        "the fold kept a tree whose job the kill reached"
     );
     Ok(())
 }
