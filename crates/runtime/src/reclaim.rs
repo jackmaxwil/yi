@@ -524,10 +524,10 @@ pub(crate) fn decide(
         let marked = |map| find(map, message).is_some();
         let sized = chars(content) >= MIN_RESULT_CHARS || has_image(content);
         let floors = (aged && sized) || marked(&cut.discards);
-        let held = !marked(&cut.discards) && unchanged(index);
         if !floors {
             return false;
         }
+        let held = !marked(&cut.discards) && unchanged(index);
         let kept = marks.get(index).copied().unwrap_or(false)
             || marked(&cut.pins)
             || never_cut(message, newest.contains(&index), images.contains(&index)).is_some();
@@ -670,18 +670,30 @@ fn render(
     let briefs: Vec<Option<String>> = (calls(&messages).into_iter())
         .map(|call| call.map(|(name, args)| brief(name, args)))
         .collect();
-    for (message, call) in messages.iter_mut().zip(briefs) {
+    let reads: Vec<bool> = (calls(&messages).into_iter())
+        .map(|call| matches!(call, Some(("read" | "grep", _))))
+        .collect();
+    for ((message, call), reads) in messages.iter_mut().zip(briefs).zip(reads) {
         let Some(mark) = find(&cut.marks, message) else {
             continue;
         };
         // A discard is refused once its result is cut, so this reads the same on every request.
         let rule = match find(&cut.discards, message) {
             Some(()) => format!("{who} discarded it"),
-            None => format!(
-                "results older than {} requests (reclaim.keep_turns) are cut once dropping them costs less than resending them, unless they read files that are unchanged while context use is under {}% of the window (reclaim.keep_below_pct)",
-                crate::levers::get().reclaim_keep_turns,
-                crate::levers::get().reclaim_keep_below_pct
-            ),
+            None => {
+                let keep = format!(
+                    "results older than {} requests (reclaim.keep_turns) are cut once dropping them costs less than resending them",
+                    crate::levers::get().reclaim_keep_turns
+                );
+                if reads {
+                    format!(
+                        "{keep}, unless they read files that are unchanged while context use is under {}% of the window (reclaim.keep_below_pct)",
+                        crate::levers::get().reclaim_keep_below_pct
+                    )
+                } else {
+                    keep
+                }
+            }
         };
         let Ok(image) = reattach(message) else {
             continue;
@@ -1231,7 +1243,7 @@ pub(crate) mod tests {
             .unwrap_or_default();
         assert_eq!(
             first,
-            "[reclaimed: bash `cargo build -p crate0` → none of 9990 chars kept; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them, unless they read files that are unchanged while context use is under 30% of the window (reclaim.keep_below_pct) (cut at request 14); get it: read(\"history://self/e-17\")]"
+            "[reclaimed: bash `cargo build -p crate0` → none of 9990 chars kept; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them (cut at request 14); get it: read(\"history://self/e-17\")]"
         );
         let kept = shown
             .get(26)
@@ -1610,7 +1622,7 @@ pub(crate) mod tests {
         assert_eq!(
             placeholder,
             format!(
-                "[reclaimed: ipython → whole result dropped, none of {} chars kept, its image dropped; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them, unless they read files that are unchanged while context use is under 30% of the window (reclaim.keep_below_pct) (cut at request 10); get it: print(await attach_image({:?})); text: read(\"history://self/entry-0\")]",
+                "[reclaimed: ipython → whole result dropped, none of {} chars kept, its image dropped; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them (cut at request 10); get it: print(await attach_image({:?})); text: read(\"history://self/entry-0\")]",
                 "Loaded image into context: ".len() + paths[0].chars().count(),
                 paths[0]
             )
