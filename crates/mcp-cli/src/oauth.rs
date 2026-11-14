@@ -219,16 +219,13 @@ pub fn login(
     if options.no_browser {
         println!("Open this URL to authorize: {auth_url}");
     } else {
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
         #[expect(
             clippy::disallowed_methods,
             reason = "launching the user's browser for the interactive login is this fn's job"
         )]
-        let launched = std::process::Command::new(opener).arg(&auth_url).spawn();
+        let launched = std::process::Command::new(yi_oauth::flow::desktop_opener())
+            .arg(&auth_url)
+            .spawn();
         if launched.is_err() {
             println!("Open this URL to authorize: {auth_url}");
         }
