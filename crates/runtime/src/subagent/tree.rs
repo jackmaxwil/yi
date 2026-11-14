@@ -421,31 +421,15 @@ impl SubagentHost {
         })?;
         let key = tree.path().to_string_lossy().into_owned();
         warm::forget_tickets(&key);
-        let stopped = yi_tools::jobs::registry().kill_under(tree.path());
-        let until = Instant::now().checked_add(Duration::from_secs(5));
-        let busy = |path: &Path| {
-            !crate::lane::settle::quiescence_of_jobs(path)
-                .running
-                .is_empty()
-        };
-        while busy(tree.path()) && until.is_some_and(|until| Instant::now() < until) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let quiescence = crate::lane::settle::quiescence_of_jobs(tree.path());
+        let (stopped, quiescence) =
+            crate::lane::settle::stop_jobs_under(tree.path(), Duration::from_secs(5));
         let settled = tree
             .settle(&quiescence, self.deadline())
             .map_err(|(_kept, error)| error.to_string())?;
         settled.discard().map_err(|error| error.to_string())?;
         let mut reply = Map::new();
-        if !stopped.is_empty() {
-            reply.insert(
-                "stopped".to_owned(),
-                json!(format!(
-                    "stopped {} jobs under the tree: {}; a process that left its job keeps running",
-                    stopped.len(),
-                    stopped.join(", ")
-                )),
-            );
+        if let Some(row) = stopped {
+            reply.insert("stopped".to_owned(), json!(row));
         }
         Ok(reply)
     }

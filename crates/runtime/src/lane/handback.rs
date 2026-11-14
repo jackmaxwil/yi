@@ -343,31 +343,26 @@ impl SubagentHost {
         target: &str,
         force: bool,
     ) -> Result<Map<String, Value>, String> {
-        self.discard_within(target, force, Some(Duration::from_secs(5)))
+        self.discard_within(target, force, Duration::from_secs(5), false)
     }
 
-    /// The same disposition for a fold, which runs for every folded child inside one host call: a
-    /// tree whose jobs are still live is handed back rather than waited out.
+    /// The same disposition for a fold, which runs for every folded child inside one host call:
+    /// a killed job gets a short grace, and a tree whose jobs outlive it is handed back.
     pub(crate) fn discard_folded(&self, target: &str) -> Result<Map<String, Value>, String> {
-        self.discard_within(target, true, None)
+        self.discard_within(target, true, Duration::from_millis(250), true)
     }
 
     fn discard_within(
         &self,
         target: &str,
         force: bool,
-        wait: Option<Duration>,
+        grace: Duration,
+        hand_back_live: bool,
     ) -> Result<Map<String, Value>, String> {
         let (lane, _) = self.take_settled_worktree(target, Some(force))?;
-        let stopped = yi_tools::jobs::registry().kill_under(lane.path());
-        let settled_jobs = |root: &Path| quiescence_of_jobs(root).running.is_empty();
-        let until = wait.and_then(|wait| Instant::now().checked_add(wait));
-        while !settled_jobs(lane.path()) && until.is_some_and(|until| Instant::now() < until) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let quiescence = quiescence_of_jobs(lane.path());
+        let (stopped, quiescence) = stop_jobs_under(lane.path(), grace);
         let live = quiescence.running.len();
-        if wait.is_none() && live > 0 {
+        if hand_back_live && live > 0 {
             self.put_back_worktree(target, lane);
             return Err(format!(
                 "{live} jobs are still running under its tree: rlm.discard_worktree(\"{target}\") once they finish"
@@ -383,12 +378,7 @@ impl SubagentHost {
         let candidate = settled.discard().map_err(|error| error.to_string())?;
         let mut reply = candidate.as_reply();
         reply.insert("discarded".to_owned(), Value::Bool(true));
-        if !stopped.is_empty() {
-            let row = format!(
-                "stopped {} jobs under the tree: {}; a process that left its job keeps running",
-                stopped.len(),
-                stopped.join(", ")
-            );
+        if let Some(row) = stopped {
             reply.insert("stopped".to_owned(), Value::String(row));
         }
         reply.insert("merged".to_owned(), Value::Bool(false));

@@ -439,6 +439,48 @@ async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> 
     Ok(())
 }
 
+/// Dies with the fold discarding past a live job: a finished child's background command still
+/// ran in the tree the fold settled, and the slot it held was released under it.
+#[tokio::test]
+async fn a_fold_leaves_a_tree_with_a_live_job_in_place_for_the_named_release() -> TestResult {
+    let rig = rig("fold-live-job")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    if !foldable(&rig)? {
+        return Ok(());
+    }
+    std::fs::write(at.join("f1.txt"), "kid's\n")?;
+    let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+    yi_tools::jobs::spawn_job("setsid sleep 3", &at, &never, None, None)?;
+    let reply = rig
+        .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
+        .await?;
+    let note = (reply.get("notes").and_then(Value::as_array))
+        .and_then(|notes| notes.first())
+        .and_then(Value::as_str)
+        .ok_or("a tree with a live job was released without a note")?;
+    assert!(note.contains("kid"), "{note}");
+    assert!(note.contains("rlm.discard_worktree(\"kid\")"), "{note}");
+    assert!(at.exists(), "the tree was discarded under a live job");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !yi_tools::jobs::registry().running_under(&at).is_empty()
+        && std::time::Instant::now() < until
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let again = rig
+        .ask(
+            "rlm.discard_worktree",
+            json!({"target": "kid", "force": true}),
+        )
+        .await?;
+    assert_eq!(again["discarded"], true, "{again:?}");
+    assert!(
+        !at.exists(),
+        "the named release kept a tree whose jobs had finished"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_managed_child_fold_keeps_tree_and_names_discard_refusal() -> TestResult {
     let rig = rig("managed-fold")?;
