@@ -1,4 +1,6 @@
 ---
+version: 0.1045.0
+decisions: D597
 issue: Closes #2182
 ledger~: context P1–P19; prefix-aligned P7 | the tokens it drops pay for ten cache reads of the rewrite on any route, whatever its price | the rewrite counted at the route's own write over read price (at most 1,000 reads, twice input over read for an hour cache), ten reads where the catalog prices cache at zero (twenty on such a route's hour cache), savings counted over at most forty requests
 decision: reclaim counts a cut's rewrite as the route's own cache write price over its read price when the catalog prices both, keeps ten reads for a route that prices cache at zero (twenty on that route's hour cache), counts an hour-cache rewrite at twice input over read, caps the ratio at 1,000 reads, and counts a cut's savings over at most forty requests, not the requests so far (amends D558) | in one 211-turn Sonnet 5.5 session 34 cuts made 35 turns rewrite the whole conversation, $9.11 of $18.61, because ten reads undercounts a 25-read write and a long session made every cut easier to approve | revert the change: `rewrite_reads` returns `REWRITE_READS` and the horizon is the requests so far
