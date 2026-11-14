@@ -2975,20 +2975,7 @@ async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dy
 /// A git on PATH ahead of the real one, running `script` before it: the host runs no hook, so a
 /// shim is what slows it. nextest gives each test its own process, so it reaches no other test.
 fn shim_git(rig: &Rig, script: &str) -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    let path = std::env::var_os("PATH").ok_or("no PATH")?;
-    let real = std::env::split_paths(&path)
-        .map(|dir| dir.join("git"))
-        .find(|candidate| candidate.is_file())
-        .ok_or("no git on PATH")?;
-    let dir = rig.root.join("shim");
-    std::fs::create_dir_all(&dir)?;
-    let body = format!("#!/bin/sh\n{script}\nexec '{}' \"$@\"\n", real.display());
-    std::fs::write(dir.join("git"), body)?;
-    std::fs::set_permissions(dir.join("git"), std::fs::Permissions::from_mode(0o755))?;
-    let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))?;
-    unsafe { std::env::set_var("PATH", joined) };
-    Ok(())
+    crate::support::shim_git(&rig.root, script)
 }
 
 /// The first `verb` of the rig takes two seconds and leaves `git-ran`.

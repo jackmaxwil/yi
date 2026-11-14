@@ -88,35 +88,19 @@ enum MergeTree {
     Fails,
 }
 
-/// The host git reads as another version. Every call but `merge-tree` is the real git.
+/// The host git reads as another version, and answers `merge-tree` the way `merge` says.
 fn read_version_as(rig: &Rig, version: &str, merge: MergeTree) -> Result<(), Box<dyn Error>> {
-    use std::os::unix::fs::PermissionsExt;
-    let path = std::env::var_os("PATH").ok_or("no PATH")?;
-    let real = std::env::split_paths(&path)
-        .map(|dir| dir.join("git"))
-        .find(|candidate| candidate.is_file())
-        .ok_or("no git on PATH")?;
-    let dir = rig.repo.parent().ok_or("no scratch root")?.join("shim");
-    std::fs::create_dir_all(&dir)?;
-    let merge = match merge {
-        MergeTree::Succeeds => Some(format!(
-            "case \"$*\" in *merge-tree*) for candidate do :; done; exec '{}' rev-parse \"${{candidate}}^{{tree}}\";; esac\n",
-            real.display()
-        )),
-        MergeTree::Fails => Some("case \"$*\" in *merge-tree*) exit 129;; esac\n".to_owned()),
+    let answer = match merge {
+        MergeTree::Succeeds => format!(
+            "for candidate do :; done; exec '{}' rev-parse \"${{candidate}}^{{tree}}\"",
+            support::real_git()?.display()
+        ),
+        MergeTree::Fails => "exit 129".to_owned(),
     };
-    let body = format!(
-        "#!/bin/sh\n\
-         [ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\n\
-         {}exec '{}' \"$@\"\n",
-        merge.unwrap_or_default(),
-        real.display()
+    let script = format!(
+        "[ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\ncase \"$*\" in *merge-tree*) {answer};; esac"
     );
-    std::fs::write(dir.join("git"), body)?;
-    std::fs::set_permissions(dir.join("git"), std::fs::Permissions::from_mode(0o755))?;
-    let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))?;
-    unsafe { std::env::set_var("PATH", joined) };
-    Ok(())
+    support::shim_git(rig.repo.parent().ok_or("no scratch root")?, &script)
 }
 
 fn read(path: &Path) -> Result<String, Box<dyn Error>> {
@@ -467,14 +451,15 @@ async fn a_fold_leaves_a_tree_with_a_live_job_in_place_for_the_named_release() -
         .and_then(Value::as_str)
         .ok_or("a tree with a live job was released without a note")?;
     assert!(note.contains("kid"), "{note}");
-    assert!(note.contains("rlm.discard_worktree(\"kid\")"), "{note}");
+    assert!(
+        note.contains("rlm.discard_worktree(\"kid\", force=True)"),
+        "{note}"
+    );
     assert!(at.exists(), "the tree was discarded under a live job");
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while !yi_tools::jobs::registry().running_under(&at).is_empty()
-        && std::time::Instant::now() < until
-    {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    support::wait_until(15_000, || {
+        yi_tools::jobs::registry().running_under(&at).is_empty()
+    })
+    .await;
     let again = rig
         .ask(
             "rlm.discard_worktree",
