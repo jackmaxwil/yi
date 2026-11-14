@@ -8,6 +8,21 @@ fmt:
 fmt-check:
     cargo fmt --all --check
 
+# Opt-in fast local build: nightly Cranelift codegen on the dev profile, into target/dev-fast so the
+# stable target/debug stays untouched. CI and the pinned toolchain never run it. Needs
+# `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`. sccache wraps rustc when
+# it is on PATH. mold links on Linux when installed; mold has no Mach-O support, so macOS keeps ld-prime.
+dev-fast *args='-p yi-cli':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rustup component list --toolchain nightly --installed 2>/dev/null | grep -q rustc-codegen-cranelift \
+      || { echo "dev-fast: run: rustup component add rustc-codegen-cranelift-preview --toolchain nightly" >&2; exit 1; }
+    ! command -v sccache >/dev/null || export RUSTC_WRAPPER=sccache
+    if [ "$(uname -s)" = Linux ] && command -v mold >/dev/null; then
+      export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
+    fi
+    CARGO_TARGET_DIR=target/dev-fast exec cargo +nightly --config .cargo/dev-fast.toml build {{args}}
+
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 

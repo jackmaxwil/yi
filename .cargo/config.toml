@@ -1,0 +1,2 @@
+[alias]
+dev-fast = "build --config .cargo/dev-fast.toml"
