@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::cell::{Cell, TaskStatus, ToolStatus};
-use crate::colors::{Theme, name_accent};
+use crate::colors::{Theme, leaf_name, name_accent};
 use crate::keymap::SingleKey;
 use crate::popup::{BottomView, PopupResult};
 use yi_types::status_mark::StatusMark;
@@ -149,18 +149,19 @@ impl BottomView for AgentsPopup {
                 " ├─ "
             };
             let selected = index == self.selected;
+            let name = leaf_name(&row.name);
             let name_style = if selected {
                 Style::default()
-                    .fg(name_accent(&row.name))
+                    .fg(name_accent(name))
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(name_accent(&row.name))
+                Style::default().fg(name_accent(name))
             };
             if armed == Some(index) {
                 out.push(Line::from(vec![
                     Span::styled(connector.to_owned(), theme.dim_style()),
                     Span::styled(
-                        format!("{} x again to stop", row.name),
+                        format!("{name} x again to stop"),
                         Style::default().fg(theme.error),
                     ),
                 ]));
@@ -169,7 +170,7 @@ impl BottomView for AgentsPopup {
             let mut spans = vec![
                 Span::styled(connector.to_owned(), theme.dim_style()),
                 Span::styled(format!("{} ", glyph(row.state)), name_style),
-                Span::styled(format!("{:<20}", row.name), name_style),
+                Span::styled(format!("{name:<20}"), name_style),
                 Span::styled(
                     format!("{:>8} ", tokens_label(row.tokens)),
                     theme.muted_style(),
