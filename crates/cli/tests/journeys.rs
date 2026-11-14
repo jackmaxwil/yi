@@ -74,10 +74,13 @@ impl Journey {
     /// One `yi rpc` process fed every frame at once: the journey asserts on the
     /// response stream, and interleaving would make it a timing test.
     fn rpc(&self, frames: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
-        Ok(crate::rpc::run_rpc(&self.root, frames)?
-            .into_iter()
-            .filter(|frame| frame["type"] == "response")
-            .collect())
+        let sessions = self.root.join("home/sessions");
+        Ok(
+            crate::rpc::run_rpc_in(&self.root, &sessions, &self.project(), frames)?
+                .into_iter()
+                .filter(|frame| frame["type"] == "response")
+                .collect(),
+        )
     }
 }
 
