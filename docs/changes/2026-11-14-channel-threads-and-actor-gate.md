@@ -1,4 +1,5 @@
 ---
+version: 0.1055.0
 issue: Closes #2230
 cut: none crates/runtime/src/schedule/channel.rs
 shares: #2232 both edit docs/YI_DESIGN.md, this one only the channel job paragraph of the schedule section and #2232 only the intro and the provider section
