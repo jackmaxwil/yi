@@ -205,6 +205,7 @@ pub struct DiscoveredCustomModel {
     pub name: Option<String>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_reasoning")]
     pub reasoning: Option<bool>,
     pub max_output_tokens: Option<u64>,
     #[serde(default, deserialize_with = "lenient_limit")]
@@ -233,6 +234,21 @@ where
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(DiscoveredCustomLimit::from_value(&value))
+}
+
+fn lenient_reasoning<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match &value {
+        serde_json::Value::Bool(enabled) => Some(*enabled),
+        serde_json::Value::Object(map) => match map.get("type").and_then(|kind| kind.as_str()) {
+            Some("only" | "both") => Some(true),
+            _ => map.get("enabled").and_then(serde_json::Value::as_bool),
+        },
+        _ => None,
+    })
 }
 
 impl DiscoveredCustomLimit {
