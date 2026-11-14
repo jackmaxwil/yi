@@ -204,6 +204,7 @@ pub struct DiscoveredCustomModel {
     pub name: Option<String>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
+    pub reasoning: Option<bool>,
     pub max_output_tokens: Option<u64>,
     #[serde(default, deserialize_with = "lenient_limit")]
     pub limit: Option<DiscoveredCustomLimit>,
@@ -289,7 +290,7 @@ impl CustomProvider {
                 Some(CustomModel {
                     id: model.id,
                     name: model.name,
-                    reasoning: None,
+                    reasoning: model.reasoning,
                     input,
                     cost: None,
                     context_window,
