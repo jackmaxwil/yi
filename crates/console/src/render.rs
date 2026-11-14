@@ -166,13 +166,14 @@ fn lift(buffer: &mut Buffer, rect: Rect, theme: &Theme) {
         if let Some(cell) = buffer.cell_mut(at) {
             if cell.modifier.contains(Modifier::REVERSED) {
                 cell.fg = crate::chrome::lighten(cell.fg);
+            } else if cell.bg == theme.selection_bg() {
+                cell.bg = crate::chrome::lighten(cell.bg);
             } else {
                 cell.bg = theme.selection_bg();
             }
         }
     }
 }
-
 pub struct ViewState {
     pub sidebar: Rect,
     pub editor_cursor: Option<(u16, u16)>,

@@ -210,19 +210,19 @@ fn a_press_on_a_settings_row_works_the_control_it_names() -> TestResult {
             .map(|cell| cell.style())
     };
     let chosen = settings_of(&app, pane)?.cursor;
-    let (_, first) = rows
+    let (_, selected) = rows
         .iter()
-        .find(|(index, _)| *index != chosen)
+        .find(|(index, _)| *index == chosen)
         .copied()
-        .ok_or("every row is the chosen one")?;
-    let rest = look(&terminal, first.x, first.y);
-    mouse(&mut app, MouseKind::Moved, first.x, first.y);
+        .ok_or("the chosen row has no target")?;
+    let rest = look(&terminal, selected.x, selected.y);
+    mouse(&mut app, MouseKind::Moved, selected.x, selected.y);
     assert!(app.dirty, "moving onto a settings row asks for no frame");
     draw(&mut app, &mut terminal)?;
     assert_ne!(
-        look(&terminal, first.x, first.y),
+        look(&terminal, selected.x, selected.y),
         rest,
-        "the hovered row looks the same"
+        "the hovered chosen row looks the same"
     );
     let (index, toggle) = find("console.autoSide")?;
     mouse(&mut app, MouseKind::Down, toggle.x, toggle.y);
@@ -546,16 +546,10 @@ fn each_pane_wears_its_own_sessions_hue_and_an_unfocused_one_is_dim() -> TestRes
     let dim = theme().dim;
     let side = left_rect.y.saturating_add(3);
     let cases = [
-        ("left", left_title, left_rect.x, alpha, false),
-        (
-            "right",
-            right_title,
-            right_rect.right().saturating_sub(1),
-            beta,
-            true,
-        ),
+        ("left", left_title, left_rect, alpha, false),
+        ("right", right_title, right_rect, beta, true),
     ];
-    for (name, title, edge, hue, focused) in cases {
+    for (name, title, rect, hue, focused) in cases {
         let chip = cell_at(&terminal, title.x, title.y)?;
         assert_eq!(chip.fg, hue, "the {name} title is not its session's hue");
         assert_eq!(
@@ -563,8 +557,10 @@ fn each_pane_wears_its_own_sessions_hue_and_an_unfocused_one_is_dim() -> TestRes
             focused,
             "the {name} title is a chip only when focused"
         );
-        let border = cell_at(&terminal, edge, side)?;
-        assert_eq!(border.fg, dim, "the {name} border is not the panel colour");
+        for edge in [rect.x, rect.right().saturating_sub(1)] {
+            let border = cell_at(&terminal, edge, side)?;
+            assert_eq!(border.fg, dim, "the {name} border is not the panel colour");
+        }
     }
     Ok(())
 }
@@ -590,6 +586,7 @@ fn focused_pane_border_is_the_default_panel_colour() -> TestResult {
     }
     Ok(())
 }
+
 #[test]
 fn a_framed_pane_keeps_one_blank_column_inside_its_border() -> TestResult {
     let (mut app, pane) = console()?;
