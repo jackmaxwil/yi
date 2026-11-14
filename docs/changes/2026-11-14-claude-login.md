@@ -1,6 +1,7 @@
 ---
 issue: #2223
 ledger=: claude login | 5 | core | S | L | `yi login claude` signs in with a Claude Pro/Max subscription through Claude Code's public client (PKCE, the user pastes the `code#state` the console page shows, JSON token body) and stores it as the `anthropic` credential; Anthropic turns on it send Bearer, `anthropic-beta: oauth-2025-04-20` and the Claude Code identity line first in `system`; a profile file at `anthropic` wins and `yi login anthropic` stays the API-key path
+growth: +179 the built-in Claude and Codex profiles, their shared OAuth flow and registry wiring, and the provider authentication path; weighed for deletion: duplicate per-provider OAuth flows and credential routing, which would repeat the same PKCE and refresh behavior
 cut: none crates/oauth/src/flow.rs
 shares: #2205 adds the Claude OAuth headers beside its credential check in crates/ai/src/auth.rs, no overlapping lines
 shares: #2234 adds the Claude OAuth headers in crates/ai/src/auth.rs, away from its relay level code
