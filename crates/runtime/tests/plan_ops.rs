@@ -65,7 +65,7 @@ use serde_json::Map;
 use yi_runtime::journal::JournalError;
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError, SetRow,
-    TodoSpec,
+    TodoSpec, dispatch_width,
 };
 use yi_runtime::plan::store::{PLAN_CAP_BYTES, PlanStore, StoreError};
 use yi_runtime::plan::table::RETRY_CAP;
@@ -258,6 +258,25 @@ fn the_schema_dir_is_git_ignored_after_a_publish() -> TestResult {
         ignored.success(),
         "the generated schema is not ignored by git"
     );
+    Ok(())
+}
+
+/// Dies with a fixed count bounding fan-out when no ceiling is set: the default must be no
+/// bound, and either set ceiling must bound it, the smaller winning.
+#[test]
+fn width_is_unbounded_until_a_ceiling_is_set() -> TestResult {
+    use yi_runtime::levers::Levers;
+    assert_eq!(dispatch_width(&Levers::DEFAULT), None);
+    let plan = Levers {
+        plan_width_max: 3,
+        ..Levers::DEFAULT
+    };
+    assert_eq!(dispatch_width(&plan), NonZeroUsize::new(3));
+    let both = Levers {
+        family_max_children: 2,
+        ..plan
+    };
+    assert_eq!(dispatch_width(&both), NonZeroUsize::new(2));
     Ok(())
 }
 

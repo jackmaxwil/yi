@@ -301,8 +301,11 @@ pub trait OpSink: Send + Sync {
 
 pub const WIDTH_MAX: usize = 0;
 
-pub fn dispatch_width() -> NonZeroUsize {
-    crate::levers::get().dispatch_width()
+/// Invariant: a delegated child waits on a network model, not on a core, so only the optional
+/// child and plan ceilings bound it, never the host's cores (#468); `None` is no bound.
+pub fn dispatch_width(levers: &crate::levers::Levers) -> Option<NonZeroUsize> {
+    let ceilings = [levers.family_max_children, levers.plan_width_max];
+    ceilings.into_iter().filter_map(NonZeroUsize::new).min()
 }
 
 #[derive(Debug, Default)]
@@ -350,7 +353,7 @@ pub type VerifyHook = Arc<dyn Fn() + Send + Sync>;
 pub struct PlanEngine {
     pub(super) store: PlanStore,
     pub(super) delegate: Arc<dyn Delegate>,
-    pub(super) width: NonZeroUsize,
+    pub(super) width: Option<NonZeroUsize>,
     pub(super) output_resolve: Option<Arc<dyn OutputResolve>>,
     pub(super) op_sink: Option<Arc<dyn OpSink>>,
     pub(super) liveness: Arc<dyn Liveness>,
@@ -374,7 +377,7 @@ impl PlanEngine {
         Self {
             store,
             delegate,
-            width: dispatch_width(),
+            width: dispatch_width(crate::levers::get()),
             output_resolve: None,
             op_sink: None,
             liveness: Arc::new(recovery::Unknown),
@@ -411,6 +414,7 @@ impl PlanEngine {
     }
 
     pub fn with_width(self, width: NonZeroUsize) -> Self {
+        let width = Some(width);
         Self { width, ..self }
     }
 
@@ -422,10 +426,8 @@ impl PlanEngine {
     }
 
     pub fn with_op_sink(self, sink: Arc<dyn OpSink>) -> Self {
-        Self {
-            op_sink: Some(sink),
-            ..self
-        }
+        let op_sink = Some(sink);
+        Self { op_sink, ..self }
     }
 
     pub fn with_liveness(self, liveness: Arc<dyn Liveness>) -> Self {
@@ -957,7 +959,8 @@ impl PlanEngine {
             .filter(|plan| plan.state == PlanState::Active)
             .map(in_flight)
             .sum();
-        self.width.get().saturating_sub(flight)
+        let width = self.width.map_or(usize::MAX, NonZeroUsize::get);
+        width.saturating_sub(flight)
     }
 
     pub(super) fn conclude(

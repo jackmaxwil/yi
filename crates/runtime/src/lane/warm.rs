@@ -55,7 +55,6 @@ impl Pool {
             dir: self.dir.join("warm"),
             home: self.home.clone(),
             slots: card.slots.get(),
-            gc_after_refusal: std::sync::Arc::clone(&self.gc_after_refusal),
         })
     }
 }
