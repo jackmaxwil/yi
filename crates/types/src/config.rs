@@ -199,11 +199,6 @@ pub struct CustomCost {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct CustomModelList {
-    pub data: Vec<DiscoveredCustomModel>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveredCustomModel {
     pub id: String,
     pub name: Option<String>,
@@ -215,6 +210,8 @@ pub struct DiscoveredCustomModel {
     pub capabilities: Option<DiscoveredCustomCapabilities>,
 }
 
+/// A model list's `limit` object. A field it does not carry is absent; a shape that is not this
+/// one costs the two limits downstream, never the model that carries it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveredCustomLimit {
     pub context: Option<u64>,
@@ -222,8 +219,25 @@ pub struct DiscoveredCustomLimit {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct CustomModelList {
+    pub data: Vec<DiscoveredCustomModel>,
+}
+
+impl DiscoveredCustomLimit {
+    pub fn from_value(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveredCustomCapabilities {
     pub image_input: Option<bool>,
+}
+
+/// The first limit a model list advertises positively; a zero is a sentinel, not a cap, so it
+/// falls through to the next field rather than ending the chain.
+fn advertised(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
+    values.into_iter().flatten().find(|tokens| *tokens > 0)
 }
 
 impl CustomProvider {
@@ -233,14 +247,24 @@ impl CustomProvider {
             .data
             .into_iter()
             .filter_map(|model| {
-                let limit = model.limit.as_ref();
-                let context_window = model
-                    .context_window
-                    .or(limit.and_then(|limit| limit.context));
-                let max_tokens = (model.max_tokens)
-                    .or(model.max_output_tokens)
-                    .or(limit.and_then(|limit| limit.output));
-                if model.id.is_empty() || context_window == Some(0) || max_tokens == Some(0) {
+                let limit = model.limit.unwrap_or(DiscoveredCustomLimit {
+                    context: None,
+                    output: None,
+                });
+                let sent = [
+                    model.context_window,
+                    model.max_tokens,
+                    model.max_output_tokens,
+                    limit.context,
+                    limit.output,
+                ];
+                let context_window = advertised([model.context_window, limit.context]);
+                let max_tokens =
+                    advertised([model.max_tokens, model.max_output_tokens, limit.output])
+                        .or(context_window);
+                let nothing_positive =
+                    sent.iter().any(Option::is_some) && advertised(sent).is_none();
+                if model.id.is_empty() || nothing_positive {
                     return None;
                 }
                 let input = model.input.or_else(|| {

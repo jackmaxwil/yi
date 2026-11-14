@@ -3,6 +3,7 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use yi_ai::catalog::Catalog;
+use yi_types::config::DiscoveredCustomModel;
 use yi_types::model::Model;
 
 static CUSTOM_PROVIDERS: OnceLock<yi_types::config::Providers> = OnceLock::new();
@@ -193,16 +194,22 @@ fn fetch_models(
         return Err(format!("{url}: model list has no data array"));
     };
     let list = yi_types::config::CustomModelList {
-        data: data
-            .iter()
-            .filter_map(|value| serde_json::from_value(value.clone()).ok())
-            .collect(),
+        data: data.iter().filter_map(discovered_entry).collect(),
     };
     let models = provider.discovered_catalog(id, list);
     if models.is_empty() && !data.is_empty() {
         return Err(format!("{url}: model list named no usable model"));
     }
     Ok(models)
+}
+
+/// An entry whose `limit` is not the object Yi reads keeps the model and loses the two limits.
+fn discovered_entry(value: &serde_json::Value) -> Option<DiscoveredCustomModel> {
+    serde_json::from_value(value.clone()).ok().or_else(|| {
+        let mut value = value.clone();
+        value.as_object_mut()?.remove("limit");
+        serde_json::from_value(value).ok()
+    })
 }
 
 enum Memory {

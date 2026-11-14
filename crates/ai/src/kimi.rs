@@ -2,6 +2,7 @@
 //! catalog, so no Kimi id, window or price is compiled in.
 
 use serde_json::{Map, Value, json};
+use yi_types::config::DiscoveredCustomLimit;
 use yi_types::model::{Effort, Model, ModelCost};
 
 use crate::request::{ProxyConfig, get_json};
@@ -44,14 +45,12 @@ fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model,
         Some(protocol) if *protocol == "response" => ("openai-responses", base),
         Some(other) => return Err(format!("unknown protocol {other}")),
     };
-    let positive = |pointer: &str| {
-        entry
-            .get("limit")
-            .and_then(|limit| limit.get(pointer))
-            .and_then(Value::as_u64)
-            .filter(|tokens| *tokens > 0)
-    };
-    let context_window = positive("context").ok_or("no positive limit.context")?;
+    let limit = entry
+        .get("limit")
+        .and_then(DiscoveredCustomLimit::from_value);
+    let positive = |tokens: Option<u64>| tokens.filter(|tokens| *tokens > 0);
+    let context_window = positive(limit.as_ref().and_then(|limit| limit.context))
+        .ok_or("no positive limit.context")?;
     let reasoning = entry.get("reasoning");
     let kind = reasoning
         .and_then(|r| r.get("type"))
@@ -92,7 +91,8 @@ fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model,
         input,
         cost: ModelCost::free(),
         context_window,
-        max_tokens: positive("output").unwrap_or(context_window),
+        max_tokens: positive(limit.as_ref().and_then(|limit| limit.output))
+            .unwrap_or(context_window),
         compat: None,
         thinking_level_map: thinks.then(|| levels(kind == Some("only"), &valid)),
         headers: None,

@@ -40,10 +40,12 @@ const RESPONSES: &str = concat!(
     "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n",
 );
 
-const DISCOVERY: &str = r#"{"data":[{"id":"m2","object":"model","context_window":64000,"max_output_tokens":16000,"limit":{"context":64000,"output":16000},"capabilities":{"image_input":true}}]}"#;
+const DISCOVERY: &str = r#"{"data":[{"id":"m2","object":"model","limit":{"context":64000,"output":16000},"capabilities":{"image_input":true}}]}"#;
 
-/// Answers each request in the shape of the wire its path names and keeps each request whole.
-fn fake_gateway() -> std::io::Result<(u16, Seen)> {
+/// Answers each request in the shape of the wire its path names and keeps each request whole,
+/// serving `discovery` as the model list.
+fn fake_gateway_serving(discovery: &str) -> std::io::Result<(u16, Seen)> {
+    let discovery = discovery.to_owned();
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let seen: Seen = Arc::default();
@@ -54,7 +56,7 @@ fn fake_gateway() -> std::io::Result<(u16, Seen)> {
             let request = read_request(&mut reader);
             let line = request.lines().next().unwrap_or_default();
             let (content_type, body) = if line.contains("/models ") {
-                ("application/json", DISCOVERY)
+                ("application/json", discovery.as_str())
             } else if line.contains("/messages ") {
                 ("text/event-stream", MESSAGES)
             } else if line.contains("/responses ") {
@@ -70,6 +72,10 @@ fn fake_gateway() -> std::io::Result<(u16, Seen)> {
         }
     });
     Ok((port, seen))
+}
+
+fn fake_gateway() -> std::io::Result<(u16, Seen)> {
+    fake_gateway_serving(DISCOVERY)
 }
 
 struct Home {
@@ -233,13 +239,8 @@ fn a_down_models_endpoint_is_named_instead_of_an_unknown_model() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn a_model_list_includes_a_discovered_model() -> TestResult {
-    let (port, seen) = fake_gateway()?;
-    let providers = json!({"localgw": {
-        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
-        "apiKey": "sk-placeholder", "models": []}});
-    let home = Home::new("discover-list", &providers)?;
+/// The models `yi rpc` reports for `home`, read off its `get_available_models` frame.
+fn available_models(home: &Home) -> Result<Vec<Value>, Box<dyn Error>> {
     let mut child = yi_command(&home.dir.join("home"))
         .args(["rpc", "--model", "faux/faux-1"])
         .env_remove("HTTPS_PROXY")
@@ -260,13 +261,26 @@ fn a_model_list_includes_a_discovered_model() -> TestResult {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .find(|frame| frame["id"] == "m")
         .ok_or_else(|| format!("no models frame: {frames}"))?;
-    let models = frame["data"]["models"].as_array().ok_or("no models")?;
-    assert!(
-        models
-            .iter()
-            .any(|model| model["provider"] == "localgw" && model["id"] == "m2"),
-        "{frame}"
-    );
+    Ok(frame["data"]["models"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// The discovered `m2` a `limit` object alone describes, listed with both of its caps.
+#[test]
+fn a_model_list_includes_a_discovered_model() -> TestResult {
+    let (port, seen) = fake_gateway()?;
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-list", &providers)?;
+    let models = available_models(&home)?;
+    let model = (models.iter())
+        .find(|model| model["provider"] == "localgw" && model["id"] == "m2")
+        .ok_or_else(|| format!("no m2 in {models:?}"))?;
+    assert_eq!(model["contextWindow"], 64000, "{model}");
+    assert_eq!(model["maxTokens"], 16000, "{model}");
     let requests = seen.lock().map_err(|_| "fake lock")?.clone();
     assert!(
         requests
@@ -274,6 +288,78 @@ fn a_model_list_includes_a_discovered_model() -> TestResult {
             .any(|request| request.starts_with("GET /v1/models ")),
         "{requests:?}"
     );
+    Ok(())
+}
+
+/// One wire field at a time: `limit` alone carries both caps, a top-level field wins over it, and
+/// a zero is a sentinel that falls through the chain instead of ending it.
+#[test]
+fn a_discovered_model_takes_its_limits_from_whichever_field_carries_them() -> TestResult {
+    for (tag, discovery, max_tokens, context_window) in [
+        (
+            "limit-alone",
+            r#"{"data":[{"id":"m2","limit":{"context":64000,"output":16000}}]}"#,
+            16000,
+            64000,
+        ),
+        (
+            "limit-context-only",
+            r#"{"data":[{"id":"m2","limit":{"context":64000}}]}"#,
+            64000,
+            64000,
+        ),
+        (
+            "top-level-wins",
+            r#"{"data":[{"id":"m2","context_window":128000,"max_output_tokens":16000,"limit":{"context":64000,"output":8000}}]}"#,
+            16000,
+            128000,
+        ),
+        (
+            "zero-sentinels",
+            r#"{"data":[{"id":"m2","context_window":0,"max_tokens":0,"max_output_tokens":16000,"limit":{"context":64000,"output":0}}]}"#,
+            16000,
+            64000,
+        ),
+    ] {
+        let (port, _) = fake_gateway_serving(discovery)?;
+        let providers = json!({"localgw": {
+            "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+            "apiKey": "sk-placeholder", "models": []}});
+        let home = Home::new(&format!("limits-{tag}"), &providers)?;
+        let models = available_models(&home)?;
+        let model = (models.iter())
+            .find(|model| model["provider"] == "localgw" && model["id"] == "m2")
+            .ok_or_else(|| format!("{tag}: no m2 in {models:?}"))?;
+        assert_eq!(model["maxTokens"], max_tokens, "{tag}: {model}");
+        assert_eq!(model["contextWindow"], context_window, "{tag}: {model}");
+    }
+    Ok(())
+}
+
+/// A `limit` in a shape Yi does not read costs the two limits it might have carried, never the
+/// model: a bare number, an array and string-valued fields all leave the entry listed.
+#[test]
+fn an_unreadable_limit_costs_the_limits_and_not_the_model() -> TestResult {
+    for (tag, limit) in [
+        ("bare", json!(128000)),
+        ("array", json!([64000, 16000])),
+        ("strings", json!({"context": "64000", "output": "16000"})),
+    ] {
+        let discovery =
+            json!({"data": [{"id": "m2", "max_output_tokens": 16000, "limit": limit}]}).to_string();
+        let (port, seen) = fake_gateway_serving(&discovery)?;
+        let providers = json!({"localgw": {
+            "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+            "apiKey": "sk-placeholder", "models": []}});
+        let home = Home::new(&format!("limit-shape-{tag}"), &providers)?;
+        let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+        assert_eq!(ask.status.code(), Some(0), "{tag}: {}", text(&ask));
+        let requests = seen.lock().map_err(|_| "fake lock")?.clone();
+        let completion = requests.get(1).ok_or("no completion request")?;
+        let body: Value =
+            serde_json::from_str(completion.rsplit("\r\n").next().unwrap_or_default())?;
+        assert_eq!(body["max_tokens"], 16000, "{tag}: {body}");
+    }
     Ok(())
 }
 
