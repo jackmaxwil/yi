@@ -1,6 +1,7 @@
 ---
 issue: Closes #2207
 cut: none crates/console/src/render.rs
+cut: none crates/console/src/settings.rs
 raise: crate console +51, tests +49
 ---
 The console draws a focused pane's border in the normal panel colour, as it does for every other pane. The session colour stays on the title chip and the scrollbar thumb.
