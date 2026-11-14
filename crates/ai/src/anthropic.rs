@@ -39,6 +39,7 @@ pub struct AnthropicOptions {
     pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Bearer instead of `x-api-key`: a stored OAuth credential, not a key.
     pub oauth: bool,
+    pub claude_code: bool,
     pub extra_headers: Vec<(String, String)>,
 }
 
@@ -309,7 +310,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         ),
         ("stream", json!(true)),
     ]);
-    if options.oauth {
+    if options.claude_code {
         let mut blocks = vec![text_block(yi_oauth::claude::IDENTITY_LINE)];
         if !context.system_prompt.is_empty() {
             blocks.extend(system_blocks(&context.system_prompt));

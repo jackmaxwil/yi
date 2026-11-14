@@ -50,9 +50,33 @@ fn serve_once() -> Result<(u16, std::thread::JoinHandle<String>), Box<dyn std::e
         let Ok((mut stream, _)) = listener.accept() else {
             return String::new();
         };
+        let mut request = Vec::new();
         let mut buf = [0u8; 8192];
-        let read = stream.read(&mut buf).unwrap_or(0);
-        let request = String::from_utf8_lossy(&buf[..read]).into_owned();
+        while let Ok(read) = stream.read(&mut buf) {
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..read]);
+            let text = String::from_utf8_lossy(&request).into_owned();
+            let Some(end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let Some(head) = text.get(..end) else { break };
+            let length = head
+                .to_ascii_lowercase()
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")?
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            if text.len() >= end + 4 + length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&request).into_owned();
         let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n");
         request
     });
@@ -251,6 +275,7 @@ fn the_claude_login_sends_the_beta_header_and_the_identity_line() -> Res {
     context.system_prompt = "Be brief.".to_owned();
     let options = yi_ai::anthropic::AnthropicOptions {
         oauth: true,
+        claude_code: true,
         extra_headers: resolved.headers.clone(),
         ..yi_ai::anthropic::AnthropicOptions::default()
     };
@@ -270,5 +295,28 @@ fn the_claude_login_sends_the_beta_header_and_the_identity_line() -> Res {
         .ok_or("identity line missing")?;
     let prompt = request.find("Be brief.").ok_or("system prompt missing")?;
     assert!(identity < prompt, "{request}");
+    Ok(())
+}
+
+#[test]
+fn an_oauth_credential_without_the_claude_login_sends_no_identity_line() -> Res {
+    let _serial = serial();
+    let _home = home("kimi-wire")?;
+    let (port, handle) = serve_once()?;
+    let model = model(port)?;
+    let mut context = context();
+    context.system_prompt = "Be brief.".to_owned();
+    let options = yi_ai::anthropic::AnthropicOptions {
+        oauth: true,
+        ..yi_ai::anthropic::AnthropicOptions::default()
+    };
+    drain(|| yi_ai::anthropic::stream(&model, &context, &options, "kimi-tok"))?;
+    let request = handle.join().map_err(|_| "server thread")?;
+    let lower = request.to_ascii_lowercase();
+    assert!(
+        lower.contains("authorization: bearer kimi-tok"),
+        "{request}"
+    );
+    assert!(!request.contains("You are Claude Code"), "{request}");
     Ok(())
 }

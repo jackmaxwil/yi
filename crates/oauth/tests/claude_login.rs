@@ -119,6 +119,14 @@ fn claude_is_built_in_until_a_profile_file_exists_and_anthropic_stays_a_key() ->
     };
     assert_eq!(login.authorize, "https://claude.ai/oauth/authorize");
     assert!(matches!(registry::lookup("anthropic")?, Some(Kind::ApiKey)));
+    assert!(matches!(
+        registry::refresh_kind("anthropic", true)?,
+        Some(Kind::OauthCode(_))
+    ));
+    assert!(matches!(
+        registry::refresh_kind("anthropic", false)?,
+        Some(Kind::ApiKey)
+    ));
     assert!(registry::ids().iter().any(|id| id == "claude"));
 
     let dir = home.join(".yi").join("oauth");
