@@ -211,6 +211,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the
   tokens dropped × requests so far beat ten reads of the tokens after the first cut, or the cache
   lapsed; at least 2,000 tokens, on every route whatever its price.
+  A `read` or `grep` result whose `[path#TAG]` headers all still match the files on disk is kept past
+  the age floor while the last reply's context use is under `reclaim.keep_below_pct` (30) of the window.
   A `custom{reclaim}` entry names the cut results, which render from then on as one
   `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
 - `annotate` writes `custom{annotation}`: `pin` keeps the newest result whose call contains

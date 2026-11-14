@@ -42,5 +42,6 @@
  "review.timeout_s": 30,
  "graph.next_lines": 3,
  "reclaim.keep_turns": 5,
+ "reclaim.keep_below_pct": 30,
  "compaction.render": 0
 }

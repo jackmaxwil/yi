@@ -11,6 +11,7 @@ use yi_types::model::{CACHE_DIAGNOSTIC, Model, Ttl};
 use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 
 pub(crate) const KEEP_TURNS: u64 = 5;
+pub(crate) const KEEP_BELOW_PCT: u64 = 30;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
 const MIN_DROPPED: u64 = 2_000;
 /// Cache reads a rewrite counts as on a route with no catalog cache prices.
@@ -39,32 +40,65 @@ pub(crate) struct Cut {
     pins: BTreeMap<Key, ()>,
     discards: BTreeMap<Key, ()>,
     sections: Sections,
+    disk: Disk,
+    cwd: std::path::PathBuf,
 }
 
-/// Invariant: keyed by the text's hash, never the call id, which leaked calls reuse. The paths
-/// each read, edit or write result's `[path#TAG]` headers name, parsed once per text.
+/// Invariant: keyed by the text's hash, never the call id, which leaked calls reuse. The
+/// (path, tag) pairs each read, edit or write result's `[path#TAG]` headers name, parsed once per text.
 #[derive(Default)]
-pub(crate) struct Sections(Mutex<BTreeMap<u64, Vec<String>>>);
+pub(crate) struct Sections(Mutex<BTreeMap<u64, Vec<(String, String)>>>);
 
 impl Sections {
     pub(crate) fn paths(&self, content: &[Content]) -> Vec<String> {
+        (self.tags(content).into_iter())
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    pub(crate) fn tags(&self, content: &[Content]) -> Vec<(String, String)> {
         self.memo(content, |text| {
             text.lines()
                 .filter_map(yi_tools::hashline::tokenizer::try_parse_header)
-                .filter(|header| header.file_hash.is_some())
-                .map(|header| header.path)
+                .filter_map(|header| Some((header.path, header.file_hash?)))
                 .collect()
         })
     }
 
     /// The lock is held across `parse`, so readers of one new text at once parse it once.
-    fn memo(&self, content: &[Content], parse: impl FnOnce(&str) -> Vec<String>) -> Vec<String> {
+    fn memo(
+        &self,
+        content: &[Content],
+        parse: impl FnOnce(&str) -> Vec<(String, String)>,
+    ) -> Vec<(String, String)> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         texts(content).for_each(|text| text.hash(&mut hasher));
         let mut memo = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let parsed = || parse(&yi_types::message::join_text(content, "\n"));
         memo.entry(hasher.finish()).or_insert_with(parsed).clone()
+    }
+}
+
+/// Invariant: a file is rehashed only when its mtime or length moved, so a request costs one stat
+/// per kept result; an edit that keeps both is unseen until the file changes again.
+#[derive(Default)]
+struct Disk(Mutex<BTreeMap<(std::path::PathBuf, std::time::SystemTime, u64), String>>);
+
+impl Disk {
+    fn tag(&self, path: &std::path::Path) -> Option<String> {
+        let meta = std::fs::metadata(path)
+            .ok()
+            .filter(std::fs::Metadata::is_file)?;
+        let key = (path.to_path_buf(), meta.modified().ok()?, meta.len());
+        let mut memo = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tag) = memo.get(&key) {
+            return Some(tag.clone());
+        }
+        let text = std::fs::read_to_string(path).ok()?;
+        let tag = yi_tools::hashline::format::compute_file_hash(&text).to_string();
+        memo.insert(key, tag.clone());
+        Some(tag)
     }
 }
 
@@ -160,7 +194,15 @@ pub(crate) struct Overlay {
 }
 
 impl Overlay {
-    pub(crate) fn new(cut: Arc<Mutex<Cut>>, store: Box<StoreFn>, model: Model) -> Self {
+    pub(crate) fn new(
+        cut: Arc<Mutex<Cut>>,
+        store: Box<StoreFn>,
+        model: Model,
+        cwd: Option<std::path::PathBuf>,
+    ) -> Self {
+        if let Some(cwd) = cwd {
+            cut.lock().unwrap_or_else(PoisonError::into_inner).cwd = cwd;
+        }
         Self { cut, store, model }
     }
 
@@ -438,6 +480,37 @@ pub(crate) fn decide(
         }
         turns.push(turn);
     }
+    let pct = crate::levers::get().reclaim_keep_below_pct;
+    let used = (messages.iter().rev())
+        .find_map(|message| match message {
+            AgentMessage::Assistant { usage, .. }
+                if usage.input.saturating_add(usage.cache_read) > 0 =>
+            {
+                Some(
+                    [usage.input, usage.cache_read, usage.cache_write]
+                        .map(|n| u64::try_from(n).unwrap_or(0)),
+                )
+            }
+            _ => None,
+        })
+        .map_or(u64::MAX, |parts| {
+            parts.iter().fold(0, |sum, n| u64::saturating_add(sum, *n))
+        });
+    let roomy = used.saturating_mul(100) < model.context_window.saturating_mul(pct);
+    let unchanged = |index: usize| -> bool {
+        let Some(AgentMessage::ToolResult { content, .. }) = messages.get(index) else {
+            return false;
+        };
+        let reads = matches!(calls.get(index), Some(Some(("read" | "grep", _))));
+        if !roomy || !reads {
+            return false;
+        }
+        let tags = cut.sections.tags(content);
+        !tags.is_empty()
+            && tags.iter().all(|(path, tag)| {
+                cut.disk.tag(&cut.cwd.join(path)).as_deref() == Some(tag.as_str())
+            })
+    };
     let eligible = |index: usize| -> bool {
         let Some(message) = messages.get(index) else {
             return false;
@@ -451,13 +524,14 @@ pub(crate) fn decide(
         let marked = |map| find(map, message).is_some();
         let sized = chars(content) >= MIN_RESULT_CHARS || has_image(content);
         let floors = (aged && sized) || marked(&cut.discards);
+        let held = !marked(&cut.discards) && unchanged(index);
         if !floors {
             return false;
         }
         let kept = marks.get(index).copied().unwrap_or(false)
             || marked(&cut.pins)
             || never_cut(message, newest.contains(&index), images.contains(&index)).is_some();
-        !kept
+        !kept && !held
     };
     // A result already cut costs its placeholder, so a new cut's rewrite is the view's own size.
     let sizes: Vec<u64> = (messages.iter().zip(&marks))
@@ -604,8 +678,9 @@ fn render(
         let rule = match find(&cut.discards, message) {
             Some(()) => format!("{who} discarded it"),
             None => format!(
-                "results older than {} requests (reclaim.keep_turns) are cut once dropping them costs less than resending them",
-                crate::levers::get().reclaim_keep_turns
+                "results older than {} requests (reclaim.keep_turns) are cut once dropping them costs less than resending them, unless they read files that are unchanged while context use is under {}% of the window (reclaim.keep_below_pct)",
+                crate::levers::get().reclaim_keep_turns,
+                crate::levers::get().reclaim_keep_below_pct
             ),
         };
         let Ok(image) = reattach(message) else {
@@ -730,8 +805,12 @@ pub(crate) mod tests {
         let ends: Vec<usize> = ends.collect();
         let views = |fresh: bool| -> Result<Vec<Vec<AgentMessage>>, Box<dyn std::error::Error>> {
             let cut = std::sync::Arc::new(std::sync::Mutex::new(Cut::default()));
-            let overlay =
-                super::Overlay::new(std::sync::Arc::clone(&cut), Box::new(|| None), opus()?);
+            let overlay = super::Overlay::new(
+                std::sync::Arc::clone(&cut),
+                Box::new(|| None),
+                opus()?,
+                None,
+            );
             let mut sent = Vec::new();
             for end in &ends {
                 if fresh {
@@ -787,14 +866,14 @@ pub(crate) mod tests {
                     sections.memo(&content, |_| {
                         parses.fetch_add(1, Ordering::SeqCst);
                         std::thread::sleep(std::time::Duration::from_millis(50));
-                        vec!["src/lib.rs".to_owned()]
+                        vec![("src/lib.rs".to_owned(), "BDF3".to_owned())]
                     })
                 })
             })
             .collect();
         for reader in readers {
             let paths = reader.join().map_err(|_| "a reader panicked")?;
-            assert_eq!(paths, ["src/lib.rs"]);
+            assert_eq!(paths, [("src/lib.rs".to_owned(), "BDF3".to_owned())]);
         }
         assert_eq!(
             parses.load(Ordering::SeqCst),
@@ -1152,7 +1231,7 @@ pub(crate) mod tests {
             .unwrap_or_default();
         assert_eq!(
             first,
-            "[reclaimed: bash `cargo build -p crate0` → none of 9990 chars kept; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them (cut at request 14); get it: read(\"history://self/e-17\")]"
+            "[reclaimed: bash `cargo build -p crate0` → none of 9990 chars kept; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them, unless they read files that are unchanged while context use is under 30% of the window (reclaim.keep_below_pct) (cut at request 14); get it: read(\"history://self/e-17\")]"
         );
         let kept = shown
             .get(26)
@@ -1531,7 +1610,7 @@ pub(crate) mod tests {
         assert_eq!(
             placeholder,
             format!(
-                "[reclaimed: ipython → whole result dropped, none of {} chars kept, its image dropped; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them (cut at request 10); get it: print(await attach_image({:?})); text: read(\"history://self/entry-0\")]",
+                "[reclaimed: ipython → whole result dropped, none of {} chars kept, its image dropped; results older than 5 requests (reclaim.keep_turns) are cut once dropping them costs less than resending them, unless they read files that are unchanged while context use is under 30% of the window (reclaim.keep_below_pct) (cut at request 10); get it: print(await attach_image({:?})); text: read(\"history://self/entry-0\")]",
                 "Loaded image into context: ".len() + paths[0].chars().count(),
                 paths[0]
             )
@@ -1640,6 +1719,92 @@ pub(crate) mod tests {
         std::fs::remove_file(&paths[0])?;
         let ids = cut(&messages)?;
         assert!(!ids.contains(&"call-0".to_owned()), "{ids:?}");
+        Ok(())
+    }
+
+    fn tagged_read_session(path: &std::path::Path, tag_of: &str) -> Vec<AgentMessage> {
+        let header = yi_tools::hashline::format::format_hashline_header(
+            &path.display().to_string(),
+            yi_tools::hashline::format::compute_file_hash(tag_of),
+        );
+        let mut messages = vec![AgentMessage::user_input(
+            UserContent::Text("read it".to_owned()),
+            0,
+        )];
+        let args = json!({"path": path.display().to_string()});
+        messages.push(assistant(&[("call-0".to_owned(), "read", args)], 0));
+        messages.push(AgentMessage::ToolResult {
+            tool_call_id: "call-0".to_owned(),
+            tool_name: "read".to_owned(),
+            content: vec![Content::Text {
+                text: format!("{header}\n{}", "1:fn main() {}\n".repeat(700)),
+                text_signature: None,
+            }],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        });
+        calls(1..10, 10_000, &mut messages);
+        messages
+    }
+
+    fn cuts_call_zero(messages: &[AgentMessage]) -> Result<bool, Box<dyn std::error::Error>> {
+        let late = REPLIED + 60_000 * 9 + 6 * 60_000;
+        let record = decide(messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
+        Ok((record.items.iter()).any(|item| item.tool_call_id == "call-0"))
+    }
+
+    /// Incident: ten children reread files 518 times after their reads aged out at five requests.
+    #[test]
+    fn an_old_read_of_an_unchanged_file_stays_while_the_window_is_roomy() -> Fallible {
+        let scratch = crate::scratch::Scratch::new("yi-reclaim-reads")?;
+        let path = scratch.join("lib.rs");
+        std::fs::write(&path, "fn main() {}\n")?;
+        let messages = tagged_read_session(&path, "fn main() {}\n");
+        assert!(
+            !cuts_call_zero(&messages)?,
+            "an unchanged file's read was cut"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_old_read_is_cut_once_its_file_changed_even_at_the_same_size() -> Fallible {
+        let scratch = crate::scratch::Scratch::new("yi-reclaim-reads")?;
+        let path = scratch.join("lib.rs");
+        std::fs::write(&path, "fn main() {}\n")?;
+        let messages = tagged_read_session(&path, "fn main() {}\n");
+        std::fs::write(&path, "fn mine() {}\n")?;
+        let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000))?;
+        assert!(cuts_call_zero(&messages)?, "a rewritten file's read stayed");
+        Ok(())
+    }
+
+    #[test]
+    fn an_old_read_of_a_deleted_file_is_cut() -> Fallible {
+        let scratch = crate::scratch::Scratch::new("yi-reclaim-reads")?;
+        let path = scratch.join("lib.rs");
+        std::fs::write(&path, "fn main() {}\n")?;
+        let messages = tagged_read_session(&path, "fn main() {}\n");
+        std::fs::remove_file(&path)?;
+        assert!(cuts_call_zero(&messages)?, "a deleted file's read stayed");
+        Ok(())
+    }
+
+    #[test]
+    fn an_old_read_is_cut_when_the_window_is_not_roomy() -> Fallible {
+        let scratch = crate::scratch::Scratch::new("yi-reclaim-reads")?;
+        let path = scratch.join("lib.rs");
+        std::fs::write(&path, "fn main() {}\n")?;
+        let mut messages = tagged_read_session(&path, "fn main() {}\n");
+        set_usage(&mut messages, |usage| usage.input = 400_000);
+        assert!(
+            cuts_call_zero(&messages)?,
+            "a read stayed at 40% of the window"
+        );
         Ok(())
     }
 }
