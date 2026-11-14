@@ -1,4 +1,5 @@
 ---
+version: 0.1048.0
 issue: Refs #2201
 cut: crates/types/src/config.rs | provider.models = (list.data.into_iter()) | the filter/map chain became one filter_map that resolves the limit fallbacks before validating
 raise: crate types +52, tests +109
