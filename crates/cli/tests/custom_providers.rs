@@ -40,7 +40,7 @@ const RESPONSES: &str = concat!(
     "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n",
 );
 
-const DISCOVERY: &str = r#"{"data":[{"id":"m2","object":"model","context_window":64000,"max_tokens":16000,"capabilities":{"image_input":true}}]}"#;
+const DISCOVERY: &str = r#"{"data":[{"id":"m2","object":"model","context_window":64000,"max_output_tokens":16000,"limit":{"context":64000,"output":16000},"capabilities":{"image_input":true}}]}"#;
 
 /// Answers each request in the shape of the wire its path names and keeps each request whole.
 fn fake_gateway() -> std::io::Result<(u16, Seen)> {
