@@ -82,7 +82,10 @@ class LabelTest(unittest.TestCase):
         with mock.patch.object(memory_inject.urllib.request, "urlopen", return_value=Reply(answer(None))):
             with contextlib.redirect_stderr(complaint):
                 self.assertEqual(memory_inject.label(self.args), 1)
-        self.assertIn("usage.cost", complaint.getvalue())
+        self.assertEqual(
+            complaint.getvalue(),
+            "FAIL label: refused: the reply carried no usage.cost, so --cap-usd cannot count it\n",
+        )
         self.assertEqual(self.labels.read_bytes(), self.original)
         self.assertFalse((self.fixture / "labels-judge.json").exists())
 
