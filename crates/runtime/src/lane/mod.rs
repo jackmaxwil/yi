@@ -624,7 +624,7 @@ impl Pool {
     }
 
     /// Incident: sixty finished lanes' `target/` directories filled a 1.8 TB disk. A claim the
-    /// host cannot take first reaps every lane `gc` proves finished, then judges again.
+    /// host refuses on disk first reaps every lane `gc` proves finished, then judges again.
     fn admit_claim(&self) -> Result<(), LaneError> {
         Self::retry_admission(
             || crate::admission::check(&self.dir, 0),
@@ -636,8 +636,11 @@ impl Pool {
         mut check: impl FnMut() -> Result<(), crate::admission::Refusal>,
         gc: impl FnOnce() -> Result<(), LaneError>,
     ) -> Result<(), LaneError> {
-        if check().is_ok() {
+        let Err(refusal) = check() else {
             return Ok(());
+        };
+        if refusal.resource != crate::admission::Resource::Disk {
+            return Err(LaneError::Admission(refusal));
         }
         gc()?;
         check().map_err(LaneError::Admission)
@@ -1058,5 +1061,31 @@ mod tests {
             "a claim after a refused one skipped the reap that frees space: {second:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_claim_refused_on_memory_or_load_skips_the_lane_sweep() {
+        use crate::admission::{Refusal, Resource};
+        for resource in [Resource::Memory, Resource::Cpu] {
+            let refused = Refusal {
+                resource,
+                have: 0,
+                need: 1,
+                live: 0,
+            };
+            let mut swept = false;
+            let outcome = Pool::retry_admission(
+                || Err(refused),
+                || {
+                    swept = true;
+                    Ok(())
+                },
+            );
+            assert!(matches!(outcome, Err(LaneError::Admission(_))));
+            assert!(
+                !swept,
+                "a {resource:?} refusal ran the lane gc, which frees only disk"
+            );
+        }
     }
 }
