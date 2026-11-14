@@ -90,6 +90,8 @@ pub fn wait_schedule_in(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fired {
     Created(Vec<String>),
+    /// A channel delivery: the todos it created, and the open thread todos it joined.
+    Followed(Vec<String>, Vec<String>),
     Unblocked(TodoLabel),
     Held(String),
     /// A channel delivery: what it did to the list, and its messages rendered as fenced data.
@@ -356,7 +358,7 @@ fn todo_for(
 /// How the timer records a firing: a wait whose batch carried only refusals keeps waiting.
 pub fn outcome(fired: &Fired) -> RunOutcome {
     match fired {
-        Fired::Created(_) | Fired::Unblocked(_) => RunOutcome::Ran,
+        Fired::Created(_) | Fired::Followed(..) | Fired::Unblocked(_) => RunOutcome::Ran,
         Fired::Delivered(inner, _) if matches!(**inner, Fired::Held(_)) => RunOutcome::Idle,
         Fired::Delivered(..) => RunOutcome::Ran,
         Fired::Held(_) => RunOutcome::Skipped,
@@ -372,6 +374,16 @@ pub fn wake_message(job: &Job, fired: &Fired, now_ms: u64) -> Option<AgentMessag
             "added {} to your todo list; its label and note say what to do",
             ids.join(", ")
         ),
+        Fired::Followed(created, joined) => {
+            let added = match created.is_empty() {
+                true => String::new(),
+                false => format!("added {} to your todo list, and ", created.join(", ")),
+            };
+            format!(
+                "{added}they follow up the open thread todo(s) {}; read them as new input to that work",
+                joined.join(", ")
+            )
+        }
         Fired::Unblocked(label) => format!("unblocked todo {label}, which waited on it"),
         Fired::Held(why) => format!("left it blocked: {why}"),
         Fired::Delivered(..) | Fired::Idle | Fired::Stopped(_) => String::new(),

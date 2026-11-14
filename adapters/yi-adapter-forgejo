@@ -4,7 +4,8 @@
 Polls `fgj api --hostname <host> repos/<owner>/<repo>/actions/tasks` (one record per job)
 and emits a run once every job in it has ended: `failure` if any job failed, `cancelled`
 if any was cancelled, else `success`. `forgejo://<host>/<owner>/<repo>/pulls` instead emits
-each open PR's head once per sha, so a subscription wakes on a new PR and on every push.
+each open PR's head once per sha, so a subscription wakes on a new PR and on every push; each
+head names its PR as its `thread` and its author as its `actor`.
 The protocol is adapters/README.md.
 """
 import json
@@ -56,6 +57,8 @@ def heads(host, repo, seen):
             "title": pr["title"],
             # The draft marker `just pr open` writes and the title rule accepts (D318).
             "draft": pr["title"].startswith("WIP: "),
+            "thread": f"pr-{pr['number']}",
+            "actor": (pr.get("user") or {}).get("login", ""),
         }
         print(json.dumps({"id": key, "at": int(time.time() * 1000), "data": data}), flush=True)
 

@@ -24,6 +24,7 @@ pub const DEFAULT_CADENCE_MS: u64 = 60_000;
 pub const DEFAULT_BATCH: u32 = 20;
 /// Retention for a channel an adapter URI implies when its first subscription names none.
 pub const DEFAULT_RETENTION: u64 = 256;
+pub const THREAD_KEY: &str = "thread";
 /// One wake carries at most this much rendered data, two messages at the channel cap.
 pub const WAKE_MAX_BYTES: usize = 32 * 1024;
 
@@ -295,8 +296,8 @@ impl Channel {
     }
 }
 
-/// Filters run on the host before any model sees a message: every `key=value` term, joined by
-/// `&`, matches a top-level field exactly; a term without `=` is a substring of the data.
+/// Filters run on the host before any model sees a message: `key=value` terms joined by `&`
+/// match a top-level field exactly (`key=a|b` any of its values), a bare term a substring.
 pub fn matches(filter: Option<&str>, entry: &ChannelEntry) -> bool {
     if entry.refused.is_some() {
         return true;
@@ -307,14 +308,25 @@ pub fn matches(filter: Option<&str>, entry: &ChannelEntry) -> bool {
         .split('&')
         .filter(|term| !term.is_empty())
         .all(|term| match term.split_once('=') {
-            Some((key, want)) => entry.data.get(key).is_some_and(|got| {
-                got.as_str().map_or_else(
-                    || serde_json::to_string(got).is_ok_and(|text| text == want),
-                    |text| text == want,
-                )
+            Some((key, wants)) => entry.data.get(key).is_some_and(|got| {
+                let got = got.as_str().map_or_else(
+                    || serde_json::to_string(got).unwrap_or_default(),
+                    str::to_owned,
+                );
+                wants.split('|').any(|want| got == want)
             }),
             None => whole.contains(term),
         })
+}
+
+fn thread(key: Option<&Value>) -> Option<&str> {
+    key?.as_str().filter(|key| !key.is_empty())
+}
+
+fn item_id(item: &Todo) -> String {
+    item.id
+        .as_ref()
+        .map_or_else(|| item.label.to_string(), ToString::to_string)
 }
 
 /// Messages reach the model as data: fenced, labelled with their source, never as a prompt.
@@ -451,8 +463,7 @@ fn unblock(
     }
 }
 
-/// `None` is a hold by the overlap policy: nothing is acked, so the messages wait for the
-/// open todo to close and ride the next delivery.
+/// `None` is an overlap hold on unthreaded messages; a threaded one joins or opens its thread's todo.
 fn create(
     todos: &TodoStore,
     job: &Job,
@@ -460,9 +471,9 @@ fn create(
     batch: &[ChannelEntry],
 ) -> Result<Option<Fired>, String> {
     let list = todos.list();
-    let mine: Vec<(bool, ChannelStamp)> = list
+    let mine: Vec<(&Todo, ChannelStamp)> = list
         .items()
-        .filter_map(|item| Some((item.state.is_terminal(), stamp(item)?)))
+        .filter_map(|item| Some((item, stamp(item)?)))
         .filter(|(_, stamp)| stamp.job == job.id)
         .collect();
     let delivered: HashSet<&String> = mine.iter().flat_map(|(_, stamp)| &stamp.ids).collect();
@@ -476,18 +487,40 @@ fn create(
             "every message was delivered before".to_owned(),
         )));
     }
-    let open = mine.iter().filter(|(done, _)| !done).count();
-    if clock::overlap_room(job, open).is_err() {
+    // A mailbox makes one todo per letter; any other channel one per thread, plus one unthreaded.
+    let mailbox = crate::post::is_mailbox(&sub.address);
+    let mut groups: Vec<(Option<String>, Vec<ChannelEntry>)> = Vec::new();
+    for entry in fresh.iter().cloned() {
+        let key = thread(entry.data.get(THREAD_KEY))
+            .filter(|_| !mailbox)
+            .map(str::to_owned);
+        match groups.iter_mut().find(|(k, _)| !mailbox && *k == key) {
+            Some((_, group)) => group.push(entry),
+            None => groups.push((key, vec![entry])),
+        }
+    }
+    let open: Vec<(Option<&str>, &TodoLabel)> = mine
+        .iter()
+        .filter(|(item, _)| !item.state.is_terminal())
+        .map(|(item, stamp)| (thread(stamp.extra.get(THREAD_KEY)), &item.label))
+        .collect();
+    let unthreaded = open.iter().filter(|(key, _)| key.is_none()).count();
+    if groups.iter().any(|(key, _)| key.is_none()) && clock::overlap_room(job, unthreaded).is_err()
+    {
         return Ok(None);
     }
-    // A mailbox makes one todo per letter, each stamped with its own; any other channel one per
-    // delivery.
-    let groups: Vec<&[ChannelEntry]> = match crate::post::is_mailbox(&sub.address) {
-        true => fresh.chunks(1).collect(),
-        false => vec![fresh.as_slice()],
-    };
     let mut items: Vec<Todo> = Vec::new();
-    for group in groups {
+    let mut joined: Vec<(TodoLabel, Vec<String>)> = Vec::new();
+    for (key, group) in &groups {
+        let ids: Vec<String> = group.iter().map(|entry| entry.id.clone()).collect();
+        let owner = open
+            .iter()
+            .rev()
+            .find(|(k, _)| key.is_some() && *k == key.as_deref());
+        if let Some((_, label)) = owner {
+            joined.push(((*label).clone(), ids));
+            continue;
+        }
         let (Some(head), Some(last)) = (group.first(), group.last()) else {
             continue;
         };
@@ -512,10 +545,14 @@ fn create(
             .map_err(|error| error.to_string())?,
         );
         todo.cites.intent = job.intent.clone();
+        let mut extra = serde_json::Map::new();
+        if let Some(key) = key {
+            extra.insert(THREAD_KEY.to_owned(), Value::String(key.clone()));
+        }
         let stamp = ChannelStamp {
             job: job.id.clone(),
-            ids: group.iter().map(|entry| entry.id.clone()).collect(),
-            extra: serde_json::Map::new(),
+            ids,
+            extra,
         };
         todo.extra.insert(
             CHANNEL_KEY.to_owned(),
@@ -523,32 +560,63 @@ fn create(
         );
         items.push(todo);
     }
+    let followed: Vec<String> = joined.iter().map(|(label, _)| label.to_string()).collect();
+    join(todos, job, &joined);
     let labels: Vec<TodoLabel> = items.iter().map(|todo| todo.label.clone()).collect();
-    let applied = todos
-        .apply_as(
-            Op::Append {
-                phase: None,
-                under: None,
-                items,
-            },
-            None,
-            CHANNEL_ACTOR,
-        )
-        .map_err(|error| error.to_string())?;
-    let ids = applied
-        .list
-        .items()
-        .filter(|item| labels.contains(&item.label))
-        .map(|item| {
-            item.id
-                .as_ref()
-                .map_or_else(|| item.label.to_string(), ToString::to_string)
-        })
-        .collect();
+    let ids = match items.is_empty() {
+        true => Vec::new(),
+        false => todos
+            .apply_as(
+                Op::Append {
+                    phase: None,
+                    under: None,
+                    items,
+                },
+                None,
+                CHANNEL_ACTOR,
+            )
+            .map_err(|error| error.to_string())?
+            .list
+            .items()
+            .filter(|item| labels.contains(&item.label))
+            .map(item_id)
+            .collect(),
+    };
+    let fired = match followed.is_empty() {
+        true => Fired::Created(ids),
+        false => Fired::Followed(ids, followed),
+    };
     Ok(Some(Fired::Delivered(
-        Box::new(Fired::Created(ids)),
+        Box::new(fired),
         render(&sub.address, &sub.path, &fresh),
     )))
+}
+
+/// Invariant: a joined id lands in its todo's stamp, so a redelivery wakes nobody twice.
+/// finds it delivered and wakes nobody twice.
+fn join(todos: &TodoStore, job: &Job, joined: &[(TodoLabel, Vec<String>)]) {
+    if joined.is_empty() {
+        return;
+    }
+    todos.replace_with(
+        |list| {
+            let mut list = list.clone();
+            list.for_each_mut(|item| {
+                let Some((_, ids)) = joined.iter().find(|(label, _)| *label == item.label) else {
+                    return;
+                };
+                let Some(mut stamp) = stamp(item).filter(|stamp| stamp.job == job.id) else {
+                    return;
+                };
+                stamp.ids.extend(ids.iter().cloned());
+                if let Ok(value) = serde_json::to_value(stamp) {
+                    item.extra.insert(CHANNEL_KEY.to_owned(), value);
+                }
+            });
+            Some(list)
+        },
+        CHANNEL_ACTOR,
+    );
 }
 
 #[derive(Debug, Clone, Default)]
