@@ -539,6 +539,20 @@ fn elide_images(value: &mut Value) {
 mod tests {
     use super::*;
     use yi_tui::colors::{ColorTier, Theme};
+    fn register_other_session(app: &mut App) -> SessionId {
+        let id = SessionId("other".to_owned());
+        app.state.upsert_row(SessionRow {
+            id: id.clone(),
+            root: "/other".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some("other".to_owned()),
+            created_ms: 0,
+            last_ms: 0,
+            pinned: None,
+        });
+        id
+    }
 
     #[test]
     fn a_verb_whose_pane_closed_under_the_menu_does_nothing() -> Result<(), String> {
@@ -576,16 +590,7 @@ mod tests {
     fn every_new_session_entry_asks_and_the_choice_sets_the_root() -> Result<(), String> {
         let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
         app.state.link = crate::model::Link::Connected;
-        app.state.upsert_row(SessionRow {
-            id: SessionId("other".to_owned()),
-            root: "/other".to_owned(),
-            status: SessionStatus::Idle,
-            attached: false,
-            name: Some("other".to_owned()),
-            created_ms: 0,
-            last_ms: 0,
-            pinned: None,
-        });
+        register_other_session(&mut app);
         let (events, _received) = crate::client::events();
         let socket = std::env::temp_dir().join("yi-menu-new-session-no-daemon.sock");
         let (outbound, _threads) = crate::client::spawn(socket, events);
@@ -617,17 +622,7 @@ mod tests {
     fn a_new_pane_or_tab_opens_chat() -> Result<(), String> {
         let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
         app.state.link = crate::model::Link::Connected;
-        app.state.upsert_row(SessionRow {
-            id: SessionId("other".to_owned()),
-            root: "/other".to_owned(),
-            status: SessionStatus::Idle,
-            attached: false,
-            name: Some("other".to_owned()),
-            created_ms: 0,
-            last_ms: 0,
-            pinned: None,
-        });
-        let other = SessionId("other".to_owned());
+        let other = register_other_session(&mut app);
         let (events, _received) = crate::client::events();
         let socket = std::env::temp_dir().join("yi-menu-new-pane-chat-no-daemon.sock");
         let (outbound, _threads) = crate::client::spawn(socket, events);
