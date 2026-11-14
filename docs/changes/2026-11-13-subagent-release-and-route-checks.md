@@ -1,4 +1,5 @@
 ---
+version: 0.1047.0
 issue: Refs #2168, #2169, #2170
 cut: none crates/runtime/src/lane/handback.rs
 cut: none crates/runtime/src/subagent/build.rs
