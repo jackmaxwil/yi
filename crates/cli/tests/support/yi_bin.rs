@@ -16,7 +16,21 @@ pub fn bin() -> &'static Path {
 pub fn yi_command(home: &Path) -> Command {
     let mut command = Command::new(BIN);
     command.env("HOME", home);
+    for (_, key) in yi_types::PROVIDER_KEY_VARS {
+        command.env_remove(key);
+    }
     command
+}
+
+#[test]
+fn yi_command_removes_every_provider_key() {
+    let command = yi_command(Path::new("/nonexistent-home"));
+    for (_, key) in yi_types::PROVIDER_KEY_VARS {
+        assert!(
+            command.get_envs().any(|(n, v)| n == key && v.is_none()),
+            "{key} is not removed from a spawned yi"
+        );
+    }
 }
 
 /// Invariant: the binary's refusal of an unset HOME is the contract; only that test spawns bare.

@@ -94,6 +94,28 @@ pub fn listed_models() -> Vec<Model> {
     available_models()
 }
 
+pub fn pickable_models(current: &Model) -> Vec<Model> {
+    keep_usable(available_models(), current, |provider| {
+        provider == yi_ai::faux::FAUX_PROVIDER || yi_ai::auth::has_credential(provider)
+    })
+}
+
+fn keep_usable(models: Vec<Model>, current: &Model, usable: impl Fn(&str) -> bool) -> Vec<Model> {
+    let mut asked = std::collections::HashMap::new();
+    let mut holds = |provider: &str| {
+        *asked
+            .entry(provider.to_owned())
+            .or_insert_with(|| usable(provider))
+    };
+    if !models.iter().any(|model| holds(&model.provider)) {
+        return models;
+    }
+    let is_current = |model: &Model| model.provider == current.provider && model.id == current.id;
+    (models.into_iter())
+        .filter(|model| holds(&model.provider) || is_current(model))
+        .collect()
+}
+
 pub fn dynamic_model_count(id: &str) -> Result<usize, String> {
     Ok(discover_models(id)?.len())
 }
@@ -360,5 +382,55 @@ mod tests {
             .unwrap();
         assert_eq!((left, right), (1, 1));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    fn registered(provider: &str, id: &str) -> Model {
+        let mut model = crate::faux::faux_model();
+        model.provider = provider.to_owned();
+        model.id = id.to_owned();
+        model
+    }
+
+    fn offered(models: &[Model]) -> Vec<String> {
+        (models.iter())
+            .map(|model| format!("{}/{}", model.provider, model.id))
+            .collect()
+    }
+
+    #[test]
+    fn a_picker_drops_the_models_of_providers_without_a_credential() {
+        let asked = std::cell::Cell::new(0);
+        let models = vec![
+            registered("anthropic", "a"),
+            registered("localgw", "m1"),
+            registered("anthropic", "b"),
+            registered("openai", "g"),
+        ];
+        let kept = keep_usable(models, &registered("faux", "x"), |provider| {
+            asked.set(asked.get() + 1);
+            provider == "localgw"
+        });
+        assert_eq!(offered(&kept), ["localgw/m1"]);
+        assert_eq!(asked.get(), 3, "each provider is asked once");
+    }
+
+    #[test]
+    fn a_picker_keeps_the_current_model_of_a_provider_without_a_credential() {
+        let models = vec![
+            registered("anthropic", "a"),
+            registered("anthropic", "b"),
+            registered("localgw", "m1"),
+        ];
+        let kept = keep_usable(models, &registered("anthropic", "b"), |provider| {
+            provider == "localgw"
+        });
+        assert_eq!(offered(&kept), ["anthropic/b", "localgw/m1"]);
+    }
+
+    #[test]
+    fn a_picker_with_no_credential_anywhere_still_lists_the_catalog() {
+        let models = vec![registered("anthropic", "a"), registered("openai", "g")];
+        let kept = keep_usable(models, &registered("faux", "x"), |_| false);
+        assert_eq!(offered(&kept), ["anthropic/a", "openai/g"]);
     }
 }
