@@ -1055,7 +1055,7 @@ fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
     assert_eq!(answered.status.code(), Some(0));
     let complaint = String::from_utf8_lossy(&answered.stderr);
     assert!(
-        complaint.contains("unknown summarizer model nope/nope-1"),
+        complaint.contains("unknown model nope/nope-1"),
         "{complaint}"
     );
     assert!(
@@ -1077,7 +1077,8 @@ fn a_named_selector_role_is_resolved_at_session_start() -> TestResult {
     assert_eq!(answered.status.code(), Some(0));
     let complaint = String::from_utf8_lossy(&answered.stderr);
     assert!(
-        complaint.contains("unknown selector model nope/nope-1; the reducer's cut stands alone"),
+        complaint.contains("unknown model nope/nope-1")
+            && complaint.contains("the reducer's cut stands alone"),
         "{complaint}"
     );
     Ok(())

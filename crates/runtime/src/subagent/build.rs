@@ -7,7 +7,7 @@ use yi_types::message::{AgentMessage, Content};
 use super::{ChildActivity, ChildBuild, Standing, SubagentHost};
 use crate::mailbox::ParentLink;
 use crate::plan::ops::{ENGINE_AGENT, OWNER_AGENT};
-use crate::provider::resolve_model;
+use crate::provider::select_model;
 use yi_types::model::{Effort, Model};
 
 /// What a build is made from, read off the spawn's kwargs: the model, the effort, the wall.
@@ -140,8 +140,7 @@ impl SubagentHost {
                 let (provider, id) = selector.split_once('/').ok_or_else(|| {
                     format!("model selector must be provider/model, got {selector}")
                 })?;
-                resolve_model(provider, id)
-                    .ok_or_else(|| format!("no model matches selector {selector}"))?
+                select_model(provider, id)?
             }
         };
         // Before a lane, a container or a lease is taken: the child would stream with no key.

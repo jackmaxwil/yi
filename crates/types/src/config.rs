@@ -110,9 +110,6 @@ impl TryFrom<std::collections::BTreeMap<String, CustomProvider>> for Providers {
                 ));
             }
             let mut seen = std::collections::BTreeSet::new();
-            if provider.models.is_empty() {
-                return Err(format!("providers.{id}.models: declares no model"));
-            }
             if let Some(bad) = (provider.models.iter())
                 .find(|model| !seen.insert(&model.id) || model.id.is_empty())
             {
@@ -141,6 +138,7 @@ pub struct CustomProvider {
     pub api: Option<CustomApi>,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
+    #[serde(default)]
     pub models: Vec<CustomModel>,
 }
 
@@ -174,7 +172,6 @@ impl CustomApi {
         Self::OpenAiResponses,
         Self::AnthropicMessages,
     ];
-
     pub const fn wire(self) -> &'static str {
         match self {
             Self::OpenAiCompletions => "openai-completions",
@@ -201,6 +198,56 @@ pub struct CustomCost {
     pub cache_write: Option<serde_json::Number>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomModelList {
+    pub data: Vec<DiscoveredCustomModel>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoveredCustomModel {
+    pub id: String,
+    pub name: Option<String>,
+    pub context_window: Option<u64>,
+    pub max_tokens: Option<u64>,
+    pub input: Option<Vec<CustomInput>>,
+    pub capabilities: Option<DiscoveredCustomCapabilities>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoveredCustomCapabilities {
+    pub image_input: Option<bool>,
+}
+
+impl CustomProvider {
+    pub fn discovered_catalog(&self, id: &str, list: CustomModelList) -> Vec<crate::model::Model> {
+        let mut provider = self.clone();
+        provider.models = (list.data.into_iter())
+            .filter(|model| {
+                !model.id.is_empty()
+                    && model.context_window != Some(0)
+                    && model.max_tokens != Some(0)
+            })
+            .map(|model| {
+                let input = model.input.or_else(|| {
+                    model.capabilities.and_then(|capabilities| {
+                        (capabilities.image_input.unwrap_or(false))
+                            .then_some(vec![CustomInput::Text, CustomInput::Image])
+                    })
+                });
+                CustomModel {
+                    id: model.id,
+                    name: model.name,
+                    reasoning: None,
+                    input,
+                    cost: None,
+                    context_window: model.context_window,
+                    max_tokens: model.max_tokens,
+                }
+            })
+            .collect();
+        provider.catalog(id)
+    }
+}
 impl CustomProvider {
     /// The catalog entries this provider declares under `id`.
     pub fn catalog(&self, id: &str) -> Vec<crate::model::Model> {

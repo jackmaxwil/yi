@@ -14,28 +14,12 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content};
 use yi_types::model::{Effort, LlmContext, Model};
 
-/// OpenRouter's model list omits routing variants (`:exacto`, `:nitro`): one takes its base's entry.
-pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
-    resolve_in(Catalog::shared(), provider, id)
-}
-
-/// A Cursor id is taken on trust only until the account's model list has been fetched: with a
-/// list on disk a typo resolves to nothing, as for every other provider.
-fn resolve_in(catalog: &Catalog, provider: &str, id: &str) -> Option<Model> {
-    catalog.get(provider, id).cloned().or_else(|| {
-        if provider == "cursor" && !catalog.has_provider("cursor") {
-            return Some(yi_ai::cursor::model_for(id));
-        }
-        let (base, _variant) = id.rsplit_once(':').filter(|_| provider == "openrouter")?;
-        let mut model = catalog.get(provider, base)?.clone();
-        model.id = id.to_owned();
-        Some(model)
-    })
-}
-
-pub fn available_models() -> Vec<Model> {
-    Catalog::shared().models()
-}
+#[path = "discover.rs"]
+mod discover;
+pub use discover::{
+    available_models, dynamic_model_count, listed_models, proxy_from_env, resolve_model,
+    select_model,
+};
 
 pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {
     Catalog::set_cache_dir(dir);
@@ -43,6 +27,7 @@ pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {
 
 /// The config's `providers`, installed before the first model lookup or credential resolve.
 pub fn set_custom_providers(providers: &yi_types::config::Providers) {
+    discover::install(providers);
     Catalog::set_custom(
         (providers.iter())
             .flat_map(|(id, provider)| provider.catalog(id))
@@ -824,7 +809,7 @@ mod tests {
     #[test]
     fn a_cursor_typo_resolves_only_until_the_account_list_is_fetched()
     -> Result<(), Box<dyn std::error::Error>> {
-        assert!(resolve_in(&Catalog::bundled(), "cursor", "composer-typo").is_some());
+        assert!(discover::resolve_in(&Catalog::bundled(), "cursor", "composer-typo").is_some());
         let dir = std::env::temp_dir().join(format!("yi-cursor-resolve-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         let list = serde_json::json!({"models": [{"name": "composer-2.5-fast"}]});
@@ -834,8 +819,8 @@ mod tests {
         )?;
         let fetched = Catalog::bundled().with_cache(&dir);
         std::fs::remove_dir_all(&dir)?;
-        assert!(resolve_in(&fetched, "cursor", "composer-2.5-fast").is_some());
-        assert!(resolve_in(&fetched, "cursor", "composer-typo").is_none());
+        assert!(discover::resolve_in(&fetched, "cursor", "composer-2.5-fast").is_some());
+        assert!(discover::resolve_in(&fetched, "cursor", "composer-typo").is_none());
         Ok(())
     }
 
