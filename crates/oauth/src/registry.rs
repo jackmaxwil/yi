@@ -188,6 +188,7 @@ pub fn lookup(provider: &str) -> Result<Option<Kind>> {
     match load(provider)? {
         Some(kind) => Ok(Some(kind)),
         None if provider == CURSOR_ID => Ok(Some(Kind::Cursor)),
+        None if provider == crate::codex::CODEX_ID => Ok(Some(crate::codex::profile())),
         None => Ok(API_KEY_IDS.contains(&provider).then_some(Kind::ApiKey)),
     }
 }
@@ -205,7 +206,7 @@ pub fn load(provider: &str) -> Result<Option<Kind>> {
 pub fn ids() -> Vec<String> {
     let mut found: Vec<String> = API_KEY_IDS
         .iter()
-        .chain(std::iter::once(&CURSOR_ID))
+        .chain([&CURSOR_ID, &crate::codex::CODEX_ID])
         .map(|id| (*id).to_owned())
         .collect();
     let Ok(entries) = std::fs::read_dir(profile_root()) else {

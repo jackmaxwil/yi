@@ -769,3 +769,6 @@ TUI | `tui_drive::queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highl
 TUI | `result_paint::read_from_the_middle_of_a_file_is_coloured` (T0)
 TUI | `result_paint::shell_colour_codes_render_as_colour` (T0)
 console notebook pane | `notebook_text::notebook_text_colours_codes_json_and_paths` (T0)
+openai-codex login | `codex_login::the_login_opens_the_codex_authorize_url_and_exchanges_the_code`
+openai-codex login | `codex_login::a_refresh_keeps_the_account_id_the_response_does_not_repeat`
+openai-codex login | `codex_login::the_codex_login_is_built_in_and_a_user_profile_file_wins`
