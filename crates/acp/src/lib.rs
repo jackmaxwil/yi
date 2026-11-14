@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 use yi_runtime::session_store::{
     CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
-use yi_runtime::{AgentSession, Asker, SubagentHost, available_models, resolve_model};
+use yi_runtime::{AgentSession, Asker, SubagentHost, available_models, select_model};
 use yi_types::acp::{
     AcpConfigChoice, AcpConfigKind, AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame,
     AcpImplementation, AcpInitializeResult, AcpMeta, AcpResponse, AcpSessionResult,
@@ -392,8 +392,8 @@ impl AcpState {
                 let (provider, model_id) = value
                     .split_once('/')
                     .ok_or((INVALID_PARAMS, format!("unknown model {value}")))?;
-                let model = resolve_model(provider, model_id)
-                    .ok_or((INVALID_PARAMS, format!("unknown model {value}")))?;
+                let model =
+                    select_model(provider, model_id).map_err(|error| (INVALID_PARAMS, error))?;
                 handle.session.set_model(model);
             }
             "thought_level" => {

@@ -92,6 +92,8 @@ impl Home {
             .args(args)
             .env_remove("HTTPS_PROXY")
             .env_remove("HTTP_PROXY")
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
             .env_remove("LOCALGW_API_KEY")
             .envs(env.iter().copied())
             .current_dir(self.dir.join("project"))
@@ -186,10 +188,182 @@ fn a_provider_without_models_discovers_them_on_first_use() -> TestResult {
     assert_eq!(requests.len(), 2, "{requests:?}");
     let discovery = requests.first().ok_or("no discovery request")?;
     assert!(discovery.starts_with("GET /v1/models "), "{discovery}");
+    assert!(
+        discovery
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("authorization: Bearer sk-placeholder")),
+        "{discovery}"
+    );
     let completion = requests.get(1).ok_or("no completion request")?;
     let body: Value = serde_json::from_str(completion.rsplit("\r\n").next().unwrap_or_default())?;
     assert_eq!(body["model"], "m2");
     assert_eq!(body["max_tokens"], 16000);
+    let row = providers_row(&home, &[("YI_KERNEL_PYTHON", "/nonexistent/python3")])?;
+    assert_eq!(row["status"], "ok", "{row}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("1 dynamic models"), "{row}");
+    Ok(())
+}
+
+#[test]
+fn a_down_models_endpoint_is_named_instead_of_an_unknown_model() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let _ = read_request(&mut reader);
+            let answer = reply("500 Internal Server Error", "application/json", "{}");
+            let _ = reader.get_mut().write_all(answer.as_bytes());
+        }
+    });
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-down", &providers)?;
+    let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+    assert_ne!(ask.status.code(), Some(0));
+    let err = text(&ask);
+    assert!(err.contains("/v1/models"), "{err}");
+    assert!(!err.contains("unknown model"), "{err}");
+    let row = providers_row(&home, &[("YI_KERNEL_PYTHON", "/nonexistent/python3")])?;
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("/v1/models"), "{row}");
+    assert_ne!(row["status"], "ok", "{row}");
+    Ok(())
+}
+
+#[test]
+fn a_model_list_includes_a_discovered_model() -> TestResult {
+    let (port, seen) = fake_gateway()?;
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-list", &providers)?;
+    let mut child = yi_command(&home.dir.join("home"))
+        .args(["rpc", "--model", "faux/faux-1"])
+        .env_remove("HTTPS_PROXY")
+        .env_remove("HTTP_PROXY")
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    stdin.write_all(b"{\"id\":\"m\",\"type\":\"get_available_models\"}\n")?;
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    let frames = String::from_utf8_lossy(&output.stdout);
+    let frame = frames
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|frame| frame["id"] == "m")
+        .ok_or_else(|| format!("no models frame: {frames}"))?;
+    let models = frame["data"]["models"].as_array().ok_or("no models")?;
+    assert!(
+        models
+            .iter()
+            .any(|model| model["provider"] == "localgw" && model["id"] == "m2"),
+        "{frame}"
+    );
+    let requests = seen.lock().map_err(|_| "fake lock")?.clone();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("GET /v1/models ")),
+        "{requests:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_model_list_without_a_data_array_is_named() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let _ = read_request(&mut reader);
+            let answer = reply("200 OK", "application/json", r#"{"models":[{"id":"m2"}]}"#);
+            let _ = reader.get_mut().write_all(answer.as_bytes());
+        }
+    });
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-shape", &providers)?;
+    let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+    assert_ne!(ask.status.code(), Some(0));
+    let err = text(&ask);
+    assert!(err.contains("no data array"), "{err}");
+    assert!(!err.contains("unknown model"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_model_list_with_no_usable_model_is_named() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let _ = read_request(&mut reader);
+            let body = r#"{"data":[{"id":"m2","context_window":0,"max_tokens":0}]}"#;
+            let _ = reader
+                .get_mut()
+                .write_all(reply("200 OK", "application/json", body).as_bytes());
+        }
+    });
+    let providers = json!({"localgw": {
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-empty", &providers)?;
+    let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+    assert_ne!(ask.status.code(), Some(0));
+    let err = text(&ask);
+    assert!(err.contains("no usable model"), "{err}");
+    assert!(!err.contains("unknown model"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_discovery_get_goes_through_https_proxy() -> TestResult {
+    let (port, seen) = fake_gateway()?;
+    let providers = json!({"localgw": {
+        "baseUrl": "http://127.0.0.1:9/v1",
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-proxy-ok", &providers)?;
+    let proxy = format!("http://127.0.0.1:{port}");
+    let ask = home.yi(
+        &["ask", "--here", "--model", "localgw/m2", "hi"],
+        &[("HTTPS_PROXY", &proxy)],
+    )?;
+    assert_eq!(ask.status.code(), Some(0), "{}", text(&ask));
+    let requests = seen.lock().map_err(|_| "fake lock")?.clone();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("/v1/models")),
+        "{requests:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_undialable_proxy_is_named_before_discovery() -> TestResult {
+    let providers = json!({"localgw": {
+        "baseUrl": "http://127.0.0.1:9/v1",
+        "apiKey": "sk-placeholder", "models": []}});
+    let home = Home::new("discover-proxy", &providers)?;
+    let ask = home.yi(
+        &["ask", "--here", "--model", "localgw/m2", "hi"],
+        &[("HTTPS_PROXY", "socks5://127.0.0.1:1")],
+    )?;
+    assert_ne!(ask.status.code(), Some(0));
+    let err = text(&ask);
+    assert!(err.contains("SOCKS proxies are not supported"), "{err}");
+    assert!(!err.contains("unknown model"), "{err}");
     Ok(())
 }
 
