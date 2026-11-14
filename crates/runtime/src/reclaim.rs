@@ -371,7 +371,9 @@ pub(crate) fn calls<M: std::borrow::Borrow<AgentMessage>>(
         })
         .collect()
 }
-
+fn reads_files(call: Option<(&str, &Args)>) -> bool {
+    matches!(call, Some(("read" | "grep", _)))
+}
 /// Every annotation on the branch, in the order the model wrote them.
 pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationRecord> + '_ {
     entries.iter().filter_map(|entry| match entry {
@@ -501,7 +503,7 @@ pub(crate) fn decide(
         let Some(AgentMessage::ToolResult { content, .. }) = messages.get(index) else {
             return false;
         };
-        let reads = matches!(calls.get(index), Some(Some(("read" | "grep", _))));
+        let reads = reads_files(calls.get(index).copied().flatten());
         if !roomy || !reads {
             return false;
         }
@@ -667,13 +669,11 @@ fn render(
     if cut.marks.is_empty() {
         return messages;
     }
-    let briefs: Vec<Option<String>> = (calls(&messages).into_iter())
-        .map(|call| call.map(|(name, args)| brief(name, args)))
+    let calls: Vec<(Option<String>, bool)> = calls(&messages)
+        .into_iter()
+        .map(|call| (call.map(brief), reads_files(call)))
         .collect();
-    let reads: Vec<bool> = (calls(&messages).into_iter())
-        .map(|call| matches!(call, Some(("read" | "grep", _))))
-        .collect();
-    for ((message, call), reads) in messages.iter_mut().zip(briefs).zip(reads) {
+    for (message, (call, reads)) in messages.iter_mut().zip(calls) {
         let Some(mark) = find(&cut.marks, message) else {
             continue;
         };
@@ -746,7 +746,7 @@ fn render(
     messages
 }
 
-pub(crate) fn brief(name: &str, args: &Args) -> String {
+pub(crate) fn brief((name, args): (&str, &Args)) -> String {
     let field = ["path", "command", "pattern", "url"]
         .iter()
         .find_map(|key| args.get(*key).and_then(serde_json::Value::as_str));
