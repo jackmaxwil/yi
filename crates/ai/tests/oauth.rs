@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{BufReader, Write};
 use std::net::TcpListener;
 use std::sync::{Mutex, OnceLock};
 
@@ -47,37 +47,14 @@ fn serve_once() -> Result<(u16, std::thread::JoinHandle<String>), Box<dyn std::e
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let handle = std::thread::spawn(move || {
-        let Ok((mut stream, _)) = listener.accept() else {
+        let Ok((stream, _)) = listener.accept() else {
             return String::new();
         };
-        let mut request = Vec::new();
-        let mut buf = [0u8; 8192];
-        while let Ok(read) = stream.read(&mut buf) {
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&buf[..read]);
-            let text = String::from_utf8_lossy(&request).into_owned();
-            let Some(end) = text.find("\r\n\r\n") else {
-                continue;
-            };
-            let Some(head) = text.get(..end) else { break };
-            let length = head
-                .to_ascii_lowercase()
-                .lines()
-                .find_map(|line| {
-                    line.strip_prefix("content-length:")?
-                        .trim()
-                        .parse::<usize>()
-                        .ok()
-                })
-                .unwrap_or(0);
-            if text.len() >= end + 4 + length {
-                break;
-            }
-        }
-        let request = String::from_utf8_lossy(&request).into_owned();
-        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n");
+        let mut reader = BufReader::new(stream);
+        let request = crate::loopback::read_request(&mut reader);
+        let _ = reader
+            .get_mut()
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n");
         request
     });
     Ok((port, handle))
@@ -318,5 +295,62 @@ fn an_oauth_credential_without_the_claude_login_sends_no_identity_line() -> Res 
         "{request}"
     );
     assert!(!request.contains("You are Claude Code"), "{request}");
+    Ok(())
+}
+
+/// An expired Claude login is refreshed before its token is handed out, so the request
+/// carries the refreshed Bearer token and not the stale one on disk.
+#[test]
+fn an_expired_claude_login_is_refreshed_before_it_is_sent() -> Res {
+    let _serial = serial();
+    let home = home("refresh")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> String {
+        let Ok((stream, _)) = listener.accept() else {
+            return String::new();
+        };
+        let mut reader = BufReader::new(stream);
+        let request = crate::loopback::read_request(&mut reader);
+        let body = json!({
+            "access_token": "fresh-tok",
+            "refresh_token": "fresh-refresh",
+            "expires_in": 3600
+        })
+        .to_string();
+        let _ = reader
+            .get_mut()
+            .write_all(crate::loopback::reply("200 OK", "application/json", &body).as_bytes());
+        request
+    });
+    write_profile(
+        &home,
+        "anthropic",
+        &json!({
+            "kind": "oauth-code",
+            "client_id": "test-client",
+            "authorize": "https://example.invalid/authorize",
+            "token": format!("http://127.0.0.1:{port}/token"),
+            "callback_port": 8765
+        }),
+    )?;
+    Store::user().save(
+        "anthropic",
+        &Credential {
+            kind: Kind::Oauth,
+            access: "stale-tok".to_owned(),
+            refresh: Some("old-refresh".to_owned()),
+            expires: Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+            account: None,
+            org: None,
+            extra: Default::default(),
+        },
+    )?;
+
+    let resolved = auth::resolve("anthropic").ok_or("expected the refreshed credential")?;
+    assert_eq!(resolved.secret.expose(), "fresh-tok");
+    assert_eq!(resolved.kind, AuthKind::Oauth);
+    let request = server.join().map_err(|_| "server thread")?;
+    assert!(request.contains("old-refresh"), "{request}");
     Ok(())
 }
