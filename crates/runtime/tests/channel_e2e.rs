@@ -297,6 +297,73 @@ fn a_message_on_an_open_threads_todo_joins_it_and_a_new_thread_opens_its_own() -
     Ok(())
 }
 
+#[test]
+fn an_unthreaded_group_does_not_hold_a_threaded_groups_delivery_and_a_joined_thread_wake_names_the_todo_and_its_follow_up_input()
+-> TestResult {
+    let dir = Scratch::new("yi-channel-mixed-thread")?;
+    let channel = Channel::at(dir.join("ci.jsonl"));
+    channel.open("channel://ci", None)?;
+    let job = subscription(&channel, "sub-ci", None)?;
+    let todos = TodoStore::new(Arc::new(|| None), "main");
+    let threaded =
+        |body: &str| serde_json::json!({"thread": "pr-7", "actor": "alice", "body": body});
+    channel.append("thread-open", 1, threaded("first"))?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+    let Some(thread_todo) = todos
+        .list()
+        .items()
+        .next()
+        .map(|item| item.label.to_string())
+    else {
+        return Err("initial threaded message made no todo".into());
+    };
+    channel.append("unthreaded-open", 2, serde_json::json!({"body": "first"}))?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+
+    channel.append("unthreaded-held", 3, serde_json::json!({"body": "second"}))?;
+    channel.append("thread-follow", 4, threaded("second"))?;
+    let fired = clock::fire(&todos, &job, &Firing::at(0))?;
+    let Fired::Delivered(inner, _) = &fired else {
+        return Err(format!("the threaded message was held: {fired:?}").into());
+    };
+    let Fired::Followed(created, joined) = inner.as_ref() else {
+        return Err(format!("the threaded message did not join: {inner:?}").into());
+    };
+    assert!(
+        created.is_empty(),
+        "a known thread opened another todo: {created:?}"
+    );
+    assert_eq!(joined, &vec![thread_todo.clone()]);
+    assert_eq!(
+        stamped(&todos),
+        vec![
+            vec!["thread-open".to_owned(), "thread-follow".to_owned()],
+            vec!["unthreaded-open".to_owned()],
+        ],
+        "the held unthreaded message was delivered or the threaded message was not joined"
+    );
+    assert_eq!(
+        channel.meta()?.acks.get("sub-ci"),
+        Some(&2),
+        "the held unthreaded message was acknowledged"
+    );
+
+    let Some(AgentMessage::Custom {
+        content: UserContent::Text(wake),
+        ..
+    }) = clock::wake_message(&job, &fired, 0)
+    else {
+        return Err("a joined thread delivery made no heartbeat message".into());
+    };
+    assert!(
+        wake.contains(&thread_todo)
+            && wake.contains("follow up the open thread todo(s)")
+            && wake.contains("new input to that work"),
+        "the heartbeat does not identify follow-up input for its todo: {wake}"
+    );
+    Ok(())
+}
+
 /// The trust gate runs before any model: a filter naming who may start work admits each of
 /// them, and a stranger's message creates nothing.
 #[test]

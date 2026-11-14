@@ -422,13 +422,16 @@ pub(crate) fn fire_with_hooks(
             batch.push(entry);
         }
     }
-    let fired = if batch.is_empty() {
-        Fired::Idle
+    let (fired, acknowledge) = if batch.is_empty() {
+        (Fired::Idle, true)
     } else {
         match &job.unblocks {
-            Some(label) => unblock(todos, job, label, (&sub.address, &sub.path), &batch)?,
+            Some(label) => (
+                unblock(todos, job, label, (&sub.address, &sub.path), &batch)?,
+                true,
+            ),
             None => match create(todos, job, sub, &batch)? {
-                Some(fired) => fired,
+                Some(delivery) => delivery,
                 None => {
                     return Ok(Fired::Held(
                         "an earlier delivery's todo is still open".to_owned(),
@@ -437,7 +440,7 @@ pub(crate) fn fire_with_hooks(
             },
         }
     };
-    if scanned > acked {
+    if acknowledge && scanned > acked {
         channel.ack(&job.id, scanned)?;
     }
     Ok(fired)
@@ -463,28 +466,29 @@ fn unblock(
     }
 }
 
-/// `None` is an overlap hold on unthreaded messages; a threaded one joins or opens its thread's todo.
+/// `None` is an overlap hold when no threaded message can deliver.
 fn create(
     todos: &TodoStore,
     job: &Job,
     sub: &ChannelSub,
     batch: &[ChannelEntry],
-) -> Result<Option<Fired>, String> {
+) -> Result<Option<(Fired, bool)>, String> {
     let list = todos.list();
     let mine: Vec<(&Todo, ChannelStamp)> = list
         .items()
         .filter_map(|item| Some((item, stamp(item)?)))
         .filter(|(_, stamp)| stamp.job == job.id)
         .collect();
-    let delivered: HashSet<&String> = mine.iter().flat_map(|(_, stamp)| &stamp.ids).collect();
+    let delivered_ids: HashSet<&String> = mine.iter().flat_map(|(_, stamp)| &stamp.ids).collect();
     let fresh: Vec<ChannelEntry> = batch
         .iter()
-        .filter(|entry| !delivered.contains(&entry.id))
+        .filter(|entry| !delivered_ids.contains(&entry.id))
         .cloned()
         .collect();
     if fresh.is_empty() {
-        return Ok(Some(Fired::Held(
-            "every message was delivered before".to_owned(),
+        return Ok(Some((
+            Fired::Held("every message was delivered before".to_owned()),
+            true,
         )));
     }
     // A mailbox makes one todo per letter; any other channel one per thread, plus one unthreaded.
@@ -505,13 +509,16 @@ fn create(
         .map(|(item, stamp)| (thread(stamp.extra.get(THREAD_KEY)), &item.label))
         .collect();
     let unthreaded = open.iter().filter(|(key, _)| key.is_none()).count();
-    if groups.iter().any(|(key, _)| key.is_none()) && clock::overlap_room(job, unthreaded).is_err()
-    {
-        return Ok(None);
-    }
+    let hold_unthreaded = groups.iter().any(|(key, _)| key.is_none())
+        && clock::overlap_room(job, unthreaded).is_err();
     let mut items: Vec<Todo> = Vec::new();
     let mut joined: Vec<(TodoLabel, Vec<String>)> = Vec::new();
+    let mut delivered = Vec::new();
     for (key, group) in &groups {
+        if hold_unthreaded && key.is_none() {
+            continue;
+        }
+        delivered.extend(group.iter().cloned());
         let ids: Vec<String> = group.iter().map(|entry| entry.id.clone()).collect();
         let owner = open
             .iter()
@@ -586,9 +593,12 @@ fn create(
         true => Fired::Created(ids),
         false => Fired::Followed(ids, followed),
     };
-    Ok(Some(Fired::Delivered(
-        Box::new(fired),
-        render(&sub.address, &sub.path, &fresh),
+    if delivered.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((
+        Fired::Delivered(Box::new(fired), render(&sub.address, &sub.path, &delivered)),
+        !hold_unthreaded,
     )))
 }
 
