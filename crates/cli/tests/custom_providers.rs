@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::loopback::{read_request, reply};
 use crate::plan_ops::streams as text;
+use crate::rpc::run_rpc;
 use crate::scratch::Scratch;
 use crate::yi_bin::yi_command;
 
@@ -239,32 +240,22 @@ fn a_down_models_endpoint_is_named_instead_of_an_unknown_model() -> TestResult {
     Ok(())
 }
 
-/// The models `yi rpc` reports for `home`, read off its `get_available_models` frame.
+/// The models `yi rpc` reports for `home`, read off its `get_available_models` response.
 fn available_models(home: &Home) -> Result<Vec<Value>, Box<dyn Error>> {
-    let mut child = yi_command(&home.dir.join("home"))
-        .args(["rpc", "--model", "faux/faux-1"])
-        .env_remove("HTTPS_PROXY")
-        .env_remove("HTTP_PROXY")
-        .env_remove("NO_PROXY")
-        .env_remove("no_proxy")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    let mut stdin = child.stdin.take().ok_or("no stdin")?;
-    stdin.write_all(b"{\"id\":\"m\",\"type\":\"get_available_models\"}\n")?;
-    drop(stdin);
-    let output = child.wait_with_output()?;
-    let frames = String::from_utf8_lossy(&output.stdout);
-    let frame = frames
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|frame| frame["id"] == "m")
-        .ok_or_else(|| format!("no models frame: {frames}"))?;
-    Ok(frame["data"]["models"]
+    let frames = run_rpc(
+        &home.dir,
+        &[json!({"id": "m", "type": "get_available_models"})],
+    )?;
+    let frame = (frames.iter())
+        .find(|frame| frame["type"] == "response" && frame["id"] == "m")
+        .ok_or_else(|| format!("no models response: {frames:?}"))?;
+    if frame["success"] != true {
+        return Err(format!("get_available_models refused: {frame}").into());
+    }
+    let models = frame["data"]["models"]
         .as_array()
-        .cloned()
-        .unwrap_or_default())
+        .ok_or_else(|| format!("no data.models array: {frame}"))?;
+    Ok(models.clone())
 }
 
 /// The discovered `m2` a `limit` object alone describes, listed with both of its caps.
