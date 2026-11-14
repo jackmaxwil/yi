@@ -3,7 +3,7 @@
 Status: proposal for owner sign-off under the TUI visual approach gate (.ruler/085-tui.md).
 Nothing here is built. Owner brief: subagents "look really ugly now".
 
-Mocks are monospace sketches at exactly 80 and 120 columns, each row checked to fit. Colours are named in prose
+Mocks are monospace sketches at 80 columns, each row checked to fit, and Option 1 also at 120 where its tails run longer. Options 2 and 3 keep the same rows at 120 and only the tail widens, so they are drawn at 80. Colours are named in prose
 because a text mock cannot carry them. Durations, names and token counts are illustrative.
 Line counts are my estimates from reading the files, not measurements. I read the code and
 did not run the binary or capture frames, so what follows describes the code, not a screenshot.
@@ -122,6 +122,10 @@ Current card at 80 columns, running, done, failed:
 ── subagent review-auth (3f9a1c2b) · reviewer · check the refresh path ─────────
 ```
 
+## Shared state vocabulary
+
+All three options draw states with the existing `StatusMark` table in crates/types/src/status_mark.rs, unchanged, as settled in docs/solutions/adr/d336.md: working `◐`, needs you `?`, stuck `!`, done `○` (`●` while unseen), failed `✕`. Each option removes the card's `◇ ◈ ◆ ◈` pulse and `↳`, so a child is the same glyph in the card, roster, sidebar and rail. The activity word (`waiting`, `writing`, `executing`) stays as text beside the glyph. The roster needs the flag change in agents.rs (Option 1 lists it), and Options 2 and 3 need it too.
+
 ## Option 1: Ledger
 
 Drop the boxes. Every child is one row in a compact table: glyph, name, state word, elapsed, calls, tokens, then the one thing worth saying (the live tool, the question, the error or the first answer line). Columns align across children, so the eye reads down a column instead of parsing five separators per box. A running child that has more to say (a question, a long answer) does not grow its row. The detail is behind `alt-↓`, which already opens the child.
@@ -200,9 +204,9 @@ Many children (30 spawned):
 
 ### State vocabulary and glyphs
 
-One vocabulary on every surface: the existing `StatusMark` table in crates/types/src/status_mark.rs, unchanged. Working `◐`, needs you `?`, stuck `!`, done `○` (`●` while unseen), failed `✕`. The card's `◇ ◈ ◆ ◈` pulse and `↳` go away, so a child is the same glyph in the card, roster, sidebar and rail. The activity word (`waiting`, `writing`, `executing`) stays as text beside the glyph.
+States and glyphs: the shared section above.
 
-Row grammar: `{glyph} {name} {state} {elapsed} {N} calls {tokens}  {tail}`. Tail by state: running shows `⚙ {tool}`, needs you shows the child's note, stuck shows the note, done shows the first answer line, failed shows the first error line. The 8-hex hash is not shown (it stays in `alt-↓` and the roster).
+Row grammar: `{glyph} {name} {state} {elapsed} {N} calls {tokens}  {tail}`. Tail by state: running shows `⚙ {tool}`, needs you shows the child's note, stuck shows the note, done shows the first answer line and a cut row `… +N lines · alt-↓ opens` when the answer runs longer, failed shows the first error line. Live rows do not show the 8-hex hash, which stays in `alt-↓` and the roster. The committed row shows it as a dim tail (see Scrollback).
 
 ### Colour and accent
 
@@ -214,14 +218,14 @@ Name is drawn in the child's hash accent (`name_accent`, the same colour the ros
 
 ### Scrollback
 
-Rows stay in the live region while the child runs. When a child ends, its row is committed once, as a single line in its final state (done or failed), at the point in the transcript where it finished. No start rule and no end rule: the committed row carries name, outcome, elapsed, tokens, cost and the first answer line, which is what the end rule carries today minus the repeated id. The 16 KiB answer cap and its `[…]` notice move to the detail view, where the full answer is read.
+Rows stay in the live region while the child runs. When a child ends, its row is committed once, as a single line in its final state (done or failed), at the point in the transcript where it finished. No start rule and no end rule: the committed row carries name, outcome, elapsed, tokens, cost, the first answer line or first error line, and a dim tail with the child's role, task and id, so scrollback still says what the child was for and can be searched by id. The 16 KiB answer cap and its `[…]` notice move to the detail view, where the full answer is read.
 
 ### Code changes
 
 - `crates/tui/src/cell.rs`: replace the `boxed` use in `TaskCell::lines_at` with a one-row renderer and a small column-width helper (name width = longest live name, capped). About -90 / +110 lines. `humanize` stops splitting the hash.
 - `crates/tui/src/app/children.rs`: drop the start `Cell::Rule` and fold `end_rule` into the committed row. About -45 / +25. `ChildRow` loses `start`, `start_committed` and most of `deferred`/`born_under` if ordering no longer needs a start anchor (needs a read of the ordering code, which I did not do).
 - Live-region ordering and the row cap (rank, pin, `+N` row): about +70.
-- `crates/tui/src/agents.rs`, `crates/console/src/sidebar.rs`: no change needed for correctness. Optional: the sidebar's `+N more` row gains the state counts, about +15.
+- `crates/tui/src/agents.rs`: needed. Its row state is a three-valued enum, so the row carries the child's flag and needs-you and stuck draw `?` and `!` through `StatusMark`. About +20. `crates/console/src/sidebar.rs`: no change needed for correctness. Optional: the sidebar's `+N more` row gains the state counts, about +15.
 - Tests: card rendering tests in crates/tui/tests/cards.rs are rewritten (7 hits for `TaskCell` there), plus one cap test that trips `LEDGER_ROWS` and reads the notice.
 
 Estimate: net about +60 to +120 lines of src, test churn larger than src. This is my estimate from reading, not a measurement.
@@ -232,6 +236,7 @@ Estimate: net about +60 to +120 lines of src, test churn larger than src. This i
 - Fixed columns waste space at 120 columns and squeeze the tail at 80. The mock at 80 already cuts the done tail at the width, with `…`.
 - Aligned columns need the longest live name, so one long name moves everyone's columns. A cap on name width fixes it.
 - An in-flight needs-you question may need more than one row. It is the one case where the ledger can break its one-row rule, and I would rather show the question in the tail and open the child than grow the row.
+- The start rule's `{role} · {task}` moves into the committed row's dim tail, so a long task is cut there. The `[…]` cap notice leaves scrollback: the done row keeps its `… +N lines` cut row, and the notice itself is in the detail view.
 
 
 ## Option 2: Gutter card
@@ -287,56 +292,11 @@ Many children (30 spawned):
   ▎ +22 more: ◐ 7  ○ 15   alt-↓ roster
 ```
 
-**120 columns**
-
-Running (2 working, 1 needs you):
-
-```text
-  ▎ review-auth ◐ writing 42s · 7 calls · 12k
-  ▎ ⚙ grep · …the lock is taken, so two requests can race on the same file
-  ▎ migrate-db ◐ executing 1m05 · 12 calls · 31k
-  ▎ ⚙ cargo test -p yi-db · running 14 tests
-  ▎ fix-lockfile ? needs you 9s · 2 calls
-  ▎ asks: keep the old lock?
-  ▎ focus it (alt-↓) and type your answer
-```
-
-Done:
-
-```text
-  ▎ review-auth ○ done 1m12 · 9 calls · 14k · $0.02
-  ▎ The refresh path reads the token before the lock is taken, so two requests can race on the same file and the first
-  ▎  caller keeps a stale token.
-  ▎ … +9 lines · alt-↓ opens
-```
-
-Failed:
-
-```text
-  ▎ fix-lockfile ✕ failed 9s · 2 calls
-  ▎ cargo update: failed to fetch index: network unreachable
-```
-
-Many children (30 spawned):
-
-```text
-  ▎ fix-lockfile ? needs you 9s
-  ▎ asks: keep the old lock?
-  ▎ probe-ci ! stuck 4m10
-  ▎ no output for 3m, last ⚙ gh run watch
-  ▎ scan-deps ✕ failed 2m02
-  ▎ cargo update: failed to fetch index
-  ▎ review-auth ◐ writing 42s · ⚙ grep
-  ▎ migrate-db ◐ executing 1m05 · ⚙ cargo test
-  ▎ lint-docs     ◐
-  ▎ port-tests    ◐
-  ▎ bench-io      ◐
-  ▎ +22 more: ◐ 7  ○ 15   alt-↓ roster
-```
+**120 columns**: the same rows, with the answer tail given more width. The 80-column mock stands for both widths.
 
 ### State vocabulary and glyphs
 
-One vocabulary on every surface: the existing `StatusMark` table in crates/types/src/status_mark.rs, unchanged. Working `◐`, needs you `?`, stuck `!`, done `○` (`●` while unseen), failed `✕`. The card's `◇ ◈ ◆ ◈` pulse and `↳` go away, so a child is the same glyph in the card, roster, sidebar and rail. The activity word (`waiting`, `writing`, `executing`) stays as text beside the glyph.
+States and glyphs: the shared section above. Title grammar is below.
 
 Title grammar: `▎ {name} {glyph} {state} {elapsed} · {N} calls · {tokens}`. Body rows by state: running, the live tool plus the last answer row; needs you, the note and the hint; failed, the error; done, up to 2 answer rows plus `… +N lines · alt-↓ opens`.
 
@@ -412,45 +372,11 @@ Many children (30 spawned):
   ✕ ZB scan-deps     cargo update: failed to fetch index
 ```
 
-**120 columns**
-
-Running (2 working, 1 needs you):
-
-```text
-  subagents  ◐ 2  ? 1   32k tok · 1m05
-  RE◐ review-auth   writing    ⚙ grep
-  MI◐ migrate-db    executing  ⚙ cargo test -p yi-db
-  FI? fix-lockfile  asks: keep the old lock? alt-↓ to answer
-```
-
-Done:
-
-```text
-  subagents  ○ 1   14k tok · $0.02 · 1m12
-  RE○ review-auth   done 1m12 · 9 calls · alt-↓ opens
-```
-
-Failed:
-
-```text
-  subagents  ✕ 1   3k tok · 9s
-  FI✕ fix-lockfile  cargo update: failed to fetch index: network unreachable
-```
-
-Many children (30 spawned):
-
-```text
-  subagents  ◐ 12  ? 1  ! 1  ○ 15  ✕ 1   411k tok · $3.10 · 4m10
-  RE◐ MI◐ SC◐ LI◐ PO◐ BE◐ GE◐ SY◐ RB◐ MB◐ TB◐ DB◐ FI? PR! ZB✕
-  PB○ BB○ DD○ GB○ RC○ MC○ TC○ AC○ CC○ DC○ EC○ HC○ IC○ JC○ KC○
-  ? FI fix-lockfile  asks: keep the old lock? alt-↓ to answer
-  ! PR probe-ci      stuck 4m10: no output for 3m
-  ✕ ZB scan-deps     cargo update: failed to fetch index
-```
+**120 columns**: the same rows, with the answer tail given more width. The 80-column mock stands for both widths.
 
 ### State vocabulary and glyphs
 
-One vocabulary on every surface: the existing `StatusMark` table in crates/types/src/status_mark.rs, unchanged. Working `◐`, needs you `?`, stuck `!`, done `○` (`●` while unseen), failed `✕`. The card's `◇ ◈ ◆ ◈` pulse and `↳` go away, so a child is the same glyph in the card, roster, sidebar and rail. The activity word (`waiting`, `writing`, `executing`) stays as text beside the glyph.
+States and glyphs: the shared section above. The header and tile grammar stay as written here.
 
 Header: counts per `StatusMark`, then total tokens, cost and the longest elapsed. Tile: `{two letters}{glyph}`. Attention row: `{glyph} {name} {note or error}`, shown for needs-you, stuck and failed only, so the user sees what needs them and nothing else.
 
@@ -460,7 +386,7 @@ A tile letter pair is in the child's hash accent and the glyph next to it takes 
 
 ### Scaling from 1 to 30 children
 
-1 child: header plus one tile, or one ledger-style row (below a threshold of 3, show rows instead of tiles). 8 children: header plus one tile row. 30 children: header plus 2 tile rows at 80 columns (about 19 tiles a row at 4 cells each) or 1 to 2 at 120. The height is bounded by the attention rows plus ceil(N / tiles per row), so growth is sublinear. Attention rows cap at a named constant with a `[…]` row. Tile collisions (two children named `review-auth` and `report-card`) are real: disambiguate with a third character or the existing `accent_index` colour, and the mock keeps pairs distinct by hand, which the real packer would have to do.
+1 child: header plus one tile, or one ledger-style row (below a threshold of 3, show rows instead of tiles). 8 children: header plus one tile row. 30 children: header plus 2 tile rows at 80 columns (about 19 tiles a row at 4 cells each, drawn with 15 a row for room) or one row at 120 (about 29 a row). The height is bounded by the attention rows plus ceil(N / tiles per row), so growth is sublinear. Attention rows cap at a named constant with a `[…]` row. Tile collisions (two children named `review-auth` and `report-card`) are real: disambiguate with a third character or the existing `accent_index` colour, and the mock keeps pairs distinct by hand, which the real packer would have to do.
 
 ### Scrollback
 
@@ -500,5 +426,6 @@ Assumptions I made, none checked with the owner: that the owner wants less heigh
 1. Is one answer line in scrollback enough for a finished child, or should three rows stay?
 2. Ledger columns (Option 1) or title-and-body rows with a gutter (Option 2)?
 3. Should the console sidebar and the orb carry state counts now, or follow later?
+4. Keep the committed row's dim tails (role, task and id), or drop them?
 
 Under the visual approach gate, no code is written until this is signed off. After sign-off, the proof is `just tui-see run` before and after on a scene with 1, 3 and 30 children, plus the cell diff, per .ruler/085-tui.md. A 30-child scene does not exist yet in scripts/proof/tui_see (not checked), so it would be added first.
