@@ -16,7 +16,7 @@ enum Outcome {
 }
 
 type Slot = Arc<Mutex<Option<Outcome>>>;
-type Probe = Arc<dyn Fn(&McpRow) -> Result<Vec<McpRow>, String> + Send + Sync>;
+type Probe = fn(&McpRow) -> Result<Vec<McpRow>, String>;
 pub struct McpPage {
     home: Option<PathBuf>,
     rows: Vec<McpRow>,
@@ -25,7 +25,7 @@ pub struct McpPage {
     note: String,
     error: Option<String>,
     busy: Option<(String, Slot)>,
-    probe: Probe,
+    probe: Option<Probe>,
 }
 
 impl crate::app::App {
@@ -83,7 +83,7 @@ impl McpPage {
             note: String::new(),
             error: None,
             busy: None,
-            probe: Arc::new(mcp_page::probe),
+            probe: None,
         }
     }
 
@@ -153,7 +153,7 @@ impl McpPage {
             return;
         };
         let name = row.name.clone();
-        let probe = Arc::clone(&self.probe);
+        let probe = self.probe.unwrap_or(mcp_page::probe);
         self.spawn(format!("probing {name}"), move || match probe(&row) {
             Ok(rows) => Outcome::Rows(format!("probed {name}"), rows),
             Err(error) => Outcome::Failed(format!("probe {name}: {error}")),
@@ -380,7 +380,7 @@ mod tests {
             tools: None,
         };
         let mut page = McpPage::from_rows(None, true, vec![row]);
-        page.probe = Arc::new(|row| {
+        page.probe = Some(|row| {
             let mut row = row.clone();
             row.tools = Some(2);
             Ok(vec![row])
