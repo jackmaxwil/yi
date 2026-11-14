@@ -74,27 +74,13 @@ impl Journey {
     /// One `yi rpc` process fed every frame at once: the journey asserts on the
     /// response stream, and interleaving would make it a timing test.
     fn rpc(&self, frames: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
-        let mut child = self
-            .command(&["rpc"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()?;
-        {
-            let mut stdin = child.stdin.take().ok_or("rpc has no stdin")?;
-            for frame in frames {
-                serde_json::to_writer(&mut stdin, frame)?;
-                stdin.write_all(b"\n")?;
-            }
-        }
-        let output = child.wait_with_output()?;
-        let mut responses = Vec::new();
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let frame: Value = serde_json::from_str(line)?;
-            if frame["type"] == "response" {
-                responses.push(frame);
-            }
-        }
-        Ok(responses)
+        let sessions = self.root.join("home/sessions");
+        Ok(
+            crate::rpc::run_rpc_in(&self.root, &sessions, &self.project(), frames)?
+                .into_iter()
+                .filter(|frame| frame["type"] == "response")
+                .collect(),
+        )
     }
 }
 

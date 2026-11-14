@@ -16,6 +16,8 @@ mod prompt_slots_support;
 mod recorded_read;
 #[path = "../../types/tests/support/repo.rs"]
 mod repo;
+#[path = "support/rpc.rs"]
+mod rpc;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 #[path = "support/session_files.rs"]
