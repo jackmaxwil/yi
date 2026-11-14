@@ -309,7 +309,7 @@ pub fn matches(filter: Option<&str>, entry: &ChannelEntry) -> bool {
         .filter(|term| !term.is_empty())
         .all(|term| match term.split_once('=') {
             Some((key, wants)) => entry.data.get(key).is_some_and(|got| {
-                let any = |text: &str| text == wants || wants.split('|').any(|want| text == want);
+                let any = |text: &str| wants.split('|').any(|want| text == want);
                 match got.as_str() {
                     Some(text) => any(text),
                     None => any(&serde_json::to_string(got).unwrap_or_default()),
