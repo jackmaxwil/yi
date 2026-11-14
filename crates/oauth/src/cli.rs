@@ -26,12 +26,16 @@ fn usage() -> i32 {
     );
     eprintln!("       yi logout [provider]");
     eprintln!(
-        "profiles: ~/.yi/oauth/<provider>.json (yi ships none; see docs/examples/oauth-profile.json and oauth-device-profile.json)"
+        "profiles: ~/.yi/oauth/<provider>.json (built in: cursor, openai-codex, claude; see docs/examples/oauth-profile.json and oauth-device-profile.json)"
     );
     eprintln!("examples: yi login --list");
     eprintln!("          yi login openai            # paste the key at the prompt");
     eprintln!(
         "          yi login openai < ~/.key   # or pipe it: a --key value shows in ps and shell history"
+    );
+    eprintln!("          yi login openai-codex      # ChatGPT Plus/Pro subscription");
+    eprintln!(
+        "          yi login claude            # Claude Pro/Max subscription, stored as anthropic"
     );
     eprintln!("          yi login <provider-with-a-profile> --no-browser");
     2
@@ -44,10 +48,19 @@ fn print_list() -> i32 {
     0
 }
 
+fn lookup_kind(provider: &str, claude: bool) -> crate::Result<Option<registry::Kind>> {
+    if claude {
+        registry::claude().map(Some)
+    } else {
+        registry::lookup(provider)
+    }
+}
+
 fn login(args: &[String]) -> i32 {
     let mut no_browser = false;
     let mut list = false;
     let mut provider = None;
+    let mut claude = false;
     let mut key = None;
     let mut refresh = None;
     let mut rest = args.iter();
@@ -79,6 +92,11 @@ fn login(args: &[String]) -> i32 {
                     return 2;
                 }
             }
+            "codex" => provider = Some(crate::codex::CODEX_ID.to_owned()),
+            crate::claude::CLAUDE_ID => {
+                claude = true;
+                provider = Some(crate::claude::ANTHROPIC_ID.to_owned());
+            }
             other => provider = Some(other.to_owned()),
         }
     }
@@ -88,7 +106,7 @@ fn login(args: &[String]) -> i32 {
     let Some(provider) = provider else {
         return usage();
     };
-    let kind = match registry::lookup(&provider) {
+    let kind = match lookup_kind(&provider, claude) {
         Ok(Some(kind)) => kind,
         Ok(None) => {
             eprintln!(
@@ -150,10 +168,12 @@ fn login(args: &[String]) -> i32 {
     let result = match kind {
         registry::Kind::Cursor => crate::cursor::login_ureq(no_browser, proxy.as_ref()),
         registry::Kind::OauthCode(spec) => {
-            eprintln!(
-                "warning: {provider} logs in with a profile you supplied ({}). Yi ships no client id or wire identity: whatever that file carries is sent as-is, and a provider's terms may forbid it. API keys remain the supported path.",
-                registry::profile_path(&provider).display()
-            );
+            if registry::profile_path(&provider).exists() {
+                eprintln!(
+                    "warning: {provider} logs in with a profile you supplied ({}). Yi ships no client id or wire identity: whatever that file carries is sent as-is, and a provider's terms may forbid it. API keys remain the supported path.",
+                    registry::profile_path(&provider).display()
+                );
+            }
             flow::login_oauth(&spec, &LoginOptions { no_browser }, proxy.as_ref())
         }
         registry::Kind::ApiKey => {

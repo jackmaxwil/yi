@@ -443,6 +443,7 @@ impl ProviderStream {
                     proxy: self.proxy.clone(),
                     stop: Some(signal.cut_flag()),
                     oauth,
+                    claude_code: oauth && model.provider == "anthropic",
                     extra_headers: credential.headers.clone(),
                     ..AnthropicOptions::default()
                 };

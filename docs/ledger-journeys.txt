@@ -769,6 +769,13 @@ TUI | `tui_drive::queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highl
 TUI | `result_paint::read_from_the_middle_of_a_file_is_coloured` (T0)
 TUI | `result_paint::shell_colour_codes_render_as_colour` (T0)
 console notebook pane | `notebook_text::notebook_text_colours_codes_json_and_paths` (T0)
+openai-codex login | `codex_login::the_login_opens_the_codex_authorize_url_and_exchanges_the_code`
+openai-codex login | `codex_login::a_refresh_keeps_the_account_id_the_response_does_not_repeat`
+openai-codex login | `codex_login::the_codex_login_is_built_in_and_a_user_profile_file_wins`
+claude login | `claude_login::a_pasted_code_is_exchanged_as_a_json_body_with_state_and_verifier`
+claude login | `claude_login::a_pasted_state_that_is_not_ours_is_refused_before_any_request`
+claude login | `claude_login::claude_is_built_in_until_a_profile_file_exists_and_anthropic_stays_a_key`
+claude login | `oauth::the_claude_login_sends_the_beta_header_and_the_identity_line`
 TUI | `composer_box::a_pasted_image_rides_the_submission_that_names_it` (T0)
 channels: buffer, subscriptions, adapters | `channel_e2e::a_message_on_an_open_threads_todo_joins_it_and_a_new_thread_opens_its_own`
 channels: buffer, subscriptions, adapters | `channel_e2e::a_filter_with_alternatives_admits_each_listed_actor_and_no_other`

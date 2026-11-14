@@ -112,7 +112,8 @@ fn load_valid(
     provider: &str,
 ) -> Option<(yi_oauth::store::Credential, Option<registry::Kind>)> {
     let current = store.load(provider)?;
-    Some((current, registry::lookup(provider).ok()?))
+    let kind = registry::refresh_kind(provider, current.kind == Kind::Oauth).ok()?;
+    Some((current, kind))
 }
 
 /// A stored OAuth credential is refreshed before it is handed out, through the
