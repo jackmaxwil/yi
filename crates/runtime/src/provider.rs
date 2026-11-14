@@ -17,8 +17,8 @@ use yi_types::model::{Effort, LlmContext, Model};
 #[path = "discover.rs"]
 mod discover;
 pub use discover::{
-    available_models, dynamic_model_count, listed_models, proxy_from_env, resolve_model,
-    select_model,
+    available_models, dynamic_model_count, listed_models, pickable_models, proxy_from_env,
+    resolve_model, select_model,
 };
 
 pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {

@@ -358,7 +358,7 @@ pub fn model_or_stub(provider: &str, id: &str) -> Model {
 impl App {
     pub(crate) fn open_model_picker(&mut self) {
         self.bottom = Some(Bottom::Model(Box::new(ModelPopup::new(
-            yi_runtime::available_models(),
+            yi_runtime::pickable_models(&self.selection.model),
             &self.selection.model,
             self.selection.effort,
             &self.selection.mru,

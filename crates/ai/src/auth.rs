@@ -148,6 +148,10 @@ pub fn resolve(provider: &str) -> Option<Resolved> {
     resolve_with_proxy(provider, None)
 }
 
+pub fn has_credential(provider: &str) -> bool {
+    env_key(provider).is_some() || Store::open(Store::default_root()).load(provider).is_some()
+}
+
 pub fn resolve_with_proxy(
     provider: &str,
     proxy: Option<&crate::request::ProxyConfig>,

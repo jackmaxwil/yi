@@ -65,7 +65,8 @@ impl Workspace {
     ) -> Result<Vec<Value>, Box<dyn Error>> {
         use std::io::Write;
         use std::process::Stdio;
-        let mut child = yi_command(&self.0.join("home"))
+        let mut command = yi_command(&self.0.join("home"));
+        command
             .arg("acp")
             .args(args)
             .arg("--session-dir")
@@ -75,8 +76,11 @@ impl Workspace {
             .current_dir(self.project())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+        for (_, key) in yi_types::PROVIDER_KEY_VARS {
+            command.env_remove(key);
+        }
+        let mut child = command.spawn()?;
         {
             let mut stdin = child.stdin.take().ok_or("acp has no stdin")?;
             for frame in frames {

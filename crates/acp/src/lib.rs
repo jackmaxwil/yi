@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 use yi_runtime::session_store::{
     CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
-use yi_runtime::{AgentSession, Asker, SubagentHost, available_models, select_model};
+use yi_runtime::{AgentSession, Asker, SubagentHost, pickable_models, select_model};
 use yi_types::acp::{
     AcpConfigChoice, AcpConfigKind, AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame,
     AcpImplementation, AcpInitializeResult, AcpMeta, AcpResponse, AcpSessionResult,
@@ -150,7 +150,7 @@ fn options_for(
     mode: &str,
 ) -> Vec<AcpConfigOption> {
     let choice = |value: String, name: String| AcpConfigChoice { value, name };
-    let models = available_models()
+    let models = pickable_models(model)
         .iter()
         .map(|candidate| {
             let value = format!("{}/{}", candidate.provider, candidate.id);
