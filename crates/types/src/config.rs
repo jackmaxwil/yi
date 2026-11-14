@@ -213,7 +213,7 @@ pub struct DiscoveredCustomModel {
 
 /// A model list's `limit` object. A field it does not carry is absent; a shape that is not this
 /// one costs the two limits downstream, never the model that carries it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct DiscoveredCustomLimit {
     pub context: Option<u64>,
     pub output: Option<u64>,
