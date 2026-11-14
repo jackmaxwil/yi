@@ -166,13 +166,14 @@ fn lift(buffer: &mut Buffer, rect: Rect, theme: &Theme) {
         if let Some(cell) = buffer.cell_mut(at) {
             if cell.modifier.contains(Modifier::REVERSED) {
                 cell.fg = crate::chrome::lighten(cell.fg);
+            } else if cell.bg == theme.selection_bg() {
+                cell.bg = crate::chrome::lighten(cell.bg);
             } else {
                 cell.bg = theme.selection_bg();
             }
         }
     }
 }
-
 pub struct ViewState {
     pub sidebar: Rect,
     pub editor_cursor: Option<(u16, u16)>,
@@ -834,7 +835,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         down: bool,
         left: bool,
         right: bool,
-        hue: Option<Color>,
     }
     let mut raster: HashMap<(u16, u16), EdgeCell> = HashMap::new();
     if let Some(x) = view.rail_edge {
@@ -858,7 +858,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                 let cell = raster.entry((x, y)).or_default();
                 cell.left |= left_arm;
                 cell.right |= right_arm;
-                cell.hue = cell.hue.or(pane.focused.then_some(pane.hue));
             }
         }
         for y in r.y..=bottom {
@@ -868,7 +867,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                 let cell = raster.entry((x, y)).or_default();
                 cell.up |= up_arm;
                 cell.down |= down_arm;
-                cell.hue = cell.hue.or(pane.focused.then_some(pane.hue));
             }
         }
     }
@@ -877,10 +875,7 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         let symbol = glyph(cell.up, cell.down, cell.left, cell.right);
         if let Some(target) = buffer.cell_mut((*x, *y)) {
             target.set_symbol(symbol);
-            target.set_style(
-                cell.hue
-                    .map_or_else(|| theme.dim_style(), |hue| Style::default().fg(hue)),
-            );
+            target.set_style(theme.dim_style());
         }
     }
     let closable = app

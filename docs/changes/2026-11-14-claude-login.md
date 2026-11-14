@@ -5,7 +5,7 @@ cut: none crates/oauth/src/flow.rs
 shares: #2205 adds the Claude OAuth headers beside its credential check in crates/ai/src/auth.rs, no overlapping lines
 shares: #2234 adds the Claude OAuth headers in crates/ai/src/auth.rs, away from its relay level code
 shares: #2235 edits the OAuth profile section of docs/YI_DESIGN.md, not its channel section
-raise: crate ai +7, crate oauth +170, tests +491, over-cap +1, comments +11
+raise: crate ai +8, crate oauth +170, tests +491, over-cap +1, comments +11
 ---
 
 `yi login claude` opens `claude.ai/oauth/authorize`, asks for the `code#state` the console page shows, and exchanges it as a JSON body at `console.anthropic.com/v1/oauth/token`. The token is stored under `anthropic` and refreshed there. A profile file at `~/.yi/oauth/anthropic.json` replaces the built-in one, and `yi login anthropic` is still the API-key path.

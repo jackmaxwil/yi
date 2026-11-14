@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 use yi_runtime::session_store::{
     CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
-use yi_runtime::{AgentSession, Asker, SubagentHost, available_models, select_model};
+use yi_runtime::{AgentSession, Asker, SubagentHost, pickable_models, select_model};
 use yi_types::acp::{
     AcpConfigChoice, AcpConfigKind, AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame,
     AcpImplementation, AcpInitializeResult, AcpMeta, AcpResponse, AcpSessionResult,
@@ -150,7 +150,7 @@ fn options_for(
     mode: &str,
 ) -> Vec<AcpConfigOption> {
     let choice = |value: String, name: String| AcpConfigChoice { value, name };
-    let models = available_models()
+    let models = pickable_models(model)
         .iter()
         .map(|candidate| {
             let value = format!("{}/{}", candidate.provider, candidate.id);
@@ -344,13 +344,13 @@ impl AcpState {
             Err(refused) => return Some(Err(refused)),
         };
         (handle.last_active).store(daemon::now_ms(), std::sync::atomic::Ordering::Relaxed);
-        let text = crate::replay::prompt_text(params);
+        let (text, images) = crate::replay::prompt_parts(params);
         crate::update::queued(&handle.prompts).push(PendingPrompt {
             text: text.clone(),
             message_id,
             request,
         });
-        let prompt = yi_runtime::session::user_input(&text);
+        let prompt = yi_types::message::AgentMessage::user_input_with_images(&text, images);
         if handle.session.prompt_message(prompt.clone()).is_err() {
             handle.session.follow_up_message(prompt);
         }
@@ -585,7 +585,9 @@ impl AcpState {
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
         match method {
             "_yi/steer" => {
-                let prompt = yi_runtime::session::user_input(text("text"));
+                let (_, images) = crate::replay::prompt_parts(params);
+                let prompt =
+                    yi_types::message::AgentMessage::user_input_with_images(text("text"), images);
                 handle.session.steer_message(prompt);
                 Ok(json!({}))
             }

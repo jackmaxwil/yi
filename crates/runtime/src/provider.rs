@@ -17,8 +17,8 @@ use yi_types::model::{Effort, LlmContext, Model};
 #[path = "discover.rs"]
 mod discover;
 pub use discover::{
-    available_models, dynamic_model_count, listed_models, proxy_from_env, resolve_model,
-    select_model,
+    available_models, dynamic_model_count, listed_models, pickable_models, proxy_from_env,
+    resolve_model, select_model,
 };
 
 pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {
@@ -232,9 +232,15 @@ impl ProviderStream {
     }
 
     pub fn has_credential(&self, provider: &str) -> bool {
+        let cached = self
+            .credentials
+            .lock()
+            .ok()
+            .is_some_and(|credentials| credentials.contains_key(provider));
         self.force_faux
             || provider == yi_ai::faux::FAUX_PROVIDER
-            || self.credential(provider).is_ok()
+            || cached
+            || yi_ai::auth::has_credential(provider)
     }
 
     /// Every request, the family's and a switched model's included, reads the faux script.

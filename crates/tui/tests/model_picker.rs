@@ -224,3 +224,61 @@ fn ctrl_c_closes_the_model_picker_and_other_ctrl_keys_are_not_typed() {
     );
     assert!(!app.bottom_open(), "the picker stays after ctrl-c");
 }
+
+#[test]
+fn model_picker_hides_uncredentialed_providers() -> Result<(), Box<dyn std::error::Error>> {
+    let providers: yi_types::config::Providers = serde_json::from_value(json!({
+        "keyed": {
+            "baseUrl": "https://keyed.invalid/v1",
+            "apiKey": "test-key",
+            "models": [{"id": "present", "contextWindow": 1, "maxTokens": 1}]
+        },
+        "unkeyed": {
+            "baseUrl": "https://unkeyed.invalid/v1",
+            "models": [{"id": "hidden", "contextWindow": 1, "maxTokens": 1}]
+        }
+    }))?;
+    yi_runtime::set_custom_providers(&providers);
+    assert!(
+        yi_runtime::available_models()
+            .iter()
+            .any(|model| { model.provider == "unkeyed" && model.id == "hidden" })
+    );
+    let current = yi_runtime::resolve_model("keyed", "present")
+        .ok_or_else(|| std::io::Error::other("keyed model is absent"))?;
+    let mut app = App::new(
+        TuiOptions {
+            model: current,
+            session_name: "credential-picker".to_owned(),
+            ..common::options()
+        },
+        Theme::new(ColorTier::TrueColor, true),
+        default_keymap(),
+        80,
+    );
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    for character in "/model".chars() {
+        handle_terminal_event(
+            &mut app,
+            &tx,
+            Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+        );
+    }
+    handle_terminal_event(
+        &mut app,
+        &tx,
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    );
+    let shown = common::live_rows(&mut app)?.join("\n");
+    assert!(shown.contains("keyed/present"), "{shown}");
+    for character in "unkeyed".chars() {
+        handle_terminal_event(
+            &mut app,
+            &tx,
+            Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+        );
+    }
+    let shown = common::live_rows(&mut app)?.join("\n");
+    assert!(!shown.contains("unkeyed/hidden"), "{shown}");
+    Ok(())
+}

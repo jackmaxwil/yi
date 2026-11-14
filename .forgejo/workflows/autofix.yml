@@ -65,10 +65,6 @@ jobs:
           shared-key: test
           cache-on-failure: true
           save-if: false
-      # The low tier goes to wafer/mxfp4 first, as in review.yml; no fallback ban, because the higher
-      # tiers' models may not be on wafer/mxfp4 and a strict pin would refuse them.
-      - if: steps.queue.outputs.newer == '0'
-        run: mkdir -p ~/.yi && echo '{"routing":{"order":["wafer/mxfp4"]}}' > ~/.yi/config.json
       - name: fix conflicted PRs as yi-bot
         if: steps.queue.outputs.newer == '0'
         env:

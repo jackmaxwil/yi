@@ -105,6 +105,17 @@ fn refresh_cursor(
     (fresh, Vec::new())
 }
 
+/// The stored credential and its login profile; a broken profile refuses it so
+/// `yi login <provider>` prints the parse error instead of streaming blind.
+fn load_valid(
+    store: &Store,
+    provider: &str,
+) -> Option<(yi_oauth::store::Credential, Option<registry::Kind>)> {
+    let current = store.load(provider)?;
+    let kind = registry::refresh_kind(provider, current.kind == Kind::Oauth).ok()?;
+    Some((current, kind))
+}
+
 /// A stored OAuth credential is refreshed before it is handed out, through the
 /// session's proxy; a failed refresh falls back to the disk copy (the 401 names `yi login`).
 fn stored(
@@ -113,16 +124,13 @@ fn stored(
     proxy: Option<&crate::request::ProxyConfig>,
 ) -> Option<(yi_oauth::store::Credential, Vec<(String, String)>)> {
     let store = Store::open(root);
-    let current = store.load(provider)?;
-    let spec = match registry::refresh_kind(provider, current.kind == Kind::Oauth) {
-        Ok(Some(registry::Kind::Cursor)) => {
+    let (current, kind) = load_valid(&store, provider)?;
+    let spec = match kind {
+        Some(registry::Kind::Cursor) => {
             return Some(refresh_cursor(store, provider, current, proxy));
         }
-        Ok(Some(registry::Kind::OauthCode(spec))) => spec,
-        Ok(_) => return Some((current, Vec::new())),
-        // A broken profile is not a missing credential: refuse it so
-        // `yi login <provider>` prints the parse error instead of streaming blind.
-        Err(_) => return None,
+        Some(registry::Kind::OauthCode(spec)) => spec,
+        Some(registry::Kind::ApiKey) | None => return Some((current, Vec::new())),
     };
     let headers = spec.stream_headers.clone();
     if current.kind != Kind::Oauth {
@@ -146,6 +154,11 @@ pub fn stored_key(home: &std::path::Path, provider: &str) -> Option<Secret> {
 
 pub fn resolve(provider: &str) -> Option<Resolved> {
     resolve_with_proxy(provider, None)
+}
+
+pub fn has_credential(provider: &str) -> bool {
+    env_key(provider).is_some()
+        || load_valid(&Store::open(Store::default_root()), provider).is_some()
 }
 
 pub fn resolve_with_proxy(

@@ -776,3 +776,4 @@ claude login | `claude_login::a_pasted_code_is_exchanged_as_a_json_body_with_sta
 claude login | `claude_login::a_pasted_state_that_is_not_ours_is_refused_before_any_request`
 claude login | `claude_login::claude_is_built_in_until_a_profile_file_exists_and_anthropic_stays_a_key`
 claude login | `oauth::the_claude_login_sends_the_beta_header_and_the_identity_line`
+TUI | `composer_box::a_pasted_image_rides_the_submission_that_names_it` (T0)

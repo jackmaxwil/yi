@@ -56,6 +56,20 @@ impl Effort {
             Self::Max => "max",
         }
     }
+
+    pub fn level_map<'a>(levels: impl IntoIterator<Item = (Self, Option<&'a str>)>) -> Value {
+        Value::Object(
+            levels
+                .into_iter()
+                .map(|(effort, level)| {
+                    (
+                        effort.as_str().to_owned(),
+                        level.map_or(Value::Null, |level| Value::String(level.to_owned())),
+                    )
+                })
+                .collect(),
+        )
+    }
 }
 
 impl std::fmt::Display for Effort {
