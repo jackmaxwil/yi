@@ -16,7 +16,6 @@ enum Outcome {
 }
 
 type Slot = Arc<Mutex<Option<Outcome>>>;
-type Probe = fn(&McpRow) -> Result<Vec<McpRow>, String>;
 pub struct McpPage {
     home: Option<PathBuf>,
     rows: Vec<McpRow>,
@@ -25,7 +24,7 @@ pub struct McpPage {
     note: String,
     error: Option<String>,
     busy: Option<(String, Slot)>,
-    probe: Option<Probe>,
+    cli: Option<(PathBuf, PathBuf)>,
 }
 
 impl crate::app::App {
@@ -83,8 +82,17 @@ impl McpPage {
             note: String::new(),
             error: None,
             busy: None,
-            probe: None,
+            cli: None,
         }
+    }
+
+    pub fn with_cli(mut self, exe: PathBuf, home: PathBuf) -> Self {
+        self.cli = Some((exe, home));
+        self
+    }
+
+    pub fn rows(&self) -> &[McpRow] {
+        &self.rows
     }
 
     pub fn paste(&mut self, _text: &str) {}
@@ -153,10 +161,16 @@ impl McpPage {
             return;
         };
         let name = row.name.clone();
-        let probe = self.probe.unwrap_or(mcp_page::probe);
-        self.spawn(format!("probing {name}"), move || match probe(&row) {
-            Ok(rows) => Outcome::Rows(format!("probed {name}"), rows),
-            Err(error) => Outcome::Failed(format!("probe {name}: {error}")),
+        let cli = self.cli.clone();
+        self.spawn(format!("probing {name}"), move || {
+            let probed = match &cli {
+                Some((exe, home)) => mcp_page::probe_via(exe, Some(home), &row),
+                None => mcp_page::probe(&row),
+            };
+            match probed {
+                Ok(rows) => Outcome::Rows(format!("probed {name}"), rows),
+                Err(error) => Outcome::Failed(format!("probe {name}: {error}")),
+            }
         });
     }
 
@@ -358,40 +372,5 @@ impl BottomView for McpPage {
             _ => {}
         }
         PopupResult::Open
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mcp_page_probe_key_moves_the_tool_count_to_the_result()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let row = McpRow {
-            name: "fixture".to_owned(),
-            source: ".mcp.json".to_owned(),
-            path: PathBuf::from(".mcp.json"),
-            transport: "stdio".to_owned(),
-            target: "fixture".to_owned(),
-            enabled: true,
-            session: "fixture".to_owned(),
-            state: None,
-            tools: None,
-        };
-        let mut page = McpPage::from_rows(None, true, vec![row]);
-        page.probe = Some(|row| {
-            let mut row = row.clone();
-            row.tools = Some(2);
-            Ok(vec![row])
-        });
-        let key = SingleKey::parse("p").map_err(std::io::Error::other)?;
-        page.handle_key(&key);
-        while page.is_busy() {
-            let _ = page.poll();
-            std::thread::yield_now();
-        }
-        assert_eq!(page.rows.first().and_then(|row| row.tools), Some(2));
-        Ok(())
     }
 }

@@ -121,7 +121,7 @@ pub fn desktop_opener() -> &'static str {
     }
 }
 
-pub(crate) fn open_url(url: &str, no_browser: bool) {
+pub fn open_url(url: &str, no_browser: bool) {
     if no_browser {
         println!("Open this URL to authorize: {url}");
         return;

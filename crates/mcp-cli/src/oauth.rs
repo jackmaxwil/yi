@@ -216,20 +216,7 @@ pub fn login(
     if !options.scopes.is_empty() {
         auth_url.push_str(&format!("&scope={}", urlencode(&options.scopes.join(" "))));
     }
-    if options.no_browser {
-        println!("Open this URL to authorize: {auth_url}");
-    } else {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "launching the user's browser for the interactive login is this fn's job"
-        )]
-        let launched = std::process::Command::new(yi_oauth::flow::desktop_opener())
-            .arg(&auth_url)
-            .spawn();
-        if launched.is_err() {
-            println!("Open this URL to authorize: {auth_url}");
-        }
-    }
+    yi_oauth::flow::open_url(&auth_url, options.no_browser);
     let callback = yi_oauth::loopback::wait_for_callback(&listener, "/callback")?;
     if callback.state != pkce.state {
         return Err("state mismatch in OAuth callback (possible CSRF); aborting".to_owned());

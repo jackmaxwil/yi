@@ -778,3 +778,28 @@ fn mcp_page_probe_connects_the_fixture_and_the_list_then_carries_its_tool_count(
     assert_eq!(probed.tools, Some(2));
     Ok(())
 }
+
+#[test]
+fn mcp_page_probe_key_moves_the_tool_count_to_the_result() -> TestResult {
+    use yi_tui::popup::BottomView;
+    let home = mcp_home()?;
+    let command = crate::yi_bin::yi_command(&home.home);
+    let exe = PathBuf::from(command.get_program());
+    let rows = yi_runtime::mcp_page::servers_via(&exe, Some(&home.home))?;
+    let mut page =
+        yi_tui::mcp::McpPage::from_rows(None, true, rows).with_cli(exe, home.home.to_path_buf());
+    assert_eq!(page.rows().first().and_then(|row| row.tools), None);
+    let key = yi_tui::keymap::SingleKey::parse("p")?;
+    page.handle_key(&key);
+    while page.is_busy() {
+        page.poll();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let probed = page
+        .rows()
+        .iter()
+        .find(|row| row.name == "fixture")
+        .ok_or("no fixture row after probe")?;
+    assert_eq!(probed.tools, Some(2));
+    Ok(())
+}
