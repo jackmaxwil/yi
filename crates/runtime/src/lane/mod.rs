@@ -93,6 +93,8 @@ pub fn head(cwd: &Path) -> Result<Head, LaneError> {
 pub enum LaneError {
     #[error("no free lane: {held} held, {orphans} orphaned of {slots}; `yi lanes` lists them")]
     PoolFull { slots: u8, held: u8, orphans: u8 },
+    #[error("{0}")]
+    Admission(crate::admission::Refusal),
     #[error("lane {slot} is held by session {session}")]
     SlotBusy { slot: SlotIndex, session: String },
     #[error("lane {slot} was left by session {session}; `yi lanes reap {slot}` frees it")]
@@ -621,8 +623,19 @@ impl Pool {
         self.slots
     }
 
+    /// Incident: sixty finished lanes' `target/` directories filled a 1.8 TB disk. A claim the
+    /// host cannot take first reaps every lane `gc` proves finished, then judges again.
+    fn admit_claim(&self) -> Result<(), LaneError> {
+        if crate::admission::check(&self.dir, 0).is_ok() {
+            return Ok(());
+        }
+        self.gc(&self.repo, false)?;
+        crate::admission::check(&self.dir, 0).map_err(LaneError::Admission)
+    }
+
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
         let _span = yi_types::trace::span("lane.claim");
+        self.admit_claim()?;
         let pool_lock = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
         let mut free = None;

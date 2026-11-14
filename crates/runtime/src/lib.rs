@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+pub mod admission;
 pub mod advisor;
 pub mod affordance;
 mod annotate;

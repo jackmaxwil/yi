@@ -30,11 +30,8 @@ pub use record::{ChildFeed, PARENT_CLOSED, PARENT_NAME};
 pub(crate) use runs::schema_answer;
 pub(crate) use service::Standing;
 
-// A completed child holds its slot until closed: the cap forces the parent to
-// reap with rlm.delete_subagent instead of leaking children (design §11).
-pub const DEFAULT_MAX_CHILDREN: usize = 8;
-/// live sessions across the whole family, so a deeper fan-out cannot multiply (D165).
-pub const FAMILY_CAP: usize = 16;
+// A completed child holds its slot until closed: the parent reaps with rlm.delete_subagent.
+// Admission is by host load, memory and disk; family ceilings are optional, 0 meaning none.
 
 pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
@@ -493,11 +490,13 @@ impl SubagentHost {
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
             );
         }
-        if self.options.family_live.live() >= family_cap {
+        let live = self.options.family_live.live();
+        if family_cap > 0 && live >= family_cap {
             return Err(format!(
-                "the family holds {family_cap} live sessions; reap one with rlm.delete_subagent before spawning"
+                "the family holds {live} live sessions, at its configured family.cap of {family_cap}; reap one with rlm.delete_subagent before spawning"
             ));
         }
+        crate::admission::check(&self.options.home, live).map_err(|refusal| refusal.to_string())?;
         if self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",

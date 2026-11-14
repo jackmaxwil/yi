@@ -268,10 +268,14 @@ fn width_is_the_family_cap_not_the_host() -> TestResult {
     // evals and CI run on, and no lever could raise it (#468). The width now measures what
     // actually bounds delegated children, and never the host's cores.
     let levers = yi_runtime::levers::get();
-    assert_eq!(
-        dispatch_width().get(),
-        levers.family_max_children.min(levers.plan_width_max)
-    );
+    let ceilings = [levers.family_max_children, levers.plan_width_max];
+    let expected = ceilings
+        .iter()
+        .copied()
+        .filter(|c| *c > 0)
+        .min()
+        .unwrap_or(4096);
+    assert_eq!(dispatch_width().get(), expected);
     assert!(
         dispatch_width().get() > 1,
         "a small host must still admit fan-out"

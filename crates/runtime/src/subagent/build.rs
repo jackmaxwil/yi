@@ -114,7 +114,10 @@ impl SubagentHost {
             Some(format!(
                 "\"{session_name}\" is reserved: it names the plan's owner, engine or host; pick another name"
             ))
-        } else if matches!(standing, Standing::Worker) && held >= self.options.max_children {
+        } else if matches!(standing, Standing::Worker)
+            && self.options.max_children > 0
+            && held >= self.options.max_children
+        {
             Some(format!(
                 "RLM child limit reached: {held} of {} children held ({failed} failed, {finished} finished, {running} running); rlm.delete_subagent frees a slot",
                 self.options.max_children
