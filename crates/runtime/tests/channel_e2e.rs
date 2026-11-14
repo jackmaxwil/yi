@@ -303,7 +303,10 @@ fn an_unthreaded_group_does_not_hold_a_threaded_groups_delivery_and_a_joined_thr
     let dir = Scratch::new("yi-channel-mixed-thread")?;
     let channel = Channel::at(dir.join("ci.jsonl"));
     channel.open("channel://ci", None)?;
-    let job = subscription(&channel, "sub-ci", None)?;
+    let mut job = subscription(&channel, "sub-ci", None)?;
+    if let Some(sub) = job.channel.as_mut() {
+        sub.batch = Some(2);
+    }
     let todos = TodoStore::new(Arc::new(|| None), "main");
     let threaded =
         |body: &str| serde_json::json!({"thread": "pr-7", "actor": "alice", "body": body});
@@ -360,6 +363,14 @@ fn an_unthreaded_group_does_not_hold_a_threaded_groups_delivery_and_a_joined_thr
             && wake.contains("follow up the open thread todo(s)")
             && wake.contains("new input to that work"),
         "the heartbeat does not identify follow-up input for its todo: {wake}"
+    );
+    // Incident: the held message pinned the ack, and its delivered neighbour filled the window.
+    channel.append("thread-late", 5, threaded("third"))?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+    assert_eq!(
+        stamped(&todos).first().map(Vec::len),
+        Some(3),
+        "a threaded message past a full window of delivered ones was never read"
     );
     Ok(())
 }

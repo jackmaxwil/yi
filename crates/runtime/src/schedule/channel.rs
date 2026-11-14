@@ -408,17 +408,27 @@ pub(crate) fn fire_with_hooks(
     }
     let acked = acked(&meta, job);
     let size = usize::try_from(sub.batch.unwrap_or(DEFAULT_BATCH).max(1)).unwrap_or(usize::MAX);
-    let (mut scanned, mut batch) = (acked, Vec::new());
+    let list = todos.list();
+    let delivered: HashSet<String> = list
+        .items()
+        .filter_map(stamp)
+        .filter(|stamp| stamp.job == job.id)
+        .flat_map(|stamp| stamp.ids)
+        .collect();
+    let (mut scanned, mut batch, mut undelivered) = (acked, Vec::new(), 0usize);
     for entry in channel
         .entries()
         .into_iter()
         .filter(|entry| entry.offset > acked)
     {
-        if batch.len() == size {
+        if undelivered == size {
             break;
         }
         scanned = entry.offset;
         if matches(sub.filter.as_deref(), &entry) {
+            if !delivered.contains(&entry.id) {
+                undelivered = undelivered.saturating_add(1);
+            }
             batch.push(entry);
         }
     }
@@ -511,14 +521,10 @@ fn create(
     let unthreaded = open.iter().filter(|(key, _)| key.is_none()).count();
     let hold_unthreaded = groups.iter().any(|(key, _)| key.is_none())
         && clock::overlap_room(job, unthreaded).is_err();
+    groups.retain(|(key, _)| !(hold_unthreaded && key.is_none()));
     let mut items: Vec<Todo> = Vec::new();
     let mut joined: Vec<(TodoLabel, Vec<String>)> = Vec::new();
-    let mut delivered = Vec::new();
     for (key, group) in &groups {
-        if hold_unthreaded && key.is_none() {
-            continue;
-        }
-        delivered.extend(group.iter().cloned());
         let ids: Vec<String> = group.iter().map(|entry| entry.id.clone()).collect();
         let owner = open
             .iter()
@@ -593,9 +599,10 @@ fn create(
         true => Fired::Created(ids),
         false => Fired::Followed(ids, followed),
     };
-    if delivered.is_empty() {
+    if groups.is_empty() {
         return Ok(None);
     }
+    let delivered: Vec<ChannelEntry> = groups.into_iter().flat_map(|(_, group)| group).collect();
     Ok(Some((
         Fired::Delivered(Box::new(fired), render(&sub.address, &sub.path, &delivered)),
         !hold_unthreaded,
