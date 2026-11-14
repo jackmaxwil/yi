@@ -470,6 +470,28 @@ async fn spawn_refuses_a_host_that_lacks_memory() -> TestResult {
 /// past the family cap, since a reader has no kernel; reaping one frees its seat.
 #[tokio::test]
 async fn held_readers_fill_the_family_cap() -> TestResult {
+    if std::env::var_os("RLM_HELD_READERS_CHILD").is_none() {
+        let dir = crate::scratch::Scratch::new("yi-held-readers")?;
+        let overrides = dir.join("levers.json");
+        std::fs::write(&overrides, r#"{"family.cap":8,"family.max_children":8}"#)?;
+        let output = yi_tools::command(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "reader_e2e::held_readers_fill_the_family_cap",
+                "--nocapture",
+            ])
+            .env("RLM_HELD_READERS_CHILD", "1")
+            .env("YI_LEVERS", &overrides)
+            .output()?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "held-readers child failed: {output:?}"
+        );
+        return Ok(());
+    }
+    yi_runtime::levers::init(true)?;
     let family = family(1, Arc::default())?;
     let cap = yi_runtime::levers::get().family_cap;
     for index in 0..cap {

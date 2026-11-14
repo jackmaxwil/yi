@@ -2608,6 +2608,28 @@ async fn a_respawned_reader_service_keeps_its_write_wall() -> TestResult {
 /// no kernel, leaves its seat, so the family admits one reader past its cap.
 #[tokio::test]
 async fn a_respawned_reader_service_keeps_its_family_seat() -> TestResult {
+    if std::env::var_os("RLM_RESPAWN_SEAT_CHILD").is_none() {
+        let dir = crate::scratch::Scratch::new("yi-respawn-seat")?;
+        let overrides = dir.join("levers.json");
+        std::fs::write(&overrides, r#"{"family.cap":8,"family.max_children":8}"#)?;
+        let output = yi_tools::command(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "recursion_e2e::a_respawned_reader_service_keeps_its_family_seat",
+                "--nocapture",
+            ])
+            .env("RLM_RESPAWN_SEAT_CHILD", "1")
+            .env("YI_LEVERS", &overrides)
+            .output()?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "respawn-seat child failed: {output:?}"
+        );
+        return Ok(());
+    }
+    yi_runtime::levers::init(true)?;
     let harness = harness(0, 1, "serving")?;
     harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
     let mut asked = Map::new();
