@@ -780,3 +780,4 @@ claude login | `oauth::the_claude_login_sends_the_beta_header_and_the_identity_l
 TUI | `composer_box::a_pasted_image_rides_the_submission_that_names_it` (T0)
 channels: buffer, subscriptions, adapters | `channel_e2e::a_message_on_an_open_threads_todo_joins_it_and_a_new_thread_opens_its_own`
 channels: buffer, subscriptions, adapters | `channel_e2e::a_filter_with_alternatives_admits_each_listed_actor_and_no_other`
+console editor and viewers | `app::menu::tests::a_new_pane_or_tab_opens_chat`
