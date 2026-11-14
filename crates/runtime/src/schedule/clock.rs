@@ -304,11 +304,7 @@ fn create(todos: &TodoStore, job: &Job, firing: &Firing) -> Result<Fired, String
             .list
             .items()
             .filter(|item| labels.contains(&item.label))
-            .map(|item| {
-                item.id
-                    .as_ref()
-                    .map_or_else(|| item.label.to_string(), ToString::to_string)
-            })
+            .map(super::channel::item_id)
             .collect(),
     ))
 }

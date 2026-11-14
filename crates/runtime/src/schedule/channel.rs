@@ -309,11 +309,11 @@ pub fn matches(filter: Option<&str>, entry: &ChannelEntry) -> bool {
         .filter(|term| !term.is_empty())
         .all(|term| match term.split_once('=') {
             Some((key, wants)) => entry.data.get(key).is_some_and(|got| {
-                let got = got.as_str().map_or_else(
-                    || serde_json::to_string(got).unwrap_or_default(),
-                    str::to_owned,
-                );
-                wants.split('|').any(|want| got == want)
+                let any = |text: &str| text == wants || wants.split('|').any(|want| text == want);
+                match got.as_str() {
+                    Some(text) => any(text),
+                    None => any(&serde_json::to_string(got).unwrap_or_default()),
+                }
             }),
             None => whole.contains(term),
         })
@@ -323,7 +323,7 @@ fn thread(key: Option<&Value>) -> Option<&str> {
     key?.as_str().filter(|key| !key.is_empty())
 }
 
-fn item_id(item: &Todo) -> String {
+pub(super) fn item_id(item: &Todo) -> String {
     item.id
         .as_ref()
         .map_or_else(|| item.label.to_string(), ToString::to_string)
@@ -561,7 +561,6 @@ fn create(
         items.push(todo);
     }
     let followed: Vec<String> = joined.iter().map(|(label, _)| label.to_string()).collect();
-    join(todos, job, &joined);
     let labels: Vec<TodoLabel> = items.iter().map(|todo| todo.label.clone()).collect();
     let ids = match items.is_empty() {
         true => Vec::new(),
@@ -582,6 +581,7 @@ fn create(
             .map(item_id)
             .collect(),
     };
+    join(todos, job, &joined);
     let fired = match followed.is_empty() {
         true => Fired::Created(ids),
         false => Fired::Followed(ids, followed),

@@ -45,7 +45,6 @@ Each is stdlib Python, tested against a fake CLI by `test_adapters.py`:
 - `yi-adapter-github` — `github://<owner>/<repo>?every=60s`: each finished workflow run, via `gh api`.
 - `yi-adapter-forgejo` — `forgejo://<host>/<owner>/<repo>?every=60s`: each run whose jobs all
   ended, with its conclusion, via `fgj api`. `forgejo://<host>/<owner>/<repo>/pulls?every=60s`:
-  ended, with its conclusion, via `fgj api`. `forgejo://<host>/<owner>/<repo>/pulls?every=60s`:
   each open PR's head once per sha (`{pr, sha, branch, title, draft, thread, actor}`), which is
   what wakes the PR review rounds (`just pr sweep`, docs/FORGE.md).
 
