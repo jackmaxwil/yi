@@ -769,3 +769,4 @@ TUI | `tui_drive::queue_starts_a_turn_and_enter_in_the_slash_list_runs_the_highl
 TUI | `result_paint::read_from_the_middle_of_a_file_is_coloured` (T0)
 TUI | `result_paint::shell_colour_codes_render_as_colour` (T0)
 console notebook pane | `notebook_text::notebook_text_colours_codes_json_and_paths` (T0)
+TUI | `composer_box::a_pasted_image_rides_the_submission_that_names_it` (T0)

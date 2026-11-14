@@ -21,6 +21,7 @@ pub struct Composer {
     pub textarea: TextArea<'static>,
     pastes: BTreeMap<u32, String>,
     paste_counter: u32,
+    images: BTreeMap<u32, crate::clipboard::ClipImage>,
     history: Vec<String>,
     history_index: Option<usize>,
     draft: Option<String>,
@@ -49,6 +50,7 @@ impl Default for Composer {
             textarea,
             pastes: BTreeMap::new(),
             paste_counter: 0,
+            images: BTreeMap::new(),
             history: Vec::new(),
             history_index: None,
             draft: None,
@@ -497,6 +499,14 @@ impl Composer {
         }
     }
 
+    pub fn attach_image(&mut self, image: crate::clipboard::ClipImage) {
+        self.recalled = true;
+        self.paste_counter += 1;
+        let id = self.paste_counter;
+        self.textarea.insert_str(format!("[Image #{id}]"));
+        self.images.insert(id, image);
+    }
+
     /// One pass, so replaced content is never rescanned and a pasted body
     /// keeps a marker label. Longer labels first so `#1` never shadows `#10`.
     pub fn expand_markers(&self, text: &str) -> String {
@@ -541,9 +551,20 @@ impl Composer {
         let line = self.textarea.lines().get(row).cloned().unwrap_or_default();
         let prefix: String = line.chars().take(col).collect();
         if prefix.ends_with(']')
-            && let Some(start) = prefix.rfind("[Paste #")
+            && let Some(start) = ["[Paste #", "[Image #"]
+                .iter()
+                .filter_map(|open| prefix.rfind(open))
+                .max()
         {
             let head = prefix.get(..start).unwrap_or_default();
+            let token = prefix.get(start..).unwrap_or_default();
+            if let Some(id) = token
+                .strip_prefix("[Image #")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|digits| digits.parse::<u32>().ok())
+            {
+                self.images.remove(&id);
+            }
             let token_len = prefix.chars().count().saturating_sub(head.chars().count());
             for _ in 0..token_len {
                 self.textarea.delete_char();
@@ -554,17 +575,27 @@ impl Composer {
     }
 
     pub fn take_submission(&mut self) -> Option<String> {
+        self.take_message().map(|(text, _)| text)
+    }
+
+    /// The submission and the images its markers still name: deleting a marker drops its image.
+    pub fn take_message(&mut self) -> Option<(String, Vec<crate::clipboard::ClipImage>)> {
         let text = self.text();
         if text.trim().is_empty() {
             return None;
         }
         let expanded = self.expand_markers(&text);
-        self.history.push(text);
+        self.history.push(text.clone());
         self.history_index = None;
         self.search = None;
         self.pastes.clear();
+        let images = std::mem::take(&mut self.images)
+            .into_iter()
+            .filter(|(id, _)| text.contains(&format!("[Image #{id}]")))
+            .map(|(_, image)| image)
+            .collect();
         self.set_text("");
-        Some(expanded)
+        Some((expanded, images))
     }
 
     pub fn history_prev(&mut self) {
@@ -838,11 +869,37 @@ impl crate::app::App {
     }
 
     pub fn assist_wake(&self) -> std::time::Duration {
-        self.composer.assist.wake()
+        let wake = self.composer.assist.wake();
+        if self.clip_read.is_some() {
+            wake.min(std::time::Duration::from_millis(30))
+        } else {
+            wake
+        }
+    }
+
+    fn poll_clipboard(&mut self) {
+        let Some((rx, say_none)) = self.clip_read.as_ref() else {
+            return;
+        };
+        let say_none = *say_none;
+        let done = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(None),
+        };
+        self.clip_read = None;
+        match done {
+            Ok(Some(image)) => self.composer.attach_image(image),
+            Ok(None) if say_none => self.notice("no image on the clipboard".to_owned()),
+            Ok(None) => {}
+            Err(error) => self.notice(error),
+        }
+        self.scheduler.request();
     }
 
     /// Answers that arrived since the last key: marks and the ghost redraw without one.
     pub(crate) fn poll_assist(&mut self) {
+        self.poll_clipboard();
         if self.composer.assist.poll() {
             self.composer.recalled = true;
             self.sync_assist();

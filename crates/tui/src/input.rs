@@ -28,7 +28,11 @@ pub fn handle_terminal_event(
             } else if let Some(bottom) = app.bottom.as_mut() {
                 paste_into(bottom, &text);
             } else if !app.composer.search_active() {
-                app.composer.handle_paste(&text);
+                if text.is_empty() {
+                    attach_clipboard_image(app, false);
+                } else {
+                    app.composer.handle_paste(&text);
+                }
                 app.sync_assist();
             }
             app.scheduler.request();
@@ -77,6 +81,12 @@ pub fn handle_terminal_event(
                     Some(Action::HistoryNext) => app.composer.search_newer(),
                     Some(_) | None => app.composer.handle_search_key(key_event),
                 }
+                return;
+            }
+            if key_event.modifiers.contains(KeyModifiers::SUPER)
+                && key.code == KeyCodeValue::Char('v')
+            {
+                attach_clipboard_image(app, true);
                 return;
             }
             match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
@@ -201,15 +211,31 @@ pub(crate) fn handle_bottom_key(
             Bottom::Approval(view, reply) => {
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
-            Bottom::Question(_) => send_message(app, cmd_tx, text),
+            Bottom::Question(_) => send_message(app, cmd_tx, text, Vec::new()),
             Bottom::Theme(mut picker) => app.commit_theme(&mut picker, text.trim()),
             Bottom::Agents(_) | Bottom::Model(_) => {}
         },
     }
 }
 
+fn attach_clipboard_image(app: &mut App, say_none: bool) {
+    if app.clip_read.is_some() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::clipboard::read_image());
+    });
+    app.clip_read = Some((rx, say_none));
+}
+
 /// Invariant: Enter in the composer and in the `/` list both submit here, so `//word` prompts.
-fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
+fn submit_line(
+    app: &mut App,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
+    text: String,
+    images: Vec<crate::clipboard::ClipImage>,
+) {
     let text = match slash_line(text) {
         Slash::Command(command) => match yi_runtime::slash::split(&command) {
             ("learn", focus) => format!("{} {focus}", yi_runtime::slash::LEARN),
@@ -226,19 +252,32 @@ fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Comman
         });
         return;
     }
-    send_message(app, cmd_tx, text);
+    send_message(app, cmd_tx, text, images);
 }
 
-fn send_message(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
+fn send_message(
+    app: &mut App,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
+    text: String,
+    images: Vec<crate::clipboard::ClipImage>,
+) {
     if app.follow() != yi_types::config::FollowMode::Slide {
         app.follow_bottom();
     }
     if app.running {
         app.steering.push(text.clone());
-        let _ = cmd_tx.send(Command::Steer(text));
+        let _ = cmd_tx.send(if images.is_empty() {
+            Command::Steer(text)
+        } else {
+            Command::SteerImages(text, images)
+        });
     } else {
         app.note_submission(&text);
-        let _ = cmd_tx.send(Command::Prompt(text));
+        let _ = cmd_tx.send(if images.is_empty() {
+            Command::Prompt(text)
+        } else {
+            Command::PromptImages(text, images)
+        });
     }
 }
 
@@ -254,13 +293,13 @@ pub(crate) fn handle_action(
                 return;
             }
             if let Some(submit) = app.composer.enter_assist() {
-                if submit && let Some(text) = app.composer.take_submission() {
-                    submit_line(app, cmd_tx, text);
+                if submit && let Some((text, images)) = app.composer.take_message() {
+                    submit_line(app, cmd_tx, text, images);
                 }
                 return;
             }
-            if let Some(text) = app.composer.take_submission() {
-                submit_line(app, cmd_tx, text);
+            if let Some((text, images)) = app.composer.take_message() {
+                submit_line(app, cmd_tx, text, images);
             }
         }
         Action::InsertNewline => app.composer.insert_newline(),
@@ -303,6 +342,7 @@ pub(crate) fn handle_action(
             }
         }
         Action::HistorySearch => app.composer.begin_search(),
+        Action::PasteImage => attach_clipboard_image(app, true),
         Action::ToggleExpand => app.cycle_mode(),
         Action::ToggleHud => app.hud_hidden = !app.hud_hidden,
         Action::ExternalEditor => app.pending_editor = true,

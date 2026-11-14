@@ -256,3 +256,52 @@ fn option_arrows_move_by_word_over_a_draft_and_walk_agents_from_an_empty_box() -
     assert_eq!(composer.text(), "fix the Xbox");
     Ok(())
 }
+
+const PNG_1X1: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+fn clip(data: &str) -> yi_tui::clipboard::ClipImage {
+    yi_tui::clipboard::ClipImage {
+        mime_type: "image/png".to_owned(),
+        data: data.to_owned(),
+    }
+}
+
+/// Dies with Cmd+V of a screenshot putting a marker in the box but sending only the words.
+#[test]
+fn a_pasted_image_rides_the_submission_that_names_it() -> TestResult {
+    let mut composer = Composer::default();
+    composer.set_text("what is this? ");
+    composer.attach_image(clip(PNG_1X1));
+    let (text, images) = composer.take_message().ok_or("nothing submitted")?;
+    assert_eq!(text, "what is this? [Image #1]");
+    assert_eq!(images, [clip(PNG_1X1)]);
+    assert!(composer.take_message().is_none(), "taken once");
+    Ok(())
+}
+
+/// Dies with a deleted marker still sending its image: the user removed it from the message.
+#[test]
+fn an_image_whose_marker_was_deleted_is_not_sent() -> TestResult {
+    let mut composer = Composer::default();
+    composer.attach_image(clip(PNG_1X1));
+    composer.attach_image(clip("AAAA"));
+    composer.set_text("[Image #2] only");
+    let (_, images) = composer.take_message().ok_or("nothing submitted")?;
+    assert_eq!(images, [clip("AAAA")]);
+    Ok(())
+}
+
+/// Dies with Backspace on `[Image #1]` leaving a broken marker while the image still rides along.
+#[test]
+fn backspace_on_an_image_marker_removes_the_marker_and_its_image() -> TestResult {
+    let mut composer = Composer::default();
+    composer.attach_image(clip(PNG_1X1));
+    composer.set_text("[Image #1]");
+    composer.backspace();
+    assert_eq!(composer.text(), "");
+    composer.set_text("words");
+    let (_, images) = composer.take_message().ok_or("nothing submitted")?;
+    assert!(images.is_empty(), "the removed marker's image is gone");
+    Ok(())
+}

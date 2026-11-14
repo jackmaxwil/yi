@@ -36,16 +36,25 @@ pub fn frames(entries: &[Entry]) -> Vec<&[Entry]> {
     frames
 }
 
-/// The model reads text and resource links; every other block gets a row saying it was cut.
-pub(crate) fn prompt_text(params: &Value) -> String {
+/// The model reads text, resource links and images it accepts; every other block gets a row
+/// saying it was cut. Images come back as `(mime_type, base64 data)`.
+pub(crate) fn prompt_parts(params: &Value) -> (String, Vec<(String, String)>) {
     let blocks: &[Value] = params
         .get("prompt")
         .and_then(Value::as_array)
         .map_or(&[], Vec::as_slice);
     let mut text = String::new();
     let mut dropped = Vec::new();
+    let mut images = Vec::new();
     for (index, block) in blocks.iter().enumerate() {
         let field = |key| block.get(key).and_then(Value::as_str);
+        if field("type") == Some("image") {
+            match image_block(&field("mimeType"), &field("data")) {
+                Ok(image) => images.push(image),
+                Err(reason) => dropped.push((index, "image", reason)),
+            }
+            continue;
+        }
         match (field("type"), field("text"), field("uri")) {
             (Some("text"), Some(part), _) => text.push_str(part),
             (Some("resource_link"), _, Some(uri)) => {
@@ -54,14 +63,14 @@ pub(crate) fn prompt_text(params: &Value) -> String {
                 }
                 text.push_str(uri);
             }
-            (Some("text"), None, _) => dropped.push((index, "text", "it has no text field")),
+            (Some("text"), None, _) => dropped.push((index, "text", "it has no text field".to_owned())),
             (Some("resource_link"), _, None) => {
-                dropped.push((index, "resource_link", "it has no uri field"));
+                dropped.push((index, "resource_link", "it has no uri field".to_owned()));
             }
             (kind, _, _) => dropped.push((
                 index,
                 kind.unwrap_or("untyped"),
-                "this agent reads text and resource_link blocks; send the file as a resource_link",
+                "this agent reads text, resource_link and image blocks; send the file as a resource_link".to_owned(),
             )),
         }
     }
@@ -71,7 +80,17 @@ pub(crate) fn prompt_text(params: &Value) -> String {
             "\n[…] prompt block {position} of {total} ({kind}) was dropped: {reason}"
         ));
     }
-    text
+    (text, images)
+}
+
+fn image_block(mime_type: &Option<&str>, data: &Option<&str>) -> Result<(String, String), String> {
+    let (Some(mime_type), Some(data)) = (mime_type, data) else {
+        return Err("it has no mimeType or data field".to_owned());
+    };
+    match yi_types::image::image_defect(mime_type, data) {
+        Some(defect) => Err(format!("the image {defect}")),
+        None => Ok(((*mime_type).to_owned(), (*data).to_owned())),
+    }
 }
 
 impl AcpState {
