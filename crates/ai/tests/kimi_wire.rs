@@ -28,6 +28,14 @@ fn k3_1() -> Result<Model, Box<dyn Error>> {
         "reasoning": {"type": "only", "effort": {"valid": ["low", "high", "max"], "default": "high"}},
     }))
 }
+#[test]
+fn a_kimi_model_keeps_a_valid_context_when_output_is_unreadable() -> TestResult {
+    let model = kimi_model(json!({
+        "id": "kimi-partial-limit", "limit": {"context": 64000, "output": "32000"},
+    }))?;
+    assert_eq!((model.context_window, model.max_tokens), (64000, 64000));
+    Ok(())
+}
 
 fn context(messages: Vec<AgentMessage>) -> LlmContext {
     LlmContext {

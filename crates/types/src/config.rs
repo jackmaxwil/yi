@@ -205,6 +205,7 @@ pub struct DiscoveredCustomModel {
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_limit")]
     pub limit: Option<DiscoveredCustomLimit>,
     pub input: Option<Vec<CustomInput>>,
     pub capabilities: Option<DiscoveredCustomCapabilities>,
@@ -223,9 +224,21 @@ pub struct CustomModelList {
     pub data: Vec<DiscoveredCustomModel>,
 }
 
+fn lenient_limit<'de, D>(deserializer: D) -> Result<Option<DiscoveredCustomLimit>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(DiscoveredCustomLimit::from_value(&value))
+}
+
 impl DiscoveredCustomLimit {
     pub fn from_value(value: &serde_json::Value) -> Option<Self> {
-        serde_json::from_value(value.clone()).ok()
+        value.as_object()?;
+        Some(Self {
+            context: value.get("context").and_then(serde_json::Value::as_u64),
+            output: value.get("output").and_then(serde_json::Value::as_u64),
+        })
     }
 }
 
