@@ -80,7 +80,6 @@ fn login(args: &[String]) -> i32 {
                     return 2;
                 }
             }
-            "codex" => provider = Some(crate::codex::CODEX_ID.to_owned()),
             other => provider = Some(other.to_owned()),
         }
     }

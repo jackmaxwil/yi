@@ -53,6 +53,36 @@ pub struct CodeLogin {
 /// Providers whose login is a pasted key: no endpoints, no identity, nothing to supply.
 pub const API_KEY_IDS: [&str; 4] = ["anthropic", "openai", "openrouter", "google"];
 pub const CURSOR_ID: &str = "cursor";
+pub const CODEX_ID: &str = "openai-codex";
+
+/// Incident: the Codex CLI's public client registers exactly `localhost:1455/auth/callback`
+/// as its redirect, so the port cannot fall back to a free one.
+fn codex_profile() -> Kind {
+    let pair = |key: &str, value: &str| (key.to_owned(), value.to_owned());
+    Kind::OauthCode(Box::new(OauthCode {
+        id: CODEX_ID.to_owned(),
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_owned(),
+        client_secret: None,
+        token: "https://auth.openai.com/oauth/token".to_owned(),
+        scopes: "openid profile email offline_access".to_owned(),
+        json_token: false,
+        stream_headers: Vec::new(),
+        refresh_headers: Vec::new(),
+        api_base: None,
+        login: Login::Code(CodeLogin {
+            authorize: "https://auth.openai.com/oauth/authorize".to_owned(),
+            callback_port: 1455,
+            callback_path: "/auth/callback".to_owned(),
+            redirect_host: "localhost".to_owned(),
+            port_fallback: false,
+            extra_authorize: vec![
+                pair("id_token_add_organizations", "true"),
+                pair("codex_cli_simplified_flow", "true"),
+                pair("originator", "codex_cli_rs"),
+            ],
+        }),
+    }))
+}
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -188,7 +218,7 @@ pub fn lookup(provider: &str) -> Result<Option<Kind>> {
     match load(provider)? {
         Some(kind) => Ok(Some(kind)),
         None if provider == CURSOR_ID => Ok(Some(Kind::Cursor)),
-        None if provider == crate::codex::CODEX_ID => Ok(Some(crate::codex::profile())),
+        None if provider == CODEX_ID => Ok(Some(codex_profile())),
         None => Ok(API_KEY_IDS.contains(&provider).then_some(Kind::ApiKey)),
     }
 }
@@ -206,7 +236,7 @@ pub fn load(provider: &str) -> Result<Option<Kind>> {
 pub fn ids() -> Vec<String> {
     let mut found: Vec<String> = API_KEY_IDS
         .iter()
-        .chain([&CURSOR_ID, &crate::codex::CODEX_ID])
+        .chain([&CURSOR_ID, &CODEX_ID])
         .map(|id| (*id).to_owned())
         .collect();
     let Ok(entries) = std::fs::read_dir(profile_root()) else {
