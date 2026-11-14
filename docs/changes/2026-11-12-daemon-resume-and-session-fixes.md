@@ -20,3 +20,5 @@ Four more bugs surfaced by the latest Yi sessions and `~/.yi/daemon.worker.log` 
 - `plan set` moving a contracted todo directly to `running` now runs `Op::Start` so `contract_hash` is frozen and a later `done` is no longer refused with `the contract was never frozen; start records it`.
 - `Checkpoints::materialize` initializes a disposable `.git` inside a materialized snapshot of a git workspace so git-aware deciders (`scripts/wt_home.sh`) no longer exit 128 on `git rev-parse --show-toplevel`.
 - `scripts/wt_home.sh` links `~/.config/fgj` into the scratch `HOME`, and `scripts/forge_pr.py` ignores untracked `.yi/plans/` in `just push`, wires the zig cross-compiler environment automatically for `linux-clippy` on macOS, and accepts inline text as well as a file path on `--body`.
+
+`evals/tests/test_memory_inject.py` also changes, outside the daemon work: its cost-refusal test now captures the `FAIL label: refused: …` line it expects on stderr and asserts that exact text, so a passing evals selftest no longer prints a `^FAIL` line into the gate log, where it read as a failure while this branch's gate runs were being triaged.
