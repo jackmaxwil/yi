@@ -148,6 +148,7 @@ pub struct CustomModel {
     pub id: String,
     pub name: Option<String>,
     pub reasoning: Option<bool>,
+    pub thinking_level_map: Option<serde_json::Value>,
     pub input: Option<Vec<CustomInput>>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
@@ -210,6 +211,7 @@ pub struct DiscoveredCustomModel {
     pub limit: Option<DiscoveredCustomLimit>,
     pub input: Option<Vec<CustomInput>>,
     pub capabilities: Option<DiscoveredCustomCapabilities>,
+    pub variants: Option<serde_json::Value>,
 }
 
 /// A model list's `limit` object. A field it does not carry is absent; a shape that is not this
@@ -246,6 +248,25 @@ impl DiscoveredCustomLimit {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveredCustomCapabilities {
     pub image_input: Option<bool>,
+}
+
+/// Invariant: a level the list's `variants` omits maps to null, so it is unsupported rather than
+/// defaulted; `off` is left out because a variants table only names thinking levels.
+fn level_map(variants: &serde_json::Value) -> Option<serde_json::Value> {
+    let variants = variants.as_object().filter(|map| !map.is_empty())?;
+    let map = crate::model::Effort::ALL
+        .into_iter()
+        .filter(|effort| *effort != crate::model::Effort::Off)
+        .map(|effort| {
+            let sent = variants
+                .get(effort.as_str())
+                .and_then(|variant| variant.get("reasoningEffort"))
+                .and_then(serde_json::Value::as_str);
+            let value = sent.map_or(serde_json::Value::Null, |sent| sent.into());
+            (effort.as_str().to_owned(), value)
+        })
+        .collect();
+    Some(serde_json::Value::Object(map))
 }
 
 /// The first limit a model list advertises positively; a zero is a sentinel, not a cap, so it
@@ -291,6 +312,7 @@ impl CustomProvider {
                     id: model.id,
                     name: model.name,
                     reasoning: model.reasoning,
+                    thinking_level_map: model.variants.as_ref().and_then(level_map),
                     input,
                     cost: None,
                     context_window,
@@ -339,7 +361,7 @@ impl CustomProvider {
                     context_window: model.context_window.unwrap_or(128_000),
                     max_tokens: model.max_tokens.unwrap_or(16_384),
                     compat: compat.clone(),
-                    thinking_level_map: None,
+                    thinking_level_map: model.thinking_level_map.clone(),
                     headers: None,
                     read_timeout_secs: None,
                 }
