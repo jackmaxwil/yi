@@ -179,7 +179,7 @@ impl SubagentHost {
                 "the check is refused before it runs on the host: {refused}"
             ));
         }
-        let (lane, name) = self.take_settled_worktree(target)?;
+        let (lane, name) = self.take_settled_worktree(target, None)?;
         let pool = lane.pool().clone();
         let deadline = self.deadline();
         let quiescence = quiescence_of_jobs(lane.path());
@@ -338,15 +338,36 @@ impl SubagentHost {
     }
 
     /// The `Discarded` disposition for a kernel-driven child: settled, then the branch deleted.
-    pub fn discard_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
-        let (lane, _) = self.take_settled_worktree(target)?;
-        let stopped = yi_tools::jobs::registry().kill_under(lane.path());
-        let settled_jobs = |root: &Path| quiescence_of_jobs(root).running.is_empty();
-        let until = Instant::now().checked_add(Duration::from_secs(5));
-        while !settled_jobs(lane.path()) && until.is_some_and(|until| Instant::now() < until) {
-            std::thread::sleep(Duration::from_millis(20));
+    pub fn discard_worktree(
+        &self,
+        target: &str,
+        force: bool,
+    ) -> Result<Map<String, Value>, String> {
+        self.discard_within(target, force, Duration::from_secs(5), false)
+    }
+
+    /// The same disposition for a fold, which runs for every folded child inside one host call:
+    /// a killed job gets a short grace, and a tree whose jobs outlive it is handed back.
+    pub(crate) fn discard_folded(&self, target: &str) -> Result<Map<String, Value>, String> {
+        self.discard_within(target, true, Duration::from_millis(250), true)
+    }
+
+    fn discard_within(
+        &self,
+        target: &str,
+        force: bool,
+        grace: Duration,
+        hand_back_live: bool,
+    ) -> Result<Map<String, Value>, String> {
+        let (lane, _) = self.take_settled_worktree(target, Some(force))?;
+        let (stopped, quiescence) = stop_jobs_under(lane.path(), grace);
+        let live = quiescence.running.len();
+        if hand_back_live && live > 0 {
+            self.put_back_worktree(target, lane);
+            return Err(format!(
+                "{live} jobs are still running under its tree: rlm.discard_worktree(\"{target}\", force=True) once they finish"
+            ));
         }
-        let quiescence = quiescence_of_jobs(lane.path());
         let settled = match lane.settle(&quiescence, self.deadline()) {
             Ok(settled) => settled,
             Err((kept, error)) => {
@@ -357,12 +378,7 @@ impl SubagentHost {
         let candidate = settled.discard().map_err(|error| error.to_string())?;
         let mut reply = candidate.as_reply();
         reply.insert("discarded".to_owned(), Value::Bool(true));
-        if !stopped.is_empty() {
-            let row = format!(
-                "stopped {} jobs under the tree: {}; a process that left its job keeps running",
-                stopped.len(),
-                stopped.join(", ")
-            );
+        if let Some(row) = stopped {
             reply.insert("stopped".to_owned(), Value::String(row));
         }
         reply.insert("merged".to_owned(), Value::Bool(false));
@@ -381,7 +397,11 @@ impl SubagentHost {
 
     /// Invariant: taken off the record, so a tree is never handed back twice; never for a
     /// child the plan engine dispatched, whose branch goes through `submit` or a disposition.
-    fn take_settled_worktree(&self, target: &str) -> Result<(ChildTree, String), String> {
+    fn take_settled_worktree(
+        &self,
+        target: &str,
+        discarding: Option<bool>,
+    ) -> Result<(ChildTree, String), String> {
         let mut children = self
             .children
             .lock()
@@ -397,14 +417,20 @@ impl SubagentHost {
                 "child \"{target}\" is still running; wait for it before touching its worktree"
             ));
         }
-        if record
-            .worktree
-            .as_ref()
-            .is_some_and(ChildTree::carries_dirt)
-        {
-            return Err(format!(
-                "child \"{target}\" took a tree that carries uncommitted files, which a commit would claim as its work: merge it with h.tree.merge() from the tree it came from"
-            ));
+        if let Some(tree) = record.worktree.as_ref().filter(|tree| tree.carries_dirt()) {
+            match discarding {
+                None => {
+                    return Err(format!(
+                        "child \"{target}\" took a tree that carries uncommitted files, which a commit would claim as its work: fold its files with rlm.tree().merge(h.tree), then rlm.delete_subagent(\"{target}\"); rlm.discard_worktree(\"{target}\") drops it when it only holds the files it was forked with"
+                    ));
+                }
+                Some(false) if !tree.unchanged_since_fork() => {
+                    return Err(format!(
+                        "child \"{target}\" changed the uncommitted files it was forked with, and discarding drops those changes: fold them with rlm.tree().merge(h.tree) then rlm.delete_subagent(\"{target}\"), or rlm.discard_worktree(\"{target}\", force=True) to drop them"
+                    ));
+                }
+                Some(_) => {}
+            }
         }
         let lane = record
             .worktree

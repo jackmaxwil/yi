@@ -55,6 +55,10 @@ struct Harness {
     receivers: Arc<Mutex<std::collections::HashMap<String, HostRegistry>>>,
 }
 
+thread_local! {
+    static DEAD_ROUTE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
 type BuildHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 
 struct HarnessOptions {
@@ -201,7 +205,13 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         cwd: cwd.clone(),
         home: root.join("home"),
         lane_slots: 2,
-        defaults: Arc::new(|| (faux_model(128_000), yi_types::model::Effort::Medium)),
+        defaults: Arc::new(|| {
+            let mut model = faux_model(128_000);
+            if let Some(url) = DEAD_ROUTE.with(|route| route.borrow().clone()) {
+                model.base_url = url;
+            }
+            (model, yi_types::model::Effort::Medium)
+        }),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut slot) = cwd_sink.lock() {
                 *slot = build.cwd.map(std::path::Path::to_path_buf);
@@ -2955,7 +2965,7 @@ async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
     std::fs::write(tree.join("spike.txt"), "throwaway\n")?;
     harness
         .host
-        .discard_worktree("spike")
+        .discard_worktree("spike", false)
         .map_err(|error| error.to_string())?;
     assert!(!repo.join("spike.txt").exists(), "nothing crosses back");
     assert!(
@@ -2967,10 +2977,74 @@ async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
     assert!(
         harness
             .host
-            .discard_worktree("spike")
+            .discard_worktree("spike", false)
             .err()
             .is_some_and(|error| error.contains("has no worktree")),
         "a second hand-back names the reason rather than half-working"
+    );
+    Ok(())
+}
+
+/// Eight children that fail on their first model call hold no slot, so a burst of spawns on a dead
+/// route cannot leave the parent unable to spawn the next one.
+#[tokio::test]
+async fn children_that_failed_before_any_tool_call_free_their_slots() -> TestResult {
+    let harness = harness_with(HarnessOptions {
+        child_errors: true,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "unused",
+        tool_command: None,
+        cwd: None,
+        wake_parent: None,
+    })?;
+    for index in 0..8 {
+        harness
+            .host
+            .spawn(
+                format!("doomed {index}"),
+                kwargs(&[("name", &format!("doomed-{index}"))]),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    for _ in 0..POLL_ATTEMPTS {
+        let members = harness.host.status()["members"].clone();
+        if members
+            .as_array()
+            .is_some_and(|rows| rows.len() == 8 && rows.iter().all(|row| row["state"] == "failed"))
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let ninth = harness
+        .host
+        .spawn("ninth".to_owned(), kwargs(&[("name", "ninth")]));
+    assert!(
+        ninth.is_ok(),
+        "failed children that never ran a tool must not fill the cap: {ninth:?}"
+    );
+    Ok(())
+}
+
+/// A model whose `base_url` is a closed loopback port is refused at the spawn, before a slot or a
+/// worktree is taken, so a dead local proxy cannot leave a failed child behind.
+#[tokio::test]
+async fn a_spawn_on_a_closed_loopback_route_is_refused_before_a_child_exists() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    DEAD_ROUTE.with(|route| *route.borrow_mut() = Some(format!("http://127.0.0.1:{port}/v1")));
+    let harness = harness(0, 1, "unused")?;
+    let refused = harness
+        .host
+        .spawn("doomed".to_owned(), kwargs(&[("name", "doomed")]))
+        .err()
+        .ok_or("a spawn on a dead loopback route was accepted")?;
+    assert!(refused.contains("unreachable before spawning"), "{refused}");
+    assert_eq!(
+        harness.host.status()["members"].as_array().map(Vec::len),
+        Some(0)
     );
     Ok(())
 }
@@ -2994,10 +3068,10 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
         .host
         .spawn("second".to_owned(), kwargs(&[("name", "twin")]));
     assert!(
-        collision
-            .err()
-            .is_some_and(|error| error.contains("\"twin\" is already taken at depth 1")),
-        "duplicate names must be rejected"
+        collision.err().is_some_and(|error| error
+            .contains("\"twin\" is already taken at depth 1 by a ")
+            && error.contains("child; rlm.delete_subagent(\"twin\") frees it")),
+        "duplicate names must be rejected, naming the holder and the call that frees it"
     );
     // Dies with the reserved names in `reserve`: `main` is the owner's inline agent.
     for word in ["main", "host"] {
@@ -3023,8 +3097,9 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
     assert!(
         overflow
             .err()
-            .is_some_and(|error| error.contains("child limit reached")),
-        "a completed child must hold its slot until closed"
+            .is_some_and(|error| error.contains("8 of 8 children held (0 failed, ")
+                && error.contains(" running); rlm.delete_subagent frees a slot")),
+        "a completed child must hold its slot until closed, and the refusal counts who holds them"
     );
 
     let deleted = harness

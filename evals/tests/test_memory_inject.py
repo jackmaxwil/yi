@@ -78,8 +78,14 @@ class LabelTest(unittest.TestCase):
         self.assertEqual(judged["labeling"]["by"], "judge openrouter/test-judge")
 
     def test_label_refuses_a_reply_whose_cost_cannot_be_counted(self):
+        complaint = io.StringIO()
         with mock.patch.object(memory_inject.urllib.request, "urlopen", return_value=Reply(answer(None))):
-            self.assertEqual(memory_inject.label(self.args), 1)
+            with contextlib.redirect_stderr(complaint):
+                self.assertEqual(memory_inject.label(self.args), 1)
+        self.assertEqual(
+            complaint.getvalue(),
+            "FAIL label: refused: the reply carried no usage.cost, so --cap-usd cannot count it\n",
+        )
         self.assertEqual(self.labels.read_bytes(), self.original)
         self.assertFalse((self.fixture / "labels-judge.json").exists())
 
