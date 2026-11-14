@@ -770,3 +770,4 @@ TUI | `result_paint::read_from_the_middle_of_a_file_is_coloured` (T0)
 TUI | `result_paint::shell_colour_codes_render_as_colour` (T0)
 console notebook pane | `notebook_text::notebook_text_colours_codes_json_and_paths` (T0)
 TUI | `composer_box::a_pasted_image_rides_the_submission_that_names_it` (T0)
+console editor and viewers | `app::menu::tests::a_new_pane_or_tab_opens_chat`

@@ -826,8 +826,8 @@ impl App {
 
     pub(super) fn apply_action(&mut self, outbound: &Outbound, action: Action) {
         match action {
-            Action::SplitRight => self.split_share(Direction::Horizontal, 0.5),
-            Action::SplitDown => self.split_share(Direction::Vertical, 0.5),
+            Action::SplitRight => self.open_chat_beside(outbound, Some(Direction::Horizontal)),
+            Action::SplitDown => self.open_chat_beside(outbound, Some(Direction::Vertical)),
             Action::ClosePane => match self.close_tab_or_pane() {
                 None => self.note("last pane — alt+q quits"),
                 Some(mut pane) => {
@@ -845,7 +845,7 @@ impl App {
             Action::FocusRight => self.focus_direction(NavDirection::Right),
             Action::FocusUp => self.focus_direction(NavDirection::Up),
             Action::FocusDown => self.focus_direction(NavDirection::Down),
-            Action::NewTab => self.state.new_tab(),
+            Action::NewTab => self.open_chat_beside(outbound, None),
             Action::NextTab => {
                 let next = self
                     .state
