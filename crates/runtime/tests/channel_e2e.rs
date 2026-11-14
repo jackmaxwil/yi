@@ -251,6 +251,151 @@ fn a_duplicate_message_id_is_delivered_once() -> TestResult {
     Ok(())
 }
 
+fn stamped(todos: &TodoStore) -> Vec<Vec<String>> {
+    todos
+        .list()
+        .items()
+        .filter_map(|item| item.extra.get("channel")?.get("ids")?.as_array().cloned())
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_owned))
+                .collect()
+        })
+        .collect()
+}
+
+/// A reviewer's reply on a PR whose todo is still open is input to that work: under overlap
+/// `skip` it used to wait unacked until the todo closed, and a second PR waited behind the first.
+#[test]
+fn a_message_on_an_open_threads_todo_joins_it_and_a_new_thread_opens_its_own() -> TestResult {
+    let dir = Scratch::new("yi-channel-thread")?;
+    let channel = Channel::at(dir.join("ci.jsonl"));
+    channel.open("channel://ci", None)?;
+    let job = subscription(&channel, "sub-ci", None)?;
+    let todos = TodoStore::new(Arc::new(|| None), "main");
+    let on = |thread: &str, actor: &str| serde_json::json!({"thread": thread, "actor": actor, "body": "ü"});
+    channel.append("c1", 1, on("pr-7", "alice"))?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+
+    channel.append("c2", 2, on("pr-7", "bob"))?;
+    channel.append("c3", 3, on("pr-8", "alice"))?;
+    let fired = clock::fire(&todos, &job, &Firing::at(0))?;
+    assert!(matches!(fired, Fired::Delivered(..)), "{fired:?}");
+    assert_eq!(
+        stamped(&todos),
+        vec![
+            vec!["c1".to_owned(), "c2".to_owned()],
+            vec!["c3".to_owned()]
+        ],
+        "pr-7's reply joins its open todo and pr-8 opens one"
+    );
+    assert_eq!(
+        channel.meta()?.acks.get("sub-ci"),
+        Some(&3),
+        "joined messages are acked"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unthreaded_group_does_not_hold_a_threaded_groups_delivery_and_a_joined_thread_wake_names_the_todo_and_its_follow_up_input()
+-> TestResult {
+    let dir = Scratch::new("yi-channel-mixed-thread")?;
+    let channel = Channel::at(dir.join("ci.jsonl"));
+    channel.open("channel://ci", None)?;
+    let mut job = subscription(&channel, "sub-ci", None)?;
+    if let Some(sub) = job.channel.as_mut() {
+        sub.batch = Some(2);
+    }
+    let todos = TodoStore::new(Arc::new(|| None), "main");
+    let threaded =
+        |body: &str| serde_json::json!({"thread": "pr-7", "actor": "alice", "body": body});
+    channel.append("thread-open", 1, threaded("first"))?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+    let Some(thread_todo) = todos
+        .list()
+        .items()
+        .next()
+        .map(|item| item.label.to_string())
+    else {
+        return Err("initial threaded message made no todo".into());
+    };
+    channel.append("unthreaded-open", 2, serde_json::json!({"body": "first"}))?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+
+    channel.append("unthreaded-held", 3, serde_json::json!({"body": "second"}))?;
+    channel.append("thread-follow", 4, threaded("second"))?;
+    let fired = clock::fire(&todos, &job, &Firing::at(0))?;
+    let Fired::Delivered(inner, _) = &fired else {
+        return Err(format!("the threaded message was held: {fired:?}").into());
+    };
+    let Fired::Followed(created, joined) = inner.as_ref() else {
+        return Err(format!("the threaded message did not join: {inner:?}").into());
+    };
+    assert!(
+        created.is_empty(),
+        "a known thread opened another todo: {created:?}"
+    );
+    assert_eq!(joined, &vec![thread_todo.clone()]);
+    assert_eq!(
+        stamped(&todos),
+        vec![
+            vec!["thread-open".to_owned(), "thread-follow".to_owned()],
+            vec!["unthreaded-open".to_owned()],
+        ],
+        "the held unthreaded message was delivered or the threaded message was not joined"
+    );
+    assert_eq!(
+        channel.meta()?.acks.get("sub-ci"),
+        Some(&2),
+        "the held unthreaded message was acknowledged"
+    );
+
+    let Some(AgentMessage::Custom {
+        content: UserContent::Text(wake),
+        ..
+    }) = clock::wake_message(&job, &fired, 0)
+    else {
+        return Err("a joined thread delivery made no heartbeat message".into());
+    };
+    assert!(
+        wake.contains(&thread_todo)
+            && wake.contains("follow up the open thread todo(s)")
+            && wake.contains("new input to that work"),
+        "the heartbeat does not identify follow-up input for its todo: {wake}"
+    );
+    // Incident: the held message pinned the ack, and its delivered neighbour filled the window.
+    channel.append("thread-late", 5, threaded("third"))?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+    assert_eq!(
+        stamped(&todos).first().map(Vec::len),
+        Some(3),
+        "a threaded message past a full window of delivered ones was never read"
+    );
+    Ok(())
+}
+
+/// The trust gate runs before any model: a filter naming who may start work admits each of
+/// them, and a stranger's message creates nothing.
+#[test]
+fn a_filter_with_alternatives_admits_each_listed_actor_and_no_other() -> TestResult {
+    let dir = Scratch::new("yi-channel-allow")?;
+    let channel = Channel::at(dir.join("ci.jsonl"));
+    channel.open("channel://ci", None)?;
+    let mut job = subscription(&channel, "sub-ci", None)?;
+    job.overlap = Some(Overlap::Allow);
+    if let Some(sub) = job.channel.as_mut() {
+        sub.filter = Some("actor=alice|bob".to_owned());
+    }
+    let todos = TodoStore::new(Arc::new(|| None), "main");
+    for (id, actor) in [("m1", "mallory"), ("m2", "bob"), ("m3", "alice|bob")] {
+        channel.append(id, 1, serde_json::json!({"thread": id, "actor": actor}))?;
+    }
+    clock::fire(&todos, &job, &Firing::at(0))?;
+    assert_eq!(stamped(&todos), vec![vec!["m2".to_owned()]]);
+    Ok(())
+}
+
 async fn create(
     host: &HostRegistry,
     payload: serde_json::Value,

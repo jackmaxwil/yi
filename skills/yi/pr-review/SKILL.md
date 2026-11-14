@@ -49,4 +49,8 @@ await rlm.subscribe(
 )
 ```
 
+Each head carries `thread: pr-<n>` and `actor: <login>`. A push to a PR whose review todo is still
+open joins that todo instead of waiting behind it, and `filter="draft=true&actor=jack|claude"` keeps
+strangers' PRs from starting a round.
+
 The review model is whatever `YI_REVIEW_MODEL` names, else the configured primary, of any family.

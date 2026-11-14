@@ -1174,8 +1174,11 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   It is never authority once delivered: the target's log is written first, then the ack.
 - A channel job carries `channel: {address, path, filter?, batch?}` and ticks on its cadence (60 s
   unasked); a landing message pokes it due, and a tick on a channel no adapter feeds with nothing
-  past its ack re-arms in memory, with no claim and no ledger write. It filters on the host, creates one todo per batch
-  (stamped `channel: {job, ids}`) or unblocks its waiter, and wakes with the messages fenced as data.
+  past its ack re-arms in memory, with no claim and no ledger write. It filters on the host (`key=a|b`
+  admits any listed value, which is how `actor=alice|bob` gates who can start work), creates one todo
+  per batch (stamped `channel: {job, ids, thread?}`) or unblocks its waiter, and wakes with the
+  messages fenced as data. A message whose `data.thread` has an open todo joins that todo's stamp as
+  follow-up input; one on a new thread opens its own todo whatever the job's overlap.
   `External {probe}` is an `exec` wait on `ok=true`. [`plan/timer.rs`](../crates/runtime/src/plan/timer.rs)
   runs only leases, stuck children and the dispatch backstop.
 - Adapters: `exec://` and `file://` in the host; any other scheme is `yi-adapter-<scheme>`
