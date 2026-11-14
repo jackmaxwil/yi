@@ -94,8 +94,7 @@ impl App {
     pub(super) fn open_chat_beside(&mut self, outbound: &Outbound, direction: Option<Direction>) {
         let root = (self.state.focused_pane_id())
             .and_then(|id| self.state.panes.get(&id)?.session().cloned())
-            .and_then(|id| Some(self.state.sessions.get(&id)?.root.clone()))
-            .unwrap_or_else(|| self.state.root.clone());
+            .map_or_else(|| self.state.root.clone(), |session| self.root_of(&session));
         match direction {
             Some(direction) => self.split_share(direction, 0.5),
             None => self.state.new_tab(),
@@ -618,13 +617,28 @@ mod tests {
     fn a_new_pane_or_tab_opens_chat() -> Result<(), String> {
         let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
         app.state.link = crate::model::Link::Connected;
+        app.state.upsert_row(SessionRow {
+            id: SessionId("other".to_owned()),
+            root: "/other".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some("other".to_owned()),
+            created_ms: 0,
+            last_ms: 0,
+            pinned: None,
+        });
+        let other = SessionId("other".to_owned());
         let (events, _received) = crate::client::events();
         let socket = std::env::temp_dir().join("yi-menu-new-pane-chat-no-daemon.sock");
         let (outbound, _threads) = crate::client::spawn(socket, events);
+        let first = app.state.focused_pane_id().ok_or("no focused pane")?;
+        app.bind_pane(first, &other);
         let mut opened = Vec::new();
         for action in [Action::SplitRight, Action::SplitDown, Action::NewTab] {
             app.apply_action(&outbound, action);
-            opened.push(app.state.focused_pane_id().ok_or("no focused pane")?);
+            let pane = app.state.focused_pane_id().ok_or("no focused pane")?;
+            app.bind_pane(pane, &other);
+            opened.push(pane);
         }
         let started: Vec<_> = (app.pending.values())
             .filter_map(|pending| match &pending.kind {
@@ -635,8 +649,8 @@ mod tests {
         outbound.shutdown();
         for pane in opened {
             assert!(
-                started.contains(&(pane, "/repo".to_owned())),
-                "{pane:?} opened with no chat: {started:?}"
+                started.contains(&(pane, "/other".to_owned())),
+                "{pane:?} did not open in the focused pane's project /other: {started:?}"
             );
         }
         Ok(())

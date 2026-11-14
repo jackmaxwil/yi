@@ -258,7 +258,7 @@ impl App {
         }
     }
 
-    fn root_of(&self, session: &SessionId) -> String {
+    pub(super) fn root_of(&self, session: &SessionId) -> String {
         self.state
             .sessions
             .get(session)
