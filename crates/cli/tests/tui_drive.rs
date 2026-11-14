@@ -569,29 +569,15 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
     let socket = dir.join("c.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket)?;
     let sessions = dir.join("sessions");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the control socket only exists on an interactive run, which needs a real pty"
-    )]
-    let mut pty = Command::new("python3")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../scripts/tui_pty.py"
-        ))
-        .args(["--seconds", "60", "--stdin"])
-        .arg("--binary")
-        .arg(crate::yi_bin::bin())
-        .arg("--home")
-        .arg(&home)
+    let mut pty = crate::pty::pty_command(&home, &dir)
+        .arg("--stdin")
         .args(["--", "tui", "--model", "faux/faux-1", "--faux"])
         .arg(&cassette)
         .arg("--session-dir")
         .arg(&sessions)
         .arg("--control")
         .arg(&socket)
-        .current_dir(&*dir)
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
         .spawn()?;
     let mut keys = pty.stdin.take().ok_or("no stdin")?;
     keys.write_all(b"first\r")?;

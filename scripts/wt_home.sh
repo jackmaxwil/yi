@@ -7,6 +7,10 @@ if [ "$HOME" = "$home" ]; then exec "$@"; fi
 real="$HOME"
 mkdir -p "$home"
 if [ -f "$real/.gitconfig" ]; then cp "$real/.gitconfig" "$home/.gitconfig"; fi
+if [ -d "$real/.config/fgj" ] && [ ! -e "$home/.config/fgj" ]; then
+  mkdir -p "$home/.config"
+  ln -s "$real/.config/fgj" "$home/.config/fgj"
+fi
 # RUSTUP_AUTO_INSTALL=0: a shared RUSTUP_HOME is safe to read but two concurrent installs of one
 # toolchain can corrupt it (rust-lang/rustup#988), so a missing toolchain fails instead.
 exec env HOME="$home" \

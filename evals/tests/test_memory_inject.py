@@ -78,6 +78,7 @@ class LabelTest(unittest.TestCase):
         self.assertEqual(judged["labeling"]["by"], "judge openrouter/test-judge")
 
     def test_label_refuses_a_reply_whose_cost_cannot_be_counted(self):
+        # A gate reads `^FAIL` lines as failures, so this expected refusal is kept off stderr.
         complaint = io.StringIO()
         with mock.patch.object(memory_inject.urllib.request, "urlopen", return_value=Reply(answer(None))):
             with contextlib.redirect_stderr(complaint):

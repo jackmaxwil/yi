@@ -266,7 +266,7 @@ fn row_ops(
     let already = was.map(TodoStateName::as_str) == Some(want.as_str());
     match want.as_str() {
         "done" if by_engine || parked => ops.push(op("done")),
-        "running" if row.contains_key("delegation") || parked => ops.push(op("start")),
+        "running" if (by_engine && !already) || parked => ops.push(op("start")),
         "blocked" if !already => ops.push(json!({"op": "block", "label": label,
             "on": on.unwrap_or_else(|| json!({"user": null})), "note": note.unwrap_or_else(|| json!(label)),
             "options": options.unwrap_or(Value::Null)})),
