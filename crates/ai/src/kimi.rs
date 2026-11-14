@@ -2,7 +2,7 @@
 //! catalog, so no Kimi id, window or price is compiled in.
 
 use serde_json::{Map, Value, json};
-use yi_types::config::DiscoveredCustomLimit;
+use yi_types::config::{DiscoveredCustomLimit, reasoning_kind_thinks};
 use yi_types::model::{Effort, Model, ModelCost};
 
 use crate::request::{ProxyConfig, get_json};
@@ -36,7 +36,7 @@ fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model,
     let kind = reasoning
         .and_then(|r| r.get("type"))
         .and_then(Value::as_str);
-    let thinks = matches!(kind, Some("only" | "both"));
+    let thinks = reasoning_kind_thinks(kind);
     let valid: Vec<&str> = reasoning
         .and_then(|r| r.pointer("/effort/valid"))
         .and_then(Value::as_array)

@@ -236,6 +236,11 @@ where
     Ok(DiscoveredCustomLimit::from_value(&value))
 }
 
+/// A model list's `reasoning.type`: `only` and `both` think, any other value or none does not.
+pub fn reasoning_kind_thinks(kind: Option<&str>) -> bool {
+    matches!(kind, Some("only" | "both"))
+}
+
 fn lenient_reasoning<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -243,10 +248,13 @@ where
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(match &value {
         serde_json::Value::Bool(enabled) => Some(*enabled),
-        serde_json::Value::Object(map) => match map.get("type").and_then(|kind| kind.as_str()) {
-            Some("only" | "both") => Some(true),
-            _ => map.get("enabled").and_then(serde_json::Value::as_bool),
-        },
+        serde_json::Value::Object(map) => {
+            if reasoning_kind_thinks(map.get("type").and_then(serde_json::Value::as_str)) {
+                Some(true)
+            } else {
+                map.get("enabled").and_then(serde_json::Value::as_bool)
+            }
+        }
         _ => None,
     })
 }
