@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use yi_tui::SessionPort;
-use yi_tui::colors::{ColorTier, Theme, name_tile, tile_style_at};
+use yi_tui::colors::{ColorTier, Theme, leaf_name, name_tile, tile_style_at};
 use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
@@ -593,7 +593,7 @@ pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 pub(crate) fn short_path(path: &str) -> String {
-    path.rsplit('/').next().unwrap_or(path).to_owned()
+    leaf_name(path).to_owned()
 }
 
 pub(crate) fn status_style(theme: &Theme, status: SessionStatus) -> Style {
