@@ -429,6 +429,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         Arc::clone(&cut),
         Box::new(move || super::store_of(&stores)),
         model.clone(),
+        tool_cwd.clone(),
     );
     config.convert_to_llm = match reads {
         true => Box::new(move |messages| overlay.view(yi_context::convert_to_llm(messages))),
