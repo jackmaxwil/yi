@@ -244,6 +244,7 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
             Intent::None
         }
         KeyCode::Enter => begin(settings, options, How::Key),
+        KeyCode::Char(' ') => begin(settings, options, How::Click),
         KeyCode::Char('u') if settings.tab != SESSION && settings.tab != KEYS => {
             match settings
                 .tab_rows()
@@ -462,6 +463,10 @@ fn applies(applies: Applies) -> &'static str {
     }
 }
 
+fn at_default(shown: &str) -> bool {
+    shown == "unset" || shown.ends_with("(default)")
+}
+
 fn clip(text: &str, width: usize) -> String {
     let count = text.chars().count();
     if count <= width {
@@ -641,7 +646,10 @@ pub fn view(
     visible: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![tab_bar(settings, width, theme), Line::default()];
+    let mut lines = vec![
+        tab_bar(settings, width, theme),
+        Line::styled("─".repeat(width), theme.dim_style()),
+    ];
     let rows = shown_rows(settings, options, cmd);
     let (first, room) = window(settings, visible);
     if waiting(settings) {
@@ -675,19 +683,34 @@ pub fn view(
                 .map_or_else(String::new, |pick| format!("‹ {pick} ›")),
             None => shown.clone(),
         };
-        let style = if chosen {
-            Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
+        let bar = if chosen {
+            Style::default().bg(theme.selection_bg())
+        } else {
+            Style::default()
+        };
+        let label_style = if chosen {
+            bar.fg(theme.text).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.text)
         };
-        lines.push(Line::from(vec![
+        let value_style = if editing.is_some() {
+            bar.fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else if at_default(&shown) {
+            bar.patch(theme.dim_style())
+        } else {
+            bar.fg(theme.teal)
+        };
+        let mut spans = vec![
             Span::styled(
                 format!(" {marker}{}", clip(name, label.saturating_sub(3))),
-                style,
+                label_style,
             ),
-            Span::styled(clip(&shown, value), Style::default().fg(theme.teal)),
-            Span::styled(clip(applies, tail), theme.dim_style()),
-        ]));
+            Span::styled(clip(&shown, value), value_style),
+            Span::styled(clip(applies, tail), bar.patch(theme.dim_style())),
+        ];
+        let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+        spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), bar));
+        lines.push(Line::from(spans));
         if let (true, Some((start, shown, total))) = (chosen, list_span(settings)) {
             lines.extend(listed(settings, start, shown, theme));
             if shown < total {
@@ -739,9 +762,19 @@ pub fn view(
             " ↑↓ choose · enter saves it for a dark terminal · esc cancel"
         }
         (Some(Edit::Pick { .. }), _) => " ↑↓ choose · enter save · esc cancel",
-        (None, SESSION) => " ↑↓ move · ←→ tab · enter change · d make default",
+        (None, SESSION) => " ↑↓ move · ←→ tab · space next · enter pick · d make default",
         (None, KEYS) => " ↑↓ move · ←→ tab",
-        (None, _) => " ↑↓ move · ←→ tab · enter change · u unset",
+        (None, _) => match settings
+            .tab_rows()
+            .get(settings.cursor)
+            .map(|row| &row.kind)
+        {
+            Some(SettingKind::Toggle) => " ↑↓ move · ←→ tab · space toggle · u unset",
+            Some(SettingKind::Choice { .. }) => {
+                " ↑↓ move · ←→ tab · space next · enter pick · u unset"
+            }
+            _ => " ↑↓ move · ←→ tab · enter edit · u unset",
+        },
     };
     lines.push(Line::styled(hint, theme.dim_style()));
     lines
@@ -987,6 +1020,30 @@ mod theme_rows {
         assert!(below > 0, "the tab has rows under the theme row");
         let more = lines.iter().map(text).find(|line| line.contains("more ·"));
         assert_eq!(more.as_deref(), Some("        … 97 more · ↑↓ to reach"));
+        Ok(())
+    }
+
+    #[test]
+    fn space_changes_the_chosen_setting_like_enter() -> TestResult {
+        let mut settings = on_dark_theme()?;
+        press(&mut settings, KeyCode::Char(' '));
+        assert!(settings.edit.is_some(), "space did not open the row");
+        Ok(())
+    }
+
+    #[test]
+    fn the_chosen_settings_row_is_a_full_width_bar_with_dim_defaults() -> TestResult {
+        let settings = on_dark_theme()?;
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = view(&settings, &[], false, 80, 40, &theme);
+        let bar = theme.selection_bg();
+        let barred = |line: &&Line| {
+            !line.spans.is_empty() && line.spans.iter().all(|span| span.style.bg == Some(bar))
+        };
+        let chosen = lines.iter().find(barred).ok_or("no highlighted row")?;
+        assert_eq!(text(chosen).chars().count(), 80, "the bar stops short");
+        let others = lines.iter().filter(barred).count();
+        assert_eq!(others, 1, "more than one row is highlighted");
         Ok(())
     }
 
