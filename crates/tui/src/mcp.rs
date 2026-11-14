@@ -16,6 +16,7 @@ enum Outcome {
 }
 
 type Slot = Arc<Mutex<Option<Outcome>>>;
+type Probe = Arc<dyn Fn(&McpRow) -> Result<Vec<McpRow>, String> + Send + Sync>;
 pub struct McpPage {
     home: Option<PathBuf>,
     rows: Vec<McpRow>,
@@ -24,6 +25,7 @@ pub struct McpPage {
     note: String,
     error: Option<String>,
     busy: Option<(String, Slot)>,
+    probe: Probe,
 }
 
 impl crate::app::App {
@@ -64,8 +66,11 @@ fn mark(row: &McpRow) -> &'static str {
 
 impl McpPage {
     pub fn open(home: Option<PathBuf>) -> Self {
-        let mut page = Self::from_rows(home, false, Vec::new());
-        page.reload();
+        let enabled = home.as_deref().is_some_and(mcp_page::enabled);
+        let mut page = Self::from_rows(home, enabled, Vec::new());
+        if page.enabled {
+            page.list_servers();
+        }
         page
     }
 
@@ -78,6 +83,7 @@ impl McpPage {
             note: String::new(),
             error: None,
             busy: None,
+            probe: Arc::new(mcp_page::probe),
         }
     }
 
@@ -95,13 +101,20 @@ impl McpPage {
         };
         self.enabled = mcp_page::enabled(home);
         self.rows.clear();
+        self.selected = 0;
         if self.enabled {
-            match mcp_page::servers() {
-                Ok(rows) => self.rows = rows,
-                Err(error) => self.error = Some(error),
-            }
+            self.list_servers();
         }
-        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+    }
+
+    fn list_servers(&mut self) {
+        self.spawn(
+            "listing MCP servers".to_owned(),
+            || match mcp_page::servers() {
+                Ok(rows) => Outcome::Rows("loaded MCP servers".to_owned(), rows),
+                Err(error) => Outcome::Failed(error),
+            },
+        );
     }
 
     fn selected_row(&self) -> Option<&McpRow> {
@@ -140,11 +153,10 @@ impl McpPage {
             return;
         };
         let name = row.name.clone();
-        self.spawn(format!("probing {name}"), move || {
-            match mcp_page::probe(&row) {
-                Ok(rows) => Outcome::Rows(format!("probed {name}"), rows),
-                Err(error) => Outcome::Failed(format!("probe {name}: {error}")),
-            }
+        let probe = Arc::clone(&self.probe);
+        self.spawn(format!("probing {name}"), move || match probe(&row) {
+            Ok(rows) => Outcome::Rows(format!("probed {name}"), rows),
+            Err(error) => Outcome::Failed(format!("probe {name}: {error}")),
         });
     }
 
@@ -339,11 +351,47 @@ impl BottomView for McpPage {
                 'p' => self.probe(),
                 'l' => self.login(),
                 'o' => self.open_config(),
+
                 'r' => self.reload(),
                 _ => {}
             },
             _ => {}
         }
         PopupResult::Open
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_page_probe_key_moves_the_tool_count_to_the_result()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let row = McpRow {
+            name: "fixture".to_owned(),
+            source: ".mcp.json".to_owned(),
+            path: PathBuf::from(".mcp.json"),
+            transport: "stdio".to_owned(),
+            target: "fixture".to_owned(),
+            enabled: true,
+            session: "fixture".to_owned(),
+            state: None,
+            tools: None,
+        };
+        let mut page = McpPage::from_rows(None, true, vec![row]);
+        page.probe = Arc::new(|row| {
+            let mut row = row.clone();
+            row.tools = Some(2);
+            Ok(vec![row])
+        });
+        let key = SingleKey::parse("p").map_err(std::io::Error::other)?;
+        page.handle_key(&key);
+        while page.is_busy() {
+            let _ = page.poll();
+            std::thread::yield_now();
+        }
+        assert_eq!(page.rows.first().and_then(|row| row.tools), Some(2));
+        Ok(())
     }
 }

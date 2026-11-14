@@ -140,12 +140,7 @@ pub fn set_enabled(home: &Path, on: bool) -> Result<(), String> {
 }
 
 pub fn open_config(path: &Path) -> Result<(), String> {
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    let mut command = keyless_command(opener);
+    let mut command = keyless_command(yi_ai::desktop_opener());
     command.arg(path);
     let capture = run_captured_until(command, None, None, Duration::from_secs(10), OUTPUT_CAP)?;
     if capture.exit_code == Some(0) {

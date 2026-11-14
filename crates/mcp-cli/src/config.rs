@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use yi_types::mcp::McpServerSpec;
@@ -106,22 +106,16 @@ pub fn resolve_server(server: &str, home: &Path) -> Result<(String, McpServerSpe
     if Path::new(server).is_file() {
         return from_file(Path::new(server), None);
     }
-    let default_config = home.join(".yi").join("mcp.json");
-    if default_config.is_file()
-        && let Ok(found) = from_file(&default_config, Some(server))
-    {
-        return Ok(found);
-    }
-    for candidate in [".mcp.json", ".vscode/mcp.json", ".cursor/mcp.json"] {
-        let path = Path::new(candidate);
+    for (_, path) in config_sources(home) {
         if path.is_file()
-            && let Ok(found) = from_file(path, Some(server))
+            && let Ok(found) = from_file(&path, Some(server))
         {
             return Ok(found);
         }
     }
     Err(format!(
-        "cannot resolve server {server}: not a URL, config path, or entry in ~/.yi/mcp.json / .mcp.json / .vscode/mcp.json / .cursor/mcp.json"
+        "cannot resolve server {server}: not a URL, config path, or entry in {}",
+        CONFIG_SOURCES.join(" / ")
     ))
 }
 
@@ -131,12 +125,18 @@ const CONFIG_SOURCES: [&str; 4] = [
     ".vscode/mcp.json",
     ".cursor/mcp.json",
 ];
-pub fn list_servers(home: &Path, store: &crate::sessions::SessionsStore) -> Value {
-    let mut rows = Vec::new();
-    for source in CONFIG_SOURCES {
+
+fn config_sources(home: &Path) -> impl Iterator<Item = (&'static str, PathBuf)> {
+    CONFIG_SOURCES.into_iter().map(move |source| {
         let path = source
             .strip_prefix("~/")
             .map_or_else(|| Path::new(source).to_path_buf(), |rest| home.join(rest));
+        (source, path)
+    })
+}
+pub fn list_servers(home: &Path, store: &crate::sessions::SessionsStore) -> Value {
+    let mut rows = Vec::new();
+    for (source, path) in config_sources(home) {
         if !path.is_file() {
             continue;
         }

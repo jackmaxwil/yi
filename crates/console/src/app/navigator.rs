@@ -248,4 +248,19 @@ mod tests {
         let _ = std::fs::remove_file(&second);
         Ok(())
     }
+
+    #[test]
+    fn mcp_opens_an_mcp_pane() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = crate::app::App::new("/r".to_owned(), theme);
+        assert!(app.run_navigator_command("mcp"));
+        let pane = app.state.focused_pane_id().ok_or("a pane")?;
+        let opens_mcp = app
+            .state
+            .panes
+            .get(&pane)
+            .is_some_and(|pane| matches!(pane.content, crate::model::PaneContent::Mcp(_)));
+        assert!(opens_mcp, "the palette opened an MCP pane");
+        Ok(())
+    }
 }
