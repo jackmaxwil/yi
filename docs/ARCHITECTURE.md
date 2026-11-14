@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.1057.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.1058.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -356,6 +356,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D601 | reclaim keeps a read or grep result past the age floor while every `[path#TAG]` it printed matches the file on disk and the last reply used under `reclaim.keep_below_pct` (30) of the window (amends D597) | ten Sonnet 5.5 children reread a path they had already read 518 times and repeated 197 exact calls because results aged out at five requests while under 10% of the window was used; 396 of the 404 rereads past the floor were of a file whose tag had not changed | reversible via `reclaim.keep_below_pct = 0`, which restores the age-floor-only rule |
 | D600 | provider `openai-codex` is compiled: its client id, authorize and token endpoints, loopback redirect `http://localhost:1455/auth/callback`, scopes and extra authorize params live in the binary as a built-in `oauth-code` profile, like `cursor` (revises D191 for `cursor` and `openai-codex`; a profile at `~/.yi/oauth/openai-codex.json` still wins) | the owner asked for `yi login codex`, a ChatGPT Plus/Pro subscription login, and the Codex CLI's public client registers exactly that redirect, so a user cannot supply a working profile without copying the identity by hand | delete `crates/oauth/src/codex.rs` and its registry lookup, which restores D191 for everything but `cursor` |
 | D599 | The console and TUI model pickers offer only providers that hold a credential | An unkeyed provider's models were offered beside the ones the user can run, and picking one only failed at its first turn; with no credential anywhere the whole catalog is still offered so a fresh install can browse | Call the unfiltered registry list in both pickers again |
 | D598 | Custom providers with no explicit models discover their OpenAI-compatible model list on first use | Static model lists remain offline and unchanged, while an unavailable dynamic provider does not delay unrelated startup | Configure explicit models or restore the previous catalog-only resolver |

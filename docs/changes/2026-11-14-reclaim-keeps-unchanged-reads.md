@@ -1,4 +1,6 @@
 ---
+version: 0.1058.0
+decisions: D601
 issue: Refs #2211
 growth: +179 the unchanged-file check (per-path hash memo keyed by mtime and length), the context-share gate, and the cwd the overlay needs to resolve a header's path; weighed for deletion: Sections already parsed the headers, so the parse is reused and only the tag is kept beside the path
 decision: reclaim keeps a read or grep result past the age floor while every `[path#TAG]` it printed matches the file on disk and the last reply used under `reclaim.keep_below_pct` (30) of the window (amends D597) | ten Sonnet 5.5 children reread a path they had already read 518 times and repeated 197 exact calls because results aged out at five requests while under 10% of the window was used; 396 of the 404 rereads past the floor were of a file whose tag had not changed | reversible via `reclaim.keep_below_pct = 0`, which restores the age-floor-only rule

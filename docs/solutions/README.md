@@ -571,5 +571,6 @@ edited by hand.
 - [D598](adr/d598.md) - Custom providers with no explicit models discover their OpenAI-compatible...
 - [D599](adr/d599.md) - The console and TUI model pickers offer only providers that hold a credential
 - [D600](adr/d600.md) - provider `openai-codex` is compiled
+- [D601](adr/d601.md) - reclaim keeps a read or grep result past the age floor while every...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
