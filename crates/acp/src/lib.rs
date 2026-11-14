@@ -18,17 +18,14 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+use agent_client_protocol_schema::v2 as acp;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use yi_runtime::session_store::{
     CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
 use yi_runtime::{AgentSession, Asker, SubagentHost, available_models, select_model};
-use yi_types::acp::{
-    AcpConfigChoice, AcpConfigKind, AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame,
-    AcpImplementation, AcpInitializeResult, AcpMeta, AcpResponse, AcpSessionResult,
-    AcpSessionUpdate,
-};
+use yi_types::acp::AcpMeta;
 use yi_types::event::AgentEvent;
 use yi_types::subagent::ChildId;
 
@@ -136,7 +133,7 @@ fn mode_value(mode: Option<yi_runtime::PermissionMode>) -> &'static str {
     mode.map_or("ask", yi_runtime::gate::mode_label)
 }
 
-fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
+fn config_options(session: &AgentSession) -> Vec<acp::SessionConfigOption> {
     options_for(
         &session.model(),
         session.effort(),
@@ -148,30 +145,29 @@ fn options_for(
     model: &yi_types::model::Model,
     effort: yi_types::model::Effort,
     mode: &str,
-) -> Vec<AcpConfigOption> {
-    let choice = |value: String, name: String| AcpConfigChoice { value, name };
-    let models = available_models()
+) -> Vec<acp::SessionConfigOption> {
+    let choice = |value: String, name: String| acp::SessionConfigSelectOption::new(value, name);
+    let models: Vec<_> = available_models()
         .iter()
         .map(|candidate| {
             let value = format!("{}/{}", candidate.provider, candidate.id);
             choice(value, candidate.name.clone())
         })
         .collect();
-    let modes = ["ask", "auto", "yolo"]
+    let modes: Vec<_> = ["ask", "auto", "yolo"]
         .iter()
         .map(|mode| choice((*mode).to_owned(), (*mode).to_owned()))
         .collect();
-    let levels = model
+    let levels: Vec<_> = model
         .supported_efforts()
         .iter()
         .map(|level| choice(level.to_string(), level.to_string()))
         .collect();
-    let select = |config_id: &str, name: &str, current_value: String, options| AcpConfigOption {
-        config_id: config_id.to_owned(),
-        name: name.to_owned(),
-        kind: AcpConfigKind::Select,
-        current_value,
-        options,
+    let select = |config_id: &str,
+                  name: &str,
+                  current_value: String,
+                  options: Vec<acp::SessionConfigSelectOption>| {
+        acp::SessionConfigOption::select(config_id, name, current_value, options)
     };
     vec![
         select(
@@ -313,21 +309,25 @@ impl AcpState {
         }
     }
 
-    fn session_result(&self, session_id: &str) -> AcpSessionResult {
-        let handle = self.sessions.get(session_id);
-        let options = handle
+    fn session_options(&self, session_id: &str) -> Vec<acp::SessionConfigOption> {
+        self.sessions
+            .get(session_id)
             .map(|handle| config_options(&handle.session))
-            .unwrap_or_default();
-        let name = self
+            .unwrap_or_default()
+    }
+
+    fn session_meta(&self, session_id: &str) -> AcpMeta {
+        let mut meta = AcpMeta::default();
+        meta.yi.name = self
             .store_of(session_id)
             .and_then(|store| session_name(&store));
-        let mut meta = AcpMeta::default();
-        meta.yi.name = name;
-        AcpSessionResult {
-            session_id: Some(session_id.to_owned()),
-            config_options: options,
-            meta: Some(meta),
-        }
+        meta
+    }
+
+    fn session_result(&self, session_id: &str) -> acp::NewSessionResponse {
+        acp::NewSessionResponse::new(session_id)
+            .config_options(self.session_options(session_id))
+            .meta(meta_map(&self.session_meta(session_id)))
     }
 
     /// Answered by the forwarder once the prompt is inserted; only a refusal answers here.
@@ -431,6 +431,21 @@ impl AcpState {
         Ok(json!({"configOptions": self.session_result(&id).config_options}))
     }
 
+    fn initialize(&mut self, params: &Value) -> Result<Value, (i64, String)> {
+        let requested = params
+            .get("protocolVersion")
+            .and_then(Value::as_u64)
+            .ok_or((INVALID_PARAMS, "missing protocolVersion".to_owned()))?;
+        negotiate(requested).map_err(|message| (INVALID_PARAMS, message))?;
+        self.initialized = true;
+        let info = acp::Implementation::new("yi", self.agent_version.clone());
+        let session = acp::SessionCapabilities::new().delete(acp::SessionDeleteCapabilities::new());
+        Ok(json!(
+            acp::InitializeResponse::new(agent_client_protocol_schema::ProtocolVersion::V2, info)
+                .capabilities(acp::AgentCapabilities::new().session(session))
+        ))
+    }
+
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         if !matches!(
             method,
@@ -442,23 +457,7 @@ impl AcpState {
             self.settle(&id);
         }
         match method {
-            "initialize" => {
-                let requested = params
-                    .get("protocolVersion")
-                    .and_then(Value::as_u64)
-                    .ok_or((INVALID_PARAMS, "missing protocolVersion".to_owned()))?;
-                let agreed = negotiate(requested).map_err(|message| (INVALID_PARAMS, message))?;
-                self.initialized = true;
-                Ok(json!(AcpInitializeResult {
-                    protocol_version: agreed,
-                    info: AcpImplementation {
-                        name: "yi".to_owned(),
-                        version: self.agent_version.clone(),
-                    },
-                    capabilities: json!({"session": {"delete": {}}}),
-                    auth_methods: Vec::new(),
-                }))
-            }
+            "initialize" => self.initialize(params),
             "session/new" => {
                 let creating = yi_types::trace::span("acp.repo_create");
                 let store = self
@@ -520,8 +519,7 @@ impl AcpState {
                         .map_err(|error| (INVALID_PARAMS, error))?,
                 };
                 self.emit_servers_notice(&id, params);
-                let mut result = self.session_result(&id);
-                result.session_id = None;
+                let mut meta = self.session_meta(&id);
                 // v2 clients send `{"type": "start"}`; a bare number is the
                 // entry-offset extension. Anything non-null replays.
                 if let Some(replay_from) = params.get("replayFrom").filter(|v| !v.is_null()) {
@@ -537,10 +535,13 @@ impl AcpState {
                         None
                     };
                     let total = self.emit_replay_from(&id, &store, from, window, None)?;
-                    let meta = result.meta.get_or_insert_with(AcpMeta::default);
                     meta.yi.replayed_to = Some(replayed.unwrap_or(total));
                 }
-                Ok(json!(result))
+                Ok(json!(
+                    acp::ResumeSessionResponse::new()
+                        .config_options(self.session_options(&id))
+                        .meta(meta_map(&meta))
+                ))
             }
             "session/close" => {
                 let id = Self::session_id(params)?;
@@ -784,12 +785,10 @@ impl AcpState {
     /// A schedule mutation is a fact the client cannot infer from the
     /// method reply alone, since a heartbeat also fires without one.
     fn emit_heartbeat_changed(&self, session_id: &str, reply: &str) {
-        let mut fields = std::collections::BTreeMap::new();
-        fields.insert("text".to_owned(), Value::String(reply.to_owned()));
-        let update = AcpSessionUpdate::Extension(yi_types::acp::AcpExtensionUpdate {
-            session_update: "_yi/heartbeat_changed".to_owned(),
-            fields,
-        });
+        let update = extension(
+            "_yi/heartbeat_changed",
+            [("text", Value::String(reply.to_owned()))],
+        );
         (self.sink)(&update_notification(session_id, update));
     }
 
@@ -815,18 +814,20 @@ fn submit_plan(
         .map_err(|error| (INVALID_PARAMS, error))
 }
 
+fn meta_map(meta: &AcpMeta) -> acp::Meta {
+    match serde_json::to_value(meta) {
+        Ok(Value::Object(map)) => map,
+        _ => acp::Meta::new(),
+    }
+}
+
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
     let frame = match outcome {
-        Ok(result) => json!(AcpResponse {
-            jsonrpc: "2.0".to_owned(),
-            id,
-            result,
-        }),
-        Err((code, message)) => json!(AcpErrorResponse {
-            jsonrpc: "2.0".to_owned(),
-            id,
-            error: AcpErrorShape { code, message },
-        }),
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err((code, message)) => {
+            let code = i32::try_from(code).unwrap_or(-32603);
+            json!({"jsonrpc": "2.0", "id": id, "error": acp::Error::new(code, message)})
+        }
     };
     sink(&frame);
 }
@@ -899,7 +900,12 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
                     continue;
                 }
             };
-            let Ok(incoming) = serde_json::from_str::<AcpFrame>(&line) else {
+            let frame = serde_json::from_str::<Value>(&line).ok();
+            let Some(method) = frame
+                .as_ref()
+                .and_then(|frame| frame.get("method")?.as_str())
+                .map(str::to_owned)
+            else {
                 respond(
                     &sink,
                     Value::Null,
@@ -907,24 +913,31 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
                 );
                 continue;
             };
-            let params = incoming.params.unwrap_or(Value::Null);
-            match incoming.id {
+            let params = frame
+                .as_ref()
+                .and_then(|frame| frame.get("params").cloned())
+                .unwrap_or(Value::Null);
+            let id = frame
+                .as_ref()
+                .and_then(|frame| frame.get("id").cloned())
+                .filter(|id| !id.is_null());
+            match id {
                 Some(id) => {
-                    let _span = yi_types::trace::span(format!("acp {}", incoming.method));
+                    let _span = yi_types::trace::span(format!("acp {method}"));
                     // The worker keeps serving after a prepared answer: the supervisor retires it by
                     // closing stdin, so a refusal it already sent stays true.
-                    let outcome = match incoming.method.as_str() {
+                    let outcome = match method.as_str() {
                         "session/prompt" => state.prompt(id.clone(), &params),
                         "_yi/prepare_replace" => Some(Ok(state.prepare_replace().await)),
                         "_yi/restore" => Some(Ok(state.restore(&params))),
-                        _ => Some(state.handle(&incoming.method, &params)),
+                        _ => Some(state.handle(&method, &params)),
                     };
                     if let Some(outcome) = outcome {
                         respond(&sink, id, outcome);
                     }
                 }
                 None => {
-                    if incoming.method == "session/cancel" {
+                    if method == "session/cancel" {
                         let _ = state.handle("session/cancel", &params);
                     }
                 }

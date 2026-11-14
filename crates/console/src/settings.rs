@@ -1,5 +1,6 @@
 //! The settings pane: the focused session's live options, every config default the daemon
 //! serves, and the key table, a tab each.
+use agent_client_protocol_schema::v2 as acp;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -7,7 +8,6 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use yi_tui::colors::Theme;
 use yi_tui::theme_file::{BUILT_IN, ground_id, is_theme_row};
-use yi_types::acp::AcpConfigOption;
 use yi_types::settings::{Applies, SettingKind, SettingRow, TABS, pane_edits_list};
 
 use crate::model::SessionId;
@@ -85,6 +85,27 @@ pub enum Intent {
 }
 
 /// The config default a session option mirrors, for "make this the default".
+fn current_of(option: &acp::SessionConfigOption) -> String {
+    match &option.kind {
+        acp::SessionConfigKind::Select(select) => select.current_value.0.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn choices_of(option: &acp::SessionConfigOption) -> Vec<&acp::SessionConfigSelectOption> {
+    match &option.kind {
+        acp::SessionConfigKind::Select(select) => match &select.options {
+            acp::SessionConfigSelectOptions::Ungrouped(options) => options.iter().collect(),
+            acp::SessionConfigSelectOptions::Grouped(groups) => groups
+                .iter()
+                .flat_map(|group| group.options.iter())
+                .collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
 fn default_of(config_id: &str) -> Option<&'static str> {
     match config_id {
         "model" => Some("model"),
@@ -108,7 +129,7 @@ fn primary_over<'a>(settings: &Settings, id: &'a str) -> &'a str {
     }
 }
 
-pub(crate) fn count(settings: &Settings, options: &[AcpConfigOption]) -> usize {
+pub(crate) fn count(settings: &Settings, options: &[acp::SessionConfigOption]) -> usize {
     match settings.tab {
         SESSION => options.len(),
         KEYS => crate::keys::CHORDS.len(),
@@ -167,7 +188,7 @@ fn stepped(picks: &[String], current: &str) -> Option<String> {
     picks.get(at).cloned()
 }
 
-pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) -> Intent {
+pub fn key(settings: &mut Settings, key: KeyEvent, options: &[acp::SessionConfigOption]) -> Intent {
     let rows = count(settings, options);
     match settings.edit.take() {
         Some(Edit::Pick {
@@ -261,10 +282,10 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
         }
         KeyCode::Char('d') if settings.tab == SESSION => {
             let option = options.get(settings.cursor);
-            match option.and_then(|option| Some((default_of(&option.config_id)?, option))) {
+            match option.and_then(|option| Some((default_of(&option.config_id.0)?, option))) {
                 Some((id, option)) => Intent::SaveDefault {
                     id: primary_over(settings, id).to_owned(),
-                    value: Value::String(option.current_value.clone()),
+                    value: Value::String(current_of(option)),
                 },
                 None => Intent::None,
             }
@@ -274,13 +295,17 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
 }
 
 /// A press on row `row`: the pane focuses it and works its control, so no setting needs a key.
-pub(crate) fn click(settings: &mut Settings, row: usize, options: &[AcpConfigOption]) -> Intent {
+pub(crate) fn click(
+    settings: &mut Settings,
+    row: usize,
+    options: &[acp::SessionConfigOption],
+) -> Intent {
     settings.cursor = row;
     (settings.edit, settings.status) = (None, None);
     begin(settings, options, How::Click)
 }
 
-fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Intent {
+fn begin(settings: &mut Settings, options: &[acp::SessionConfigOption], how: How) -> Intent {
     if settings.tab == KEYS {
         return Intent::None;
     }
@@ -288,22 +313,20 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
         let Some(option) = options.get(settings.cursor) else {
             return Intent::None;
         };
-        let picks: Vec<String> = option
-            .options
-            .iter()
-            .map(|choice| choice.value.clone())
+        let picks: Vec<String> = choices_of(option)
+            .into_iter()
+            .map(|choice| choice.value.0.to_string())
             .collect();
+        let current = current_of(option);
         if how == How::Click {
-            return stepped(&picks, &option.current_value).map_or(Intent::None, |value| {
-                Intent::SetSession {
-                    config_id: option.config_id.clone(),
-                    value,
-                }
+            return stepped(&picks, &current).map_or(Intent::None, |value| Intent::SetSession {
+                config_id: option.config_id.0.to_string(),
+                value,
             });
         }
         let cursor = picks
             .iter()
-            .position(|value| *value == option.current_value)
+            .position(|value| *value == current)
             .unwrap_or(0);
         settings.edit = Some(Edit::Pick {
             options: picks,
@@ -380,14 +403,14 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
     }
 }
 
-fn commit(settings: &Settings, options: &[AcpConfigOption], value: Value) -> Intent {
+fn commit(settings: &Settings, options: &[acp::SessionConfigOption], value: Value) -> Intent {
     if settings.tab == SESSION {
         let Some(option) = options.get(settings.cursor) else {
             return Intent::None;
         };
         return match value {
             Value::String(value) => Intent::SetSession {
-                config_id: option.config_id.clone(),
+                config_id: option.config_id.0.to_string(),
                 value,
             },
             _ => Intent::None,
@@ -402,7 +425,7 @@ fn commit(settings: &Settings, options: &[AcpConfigOption], value: Value) -> Int
     }
 }
 
-fn commit_typed(settings: &Settings, options: &[AcpConfigOption], text: &str) -> Intent {
+fn commit_typed(settings: &Settings, options: &[acp::SessionConfigOption], text: &str) -> Intent {
     let Some(row) = settings
         .tab_rows()
         .get(settings.cursor)
@@ -549,7 +572,7 @@ pub(crate) fn hits(
 /// Where every target sits inside the pane: the strip's tabs, then every row the frame draws.
 pub(crate) fn targets(
     settings: &Settings,
-    options: &[AcpConfigOption],
+    options: &[acp::SessionConfigOption],
     inner: Rect,
 ) -> Vec<(Rect, Target)> {
     let mut out = Vec::new();
@@ -580,17 +603,17 @@ pub(crate) fn targets(
 /// (label, value, when it applies, help) of every row on the current tab.
 type Shown = (String, String, String, String);
 
-fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Vec<Shown> {
+fn shown_rows(settings: &Settings, options: &[acp::SessionConfigOption], cmd: bool) -> Vec<Shown> {
     match settings.tab {
         SESSION => options
             .iter()
             .map(|option| {
-                let named = option
-                    .options
-                    .iter()
-                    .find(|choice| choice.value == option.current_value)
-                    .map_or(option.current_value.clone(), |choice| choice.name.clone());
-                let help = default_of(&option.config_id).map_or_else(String::new, |id| {
+                let current = current_of(option);
+                let named = choices_of(option)
+                    .into_iter()
+                    .find(|choice| *choice.value.0 == *current)
+                    .map_or(current.clone(), |choice| choice.name.clone());
+                let help = default_of(&option.config_id.0).map_or_else(String::new, |id| {
                     format!("this session only; d saves it as the default {id}")
                 });
                 (option.name.clone(), named, "now".to_owned(), help)
@@ -635,7 +658,7 @@ fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Ve
 /// The pane's lines; `options` is the session's, `visible` its text rows.
 pub fn view(
     settings: &Settings,
-    options: &[AcpConfigOption],
+    options: &[acp::SessionConfigOption],
     cmd: bool,
     width: usize,
     visible: usize,

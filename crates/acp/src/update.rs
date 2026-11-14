@@ -1,10 +1,8 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use serde_json::{Value, json};
-use yi_types::acp::{
-    AcpContentBlock, AcpExtensionUpdate, AcpOtherBlock, AcpSessionUpdate, AcpState, AcpStopReason,
-    AcpTerminalExit, AcpToolCallStatus, AcpToolCallUpdate, AcpToolContent, AcpToolKind,
-};
+use agent_client_protocol_schema::v2 as acp;
+use serde_json::Value;
 use yi_types::encoding::base64;
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
@@ -15,18 +13,18 @@ use yi_types::subagent::ChildId;
 pub fn extension<K: Into<String>>(
     kind: &str,
     fields: impl IntoIterator<Item = (K, Value)>,
-) -> AcpSessionUpdate {
-    AcpSessionUpdate::Extension(AcpExtensionUpdate {
-        session_update: kind.to_owned(),
-        fields: fields
+) -> acp::SessionUpdate {
+    acp::SessionUpdate::Other(acp::OtherSessionUpdate::new(
+        kind,
+        fields
             .into_iter()
             .map(|(key, value)| (key.into(), value))
             .collect(),
-    })
+    ))
 }
 
 /// The runtime event verbatim: what a yi client reduces with solo's own reducer.
-pub fn event_update(event: &AgentEvent, seq: u64, child: Option<&ChildId>) -> AcpSessionUpdate {
+pub fn event_update(event: &AgentEvent, seq: u64, child: Option<&ChildId>) -> acp::SessionUpdate {
     let mut fields = vec![
         ("event", serde_json::to_value(event).unwrap_or(Value::Null)),
         ("seq", Value::from(seq)),
@@ -37,7 +35,7 @@ pub fn event_update(event: &AgentEvent, seq: u64, child: Option<&ChildId>) -> Ac
     extension("_yi/event", fields)
 }
 
-pub fn gap_update(seq: u64, dropped: u64, child: Option<&ChildId>) -> AcpSessionUpdate {
+pub fn gap_update(seq: u64, dropped: u64, child: Option<&ChildId>) -> acp::SessionUpdate {
     let mut fields = vec![("seq", Value::from(seq)), ("dropped", Value::from(dropped))];
     if let Some(child) = child {
         fields.push(("childId", Value::String(child.0.clone())));
@@ -47,9 +45,9 @@ pub fn gap_update(seq: u64, dropped: u64, child: Option<&ChildId>) -> AcpSession
 
 /// Built by moving values into maps: `json!` of a struct re-serializes every nested
 /// `Value`, which deep-copied a replay's entries twice per frame.
-pub fn update_notification(session_id: &str, update: AcpSessionUpdate) -> Value {
+pub fn update_notification(session_id: &str, update: acp::SessionUpdate) -> Value {
     let update = match update {
-        AcpSessionUpdate::Extension(extension) => {
+        acp::SessionUpdate::Other(extension) => {
             let kind = ("sessionUpdate".to_owned(), extension.session_update.into());
             Value::Object(std::iter::once(kind).chain(extension.fields).collect())
         }
@@ -86,7 +84,7 @@ pub struct ReplayFrame<'a> {
     pub stats: Option<&'a yi_types::wire::SessionStats>,
 }
 
-pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
+pub fn replay_update(frame: &ReplayFrame<'_>) -> acp::SessionUpdate {
     let mut fields = vec![
         (
             "entries",
@@ -156,7 +154,7 @@ pub fn queued(prompts: &PendingPrompts) -> std::sync::MutexGuard<'_, Vec<Pending
 pub struct IdMap {
     next_message: u64,
     current_message: Option<String>,
-    last_stop: Option<AcpStopReason>,
+    last_stop: Option<acp::StopReason>,
     context_window: u64,
     prompts: PendingPrompts,
     inserted: Vec<PendingPrompt>,
@@ -211,26 +209,28 @@ impl IdMap {
     }
 }
 
-fn stop_reason(reason: &StopReason) -> AcpStopReason {
+fn stop_reason(reason: &StopReason) -> acp::StopReason {
     match reason {
         StopReason::Stop
         | StopReason::ToolUse
         | StopReason::Pending
         | StopReason::Deferred
-        | StopReason::Other(_) => AcpStopReason::EndTurn,
-        StopReason::Length => AcpStopReason::MaxTokens,
-        StopReason::Aborted => AcpStopReason::Cancelled,
-        StopReason::Error => AcpStopReason::Other("_yi/error".to_owned()),
+        | StopReason::Other(_) => acp::StopReason::EndTurn,
+        StopReason::Length => acp::StopReason::MaxTokens,
+        StopReason::Aborted => acp::StopReason::Cancelled,
+        StopReason::Error => {
+            acp::StopReason::Other(acp::OtherStopReason::new("_yi/error", BTreeMap::new()))
+        }
     }
 }
 
-fn tool_kind(tool_name: &str) -> AcpToolKind {
+fn tool_kind(tool_name: &str) -> acp::ToolKind {
     match tool_name {
-        "read" | "glob" => AcpToolKind::Read,
-        "edit" | "write" => AcpToolKind::Edit,
-        "grep" | "web_search" => AcpToolKind::Search,
-        "bash" | "ipython" => AcpToolKind::Execute,
-        _ => AcpToolKind::Other,
+        "read" | "glob" => acp::ToolKind::Read,
+        "edit" | "write" => acp::ToolKind::Edit,
+        "grep" | "web_search" => acp::ToolKind::Search,
+        "bash" | "ipython" => acp::ToolKind::Execute,
+        _ => acp::ToolKind::Other,
     }
 }
 
@@ -242,18 +242,20 @@ fn text_of(content: &[Content]) -> String {
         .concat()
 }
 
-fn image_block(block: &Content) -> Option<AcpContentBlock> {
+fn image_block(block: &Content) -> Option<acp::ContentBlock> {
     let Content::Image { data, mime_type } = block else {
         return None;
     };
-    Some(AcpContentBlock::Other(AcpOtherBlock {
-        block_type: "image".to_owned(),
-        fields: [
-            ("data".to_owned(), Value::String(data.clone())),
-            ("mimeType".to_owned(), Value::String(mime_type.clone())),
-        ]
-        .into(),
-    }))
+    Some(acp::ContentBlock::Image(acp::ImageContent::new(
+        data.clone(),
+        mime_type.clone(),
+    )))
+}
+
+fn host_notice_text(text: String) -> acp::ContentBlock {
+    let mut meta = acp::Meta::new();
+    meta.insert("yi".to_owned(), serde_json::json!({"hostNotice": true}));
+    acp::ContentBlock::Text(acp::TextContent::new(text).meta(meta))
 }
 
 pub(crate) fn plain(content: &UserContent, sep: &str) -> String {
@@ -263,47 +265,32 @@ pub(crate) fn plain(content: &UserContent, sep: &str) -> String {
     }
 }
 
-fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
+fn user_blocks(content: &UserContent) -> Vec<acp::ContentBlock> {
     match content {
-        UserContent::Text(text) => vec![AcpContentBlock::Text { text: text.clone() }],
+        UserContent::Text(text) => vec![text.clone().into()],
         UserContent::Blocks(blocks) => blocks
             .iter()
             .filter_map(shown_text)
-            .map(|text| AcpContentBlock::Text {
-                text: text.to_owned(),
-            })
+            .map(|text| text.to_owned().into())
             .collect(),
     }
 }
 
-fn user_update(content: &UserContent, typed: bool, ids: &mut IdMap) -> AcpSessionUpdate {
+fn user_update(content: &UserContent, typed: bool, ids: &mut IdMap) -> acp::SessionUpdate {
     let claimed = typed.then(|| ids.claim(&plain(content, ""))).flatten();
     let message_id = claimed.unwrap_or_else(|| ids.allocate());
     let content = user_blocks(content);
     if typed {
-        return AcpSessionUpdate::UserMessage {
-            message_id,
-            content,
-        };
+        return acp::SessionUpdate::UserMessage(acp::UserMessage::new(message_id).content(content));
     }
-    let content = content
+    let content: Vec<_> = content
         .into_iter()
         .map(|block| match block {
-            AcpContentBlock::Text { text } => AcpContentBlock::Other(AcpOtherBlock {
-                block_type: "text".to_owned(),
-                fields: [
-                    ("text".to_owned(), Value::String(text)),
-                    ("_meta".to_owned(), json!({"yi": {"hostNotice": true}})),
-                ]
-                .into(),
-            }),
+            acp::ContentBlock::Text(text) => host_notice_text(text.text),
             other => other,
         })
         .collect();
-    AcpSessionUpdate::AgentMessage {
-        message_id,
-        content,
-    }
+    acp::SessionUpdate::AgentMessage(acp::AgentMessage::new(message_id).content(content))
 }
 
 /// A compaction note is host text the user must read: it rides as a host notice, which every
@@ -313,7 +300,7 @@ fn custom_update(
     content: &UserContent,
     details: Option<&Value>,
     ids: &mut IdMap,
-) -> AcpSessionUpdate {
+) -> acp::SessionUpdate {
     if custom_type == yi_runtime::compaction::COMPACTION_NOTICE {
         return user_update(content, false, ids);
     }
@@ -325,7 +312,7 @@ fn extension_of(
     custom_type: &str,
     content: &UserContent,
     details: Option<&Value>,
-) -> AcpSessionUpdate {
+) -> acp::SessionUpdate {
     let mut fields = vec![("text", Value::String(plain(content, "")))];
     if let Some(details) = details {
         fields.push(("details", details.clone()));
@@ -333,22 +320,25 @@ fn extension_of(
     extension(&format!("_yi/{custom_type}"), fields)
 }
 
-fn tool_call_update(
-    tool_call_id: &str,
-    status: AcpToolCallStatus,
-    raw_output: Option<Value>,
-    content: Option<Vec<AcpToolContent>>,
-) -> AcpSessionUpdate {
-    AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
-        tool_call_id: tool_call_id.to_owned(),
-        status: Some(status),
-        content,
-        raw_output,
-        ..AcpToolCallUpdate::default()
-    })
+fn state(update: acp::StateUpdate) -> acp::SessionUpdate {
+    acp::SessionUpdate::StateUpdate(update)
 }
 
-fn tool_status(result: &yi_types::event::ToolResult, is_error: bool) -> AcpToolCallStatus {
+fn tool_call_update(
+    tool_call_id: &str,
+    status: acp::ToolCallStatus,
+    raw_output: Option<Value>,
+    content: Option<Vec<acp::ToolCallContent>>,
+) -> acp::SessionUpdate {
+    acp::SessionUpdate::ToolCallUpdate(
+        acp::ToolCallUpdate::new(tool_call_id)
+            .status(status)
+            .content(content)
+            .raw_output(raw_output),
+    )
+}
+
+fn tool_status(result: &yi_types::event::ToolResult, is_error: bool) -> acp::ToolCallStatus {
     let kind = yi_types::event::ToolErrorKind::from_details(&result.details);
     let aborted = kind == Some(yi_types::event::ToolErrorKind::Aborted.as_str())
         || kind == Some(yi_types::event::ToolErrorKind::NotRun.as_str());
@@ -357,19 +347,22 @@ fn tool_status(result: &yi_types::event::ToolResult, is_error: bool) -> AcpToolC
         aborted || cut,
         yi_types::event::shown_failed(is_error, &result.details),
     ) {
-        (true, _) => AcpToolCallStatus::Cancelled,
-        (false, true) => AcpToolCallStatus::Failed,
-        (false, false) => AcpToolCallStatus::Completed,
+        (true, _) => acp::ToolCallStatus::Cancelled,
+        (false, true) => acp::ToolCallStatus::Failed,
+        (false, false) => acp::ToolCallStatus::Completed,
     }
 }
 
 /// Exhaustive over `AgentEvent` so a new variant fails compile, not wire.
-pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> {
+pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<acp::SessionUpdate> {
     match event {
-        AgentEvent::AgentStart => vec![AcpSessionUpdate::StateUpdate(AcpState::Running)],
-        AgentEvent::AgentEnd { .. } => vec![AcpSessionUpdate::StateUpdate(AcpState::Idle {
-            stop_reason: Some(ids.last_stop.take().unwrap_or(AcpStopReason::EndTurn)),
-        })],
+        AgentEvent::AgentStart => vec![state(acp::StateUpdate::Running(
+            acp::RunningStateUpdate::new(),
+        ))],
+        AgentEvent::AgentEnd { .. } => vec![state(acp::StateUpdate::Idle(
+            acp::IdleStateUpdate::new()
+                .stop_reason(ids.last_stop.take().unwrap_or(acp::StopReason::EndTurn)),
+        ))],
         AgentEvent::TurnStart | AgentEvent::TurnEnd { .. } => Vec::new(),
         AgentEvent::MessageStart { message } => match message {
             AgentMessage::Assistant { .. } => {
@@ -394,20 +387,14 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             ..
         } => match assistant_message_event {
             AssistantMessageEvent::TextDelta { delta, .. } => {
-                vec![AcpSessionUpdate::AgentMessageChunk {
-                    message_id: ids.current(),
-                    content: AcpContentBlock::Text {
-                        text: delta.clone(),
-                    },
-                }]
+                vec![acp::SessionUpdate::AgentMessageChunk(
+                    acp::ContentChunk::new(delta.clone().into(), ids.current()),
+                )]
             }
             AssistantMessageEvent::ThinkingDelta { delta, .. } => {
-                vec![AcpSessionUpdate::AgentThoughtChunk {
-                    message_id: ids.current(),
-                    content: AcpContentBlock::Text {
-                        text: delta.clone(),
-                    },
-                }]
+                vec![acp::SessionUpdate::AgentThoughtChunk(
+                    acp::ContentChunk::new(delta.clone().into(), ids.current()),
+                )]
             }
             AssistantMessageEvent::Done { reason, .. }
             | AssistantMessageEvent::Error { reason, .. } => {
@@ -419,9 +406,11 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         AgentEvent::MessageEnd { message } => {
             ids.current_message = None;
             yi_runtime::reply_tokens(message)
-                .map(|used| AcpSessionUpdate::UsageUpdate {
-                    used: used.0,
-                    size: ids.context_window,
+                .map(|used| {
+                    acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(
+                        used.0,
+                        ids.context_window,
+                    ))
                 })
                 .into_iter()
                 .collect()
@@ -430,15 +419,14 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             tool_call_id,
             tool_name,
             args,
-        } => vec![AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
-            tool_call_id: tool_call_id.clone(),
-            name: Some(tool_name.clone()),
-            title: Some(tool_name.clone()),
-            kind: Some(tool_kind(tool_name)),
-            status: Some(AcpToolCallStatus::InProgress),
-            raw_input: Some(args.clone()),
-            ..AcpToolCallUpdate::default()
-        })],
+        } => vec![acp::SessionUpdate::ToolCallUpdate(
+            acp::ToolCallUpdate::new(tool_call_id.as_str())
+                .name(tool_name.clone())
+                .title(tool_name.clone())
+                .kind(tool_kind(tool_name))
+                .status(acp::ToolCallStatus::InProgress)
+                .raw_input(args.clone()),
+        )],
         AgentEvent::ToolExecutionEnd {
             tool_call_id,
             tool_name,
@@ -454,22 +442,20 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
                     .and_then(Value::as_u64)
                     .and_then(|code| u32::try_from(code).ok());
                 vec![
-                    AcpSessionUpdate::TerminalOutputChunk {
-                        terminal_id: tool_call_id.clone(),
-                        data: base64(text.as_bytes()),
-                    },
-                    AcpSessionUpdate::TerminalUpdate {
-                        terminal_id: tool_call_id.clone(),
-                        command: None,
-                        exit_status: Some(AcpTerminalExit { exit_code }),
-                    },
+                    acp::SessionUpdate::TerminalOutputChunk(acp::TerminalOutputChunk::new(
+                        tool_call_id.as_str(),
+                        base64(text.as_bytes()),
+                    )),
+                    acp::SessionUpdate::TerminalUpdate(
+                        acp::TerminalUpdate::new(tool_call_id.as_str()).exit_status(
+                            acp::TerminalExitStatus::new().exit_code(exit_code.map(i64::from)),
+                        ),
+                    ),
                     tool_call_update(
                         tool_call_id,
                         status,
                         None,
-                        Some(vec![AcpToolContent::Terminal {
-                            terminal_id: tool_call_id.clone(),
-                        }]),
+                        Some(vec![acp::Terminal::new(tool_call_id.as_str()).into()]),
                     ),
                 ]
             } else {
@@ -478,19 +464,23 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
                     status,
                     Some(result.details.clone()),
                     Some(
-                        std::iter::once(AcpContentBlock::Text { text })
+                        std::iter::once(acp::ContentBlock::from(text))
                             .chain(result.content.iter().filter_map(image_block))
-                            .map(|content| AcpToolContent::Content { content })
+                            .map(acp::ToolCallContent::from)
                             .collect(),
                     ),
                 )]
             }
         }
         AgentEvent::PermissionRequested { .. } => {
-            vec![AcpSessionUpdate::StateUpdate(AcpState::RequiresAction)]
+            vec![state(acp::StateUpdate::RequiresAction(
+                acp::RequiresActionStateUpdate::new(),
+            ))]
         }
         AgentEvent::PermissionResolved { .. } => {
-            vec![AcpSessionUpdate::StateUpdate(AcpState::Running)]
+            vec![state(acp::StateUpdate::Running(
+                acp::RunningStateUpdate::new(),
+            ))]
         }
         AgentEvent::ChildUpdate { update } => {
             object_extension("_yi/subagent_update", serde_json::to_value(update))
@@ -502,20 +492,19 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
     }
 }
 
-fn object_extension(name: &str, value: serde_json::Result<Value>) -> Vec<AcpSessionUpdate> {
+fn object_extension(name: &str, value: serde_json::Result<Value>) -> Vec<acp::SessionUpdate> {
     let fields = value
         .ok()
         .and_then(|value| value.as_object().cloned())
         .map(|map| map.into_iter().collect())
         .unwrap_or_default();
-    vec![AcpSessionUpdate::Extension(AcpExtensionUpdate {
-        session_update: name.to_owned(),
-        fields,
-    })]
+    vec![acp::SessionUpdate::Other(acp::OtherSessionUpdate::new(
+        name, fields,
+    ))]
 }
 
 /// Replay (design §17.2): a stored branch walked into full-message updates.
-pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdate> {
+pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<acp::SessionUpdate> {
     let mut updates = Vec::new();
     for entry in entries {
         match entry {
@@ -523,12 +512,10 @@ pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdat
                 message, timestamp, ..
             } => match message {
                 AgentMessage::Assistant { content, .. } => {
-                    updates.push(AcpSessionUpdate::AgentMessage {
-                        message_id: ids.allocate(),
-                        content: vec![AcpContentBlock::Text {
-                            text: text_of(content),
-                        }],
-                    });
+                    updates.push(acp::SessionUpdate::AgentMessage(
+                        acp::AgentMessage::new(ids.allocate())
+                            .content(vec![acp::ContentBlock::from(text_of(content))]),
+                    ));
                 }
                 AgentMessage::User {
                     content,

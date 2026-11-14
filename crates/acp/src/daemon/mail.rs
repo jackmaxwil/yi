@@ -1,8 +1,8 @@
 //! A request waiting in a stopped session's mailbox starts that session.
+use agent_client_protocol_schema::v2 as acp;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use yi_runtime::post::Waiting;
-use yi_types::acp::{AcpPermissionOutcome, AcpResponse};
 use yi_types::mail::Envelope;
 
 use super::{ClientId, Input, SessionEntry, Supervisor, now_ms};
@@ -109,13 +109,11 @@ impl Supervisor {
         if let Some(request_id) = frame.get("id").and_then(Value::as_str) {
             self.worker_requests.remove(request_id);
         }
-        let result = json!({"outcome": AcpPermissionOutcome::Cancelled});
+        let result = json!(acp::RequestPermissionResponse::new(
+            acp::CancelledPermissionOutcome::new().into()
+        ));
         let id = frame.get("id").cloned().unwrap_or(Value::Null);
-        let reply = json!(AcpResponse {
-            jsonrpc: "2.0".to_owned(),
-            id,
-            result,
-        });
+        let reply = json!({"jsonrpc": "2.0", "id": id, "result": result});
         let _ = self.input.send(Input::WorkerReply(root, reply));
         let title = frame
             .pointer("/params/title")

@@ -1339,7 +1339,7 @@ fn a_strict_client_accepts_every_frame_of_a_faux_session() -> TestResult {
     client.finish()?;
     assert!(
         broken.is_empty(),
-        "a strict alpha.5 client rejects {} frame(s):\n{}",
+        "a strict schema 1.17.0 client rejects {} frame(s):\n{}",
         broken.len(),
         broken.join("\n")
     );
@@ -1558,11 +1558,12 @@ fn an_edit_approval_shows_its_diff_to_a_strict_client() -> TestResult {
         "a change path is absolute: {ask}"
     );
     assert!(ask.get("content").is_none(), "no custom root field: {ask}");
-    let decoded: yi_types::acp::AcpPermissionParams = serde_json::from_value(ask.clone())?;
+    let decoded: agent_client_protocol_schema::v2::RequestPermissionRequest =
+        serde_json::from_value(ask.clone())?;
     assert!(
         matches!(
             decoded.subject,
-            Some(yi_types::acp::AcpPermissionSubject::ToolCall { .. })
+            Some(agent_client_protocol_schema::v2::RequestPermissionSubject::ToolCall(_))
         ),
         "the console's own decoder must read the worker's ask: {decoded:?}"
     );
@@ -1708,9 +1709,13 @@ fn a_tool_status_yi_does_not_know_still_updates_the_card() -> TestResult {
         "sessionUpdate": "tool_call_update", "toolCallId": "t1",
         "name": "grep", "kind": "think", "status": "_paused",
     });
-    let decoded: yi_types::acp::AcpSessionUpdate = serde_json::from_value(frame.clone())?;
+    let decoded: agent_client_protocol_schema::v2::SessionUpdate =
+        serde_json::from_value(frame.clone())?;
     assert!(
-        !matches!(decoded, yi_types::acp::AcpSessionUpdate::Extension(_)),
+        !matches!(
+            decoded,
+            agent_client_protocol_schema::v2::SessionUpdate::Other(_)
+        ),
         "a standard update fell through to the extension carrier: {decoded:?}"
     );
     assert_eq!(
@@ -1731,7 +1736,8 @@ fn an_ask_offering_reject_always_reaches_the_console() -> TestResult {
             {"optionId": "n", "name": "Never", "kind": "reject_always"},
         ],
     });
-    let decoded: yi_types::acp::AcpPermissionParams = serde_json::from_value(params)?;
+    let decoded: agent_client_protocol_schema::v2::RequestPermissionRequest =
+        serde_json::from_value(params)?;
     assert_eq!(decoded.options.len(), 2, "{decoded:?}");
     Ok(())
 }

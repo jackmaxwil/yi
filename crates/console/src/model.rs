@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender};
 
+use agent_client_protocol_schema::v2 as acp;
 use ratatui::layout::Direction;
 use yi_tui::app::{CommandReceiver, CommandSender};
 use yi_tui::{AskChoice, UiEvent};
-use yi_types::acp::{AcpPermissionOption, AcpPermissionParams, AcpState};
 use yi_types::status_mark::StatusMark;
 
 use crate::app::port::RemotePort;
@@ -52,17 +52,13 @@ impl SessionStatus {
         }
     }
 
-    pub fn from_state(state: &AcpState, seen: bool) -> Self {
+    pub fn from_state(state: &acp::StateUpdate, seen: bool) -> Self {
         match state {
-            AcpState::Running => Self::Working,
-            AcpState::RequiresAction => Self::Blocked,
-            AcpState::Idle { .. } => {
-                if seen {
-                    Self::Idle
-                } else {
-                    Self::DoneUnseen
-                }
-            }
+            acp::StateUpdate::Running(_) => Self::Working,
+            acp::StateUpdate::RequiresAction(_) => Self::Blocked,
+            acp::StateUpdate::Idle(_) if seen => Self::Idle,
+            acp::StateUpdate::Idle(_) => Self::DoneUnseen,
+            _ => Self::Unknown,
         }
     }
 
@@ -209,8 +205,10 @@ pub struct PendingAsk {
     /// Wire id of the worker-originated request, echoed back in the response.
     pub request_id: String,
     pub reply: Receiver<AskChoice>,
-    pub options: Vec<AcpPermissionOption>,
+    pub options: Vec<acp::PermissionOption>,
 }
+
+pub type SessionOptions = BTreeMap<SessionId, Vec<acp::SessionConfigOption>>;
 
 pub const KEPT_CELLS: usize = 50;
 pub const IMAGE_BYTES_MAX: usize = 512 * 1024;
@@ -519,7 +517,7 @@ pub struct ConsoleState {
     pub zone: Zone,
     pub mode: Mode,
     pub banner: Option<String>,
-    pub orphan_asks: Vec<(String, AcpPermissionParams)>,
+    pub orphan_asks: Vec<(String, acp::RequestPermissionRequest)>,
     pub dropped_frames: u64,
     pub quit: bool,
     pub sidebar: SidebarMode,
@@ -540,7 +538,7 @@ pub struct ConsoleState {
     pub chat_assist: Option<(yi_tui::assist::AssistSettings, std::path::PathBuf)>,
     pub follow_fallback: yi_types::config::FollowMode,
     pub open_apps: Vec<String>,
-    pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
+    pub session_options: SessionOptions,
     pub folded: std::collections::BTreeSet<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
     pub children_evicted:

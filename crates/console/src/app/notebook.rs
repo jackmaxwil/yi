@@ -1,5 +1,5 @@
+use agent_client_protocol_schema::v2 as acp;
 use serde_json::Value;
-use yi_types::acp::{AcpContentBlock, AcpSessionUpdate, AcpToolCallUpdate, AcpToolContent};
 
 const TEXT_CAP: usize = 8 * 1024;
 const RESULT_CAP: usize = 2 * 1024;
@@ -27,9 +27,9 @@ fn clamp_bytes(text: &str, cap: usize) -> (String, bool) {
 /// the end carries streams and attachments in the details record.
 pub(super) fn apply_notebook(
     cells: &mut Vec<crate::model::NbCell>,
-    update: &AcpSessionUpdate,
+    update: &acp::SessionUpdate,
 ) -> bool {
-    let AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
+    let acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate {
         tool_call_id,
         title,
         raw_input,
@@ -41,19 +41,20 @@ pub(super) fn apply_notebook(
     else {
         return false;
     };
-    let is_start = title.as_deref() == Some("ipython");
-    let existing = cells.iter_mut().find(|cell| cell.call_id == *tool_call_id);
+    let call_id: &str = &tool_call_id.0;
+    let is_start = title.value().map(String::as_str) == Some("ipython");
+    let existing = cells.iter_mut().find(|cell| cell.call_id == call_id);
     match (existing, is_start) {
         (None, true) => {
             let code = raw_input
-                .as_ref()
+                .value()
                 .and_then(|input| input.get("code"))
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
             let number = cells.last().map_or(1, |cell| cell.number.saturating_add(1));
             cells.push(crate::model::NbCell {
-                call_id: tool_call_id.clone(),
+                call_id: call_id.to_owned(),
                 number,
                 code,
                 running: true,
@@ -65,7 +66,7 @@ pub(super) fn apply_notebook(
             true
         }
         (Some(cell), _) => {
-            if let Some(details) = raw_output {
+            if let Some(details) = raw_output.value() {
                 cell.stdout = details
                     .get("stdout")
                     .and_then(Value::as_str)
@@ -101,18 +102,23 @@ pub(super) fn apply_notebook(
                         item.get("mime_type").and_then(Value::as_str) == Some("image/png")
                     })
                     .filter_map(|item| item.get("data"));
-                let current = content.iter().flatten().filter_map(|block| match block {
-                    AcpToolContent::Content {
-                        content: AcpContentBlock::Other(block),
-                    } if block.block_type == "image"
-                        && block.fields.get("mimeType").and_then(Value::as_str)
-                            == Some("image/png") =>
-                    {
-                        block.fields.get("data")
-                    }
-                    _ => None,
-                });
-                let all: Vec<&str> = legacy.chain(current).filter_map(Value::as_str).collect();
+                let current =
+                    content
+                        .value()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|block| match block {
+                            acp::ToolCallContent::Content(content) => match &content.content {
+                                acp::ContentBlock::Image(image)
+                                    if image.mime_type.as_ref() == "image/png" =>
+                                {
+                                    Some(image.data.as_str())
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+                let all: Vec<&str> = legacy.filter_map(Value::as_str).chain(current).collect();
                 cell.dropped_image_bytes = all
                     .iter()
                     .filter(|data| data.len() > IMAGE_BYTES_MAX)
@@ -130,13 +136,11 @@ pub(super) fn apply_notebook(
                     .collect();
                 cell.image_bytes = cell.images.iter().map(String::len).collect();
             }
-            if status.is_some() || raw_output.is_some() {
+            if !status.is_undefined() || !raw_output.is_undefined() {
                 cell.running = false;
             }
             if !cell.images.is_empty() {
-                let older = cells
-                    .iter_mut()
-                    .filter(|cell| cell.call_id != *tool_call_id);
+                let older = cells.iter_mut().filter(|cell| cell.call_id != call_id);
                 older.for_each(|cell| cell.images = Vec::new());
             }
             true
@@ -150,12 +154,12 @@ mod tests {
     use super::apply_notebook;
     use crate::model::NbCell;
     use crate::panes::notebook_lines;
+    use agent_client_protocol_schema::v2 as acp;
     use ratatui::text::Line;
     use serde_json::{Value, json};
     use unicode_width::UnicodeWidthStr;
     use yi_tui::colors::{ColorTier, Theme};
     use yi_tui::highlight::Token;
-    use yi_types::acp::{AcpSessionUpdate, AcpToolCallStatus, AcpToolCallUpdate};
     use yi_types::message::{AgentMessage, Content};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -175,22 +179,20 @@ mod tests {
             .collect()
     }
 
-    fn start(id: &str, code: Value) -> AcpSessionUpdate {
-        AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
-            tool_call_id: id.to_owned(),
-            title: Some("ipython".to_owned()),
-            raw_input: Some(code),
-            ..AcpToolCallUpdate::default()
-        })
+    fn start(id: &str, code: Value) -> acp::SessionUpdate {
+        acp::SessionUpdate::ToolCallUpdate(
+            acp::ToolCallUpdate::new(id)
+                .title("ipython")
+                .raw_input(code),
+        )
     }
 
-    fn end(id: &str, details: Value) -> AcpSessionUpdate {
-        AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
-            tool_call_id: id.to_owned(),
-            status: Some(AcpToolCallStatus::Completed),
-            raw_output: Some(details),
-            ..AcpToolCallUpdate::default()
-        })
+    fn end(id: &str, details: Value) -> acp::SessionUpdate {
+        acp::SessionUpdate::ToolCallUpdate(
+            acp::ToolCallUpdate::new(id)
+                .status(acp::ToolCallStatus::Completed)
+                .raw_output(details),
+        )
     }
 
     // The scrubber masks call ids, so results pair with calls in order.
@@ -412,10 +414,7 @@ mod tests {
         let socket = std::env::temp_dir().join("yi-notebook-late-no-daemon.sock");
         let (outbound, _threads) = crate::client::spawn(socket, events);
         let update = start("late", json!({"code": "late_cell = 1"}));
-        let params = yi_types::acp::AcpUpdateParams {
-            session_id: session.0,
-            update,
-        };
+        let params = acp::UpdateSessionNotification::new(session.0, update);
         app.reduce_update(&outbound, params);
         outbound.shutdown();
         app.dirty = true;
@@ -589,8 +588,8 @@ mod tests {
                 .iter()
                 .flat_map(super::super::diffs::replayed_updates)
             {
-                if let AcpSessionUpdate::ToolCallUpdate(call) = &mut update {
-                    call.tool_call_id = format!("{}-{n}", call.tool_call_id);
+                if let acp::SessionUpdate::ToolCallUpdate(call) = &mut update {
+                    call.tool_call_id = format!("{}-{n}", call.tool_call_id.0).into();
                 }
                 apply_notebook(&mut cells, &update);
             }

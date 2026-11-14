@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
+use agent_client_protocol_schema::v2 as acp;
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
-use yi_types::acp::{AcpSessionUpdate, AcpToolCallStatus, AcpToolCallUpdate};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
 
@@ -30,7 +30,7 @@ pub(super) fn path_of_patch(patch: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(super) fn replayed_updates(message: &AgentMessage) -> Vec<AcpSessionUpdate> {
+pub(super) fn replayed_updates(message: &AgentMessage) -> Vec<acp::SessionUpdate> {
     match message {
         AgentMessage::Assistant { content, .. } => content
             .iter()
@@ -40,12 +40,11 @@ pub(super) fn replayed_updates(message: &AgentMessage) -> Vec<AcpSessionUpdate> 
                     name,
                     arguments,
                     ..
-                } => Some(AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
-                    tool_call_id: id.clone(),
-                    title: Some(name.clone()),
-                    raw_input: Some(Value::Object(arguments.clone())),
-                    ..AcpToolCallUpdate::default()
-                })),
+                } => Some(acp::SessionUpdate::ToolCallUpdate(
+                    acp::ToolCallUpdate::new(id.as_str())
+                        .title(name.clone())
+                        .raw_input(Value::Object(arguments.clone())),
+                )),
                 _ => None,
             })
             .collect(),
@@ -56,21 +55,23 @@ pub(super) fn replayed_updates(message: &AgentMessage) -> Vec<AcpSessionUpdate> 
             details,
             ..
         } => {
-            let plots = (tool_name == "ipython").then(|| {
+            let plots: Option<Vec<acp::ToolCallContent>> = (tool_name == "ipython").then(|| {
                 (content.iter())
-                    .filter(|block| matches!(block, Content::Image { .. }))
-                    .filter_map(|block| {
-                        serde_json::from_value(json!({"type": "content", "content": block})).ok()
+                    .filter_map(|block| match block {
+                        Content::Image { data, mime_type } => Some(acp::ContentBlock::Image(
+                            acp::ImageContent::new(data.clone(), mime_type.clone()),
+                        )),
+                        _ => None,
                     })
+                    .map(acp::ToolCallContent::from)
                     .collect()
             });
-            vec![AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
-                tool_call_id: tool_call_id.clone(),
-                status: Some(AcpToolCallStatus::Completed),
-                raw_output: details.clone(),
-                content: plots,
-                ..AcpToolCallUpdate::default()
-            })]
+            vec![acp::SessionUpdate::ToolCallUpdate(
+                acp::ToolCallUpdate::new(tool_call_id.as_str())
+                    .status(acp::ToolCallStatus::Completed)
+                    .raw_output(details.clone())
+                    .content(plots),
+            )]
         }
         _ => Vec::new(),
     }
@@ -100,7 +101,7 @@ impl App {
         &mut self,
         outbound: &Outbound,
         session: &SessionId,
-        update: &AcpSessionUpdate,
+        update: &acp::SessionUpdate,
     ) {
         if let Some(path) = self.record_edit(session, update, None) {
             self.track(outbound, session, vec![path], true);
@@ -112,11 +113,11 @@ impl App {
     fn record_edit(
         &mut self,
         session: &SessionId,
-        update: &AcpSessionUpdate,
+        update: &acp::SessionUpdate,
         replayed: Option<u64>,
     ) -> Option<String> {
-        let AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
-            raw_output: Some(details),
+        let acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate {
+            raw_output: agent_client_protocol_schema::MaybeUndefined::Value(details),
             ..
         }) = update
         else {
@@ -221,9 +222,10 @@ impl App {
         self.dirty = true;
     }
 
-    pub(super) fn absorb_kernel(&mut self, session: &SessionId, update: &AcpSessionUpdate) {
-        if let AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
-            title: Some(title), ..
+    pub(super) fn absorb_kernel(&mut self, session: &SessionId, update: &acp::SessionUpdate) {
+        if let acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate {
+            title: agent_client_protocol_schema::MaybeUndefined::Value(title),
+            ..
         }) = update
             && title == "ipython"
         {
@@ -231,8 +233,8 @@ impl App {
         }
     }
 
-    pub(super) fn fill_notebook(&mut self, session: &SessionId, update: &AcpSessionUpdate) {
-        if matches!(update, AcpSessionUpdate::ToolCallUpdate(_))
+    pub(super) fn fill_notebook(&mut self, session: &SessionId, update: &acp::SessionUpdate) {
+        if matches!(update, acp::SessionUpdate::ToolCallUpdate(_))
             && apply_notebook(
                 self.state.notebooks.entry(session.clone()).or_default(),
                 update,
@@ -494,26 +496,20 @@ mod tests {
         let (mut app, session) = app_with_session();
         app.maybe_open_side(&session, SideKind::Notebook);
         let opened = *app.auto_notebooks.keys().next().expect("auto-opened");
-        let start = AcpToolCallUpdate {
-            tool_call_id: "c1".to_owned(),
-            title: Some("ipython".to_owned()),
-            raw_input: Some(json!({"code": "x = 1"})),
-            ..AcpToolCallUpdate::default()
-        };
-        app.fill_notebook(&session, &AcpSessionUpdate::ToolCallUpdate(start));
+        let start = acp::ToolCallUpdate::new("c1")
+            .title("ipython")
+            .raw_input(json!({"code": "x = 1"}));
+        app.fill_notebook(&session, &acp::SessionUpdate::ToolCallUpdate(start));
         app.state
             .panes
             .get_mut(&opened)
             .expect("notebook")
             .scroll_from_bottom = 7;
-        let end = AcpToolCallUpdate {
-            tool_call_id: "c1".to_owned(),
-            title: Some("ipython".to_owned()),
-            status: Some(AcpToolCallStatus::Completed),
-            raw_output: Some(json!({"stdout": "1\n"})),
-            ..AcpToolCallUpdate::default()
-        };
-        app.fill_notebook(&session, &AcpSessionUpdate::ToolCallUpdate(end));
+        let end = acp::ToolCallUpdate::new("c1")
+            .title("ipython")
+            .status(acp::ToolCallStatus::Completed)
+            .raw_output(json!({"stdout": "1\n"}));
+        app.fill_notebook(&session, &acp::SessionUpdate::ToolCallUpdate(end));
         assert_eq!(app.state.panes[&opened].scroll_from_bottom, 7);
         let (events, _received) = crate::client::events();
         let socket = std::env::temp_dir().join("yi-notebook-scroll-no-daemon.sock");
@@ -552,29 +548,26 @@ mod tests {
     /// kernel still held every variable; a cell that ran while it was closed was also lost.
     #[test]
     fn cells_survive_the_notebook_closing_and_reopening() {
-        use yi_types::acp::{AcpToolCallStatus, AcpUpdateParams};
         let (mut app, session) = app_with_session();
         let (events, _received) = crate::client::events();
         let socket = std::env::temp_dir().join("yi-notebook-persist-no-daemon.sock");
         let (outbound, _threads) = crate::client::spawn(socket, events);
-        let send = |app: &mut App, update: AcpToolCallUpdate| {
-            let update = AcpUpdateParams {
-                session_id: session.0.clone(),
-                update: AcpSessionUpdate::ToolCallUpdate(update),
-            };
+        let send = |app: &mut App, update: acp::ToolCallUpdate| {
+            let update = acp::UpdateSessionNotification::new(
+                session.0.clone(),
+                acp::SessionUpdate::ToolCallUpdate(update),
+            );
             app.reduce_update(&outbound, update);
         };
-        let start = |id: &str, code: &str| AcpToolCallUpdate {
-            tool_call_id: id.to_owned(),
-            title: Some("ipython".to_owned()),
-            raw_input: Some(json!({"code": code})),
-            ..AcpToolCallUpdate::default()
+        let start = |id: &str, code: &str| {
+            acp::ToolCallUpdate::new(id)
+                .title("ipython")
+                .raw_input(json!({"code": code}))
         };
-        let end = |id: &str, stdout: &str| AcpToolCallUpdate {
-            tool_call_id: id.to_owned(),
-            status: Some(AcpToolCallStatus::Completed),
-            raw_output: Some(json!({"stdout": stdout})),
-            ..AcpToolCallUpdate::default()
+        let end = |id: &str, stdout: &str| {
+            acp::ToolCallUpdate::new(id)
+                .status(acp::ToolCallStatus::Completed)
+                .raw_output(json!({"stdout": stdout}))
         };
         send(&mut app, start("c1", "x = 1 + 2"));
         send(&mut app, end("c1", "3\n"));

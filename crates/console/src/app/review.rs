@@ -1,7 +1,7 @@
+use agent_client_protocol_schema::v2 as acp;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 use yi_tui::port::SessionPort;
-use yi_types::acp::AcpSessionUpdate;
 
 use crate::layout::PaneId;
 use crate::model::{PaneContent, SessionId};
@@ -215,13 +215,13 @@ impl App {
         self.dirty = true;
     }
 
-    pub(super) fn absorb_review(&mut self, session: &SessionId, update: &AcpSessionUpdate) {
+    pub(super) fn absorb_review(&mut self, session: &SessionId, update: &acp::SessionUpdate) {
         match update {
-            AcpSessionUpdate::StateUpdate(yi_types::acp::AcpState::Running) => {
+            acp::SessionUpdate::StateUpdate(acp::StateUpdate::Running(_)) => {
                 let diff = self.diff_mut(session);
                 diff.turn = diff.turn.saturating_add(1);
             }
-            AcpSessionUpdate::StateUpdate(yi_types::acp::AcpState::Idle { .. }) => {
+            acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(_)) => {
                 let reviewing = self.state.panes.values().any(|pane| {
                     matches!(&pane.content, PaneContent::SessionDiff { session: bound, .. } if bound == session)
                 });
@@ -229,9 +229,9 @@ impl App {
                     self.refresh_branch(session);
                 }
             }
-            AcpSessionUpdate::ToolCallUpdate(yi_types::acp::AcpToolCallUpdate {
-                title: Some(title),
-                raw_input: Some(input),
+            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate {
+                title: agent_client_protocol_schema::MaybeUndefined::Value(title),
+                raw_input: agent_client_protocol_schema::MaybeUndefined::Value(input),
                 ..
             }) if title == "read" => {
                 if let Some(path) = input.get("path").and_then(Value::as_str) {
