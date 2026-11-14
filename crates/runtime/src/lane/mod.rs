@@ -2,6 +2,8 @@
 //! A root session never edits the trunk checkout; it claims a slot.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use yi_types::lane::SlotState;
 
@@ -346,6 +348,7 @@ pub struct Pool {
     dir: PathBuf,
     home: PathBuf,
     slots: u8,
+    gc_after_refusal: Arc<AtomicBool>,
 }
 
 static FOUND: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
@@ -393,6 +396,7 @@ impl Pool {
             dir,
             home: home.to_path_buf(),
             slots: slots.max(1),
+            gc_after_refusal: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -624,13 +628,28 @@ impl Pool {
     }
 
     /// Incident: sixty finished lanes' `target/` directories filled a 1.8 TB disk. A claim the
-    /// host cannot take first reaps every lane `gc` proves finished, then judges again.
+    /// host cannot take reaps finished lanes once per continuing refusal window, then judges again.
     fn admit_claim(&self) -> Result<(), LaneError> {
-        if crate::admission::check(&self.dir, 0).is_ok() {
+        Self::retry_admission(
+            || crate::admission::check(&self.dir, 0),
+            || self.gc(&self.repo, false).map(|_| ()),
+            &self.gc_after_refusal,
+        )
+    }
+
+    fn retry_admission(
+        mut check: impl FnMut() -> Result<(), crate::admission::Refusal>,
+        gc: impl FnOnce() -> Result<(), LaneError>,
+        gc_after_refusal: &AtomicBool,
+    ) -> Result<(), LaneError> {
+        if check().is_ok() {
+            gc_after_refusal.store(false, Ordering::Relaxed);
             return Ok(());
         }
-        self.gc(&self.repo, false)?;
-        crate::admission::check(&self.dir, 0).map_err(LaneError::Admission)
+        if !gc_after_refusal.swap(true, Ordering::Relaxed) {
+            gc()?;
+        }
+        check().map_err(LaneError::Admission)
     }
 
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
@@ -1007,11 +1026,7 @@ mod tests {
             assign.contains(&"GIT_CONFIG_COUNT=7".to_owned()),
             "{assign:?}"
         );
-        for protocol in [
-            "protocol.allow",
-            "protocol.https.allow",
-            "protocol.git.allow",
-        ] {
+        for protocol in ["protocol.https.allow", "protocol.git.allow"] {
             assert!(
                 assign
                     .iter()
@@ -1019,6 +1034,33 @@ mod tests {
                 "{protocol} missing: {assign:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn admission_refusal_reaps_once() -> Result<(), LaneError> {
+        let reaped = std::sync::atomic::AtomicUsize::new(0);
+        let refused = crate::admission::Refusal {
+            resource: crate::admission::Resource::Disk,
+            have: 0,
+            need: 1,
+            live: 0,
+        };
+        let window = AtomicBool::new(false);
+        for _ in 0..2 {
+            let error = Pool::retry_admission(
+                || Err(refused),
+                || {
+                    reaped.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+                &window,
+            )
+            .err()
+            .ok_or(LaneError::Admission(refused))?;
+            assert!(matches!(error, LaneError::Admission(_)));
+        }
+        assert_eq!(reaped.load(Ordering::Relaxed), 1);
         Ok(())
     }
 }

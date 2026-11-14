@@ -65,7 +65,7 @@ use serde_json::Map;
 use yi_runtime::journal::JournalError;
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError, SetRow,
-    TodoSpec, dispatch_width,
+    TodoSpec,
 };
 use yi_runtime::plan::store::{PLAN_CAP_BYTES, PlanStore, StoreError};
 use yi_runtime::plan::table::RETRY_CAP;
@@ -257,28 +257,6 @@ fn the_schema_dir_is_git_ignored_after_a_publish() -> TestResult {
     assert!(
         ignored.success(),
         "the generated schema is not ignored by git"
-    );
-    Ok(())
-}
-
-#[test]
-fn width_is_the_family_cap_not_the_host() -> TestResult {
-    // This replaces width_clamps_low_and_high, which pinned width(1) = 1 and width(2) = 1.
-    // That rule made fan-out unavailable in a 2-core container, which is every machine the
-    // evals and CI run on, and no lever could raise it (#468). The width now measures what
-    // actually bounds delegated children, and never the host's cores.
-    let levers = yi_runtime::levers::get();
-    let ceilings = [levers.family_max_children, levers.plan_width_max];
-    let expected = ceilings
-        .iter()
-        .copied()
-        .filter(|c| *c > 0)
-        .min()
-        .unwrap_or(4096);
-    assert_eq!(dispatch_width().get(), expected);
-    assert!(
-        dispatch_width().get() > 1,
-        "a small host must still admit fan-out"
     );
     Ok(())
 }

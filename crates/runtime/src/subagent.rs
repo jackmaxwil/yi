@@ -165,6 +165,7 @@ pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> +
 pub type NoticeFn = dyn Fn(&str, Option<crate::session::StillNews>) + Send + Sync;
 pub type AttributeFn = dyn Fn(&Usage) + Send + Sync;
 pub type FinishFn = dyn Fn(String, ChildExit, Option<String>) -> bool + Send + Sync;
+pub type AdmissionFn = dyn Fn(&Path, usize) -> Result<(), crate::admission::Refusal> + Send + Sync;
 
 pub struct SubagentHostOptions {
     pub depth: u8,
@@ -227,36 +228,12 @@ pub struct SubagentHost {
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
     kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
+    admission: Arc<AdmissionFn>,
     checker: std::sync::OnceLock<crate::goal::Checker>,
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
     yi_kernel::connection::random_hex(std::path::Path::new("/dev/urandom"), 4)
-}
-
-fn default_session_name(prompt: &str, child_id: &str) -> String {
-    let slug: String = prompt
-        .to_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let slug = slug
-        .split('-')
-        .filter(|word| !word.is_empty())
-        .take(4)
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        format!("subagent-{child_id}")
-    } else {
-        format!("{slug}-{child_id}")
-    }
 }
 
 fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
@@ -333,7 +310,13 @@ impl SubagentHost {
             check_gate: std::sync::OnceLock::new(),
             checker: std::sync::OnceLock::new(),
             kernel: std::sync::OnceLock::new(),
+            admission: Arc::new(crate::admission::check),
         }
+    }
+
+    pub fn with_admission(mut self, admission: Arc<AdmissionFn>) -> Self {
+        self.admission = admission;
+        self
     }
 
     /// The lane split, shared with the plan engine so verification and workers count one pool.
@@ -448,7 +431,7 @@ impl SubagentHost {
         kwargs: Map<String, Value>,
         standing: Standing,
     ) -> Result<Map<String, Value>, String> {
-        let family_cap = crate::levers::get().family_cap;
+        let family_cap = crate::levers::get().family_cap();
         build::require_kwargs(&kwargs)?;
         let mut kwargs = kwargs;
         if matches!(standing, Standing::Worker) && !kwargs.contains_key("role") {
@@ -491,12 +474,15 @@ impl SubagentHost {
             );
         }
         let live = self.options.family_live.live();
-        if family_cap > 0 && live >= family_cap {
+        if let Some(family_cap) = family_cap
+            && live >= family_cap.get()
+        {
             return Err(format!(
-                "the family holds {live} live sessions, at its configured family.cap of {family_cap}; reap one with rlm.delete_subagent before spawning"
+                "the family holds {live} live sessions, at its configured family.cap of {}; reap one with rlm.delete_subagent before spawning",
+                family_cap.get()
             ));
         }
-        crate::admission::check(&self.options.home, live).map_err(|refusal| refusal.to_string())?;
+        (self.admission)(&self.options.home, live).map_err(|refusal| refusal.to_string())?;
         if self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
@@ -514,7 +500,7 @@ impl SubagentHost {
         let model = cast.0.clone();
         let (mut spawn_dir, child_id) = build::create_child_dir(&self.children_dir())?;
         let session_name =
-            requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
+            requested_name.unwrap_or_else(|| build::default_session_name(&prompt, &child_id));
         let (reserved, lease) = self.reserve(&session_name, &ask, &standing)?;
         let stagger = reader::share(self, &kwargs, seed.as_ref(), &mut cast);
         if let Isolation::Container(image) = &isolation {

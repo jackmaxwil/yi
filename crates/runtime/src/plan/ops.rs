@@ -301,11 +301,8 @@ pub trait OpSink: Send + Sync {
 
 pub const WIDTH_MAX: usize = 0;
 
-/// Invariant: a delegated child waits on a network model, not on a core, so the bound is what
-/// bounds children, the optional ceilings and the lever, and never the host's cores (#468).
 pub fn dispatch_width() -> NonZeroUsize {
-    let levers = crate::levers::get();
-    crate::admission::width(&[levers.family_max_children, levers.plan_width_max])
+    crate::levers::get().dispatch_width()
 }
 
 #[derive(Debug, Default)]

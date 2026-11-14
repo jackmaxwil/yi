@@ -128,6 +128,27 @@ impl Levers {
         }
     }
 
+    pub fn plan_width_max(&self) -> Option<std::num::NonZeroUsize> {
+        std::num::NonZeroUsize::new(self.plan_width_max)
+    }
+
+    pub fn family_max_children(&self) -> Option<std::num::NonZeroUsize> {
+        std::num::NonZeroUsize::new(self.family_max_children)
+    }
+
+    pub fn family_cap(&self) -> Option<std::num::NonZeroUsize> {
+        std::num::NonZeroUsize::new(self.family_cap)
+    }
+    /// Invariant: a delegated child waits on a network model, not on a core, so the bound is what
+    /// bounds children, the optional ceilings and the lever, and never the host's cores (#468).
+    pub(crate) fn dispatch_width(&self) -> std::num::NonZeroUsize {
+        [self.family_max_children(), self.plan_width_max()]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(std::num::NonZeroUsize::new(4096).unwrap_or(std::num::NonZeroUsize::MIN))
+    }
+
     /// Invariant: outside an eval run the variable is never asked for, so no file is opened
     /// and nothing is parsed; inside one a refused file is an error, never silent defaults.
     pub fn load(eval: bool, var: impl FnOnce() -> Option<OsString>) -> Result<Self, String> {

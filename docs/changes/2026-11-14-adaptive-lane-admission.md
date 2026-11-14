@@ -1,13 +1,13 @@
 ---
 issue: #2225
-growth: +230 the host sampler (load, memory, disk), the pure admit decision with its typed refusal and its tests; weighed for deletion: the fixed 8-child, 16-family and plan width ceilings are now defaults of 0 (no ceiling), so nothing was added beside them
-raise: crate runtime +321, tests +117, comments +2
+growth: +376 the host sampler (load, memory, disk), the pure admit decision, shared bounded probe runner, capped lane refusal retry and their tests; weighed for deletion: the fixed 8-child, 16-family and plan width ceilings are now defaults of 0 (no ceiling), so nothing was added beside them
 decision: Admit children and lanes by host headroom, never by a fixed count | a count of 8 refused work a roomy host could run and let a loaded one thrash | reversible via family.max_children, family.cap and plan.width_max levers set above 0
 cut: none crates/runtime/src/subagent.rs
 cut: none crates/runtime/tests/levers.rs
 cut: none evals/tests/test_levers.py
 shares: #2234 adds one `pub mod admission;` line to crates/runtime/src/lib.rs, away from its lines
 shares: #2205 adds one `pub mod admission;` line to crates/runtime/src/lib.rs, away from its lines
+raise: crate runtime +376, tests +160, comments +2
 ---
 A parent no longer stops at eight children, and a family no longer stops at sixteen live sessions. A new child or lane is admitted while the host has room: the one-minute load average per core, free memory (growing with each live child) and free disk on the lanes volume. The first child is always admitted on load, so work can start on a busy host. A refusal names the resource, what the host has and what it needs, and says to wait or reap a child with `rlm.delete_subagent`.
 

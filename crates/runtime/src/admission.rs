@@ -3,8 +3,7 @@
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::process::Command;
-
+use std::time::Duration;
 const LOAD_PER_CPU_MILLI: u64 = 4_000;
 const MEM_FLOOR_KIB: u64 = 512 * 1024;
 const MEM_PER_LIVE_KIB: u64 = 64 * 1024;
@@ -119,26 +118,10 @@ pub fn check(lanes_volume: &Path, live: usize) -> Result<(), Refusal> {
     }
 }
 
-pub fn width(ceilings: &[usize]) -> NonZeroUsize {
-    let bound = ceilings
-        .iter()
-        .copied()
-        .filter(|c| *c > 0)
-        .min()
-        .unwrap_or(4096);
-    NonZeroUsize::new(bound).unwrap_or(NonZeroUsize::MIN)
-}
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the host probes (sysctl, vm_stat, df) are one-shot reads with no dependency to carry them"
-)]
 fn run(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    crate::node::run(program, args, PROBE_TIMEOUT).ok()
 }
 
 fn load1_milli() -> Option<u64> {
