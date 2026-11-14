@@ -3,7 +3,7 @@ use std::process::{Child, Command, Stdio};
 
 /// `scripts/tui_pty.py` driving `binary` under a real pty for 60 s; the caller adds its own
 /// harness flags, then `--` and the child's arguments.
-pub fn pty_command(binary: &Path, home: &Path, cwd: &Path) -> Command {
+pub fn pty_command(home: &Path, cwd: &Path) -> Command {
     #[expect(
         clippy::disallowed_methods,
         reason = "an interactive run (control socket, restart hook) needs a real pty"
@@ -15,7 +15,7 @@ pub fn pty_command(binary: &Path, home: &Path, cwd: &Path) -> Command {
             "/../../scripts/tui_pty.py"
         ))
         .args(["--seconds", "60", "--binary"])
-        .arg(binary)
+        .arg(crate::yi_bin::yi_command(home).get_program())
         .arg("--home")
         .arg(home)
         .current_dir(cwd)
@@ -30,8 +30,7 @@ pub fn console_in_pty(
     socket: &Path,
     flags: &[&str],
 ) -> std::io::Result<Child> {
-    let yi = crate::yi_bin::yi_command(home);
-    pty_command(Path::new(yi.get_program()), home, cwd)
+    pty_command(home, cwd)
         .args(["--", "console", "--socket"])
         .arg(socket)
         .args(flags)

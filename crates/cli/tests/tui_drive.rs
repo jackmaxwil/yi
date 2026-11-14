@@ -569,7 +569,7 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
     let socket = dir.join("c.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket)?;
     let sessions = dir.join("sessions");
-    let mut pty = crate::pty::pty_command(crate::yi_bin::bin(), &home, &dir)
+    let mut pty = crate::pty::pty_command(&home, &dir)
         .arg("--stdin")
         .args(["--", "tui", "--model", "faux/faux-1", "--faux"])
         .arg(&cassette)
