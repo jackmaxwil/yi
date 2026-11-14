@@ -1,4 +1,5 @@
 ---
+version: 0.1060.0
 issue: #2229
 ledger+: console editor and viewers | a split or a new tab opens a chat in the project of the pane it came from (`app::menu::tests::a_new_pane_or_tab_opens_chat`, T0)
 shares: #2240 changes three action arms in crates/console/src/app.rs, away from the MCP pane arms
