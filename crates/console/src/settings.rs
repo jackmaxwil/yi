@@ -244,19 +244,16 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
             Intent::None
         }
         KeyCode::Enter => begin(settings, options, How::Key),
+        KeyCode::Char(' ') => begin(settings, options, How::Click),
         KeyCode::Char('u') if settings.tab != SESSION && settings.tab != KEYS => {
-            match settings
-                .tab_rows()
-                .get(settings.cursor)
-                .map(|row| (&row.kind, row.id.clone()))
-            {
-                Some((SettingKind::Json, id)) => {
-                    Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
+            let Some(row) = settings.tab_rows().get(settings.cursor).copied() else {
+                return Intent::None;
+            };
+            match control(row) {
+                Control::Note => in_config(row),
+                Control::Step | Control::Pick(_) | Control::Theme | Control::Edit => {
+                    commit(settings, options, Value::Null)
                 }
-                Some((SettingKind::List, id)) if !pane_edits_list(&id) => {
-                    Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
-                }
-                _ => commit(settings, options, Value::Null),
             }
         }
         KeyCode::Char('d') if settings.tab == SESSION => {
@@ -318,18 +315,8 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
     else {
         return Intent::None;
     };
-    if theme_row(settings).is_some() {
-        let current = row.value.as_str().unwrap_or(BUILT_IN);
-        let picks = yi_tui::theme_file::list(settings.themes.as_deref());
-        let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
-        settings.edit = Some(Edit::Pick {
-            options: picks,
-            cursor,
-        });
-        return Intent::None;
-    }
-    match &row.kind {
-        SettingKind::Toggle => {
+    match control(&row) {
+        Control::Step => {
             let on = if row.value.is_null() {
                 &row.default
             } else {
@@ -337,7 +324,17 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
             };
             commit(settings, options, Value::Bool(on != &Value::Bool(true)))
         }
-        SettingKind::Choice { options: picks } => {
+        Control::Theme => {
+            let current = row.value.as_str().unwrap_or(BUILT_IN);
+            let picks = yi_tui::theme_file::list(settings.themes.as_deref());
+            let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
+            settings.edit = Some(Edit::Pick {
+                options: picks,
+                cursor,
+            });
+            Intent::None
+        }
+        Control::Pick(picks) => {
             let current = row.value.as_str().unwrap_or_default();
             if how == How::Click {
                 return stepped(picks, current).map_or(Intent::None, |value| {
@@ -346,38 +343,26 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
             }
             let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
             settings.edit = Some(Edit::Pick {
-                options: picks.clone(),
+                options: picks.to_vec(),
                 cursor,
             });
             Intent::None
         }
-        SettingKind::Number { .. } | SettingKind::Text | SettingKind::Model => {
-            let text = match &row.value {
-                Value::String(text) => text.clone(),
-                Value::Null => String::new(),
-                other => other.to_string(),
+        Control::Edit => {
+            let text = if row.value.is_null() {
+                String::new()
+            } else {
+                shown_value(&row.value)
             };
             settings.edit = Some(Edit::Type(text));
             Intent::None
         }
-        SettingKind::List if pane_edits_list(&row.id) && row.value.is_null() => {
-            settings.edit = Some(Edit::Type(String::new()));
-            Intent::None
-        }
-        SettingKind::List
-            if pane_edits_list(&row.id)
-                && row
-                    .value
-                    .as_array()
-                    .is_some_and(|items| items.iter().all(Value::is_string)) =>
-        {
-            settings.edit = Some(Edit::Type(shown_value(&row.value)));
-            Intent::None
-        }
-        SettingKind::List | SettingKind::Json => {
-            Intent::Note(format!("{} is edited in ~/.yi/config.json", row.id))
-        }
+        Control::Note => in_config(&row),
     }
+}
+
+fn in_config(row: &SettingRow) -> Intent {
+    Intent::Note(format!("{} is edited in ~/.yi/config.json", row.id))
 }
 
 fn commit(settings: &Settings, options: &[AcpConfigOption], value: Value) -> Intent {
@@ -459,6 +444,37 @@ fn applies(applies: Applies) -> &'static str {
         Applies::DaemonRestart => "after restart",
         Applies::ConsoleRestart => "next console",
         Applies::SoloTui => "solo tui only",
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Control<'a> {
+    Step,
+    Pick(&'a [String]),
+    Theme,
+    Edit,
+    Note,
+}
+
+fn control(row: &SettingRow) -> Control<'_> {
+    if is_theme_row(&row.id) {
+        return Control::Theme;
+    }
+    match &row.kind {
+        SettingKind::Toggle => Control::Step,
+        SettingKind::Choice { options } => Control::Pick(options),
+        SettingKind::Number { .. } | SettingKind::Text | SettingKind::Model => Control::Edit,
+        SettingKind::List
+            if pane_edits_list(&row.id)
+                && (row.value.is_null()
+                    || row
+                        .value
+                        .as_array()
+                        .is_some_and(|items| items.iter().all(Value::is_string))) =>
+        {
+            Control::Edit
+        }
+        SettingKind::List | SettingKind::Json => Control::Note,
     }
 }
 
@@ -577,10 +593,14 @@ pub(crate) fn targets(
     out
 }
 
-/// (label, value, when it applies, help) of every row on the current tab.
-type Shown = (String, String, String, String);
+/// (label, value, when it applies, help, default state, control) of every row on the current tab.
+type Shown<'a> = (String, String, String, String, bool, Control<'a>);
 
-fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Vec<Shown> {
+fn shown_rows<'a>(
+    settings: &'a Settings,
+    options: &[AcpConfigOption],
+    cmd: bool,
+) -> Vec<Shown<'a>> {
     match settings.tab {
         SESSION => options
             .iter()
@@ -593,7 +613,14 @@ fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Ve
                 let help = default_of(&option.config_id).map_or_else(String::new, |id| {
                     format!("this session only; d saves it as the default {id}")
                 });
-                (option.name.clone(), named, "now".to_owned(), help)
+                (
+                    option.name.clone(),
+                    named,
+                    "now".to_owned(),
+                    help,
+                    false,
+                    Control::Pick(&[]),
+                )
             })
             .collect(),
         KEYS => crate::keys::CHORDS
@@ -609,6 +636,8 @@ fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Ve
                     chord.key(cmd).to_owned(),
                     prefix,
                     String::new(),
+                    false,
+                    Control::Note,
                 )
             })
             .collect(),
@@ -626,6 +655,8 @@ fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Ve
                         row.help,
                         applies(row.applies)
                     ),
+                    row.value.is_null() || row.value == row.default,
+                    control(row),
                 )
             })
             .collect(),
@@ -641,7 +672,10 @@ pub fn view(
     visible: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![tab_bar(settings, width, theme), Line::default()];
+    let mut lines = vec![
+        tab_bar(settings, width, theme),
+        Line::styled("─".repeat(width), theme.dim_style()),
+    ];
     let rows = shown_rows(settings, options, cmd);
     let (first, room) = window(settings, visible);
     if waiting(settings) {
@@ -664,7 +698,9 @@ pub fn view(
         width.saturating_sub(4) / 3
     };
     let label = width.saturating_sub(value.saturating_add(tail).saturating_add(1));
-    for (index, (name, shown, applies, _)) in rows.iter().enumerate().skip(first).take(room) {
+    for (index, (name, shown, applies, _, at_default, _)) in
+        rows.iter().enumerate().skip(first).take(room)
+    {
         let chosen = index == settings.cursor;
         let marker = if chosen { "▸ " } else { "  " };
         let editing = chosen.then_some(settings.edit.as_ref()).flatten();
@@ -675,19 +711,34 @@ pub fn view(
                 .map_or_else(String::new, |pick| format!("‹ {pick} ›")),
             None => shown.clone(),
         };
-        let style = if chosen {
-            Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
+        let bar = if chosen {
+            Style::default().bg(theme.selection_bg())
+        } else {
+            Style::default()
+        };
+        let label_style = if chosen {
+            bar.fg(theme.text).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.text)
         };
-        lines.push(Line::from(vec![
+        let value_style = if editing.is_some() {
+            bar.fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else if *at_default {
+            bar.patch(theme.dim_style())
+        } else {
+            bar.fg(theme.teal)
+        };
+        let mut spans = vec![
             Span::styled(
                 format!(" {marker}{}", clip(name, label.saturating_sub(3))),
-                style,
+                label_style,
             ),
-            Span::styled(clip(&shown, value), Style::default().fg(theme.teal)),
-            Span::styled(clip(applies, tail), theme.dim_style()),
-        ]));
+            Span::styled(clip(&shown, value), value_style),
+            Span::styled(clip(applies, tail), bar.patch(theme.dim_style())),
+        ];
+        let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+        spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), bar));
+        lines.push(Line::from(spans));
         if let (true, Some((start, shown, total))) = (chosen, list_span(settings)) {
             lines.extend(listed(settings, start, shown, theme));
             if shown < total {
@@ -713,10 +764,9 @@ pub fn view(
     lines.push(Line::default());
     let help = rows
         .get(settings.cursor)
-        .map_or("", |(_, _, _, help)| help.as_str());
-    let help = Line::styled(format!(" {help}"), theme.muted_style());
+        .map_or("", |(_, _, _, help, _, _)| help.as_str());
     lines.extend(
-        yi_tui::wrap::wrap_line(&help, width.saturating_sub(1), " ")
+        yi_tui::wrap::wrap_line(&Line::raw(help), width.saturating_sub(1), " ")
             .into_iter()
             .take(3),
     );
@@ -727,6 +777,9 @@ pub fn view(
         ));
     }
     let listing = theme_list_open(settings).map(|id| id == ground_id(theme.dark));
+    let control = rows
+        .get(settings.cursor)
+        .map_or(Control::Note, |(_, _, _, _, _, control)| *control);
     let hint = match (&settings.edit, settings.tab) {
         (Some(Edit::Type(_)), _) => " type · enter save · empty unsets · esc cancel",
         (Some(Edit::Pick { .. }), _) if listing == Some(true) => {
@@ -739,9 +792,16 @@ pub fn view(
             " ↑↓ choose · enter saves it for a dark terminal · esc cancel"
         }
         (Some(Edit::Pick { .. }), _) => " ↑↓ choose · enter save · esc cancel",
-        (None, SESSION) => " ↑↓ move · ←→ tab · enter change · d make default",
+        (None, SESSION) => " ↑↓ move · ←→ tab · space next · enter pick · d make default",
         (None, KEYS) => " ↑↓ move · ←→ tab",
-        (None, _) => " ↑↓ move · ←→ tab · enter change · u unset",
+        (None, _) => match control {
+            Control::Step => " ↑↓ move · ←→ tab · space toggle · u unset",
+            Control::Pick(_) | Control::Theme => {
+                " ↑↓ move · ←→ tab · space next · enter pick · u unset"
+            }
+            Control::Edit => " ↑↓ move · ←→ tab · enter edit · u unset",
+            Control::Note => " ↑↓ move · ←→ tab · enter config.json",
+        },
     };
     lines.push(Line::styled(hint, theme.dim_style()));
     lines
@@ -909,6 +969,26 @@ mod tests {
                 .iter()
                 .position(|row| row.id == id)
                 .ok_or("no row")?;
+            let hint = view(
+                &settings,
+                &[],
+                false,
+                80,
+                40,
+                &Theme::new(ColorTier::TrueColor, true),
+            )
+            .last()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .ok_or("no hint")?;
+            assert_eq!(
+                hint, " ↑↓ move · ←→ tab · enter config.json",
+                "{id} advertises an editor it cannot open"
+            );
             let opened = key(&mut settings, press(KeyCode::Enter), &[]);
             let unset = key(&mut settings, press(KeyCode::Char('u')), &[]);
             assert!(matches!(opened, Intent::Note(_)), "{id} opens an editor");
@@ -917,7 +997,8 @@ mod tests {
             Ok(())
         }
         not_edited("skills.global", serde_json::json!(2))?;
-        not_edited("lanes.land", Value::Null)
+        not_edited("lanes.land", Value::Null)?;
+        not_edited("keys", Value::Null)
     }
 }
 
@@ -991,11 +1072,71 @@ mod theme_rows {
     }
 
     #[test]
+    fn space_changes_the_chosen_setting_like_enter() -> TestResult {
+        let mut settings = on_dark_theme()?;
+        press(&mut settings, KeyCode::Char(' '));
+        assert!(settings.edit.is_some(), "space did not open the row");
+        Ok(())
+    }
+
+    #[test]
+    fn the_chosen_settings_row_is_a_full_width_bar_with_dim_defaults() -> TestResult {
+        let mut settings = on_dark_theme()?;
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let bar = theme.selection_bg();
+        let barred = |line: &&Line| {
+            !line.spans.is_empty() && line.spans.iter().all(|span| span.style.bg == Some(bar))
+        };
+        let lines = view(&settings, &[], false, 80, 40, &theme);
+        let chosen = lines.iter().find(barred).ok_or("no highlighted row")?;
+        assert_eq!(text(chosen).chars().count(), 80, "the bar stops short");
+        assert_eq!(
+            lines.iter().filter(barred).count(),
+            1,
+            "more than one row is highlighted"
+        );
+        let value = chosen.spans.get(1).ok_or("no value span")?;
+        assert_eq!(
+            value.style.fg,
+            theme.dim_style().fg,
+            "the default is not dim"
+        );
+        let row = settings
+            .rows
+            .as_mut()
+            .and_then(|rows| rows.iter_mut().find(|row| row.id == "theme.dark"))
+            .ok_or("no theme.dark")?;
+        row.value = Value::String("alabaster".to_owned());
+        let lines = view(&settings, &[], false, 80, 40, &theme);
+        let chosen = lines.iter().find(barred).ok_or("no highlighted row")?;
+        let value = chosen.spans.get(1).ok_or("no value span")?;
+        assert_eq!(
+            value.style.fg,
+            Some(theme.teal),
+            "the changed value is not teal"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn an_open_theme_list_keeps_the_footer_and_hint_inside_a_short_pane() -> TestResult {
         let mut settings = on_dark_theme()?;
         press(&mut settings, KeyCode::Enter);
         let theme = Theme::new(ColorTier::TrueColor, true);
         let lines = view(&settings, &[], false, 80, 20, &theme);
+        let bar = theme.selection_bg();
+        let chosen = lines
+            .iter()
+            .find(|line| {
+                !line.spans.is_empty() && line.spans.iter().all(|span| span.style.bg == Some(bar))
+            })
+            .ok_or("no highlighted row")?;
+        let value = chosen.spans.get(1).ok_or("no value span")?;
+        assert_eq!(
+            value.style.fg,
+            Some(theme.accent),
+            "the editing value is not accented"
+        );
         let texts: Vec<String> = lines.iter().map(text).collect();
         assert!(
             lines.len() <= 20,
