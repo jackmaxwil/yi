@@ -80,9 +80,9 @@ fn foldable(rig: &Rig) -> Result<bool, Box<dyn Error>> {
     )?))
 }
 
-/// The host git read as one that cannot fold: `--version` answers the version asked for and
-/// `merge-tree` fails as 2.34's does, every other call is the real git.
-fn read_version_as(rig: &Rig, version: &str) -> Result<(), Box<dyn Error>> {
+/// The host git reads as another version. Tests emulate `merge-tree` only when a fold must run.
+/// Every other call is the real git.
+fn read_version_as(rig: &Rig, version: &str, emulate_merge: bool) -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt;
     let path = std::env::var_os("PATH").ok_or("no PATH")?;
     let real = std::env::split_paths(&path)
@@ -91,11 +91,17 @@ fn read_version_as(rig: &Rig, version: &str) -> Result<(), Box<dyn Error>> {
         .ok_or("no git on PATH")?;
     let dir = rig.repo.parent().ok_or("no scratch root")?.join("shim");
     std::fs::create_dir_all(&dir)?;
+    let merge = emulate_merge.then(|| {
+        format!(
+            "case \"$*\" in *merge-tree*) for candidate do :; done; exec '{}' rev-parse \"${{candidate}}^{{tree}}\";; esac\n",
+            real.display()
+        )
+    });
     let body = format!(
         "#!/bin/sh\n\
          [ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\n\
-         case \"$*\" in *merge-tree*) echo 'error: unknown option write-tree' >&2; exit 129;; esac\n\
-         exec '{}' \"$@\"\n",
+         {}exec '{}' \"$@\"\n",
+        merge.unwrap_or_default(),
         real.display()
     );
     std::fs::write(dir.join("git"), body)?;
@@ -221,7 +227,7 @@ async fn would_conflict_names_the_path_and_is_empty_when_nothing_would() -> Test
 #[tokio::test]
 async fn an_old_git_is_refused_by_name_and_its_trial_is_not_read_as_no_conflict() -> TestResult {
     let rig = rig("oldgit")?;
-    read_version_as(&rig, "git version 2.34.1")?;
+    read_version_as(&rig, "git version 2.34.1", false)?;
     let at = rig.fork("oldgit").await?;
     std::fs::write(at.join("f0.txt"), "theirs\n")?;
     let seen = rig.ask("tree.diff", json!({"tree": "oldgit"})).await?;
@@ -430,6 +436,31 @@ async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> 
     assert_eq!(read(&rig.repo.join("f1.txt"))?, "kid's\n");
     rig.family.host.delete("kid")?;
     assert!(!at.exists(), "the folded child's tree went with it");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_managed_child_fold_keeps_tree_and_names_discard_refusal() -> TestResult {
+    let rig = rig("managed-fold")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    std::fs::write(at.join("f1.txt"), "kid's\n")?;
+    read_version_as(&rig, "git version 2.43.0", true)?;
+    rig.family.host.mark_managed("kid")?;
+    let reply = rig
+        .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
+        .await?;
+    let notes = reply
+        .get("notes")
+        .and_then(Value::as_array)
+        .ok_or("a managed child's discard refusal was not named")?;
+    let note = notes
+        .first()
+        .and_then(Value::as_str)
+        .ok_or("the managed child had no discard-refusal note")?;
+    assert!(note.contains("kid"), "{note}");
+    assert!(note.contains("was dispatched by the plan"), "{note}");
+    assert!(at.exists(), "the managed child's tree was discarded");
+    assert!(note.contains("tree was left in place"), "{note}");
     Ok(())
 }
 
