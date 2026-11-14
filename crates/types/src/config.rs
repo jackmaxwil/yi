@@ -268,21 +268,20 @@ pub struct DiscoveredCustomCapabilities {
 
 /// Invariant: a level the list's `variants` omits maps to null, so it is unsupported rather than
 /// defaulted; `off` is left out because a variants table only names thinking levels.
-fn level_map(variants: &serde_json::Value) -> Option<serde_json::Value> {
+fn discovered_level_map(variants: &serde_json::Value) -> Option<serde_json::Value> {
     let variants = variants.as_object().filter(|map| !map.is_empty())?;
-    let map = crate::model::Effort::ALL
-        .into_iter()
-        .filter(|effort| *effort != crate::model::Effort::Off)
-        .map(|effort| {
-            let sent = variants
-                .get(effort.as_str())
-                .and_then(|variant| variant.get("reasoningEffort"))
-                .and_then(serde_json::Value::as_str);
-            let value = sent.map_or(serde_json::Value::Null, |sent| sent.into());
-            (effort.as_str().to_owned(), value)
-        })
-        .collect();
-    Some(serde_json::Value::Object(map))
+    Some(crate::model::Effort::level_map(
+        crate::model::Effort::ALL
+            .into_iter()
+            .filter(|effort| *effort != crate::model::Effort::Off)
+            .map(|effort| {
+                let sent = variants
+                    .get(effort.as_str())
+                    .and_then(|variant| variant.get("reasoningEffort"))
+                    .and_then(serde_json::Value::as_str);
+                (effort, sent)
+            }),
+    ))
 }
 
 /// The first limit a model list advertises positively; a zero is a sentinel, not a cap, so it
@@ -328,7 +327,7 @@ impl CustomProvider {
                     id: model.id,
                     name: model.name,
                     reasoning: model.reasoning,
-                    thinking_level_map: model.variants.as_ref().and_then(level_map),
+                    thinking_level_map: model.variants.as_ref().and_then(discovered_level_map),
                     input,
                     cost: None,
                     context_window,

@@ -1,7 +1,7 @@
 ---
 issue: Refs #2204
 shares: #2220 crates/acp/src/lib.rs comes from the #2205 commits this branch is stacked on, not from this change
-raise: crate ai +4, crate runtime +73, crate types +39, tests +191
+raise: crate ai +3, crate runtime +79, crate types +52, tests +243
 ---
 
 Discovery now reads a relay's `reasoning` flag and `variants` table. A model that lists `xhigh` and `max` (OpenRelay's `bedrock-claude-opus-5-5`) offers both in the thinking picker and sends the level the relay names. A level the table omits is unsupported for that model. Before, every discovered model was marked non-reasoning with no level map, so the picker stopped at high.

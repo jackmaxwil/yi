@@ -149,7 +149,11 @@ pub fn resolve(provider: &str) -> Option<Resolved> {
 }
 
 pub fn has_credential(provider: &str) -> bool {
-    env_key(provider).is_some() || Store::open(Store::default_root()).load(provider).is_some()
+    env_key(provider).is_some() || stored_without_refresh(Store::default_root(), provider)
+}
+
+fn stored_without_refresh(root: std::path::PathBuf, provider: &str) -> bool {
+    Store::open(root).load(provider).is_some() && registry::lookup(provider).is_ok()
 }
 
 pub fn resolve_with_proxy(

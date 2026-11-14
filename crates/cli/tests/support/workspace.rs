@@ -73,9 +73,6 @@ impl Workspace {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        for (_, key) in yi_types::PROVIDER_KEY_VARS {
-            command.env_remove(key);
-        }
         let mut child = command.spawn()?;
         {
             let mut stdin = child.stdin.take().ok_or("acp has no stdin")?;
