@@ -1,5 +1,5 @@
 /// Invariant: the list offers what [`crate::input::handle_slash`] routes, plus `learn`, a prompt.
-pub(crate) const SLASH_COMMANDS: [(&str, &str); 22] = [
+pub(crate) const SLASH_COMMANDS: [(&str, &str); 23] = [
     ("new", "start a session"),
     ("undo", "restore the last turn's files"),
     ("quit", "leave the session"),
@@ -10,6 +10,7 @@ pub(crate) const SLASH_COMMANDS: [(&str, &str); 22] = [
     ("plantree", "show the plan tree"),
     ("goal", "set the session goal"),
     ("agents", "show the agents"),
+    ("mcp", "manage MCP servers"),
     ("model", "choose a model"),
     ("permissions", "show the permission mode"),
     ("compact", "compact the session"),
@@ -35,6 +36,15 @@ mod tests {
                 .iter()
                 .chain(std::iter::once(&"sessions"))
                 .all(|v| SLASH_COMMANDS.iter().any(|(name, _)| name == v))
+        );
+    }
+
+    #[test]
+    fn mcp_slash_command_is_offered_with_its_slash() {
+        assert!(
+            SLASH_COMMANDS
+                .iter()
+                .any(|(name, _)| format!("/{name}") == "/mcp")
         );
     }
 }

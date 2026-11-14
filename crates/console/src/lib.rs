@@ -541,7 +541,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
             };
             let cells = session
                 .as_ref()
-                .map(|session| crate::model::notebook_cells(&app.state.notebooks, session))
+                .map(|session| crate::panes::notebook_cells(&app.state.notebooks, session))
                 .unwrap_or(&[]);
             cells
                 .iter()

@@ -727,3 +727,54 @@ fn a_cells_mcp_call_names_the_claude_code_hooks_it_skipped() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn mcp_servers_lists_every_config_source_with_transport_and_no_session_yet() -> TestResult {
+    let home = mcp_home()?;
+    std::fs::create_dir_all(home.home.join("proj/.vscode"))?;
+    std::fs::write(
+        home.home.join("proj/.vscode/mcp.json"),
+        r#"{"servers": {"web": {"url": "https://mcp.example/api", "disabled": true}}}"#,
+    )?;
+    let out = yi_in(
+        &home,
+        &home.home.join("proj"),
+        &["mcp", "servers", "--json"],
+    )?;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let rows: serde_json::Value = serde_json::from_str(&out.stdout)?;
+    let rows = rows.as_array().ok_or("not a list")?;
+    let by = |name: &str| rows.iter().find(|row| row["name"] == name);
+    let fixture = by("fixture").ok_or("no fixture row")?;
+    assert_eq!(fixture["source"], "~/.yi/mcp.json");
+    assert_eq!(fixture["transport"], "stdio");
+    assert_eq!(fixture["enabled"], true);
+    assert!(fixture["tools"].is_null() && fixture["state"].is_null());
+    let web = by("web").ok_or("no web row")?;
+    assert_eq!(web["source"], ".vscode/mcp.json");
+    assert_eq!(web["transport"], "http");
+    assert_eq!(web["enabled"], false);
+    Ok(())
+}
+
+#[test]
+fn mcp_page_probe_connects_the_fixture_and_the_list_then_carries_its_tool_count() -> TestResult {
+    let home = mcp_home()?;
+    let command = crate::yi_bin::yi_command(&home.home);
+    let exe = std::path::Path::new(command.get_program());
+    let before = yi_runtime::mcp_page::servers_via(exe, Some(&home.home))?;
+    let fixture = before
+        .iter()
+        .find(|row| row.name == "fixture")
+        .ok_or("no fixture row")?;
+    assert_eq!(fixture.tools, None);
+    assert_eq!(fixture.auth(), "none");
+    let after = yi_runtime::mcp_page::probe_via(exe, Some(&home.home), fixture)?;
+    let probed = after
+        .iter()
+        .find(|row| row.name == "fixture")
+        .ok_or("no fixture row after probe")?;
+    assert_eq!(probed.state.as_deref(), Some("live"));
+    assert_eq!(probed.tools, Some(2));
+    Ok(())
+}

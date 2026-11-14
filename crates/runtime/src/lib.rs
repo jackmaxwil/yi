@@ -35,6 +35,7 @@ pub mod levers;
 mod listed;
 mod mail;
 pub mod mailbox;
+pub mod mcp_page;
 pub mod memory;
 pub mod node;
 mod packed;

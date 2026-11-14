@@ -107,6 +107,10 @@ impl App {
             _ if path.starts_with('/') => path.to_owned(),
             _ => format!("{dir}/{path}"),
         };
+        if query.trim() == "mcp" {
+            self.open_mcp();
+            return true;
+        }
         if query.trim() == "nb" {
             if let Some(pane) = self.state.focused_pane_mut() {
                 let session = pane.session().cloned();

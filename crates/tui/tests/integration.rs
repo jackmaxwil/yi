@@ -25,6 +25,7 @@ mod hud_todos;
 mod input;
 mod logos;
 mod markdown_render;
+mod mcp;
 mod model_picker;
 mod motion;
 mod pane_scroll;

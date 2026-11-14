@@ -124,3 +124,58 @@ pub fn resolve_server(server: &str, home: &Path) -> Result<(String, McpServerSpe
         "cannot resolve server {server}: not a URL, config path, or entry in ~/.yi/mcp.json / .mcp.json / .vscode/mcp.json / .cursor/mcp.json"
     ))
 }
+
+const CONFIG_SOURCES: [&str; 4] = [
+    "~/.yi/mcp.json",
+    ".mcp.json",
+    ".vscode/mcp.json",
+    ".cursor/mcp.json",
+];
+pub fn list_servers(home: &Path, store: &crate::sessions::SessionsStore) -> Value {
+    let mut rows = Vec::new();
+    for source in CONFIG_SOURCES {
+        let path = source
+            .strip_prefix("~/")
+            .map_or_else(|| Path::new(source).to_path_buf(), |rest| home.join(rest));
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(config) = load_config(&path) else {
+            rows.push(serde_json::json!({"source": source, "error": "unreadable config"}));
+            continue;
+        };
+        let Some(entries) = entries_of(&config) else {
+            continue;
+        };
+        for (name, entry) in entries {
+            let transport = if entry.get("url").is_some() {
+                "http"
+            } else {
+                "stdio"
+            };
+            let session = crate::sessions::default_session_name(name);
+            let state = store
+                .get(&session)
+                .and_then(|record| serde_json::to_value(record.state).ok())
+                .unwrap_or(Value::Null);
+            let tools = store.read_snapshot(&session).and_then(|snapshot| {
+                snapshot
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+            });
+            rows.push(serde_json::json!({
+                "name": name,
+                "source": source,
+                "path": path.display().to_string(),
+                "transport": transport,
+                "target": entry.get("url").or_else(|| entry.get("command")).cloned().unwrap_or(Value::Null),
+                "enabled": entry.get("disabled").and_then(Value::as_bool) != Some(true),
+                "session": session,
+                "state": state,
+                "tools": tools,
+            }));
+        }
+    }
+    Value::Array(rows)
+}
