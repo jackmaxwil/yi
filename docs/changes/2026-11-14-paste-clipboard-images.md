@@ -1,4 +1,5 @@
 ---
+version: 0.1050.0
 issue: Refs #2160
 cut: none crates/acp/src/replay.rs
 shares: #2205 it edits the model list in acp lib.rs, this branch edits the prompt and steer handlers
