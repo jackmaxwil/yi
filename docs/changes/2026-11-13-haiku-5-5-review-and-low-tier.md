@@ -1,4 +1,5 @@
 ---
+version: 0.1049.0
 cut: none .forgejo/workflows/review.yml
 cut: none .forgejo/workflows/autofix.yml
 ---
