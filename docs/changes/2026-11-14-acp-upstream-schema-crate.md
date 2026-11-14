@@ -20,5 +20,10 @@ cut: none crates/console/tests/sessions.rs
 cut: crates/types/src/acp.rs | pub struct AcpFrame { | the upstream agent-client-protocol-schema crate owns the ACP wire shapes
 cut: none docs/YI_DESIGN.md
 cut: none scripts/guardrails/baselines/schemas.lock
+shares: #2232 edits YI_DESIGN.md §17.2 and §18.3, not the OAuth profile section
+shares: #2231 adds one [workspace.dependencies] row to Cargo.toml, away from its profile and exclude lines
+shares: #2208 swaps ACP type paths in console render.rs and settings.rs, no layout change
+shares: #2205 swaps ACP type paths in crates/acp/src/lib.rs, not its credential checks
+shares: #2167 swaps ACP type paths in crates/acp/src/lib.rs and console app.rs, mechanical only
 ---
 The ACP wire is now the upstream `agent-client-protocol-schema` crate (1.17.0, feature `unstable_protocol_v2`, no `schemars`) in `yi-acp` and `yi-console`. `yi-types::acp` keeps `AcpMeta`, `AcpRoute*`, `AcpForkParams`, `AcpCommitted` and `DaemonLedger*`. `anyhow` is allowed only under that crate in `deny.toml`; `strum` is skipped as a duplicate of ratatui's. The vendored schema moves from alpha.5 to the crate's own `schema/v2/schema.json` at tag v1.17.0, and the strict-client test reads it.
