@@ -145,6 +145,7 @@ heartbeats: clock subscriptions | `serve_daemon::workers_do_not_lose_heartbeats_
 heartbeats: clock subscriptions | `schedule_e2e::a_heartbeat_due_mid_compaction_is_deferred`
 heartbeats: clock subscriptions | `schedule_e2e::a_rearming_block_does_not_hide_a_sibling_coming_due`
 heartbeats: clock subscriptions | `schedule_e2e::the_kernel_vocabulary_cannot_reach_a_sibling_session`
+custom providers | `custom_providers::a_provider_without_models_discovers_them_on_first_use`
 heartbeats: clock subscriptions | `schedule::shared::tests::an_ended_session_leaves_the_timer_nothing_to_re_arm`
 heartbeats: clock subscriptions | `schedule::shared::tests::a_departed_child_leaves_the_interned_timer_nothing_to_hold`
 heartbeats: clock subscriptions | `schedule::shared::tests::a_sibling_still_bound_keeps_the_timer_and_it_still_delivers`

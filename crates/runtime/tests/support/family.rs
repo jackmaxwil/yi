@@ -305,3 +305,28 @@ pub fn report_output() -> String {
     lines.insert(218, "release_id = rel-09d88875".to_owned());
     lines.join("\n")
 }
+
+/// The git on `PATH` before any shim is put ahead of it.
+pub fn real_git() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let path = std::env::var_os("PATH").ok_or("no PATH")?;
+    Ok(std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .ok_or("no git on PATH")?)
+}
+
+/// `script` as `<dir>/git` ahead of the real git on `PATH`, which it execs afterwards. nextest
+/// gives each test its own process, so the shim reaches no other test.
+pub fn shim_git(dir: &Path, script: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let real = real_git()?;
+    std::fs::create_dir_all(dir)?;
+    let body = format!("#!/bin/sh\n{script}\nexec '{}' \"$@\"\n", real.display());
+    std::fs::write(dir.join("git"), body)?;
+    std::fs::set_permissions(dir.join("git"), std::fs::Permissions::from_mode(0o755))?;
+    let path = std::env::var_os("PATH").ok_or("no PATH")?;
+    let first = std::iter::once(dir.to_path_buf());
+    let joined = std::env::join_paths(first.chain(std::env::split_paths(&path)))?;
+    unsafe { std::env::set_var("PATH", joined) };
+    Ok(())
+}

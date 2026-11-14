@@ -177,6 +177,7 @@ fn custom_providers(site: &Site) -> Finding {
     let Some(providers) = config.providers else {
         return ok("none declared; `providers` in config.json adds one");
     };
+    yi_runtime::set_custom_providers(&providers);
     let (mut rows, mut missing) = (Vec::new(), false);
     for (id, provider) in providers.iter() {
         let from = if let Some(variable) = (provider.api_key_env.as_deref())
@@ -198,9 +199,20 @@ fn custom_providers(site: &Site) -> Finding {
                 None => "no key (set apiKeyEnv)".to_owned(),
             }
         };
+        let models = match provider.models.len() {
+            0 => match yi_runtime::dynamic_model_count(id) {
+                Ok(0) => "dynamic models: none".to_owned(),
+                Ok(count) => format!("{count} dynamic models"),
+                Err(error) => {
+                    missing = true;
+                    format!("dynamic models: {error}")
+                }
+            },
+            1 => "1 model".to_owned(),
+            count => format!("{count} models"),
+        };
         rows.push(format!(
-            "{id} {} model(s) at {} over {}, {from}",
-            provider.models.len(),
+            "{id} {models} at {} over {}, {from}",
             provider.base_url,
             provider.api.unwrap_or_default().wire()
         ));

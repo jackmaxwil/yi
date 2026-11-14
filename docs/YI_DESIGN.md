@@ -273,8 +273,10 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - Custom providers: `providers.<id>{baseUrl,api,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
   contextWindow,maxTokens,cost}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
   `api`: `openai-completions` (unset), `openai-responses` or `anthropic-messages`, any other value
-  refused at load; an id a built-in provider, `laya` or `faux` holds refuses at load. They
-  merge after the cache, so no refresh rewrites or drops them, and no refresh ever fetches one.
+  refused at load; an id a built-in provider, `laya` or `faux` holds refuses at load. Explicit
+  models merge after the cache, so no refresh rewrites or drops them. An empty or omitted list
+  instead discovers `baseUrl/models` on first selection or model listing, caches the result for
+  the process, and never delays startup for an unrelated provider.
   Requests go through that api's adapter at `baseUrl`, which each appends its own path to:
   `/chat/completions` and `/responses` (so a base ends in `/v1`), `/v1/messages` (so it does not);
   completions with plain `max_tokens` (`compat.plainMaxTokens`) and none of OpenAI's own fields,

@@ -60,3 +60,75 @@ pub fn credentialed_models(stream: &ProviderStream) -> Vec<Model> {
 pub fn selector_of(model: &Model) -> String {
     format!("{}/{}", model.provider, model.id)
 }
+
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A loopback `base_url` whose port refuses a connection: the one route failure that can be
+/// told before a child is spawned, with no key and no cost. Anything else answers `None`.
+pub(crate) fn loopback_refused(base_url: &str) -> Option<String> {
+    use std::net::ToSocketAddrs;
+    let (scheme, rest) = base_url.split_once("://")?;
+    let default_port = match scheme {
+        "http" => 80,
+        "https" => 443,
+        _ => return None,
+    };
+    let plain = format!("http://{rest}");
+    let (host, port) = yi_types::url::http_loopback_host_and_port(&plain)?;
+    let port = match port {
+        Some(port) => port.parse::<u16>().ok()?,
+        None => default_port,
+    };
+    if port == 0 {
+        return None;
+    }
+    let addr = (host, port).to_socket_addrs().ok()?.next()?;
+    match std::net::TcpStream::connect_timeout(&addr, PROBE_TIMEOUT) {
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            Some(format!("{base_url} refused a connection"))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loopback_refused;
+    use std::net::TcpListener;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn a_closed_loopback_port_is_refused_and_an_open_one_is_not() -> TestResult {
+        let open = TcpListener::bind("127.0.0.1:0")?;
+        let port = open.local_addr()?.port();
+        assert_eq!(
+            loopback_refused(&format!("http://127.0.0.1:{port}/v1")),
+            None
+        );
+        drop(open);
+        let refused = loopback_refused(&format!("http://127.0.0.1:{port}/v1"));
+        assert_eq!(
+            refused,
+            Some(format!("http://127.0.0.1:{port}/v1 refused a connection"))
+        );
+        for url in [
+            format!("https://127.0.0.1:{port}/v1"),
+            format!("https://localhost:{port}/v1"),
+        ] {
+            assert_eq!(
+                loopback_refused(&url),
+                Some(format!("{url} refused a connection"))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_remote_or_unparsable_base_url_is_never_probed() {
+        assert_eq!(loopback_refused("https://openrouter.ai/api/v1"), None);
+        assert_eq!(loopback_refused("not a url"), None);
+        assert_eq!(loopback_refused(""), None);
+        assert_eq!(loopback_refused("http://localhost:0"), None);
+    }
+}

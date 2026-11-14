@@ -98,6 +98,7 @@ fn a_provider_typo_refuses_at_load_naming_the_key() -> TestResult {
     parse(&format!(
         r#"{{"providers":{{"gw.local":{{"baseUrl":"http://127.0.0.1:1/v1","models":[{model}]}}}}}}"#
     ))?;
+    parse(r#"{"providers":{"gw.local":{"baseUrl":"http://127.0.0.1:1/v1","models":[]}}}"#)?;
     for (base, models, named) in [
         (
             "htp://127.0.0.1:1/v1",
@@ -105,11 +106,6 @@ fn a_provider_typo_refuses_at_load_naming_the_key() -> TestResult {
             "providers.gw.local.baseUrl",
         ),
         ("", format!("[{model}]"), "providers.gw.local.baseUrl"),
-        (
-            "http://127.0.0.1:1/v1",
-            "[]".to_owned(),
-            "providers.gw.local.models",
-        ),
         (
             "http://127.0.0.1:1/v1",
             format!("[{model},{model}]"),

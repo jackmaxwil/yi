@@ -49,5 +49,4 @@ await rlm.subscribe(
 )
 ```
 
-The review model must come from a family other than the authors' (`YI_REVIEW_MODEL`; the
-default avoid list is `anthropic`, since this repository's PRs are written on Anthropic models).
+The review model is whatever `YI_REVIEW_MODEL` names, else the configured primary, of any family.

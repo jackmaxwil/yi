@@ -79,12 +79,12 @@ class LabelTest(unittest.TestCase):
 
     def test_label_refuses_a_reply_whose_cost_cannot_be_counted(self):
         # A gate reads `^FAIL` lines as failures, so this expected refusal is kept off stderr.
-        noise = io.StringIO()
+        complaint = io.StringIO()
         with mock.patch.object(memory_inject.urllib.request, "urlopen", return_value=Reply(answer(None))):
-            with contextlib.redirect_stderr(noise):
+            with contextlib.redirect_stderr(complaint):
                 self.assertEqual(memory_inject.label(self.args), 1)
         self.assertEqual(
-            noise.getvalue(),
+            complaint.getvalue(),
             "FAIL label: refused: the reply carried no usage.cost, so --cap-usd cannot count it\n",
         )
         self.assertEqual(self.labels.read_bytes(), self.original)

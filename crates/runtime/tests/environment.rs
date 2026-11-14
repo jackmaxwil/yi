@@ -358,35 +358,13 @@ fn counted_repo(name: &str, pause_ms: u64) -> Result<(Scratch, Scratch), Box<dyn
         "a",
     ];
     assert!(git(&commit)?.success());
-    let path = std::env::var_os("PATH").ok_or("no PATH")?;
-    let real = std::env::split_paths(&path)
-        .map(|dir| dir.join("git"))
-        .find(|candidate| candidate.is_file())
-        .ok_or("no git on PATH")?;
-    let bin = shim.join("bin");
-    std::fs::create_dir_all(&bin)?;
     let pause = format!("{}.{:03}", pause_ms / 1000, pause_ms % 1000);
     let script = format!(
-        "#!/bin/sh\n[ \"$1\" = status ] && {{ echo run >> '{}'; sleep {pause}; }}\nexec '{}' \"$@\"\n",
-        shim.join("status.log").display(),
-        real.display()
+        "[ \"$1\" = status ] && {{ echo run >> '{}'; sleep {pause}; }}\n",
+        shim.join("status.log").display()
     );
-    git_first_on_path(&bin, &script)?;
+    crate::support::shim_git(&shim.join("bin"), &script)?;
     Ok((dir, shim))
-}
-
-/// `script` as `<bin>/git`, with `bin` first on PATH. nextest runs each test in its own process, so
-/// it reaches no other test.
-fn git_first_on_path(bin: &std::path::Path, script: &str) -> TestResult {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::create_dir_all(bin)?;
-    std::fs::write(bin.join("git"), script)?;
-    std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))?;
-    let path = std::env::var_os("PATH").ok_or("no PATH")?;
-    let first = std::iter::once(bin.to_path_buf());
-    let joined = std::env::join_paths(first.chain(std::env::split_paths(&path)))?;
-    unsafe { std::env::set_var("PATH", joined) };
-    Ok(())
 }
 
 fn status_runs(shim: &Scratch) -> usize {
@@ -578,10 +556,7 @@ fn a_busy_event_stream_does_not_invalidate_an_unchanged_tree() -> TestResult {
 fn a_git_inside_the_tree_on_path_never_runs_on_the_host() -> TestResult {
     let (dir, _shim) = counted_repo("yi-env-tree-on-path", 0)?;
     let marker = dir.join("ran-on-host");
-    git_first_on_path(
-        &dir.join("bin"),
-        &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
-    )?;
+    crate::support::shim_git(&dir.join("bin"), &format!("touch '{}'\n", marker.display()))?;
     let summary = yi_runtime::environment::git_summary(&dir);
     assert!(!marker.exists(), "a contained write ran on the host");
     assert!(summary.is_some(), "the real git still answers");
