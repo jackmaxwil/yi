@@ -4,7 +4,10 @@
 use serde_json::{Value, json};
 use yi_oauth::registry::{self, Kind as ProfileKind, Login};
 
-type Res = Result<(), Box<dyn std::error::Error>>;
+#[allow(dead_code)]
+#[path = "common/mod.rs"]
+mod common;
+use common::Res;
 
 #[test]
 fn the_codex_login_is_built_in_and_a_user_profile_file_wins() -> Res {
