@@ -47,12 +47,32 @@ impl SubagentHost {
 
 /// The registry's models whose provider holds a credential, each provider asked once.
 pub fn credentialed_models(stream: &ProviderStream) -> Vec<Model> {
+    usable_models(available_models(), None, |provider| {
+        stream.has_credential(provider)
+    })
+}
+
+pub fn picker_models(current: &Model) -> Vec<Model> {
+    usable_models(
+        available_models(),
+        Some(current),
+        yi_ai::auth::has_credential,
+    )
+}
+
+pub(crate) fn usable_models(
+    mut models: Vec<Model>,
+    current: Option<&Model>,
+    has_credential: impl Fn(&str) -> bool,
+) -> Vec<Model> {
     let mut asked = std::collections::HashMap::new();
-    let mut models = available_models();
     models.retain(|model| {
-        *asked
+        let usable = *asked
             .entry(model.provider.clone())
-            .or_insert_with(|| stream.has_credential(&model.provider))
+            .or_insert_with(|| has_credential(&model.provider));
+        usable
+            || current
+                .is_some_and(|current| current.provider == model.provider && current.id == model.id)
     });
     models
 }

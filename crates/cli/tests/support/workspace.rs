@@ -37,10 +37,6 @@ impl Workspace {
             .arg(self.0.join("home/sessions"))
             .arg("--cwd")
             .arg(self.project());
-        // Incident: a shell's OPENROUTER_API_KEY turned the keyless doctor FAIL into a live probe.
-        for (_, key) in yi_types::PROVIDER_KEY_VARS {
-            command.env_remove(key);
-        }
         command
             .envs(env.iter().copied())
             .current_dir(self.project());
@@ -77,9 +73,6 @@ impl Workspace {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        for (_, key) in yi_types::PROVIDER_KEY_VARS {
-            command.env_remove(key);
-        }
         let mut child = command.spawn()?;
         {
             let mut stdin = child.stdin.take().ok_or("acp has no stdin")?;

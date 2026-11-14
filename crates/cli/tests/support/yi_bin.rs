@@ -16,6 +16,9 @@ pub fn bin() -> &'static Path {
 pub fn yi_command(home: &Path) -> Command {
     let mut command = Command::new(BIN);
     command.env("HOME", home);
+    for (_, key) in yi_types::PROVIDER_KEY_VARS {
+        command.env_remove(key);
+    }
     command
 }
 
@@ -49,5 +52,18 @@ fn a_spawned_run_reads_the_home_the_harness_pins() -> Result<(), Box<dyn std::er
         Some(home.display().to_string().as_str()),
         "the spawned binary must read the harness's HOME, never the developer's"
     );
+    Ok(())
+}
+
+#[test]
+fn a_spawned_run_drops_inherited_provider_keys() -> Result<(), Box<dyn std::error::Error>> {
+    let command = yi_command(Path::new("/tmp/yi-bin-keys"));
+    for (_, key) in yi_types::PROVIDER_KEY_VARS {
+        let value = command
+            .get_envs()
+            .find_map(|(name, value)| (*name == *key).then_some(value))
+            .ok_or("provider key is not configured")?;
+        assert!(value.is_none(), "{key} must be removed");
+    }
     Ok(())
 }

@@ -205,6 +205,7 @@ pub struct DiscoveredCustomModel {
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
     pub reasoning: Option<bool>,
+    #[serde(default, deserialize_with = "lenient_u64")]
     pub max_output_tokens: Option<u64>,
     #[serde(default, deserialize_with = "lenient_limit")]
     pub limit: Option<DiscoveredCustomLimit>,
@@ -223,6 +224,13 @@ pub struct DiscoveredCustomLimit {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CustomModelList {
     pub data: Vec<DiscoveredCustomModel>,
+}
+
+fn lenient_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(serde_json::Value::deserialize(deserializer)?.as_u64())
 }
 
 fn lenient_limit<'de, D>(deserializer: D) -> Result<Option<DiscoveredCustomLimit>, D::Error>
@@ -265,20 +273,11 @@ impl CustomProvider {
                     context: None,
                     output: None,
                 });
-                let sent = [
-                    model.context_window,
-                    model.max_tokens,
-                    model.max_output_tokens,
-                    limit.context,
-                    limit.output,
-                ];
                 let context_window = advertised([model.context_window, limit.context]);
                 let max_tokens =
                     advertised([model.max_tokens, model.max_output_tokens, limit.output])
                         .or(context_window);
-                let nothing_positive =
-                    sent.iter().any(Option::is_some) && advertised(sent).is_none();
-                if model.id.is_empty() || nothing_positive {
+                if model.id.is_empty() {
                     return None;
                 }
                 let input = model.input.or_else(|| {

@@ -739,9 +739,6 @@ fn setup_with(
     keys: &[(&str, &str)],
 ) -> Result<Output, Box<dyn Error>> {
     let mut command = journey.command(&["setup"]);
-    for (_, variable) in yi_types::PROVIDER_KEY_VARS {
-        command.env_remove(variable);
-    }
     command.envs(keys.iter().copied());
     feed(command, answers)
 }
