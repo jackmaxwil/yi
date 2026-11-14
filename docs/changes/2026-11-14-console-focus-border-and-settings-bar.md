@@ -1,4 +1,5 @@
 ---
+version: 0.1051.0
 issue: Closes #2207
 cut: none crates/console/src/render.rs
 cut: none crates/console/src/settings.rs
