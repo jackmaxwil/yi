@@ -246,24 +246,14 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
         KeyCode::Enter => begin(settings, options, How::Key),
         KeyCode::Char(' ') => begin(settings, options, How::Click),
         KeyCode::Char('u') if settings.tab != SESSION && settings.tab != KEYS => {
-            let Some(control) = settings
-                .tab_rows()
-                .get(settings.cursor)
-                .map(|row| control(row))
-            else {
+            let Some(row) = settings.tab_rows().get(settings.cursor).copied() else {
                 return Intent::None;
             };
-            if control == Control::Note {
-                let Some(id) = settings
-                    .tab_rows()
-                    .get(settings.cursor)
-                    .map(|row| row.id.clone())
-                else {
-                    return Intent::None;
-                };
-                Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
-            } else {
-                commit(settings, options, Value::Null)
+            match control(row) {
+                Control::Note => in_config(row),
+                Control::Step | Control::Pick(_) | Control::Theme | Control::Edit => {
+                    commit(settings, options, Value::Null)
+                }
             }
         }
         KeyCode::Char('d') if settings.tab == SESSION => {
@@ -334,7 +324,7 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
             };
             commit(settings, options, Value::Bool(on != &Value::Bool(true)))
         }
-        Control::Pick if is_theme_row(&row.id) => {
+        Control::Theme => {
             let current = row.value.as_str().unwrap_or(BUILT_IN);
             let picks = yi_tui::theme_file::list(settings.themes.as_deref());
             let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
@@ -344,10 +334,7 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
             });
             Intent::None
         }
-        Control::Pick => {
-            let SettingKind::Choice { options: picks } = &row.kind else {
-                return Intent::None;
-            };
+        Control::Pick(picks) => {
             let current = row.value.as_str().unwrap_or_default();
             if how == How::Click {
                 return stepped(picks, current).map_or(Intent::None, |value| {
@@ -356,7 +343,7 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
             }
             let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
             settings.edit = Some(Edit::Pick {
-                options: picks.clone(),
+                options: picks.to_vec(),
                 cursor,
             });
             Intent::None
@@ -370,8 +357,12 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption], how: How) -> Inte
             settings.edit = Some(Edit::Type(text));
             Intent::None
         }
-        Control::Note => Intent::Note(format!("{} is edited in ~/.yi/config.json", row.id)),
+        Control::Note => in_config(&row),
     }
+}
+
+fn in_config(row: &SettingRow) -> Intent {
+    Intent::Note(format!("{} is edited in ~/.yi/config.json", row.id))
 }
 
 fn commit(settings: &Settings, options: &[AcpConfigOption], value: Value) -> Intent {
@@ -457,20 +448,21 @@ fn applies(applies: Applies) -> &'static str {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum Control {
+enum Control<'a> {
     Step,
-    Pick,
+    Pick(&'a [String]),
+    Theme,
     Edit,
     Note,
 }
 
-fn control(row: &SettingRow) -> Control {
+fn control(row: &SettingRow) -> Control<'_> {
     if is_theme_row(&row.id) {
-        return Control::Pick;
+        return Control::Theme;
     }
     match &row.kind {
         SettingKind::Toggle => Control::Step,
-        SettingKind::Choice { .. } => Control::Pick,
+        SettingKind::Choice { options } => Control::Pick(options),
         SettingKind::Number { .. } | SettingKind::Text | SettingKind::Model => Control::Edit,
         SettingKind::List
             if pane_edits_list(&row.id)
@@ -602,9 +594,13 @@ pub(crate) fn targets(
 }
 
 /// (label, value, when it applies, help, default state, control) of every row on the current tab.
-type Shown = (String, String, String, String, bool, Control);
+type Shown<'a> = (String, String, String, String, bool, Control<'a>);
 
-fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Vec<Shown> {
+fn shown_rows<'a>(
+    settings: &'a Settings,
+    options: &[AcpConfigOption],
+    cmd: bool,
+) -> Vec<Shown<'a>> {
     match settings.tab {
         SESSION => options
             .iter()
@@ -623,7 +619,7 @@ fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Ve
                     "now".to_owned(),
                     help,
                     false,
-                    Control::Pick,
+                    Control::Pick(&[]),
                 )
             })
             .collect(),
@@ -800,7 +796,9 @@ pub fn view(
         (None, KEYS) => " ↑↓ move · ←→ tab",
         (None, _) => match control {
             Control::Step => " ↑↓ move · ←→ tab · space toggle · u unset",
-            Control::Pick => " ↑↓ move · ←→ tab · space next · enter pick · u unset",
+            Control::Pick(_) | Control::Theme => {
+                " ↑↓ move · ←→ tab · space next · enter pick · u unset"
+            }
             Control::Edit => " ↑↓ move · ←→ tab · enter edit · u unset",
             Control::Note => " ↑↓ move · ←→ tab · enter config.json",
         },
