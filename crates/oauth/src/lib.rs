@@ -1,9 +1,10 @@
 //! Provider login. An OAuth provider is a file at `~/.yi/oauth/<provider>.json`,
-//! except `cursor` and `openai-codex`, whose endpoints are compiled in.
+//! except `cursor`, `openai-codex` and `claude`, whose endpoints are compiled in.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+pub mod claude;
 pub mod cli;
 pub mod codex;
 pub mod cursor;

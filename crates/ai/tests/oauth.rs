@@ -225,3 +225,50 @@ fn a_profile_without_headers_sends_only_bearer() -> Res {
     assert!(!lower.contains("x-api-key"), "{request}");
     Ok(())
 }
+
+/// The built-in Claude login must reach the wire as Claude Code: Bearer, the oauth beta
+/// header, and the identity line first in `system`, ahead of the caller's own prompt.
+#[test]
+fn the_claude_login_sends_the_beta_header_and_the_identity_line() -> Res {
+    let _serial = serial();
+    let _home = home("claude")?;
+    Store::user().save(
+        "anthropic",
+        &Credential {
+            kind: Kind::Oauth,
+            access: "claude-tok".to_owned(),
+            refresh: None,
+            expires: None,
+            account: None,
+            org: None,
+            extra: Default::default(),
+        },
+    )?;
+    let resolved = auth::resolve("anthropic").ok_or("expected the stored credential")?;
+    let (port, handle) = serve_once()?;
+    let model = model(port)?;
+    let mut context = context();
+    context.system_prompt = "Be brief.".to_owned();
+    let options = yi_ai::anthropic::AnthropicOptions {
+        oauth: true,
+        extra_headers: resolved.headers.clone(),
+        ..yi_ai::anthropic::AnthropicOptions::default()
+    };
+    drain(|| yi_ai::anthropic::stream(&model, &context, &options, resolved.secret.expose()))?;
+    let request = handle.join().map_err(|_| "server thread")?;
+    let lower = request.to_ascii_lowercase();
+    assert!(
+        lower.contains("authorization: bearer claude-tok"),
+        "{request}"
+    );
+    assert!(
+        lower.contains("anthropic-beta: oauth-2025-04-20"),
+        "{request}"
+    );
+    let identity = request
+        .find("You are Claude Code, Anthropic's official CLI for Claude.")
+        .ok_or("identity line missing")?;
+    let prompt = request.find("Be brief.").ok_or("system prompt missing")?;
+    assert!(identity < prompt, "{request}");
+    Ok(())
+}

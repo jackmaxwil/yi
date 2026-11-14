@@ -309,7 +309,13 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         ),
         ("stream", json!(true)),
     ]);
-    if !context.system_prompt.is_empty() {
+    if options.oauth {
+        let mut blocks = vec![text_block(yi_oauth::claude::IDENTITY_LINE)];
+        if !context.system_prompt.is_empty() {
+            blocks.extend(system_blocks(&context.system_prompt));
+        }
+        params["system"] = Value::Array(blocks);
+    } else if !context.system_prompt.is_empty() {
         params["system"] = Value::Array(system_blocks(&context.system_prompt));
     }
     if let Some(tools) = &context.tools

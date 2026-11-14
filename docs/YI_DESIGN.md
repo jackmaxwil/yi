@@ -13,7 +13,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Session file | Pi's v4 session JSONL format: a header, then one `Mutation` per line; any other version is rejected (§4.1) | D32 |
 | Pi RPC | `yi rpc` serves Pi's RPC JSONL command names plus Yi's own (§17.1) | |
 | Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog, plus providers `config.json` declares on any of the first three (§5) | |
-| Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor` and `openai-codex` | D191 |
+| Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor`, `openai-codex` and `claude` | D191 |
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
@@ -305,7 +305,12 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - yi-oauth: PKCE S256 from `/dev/urandom`, a `127.0.0.1` loopback, `login`/`logout`; tokens in
   `~/.yi/providers/tokens/<provider>.json` (0600, tmp+rename), refreshed 30 s before expiry under
   a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`. Yi ships no client
-  id except `cursor` and `openai-codex`: `yi login openai-codex` is the ChatGPT Plus/Pro subscription
+  id except `cursor`, `openai-codex` and `claude`: `yi login claude` is the Claude Pro/Max subscription login,
+  a built-in paste profile stored as the `anthropic` credential (Claude Code's public client, authorize `claude.ai`,
+  token `console.anthropic.com`, redirect the console's code page: the user pastes `code#state`, JSON token body);
+  an Anthropic turn on that credential sends Bearer, `anthropic-beta: oauth-2025-04-20` and the Claude Code identity
+  line first in `system`; a profile file at `anthropic` wins and `yi login anthropic` stays the API-key path.
+  `yi login openai-codex` is the ChatGPT Plus/Pro subscription
   login, a built-in `oauth-code` profile (the Codex CLI's public client, `auth.openai.com`, fixed redirect
   `http://localhost:1455/auth/callback`, no port fallback); the `chatgpt-account-id` is read from the id_token
   into the credential's `org` and survives refresh. `yi login cursor` polls `api2.cursor.sh` and a turn posts Connect protobuf

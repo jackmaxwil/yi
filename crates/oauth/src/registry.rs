@@ -33,11 +33,19 @@ pub struct OauthCode {
     pub login: Login,
 }
 
-/// How the first token is obtained; refresh is the same grant for both.
+/// How the first token is obtained; refresh is the same grant for all.
 #[derive(Debug, Clone)]
 pub enum Login {
     Code(CodeLogin),
+    Paste(PasteLogin),
     Device { device_authorization: String },
+}
+
+/// The provider's redirect page shows the code instead of calling a loopback port.
+#[derive(Debug, Clone)]
+pub struct PasteLogin {
+    pub authorize: String,
+    pub redirect_uri: String,
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +201,25 @@ pub fn lookup(provider: &str) -> Result<Option<Kind>> {
     }
 }
 
+/// The Claude subscription login, stored under the `anthropic` credential: a profile
+/// file at `anthropic` wins, else the built-in paste flow. `yi login anthropic` stays
+/// the API-key path.
+pub fn claude() -> Result<Kind> {
+    Ok(match load(crate::claude::ANTHROPIC_ID)? {
+        Some(kind @ Kind::OauthCode(_)) => kind,
+        Some(_) | None => crate::claude::profile(),
+    })
+}
+
+/// What refreshes a stored credential: `anthropic` holds either a key or the Claude
+/// subscription token, and only the latter has a refresh grant.
+pub fn refresh_kind(provider: &str, oauth_credential: bool) -> Result<Option<Kind>> {
+    if provider == crate::claude::ANTHROPIC_ID && oauth_credential {
+        return claude().map(Some);
+    }
+    lookup(provider)
+}
+
 pub fn load(provider: &str) -> Result<Option<Kind>> {
     let path = profile_path(provider);
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -206,7 +233,11 @@ pub fn load(provider: &str) -> Result<Option<Kind>> {
 pub fn ids() -> Vec<String> {
     let mut found: Vec<String> = API_KEY_IDS
         .iter()
-        .chain([&CURSOR_ID, &crate::codex::CODEX_ID])
+        .chain([
+            &CURSOR_ID,
+            &crate::codex::CODEX_ID,
+            &crate::claude::CLAUDE_ID,
+        ])
         .map(|id| (*id).to_owned())
         .collect();
     let Ok(entries) = std::fs::read_dir(profile_root()) else {

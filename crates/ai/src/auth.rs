@@ -114,7 +114,7 @@ fn stored(
 ) -> Option<(yi_oauth::store::Credential, Vec<(String, String)>)> {
     let store = Store::open(root);
     let current = store.load(provider)?;
-    let spec = match registry::lookup(provider) {
+    let spec = match registry::refresh_kind(provider, current.kind == Kind::Oauth) {
         Ok(Some(registry::Kind::Cursor)) => {
             return Some(refresh_cursor(store, provider, current, proxy));
         }
