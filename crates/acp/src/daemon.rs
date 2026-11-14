@@ -151,17 +151,17 @@ pub fn record_invocation(socket: &std::path::Path, worker_args: &[String]) -> st
     std::fs::write(invocation_marker(socket), worker_args.join("\n"))
 }
 
-/// Invariant: the recorded invocation is the dead daemon's `serve_flags`, so a restart reuses
-/// it whole; a console pinning other flags, or a deliberate stop, refuses the restart.
+/// Invariant: only a deliberate stop refuses the restart; a console pinning nothing reuses the
+/// dead daemon's recorded `serve_flags`, and one pinning other flags restarts under its own.
 pub fn restart_flags(socket: &std::path::Path, flags: &[String]) -> Option<Vec<String>> {
     if stopped_marker(socket).exists() {
         return None;
     }
-    let Ok(recorded) = std::fs::read_to_string(invocation_marker(socket)) else {
-        return Some(flags.to_vec());
-    };
-    let recorded: Vec<String> = recorded.lines().map(str::to_owned).collect();
-    (flags.is_empty() || flags == recorded.as_slice()).then_some(recorded)
+    let recorded = std::fs::read_to_string(invocation_marker(socket));
+    match recorded {
+        Ok(recorded) if flags.is_empty() => Some(recorded.lines().map(str::to_owned).collect()),
+        _ => Some(flags.to_vec()),
+    }
 }
 
 /// Invariant: the ledger is written whole through a rename (D118), so a reader sees one
@@ -1353,7 +1353,8 @@ mod tests {
         let confirm = vec!["--confirm".to_owned()];
         assert_eq!(restart_flags(&socket, &[]), Some(confirm.clone()));
         assert_eq!(restart_flags(&socket, &confirm), Some(confirm));
-        assert_eq!(restart_flags(&socket, &["--yolo".to_owned()]), None);
+        let yolo = vec!["--yolo".to_owned()];
+        assert_eq!(restart_flags(&socket, &yolo), Some(yolo));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

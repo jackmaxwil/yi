@@ -1328,6 +1328,7 @@ fn prompting_a_session_after_the_daemon_was_killed_resumes_and_answers() -> Test
 /// `yi console` must bring a daemon back on its socket in its recorded mode, or panes strand
 /// on unknown sessionIds and later sessions silently lose the pinned `--confirm`.
 #[test]
+#[ignore = "tier-2 journey: `just journeys`"]
 fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult {
     let dir = Scratch::new("yi-console-respawn")?;
     let home = dir.join("home");
@@ -1370,5 +1371,43 @@ fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult
     let _ = pty.wait();
     let _ = daemon.kill();
     let _ = daemon.wait();
+    outcome
+}
+
+/// A console started after its daemon was killed under `--confirm` must spawn the replacement
+/// in that mode, or every later worker silently falls back to its own default.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_console_started_after_a_kill_spawns_the_daemon_in_its_recorded_mode() -> TestResult {
+    let dir = Scratch::new("yi-console-startup-respawn")?;
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home)?;
+    let (mut daemon, socket) =
+        spawn_daemon_with(&dir, &home, &["--model", "faux/faux-1", "--confirm"])?;
+    let invocation = socket.with_extension("invocation");
+    let recorded = std::fs::read_to_string(&invocation)?;
+    daemon.kill()?;
+    let _ = daemon.wait();
+    let yi = crate::yi_bin::yi_command(&home);
+    let mut pty = crate::pty::pty_command(Path::new(yi.get_program()), &home, &dir)
+        .args(["--", "console", "--socket"])
+        .arg(&socket)
+        .stdin(Stdio::null())
+        .spawn()?;
+    let outcome = (|| -> TestResult {
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(UnixStream::connect(&socket).is_ok())
+        })?;
+        let replaced = std::fs::read_to_string(&invocation)?;
+        assert!(
+            replaced.lines().any(|flag| flag == "--confirm"),
+            "the console's startup spawn dropped the recorded --confirm: {replaced:?} (was {recorded:?})"
+        );
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("s", "_yi/shutdown", json!({}))?;
+        Ok(())
+    })();
+    let _ = pty.kill();
+    let _ = pty.wait();
     outcome
 }
