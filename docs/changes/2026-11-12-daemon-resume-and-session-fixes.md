@@ -8,7 +8,7 @@ cut: none crates/console/src/app.rs
 cut: none crates/console/tests/drive.rs
 cut: none crates/runtime/src/session/run.rs
 cut: none scripts/forge_pr.py
-raise: crate acp +134, crate cli +15, crate console +124, crate runtime +61, crate tools +8, tests +555, comments +10
+raise: crate acp +134, crate cli +15, crate console +124, crate runtime +61, crate tools +8, tests +567, comments +10
 ---
 
 Double Ctrl+C in the console now quits the console and leaves the daemon and its workers running, matching `⌥q`; stopping the daemon stays in the command palette (`stop the daemon and quit`).

@@ -1343,12 +1343,7 @@ fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult
         "the first daemon did not record --confirm: {recorded:?}"
     );
     let before = std::fs::read_to_string(&ledger).unwrap_or_default();
-    let binary = crate::yi_bin::yi_command(&home);
-    let mut pty = crate::pty::pty_command(Path::new(binary.get_program()), &home, &dir)
-        .args(["--", "console", "--socket"])
-        .arg(&socket)
-        .stdin(Stdio::null())
-        .spawn()?;
+    let mut pty = crate::pty::console_in_pty(&home, &dir, &socket, &[])?;
     let outcome = (|| -> TestResult {
         wait_until(Instant::now() + Duration::from_secs(20), || {
             Ok(std::fs::read_to_string(&ledger).unwrap_or_default() != before)
@@ -1374,34 +1369,35 @@ fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult
     outcome
 }
 
-/// A console started after its daemon was killed under `--confirm` must spawn the replacement
-/// in that mode, or every later worker silently falls back to its own default.
+/// A console pinning `--yolo` that loses its `--confirm` daemon to a kill must restart it under
+/// its own flags, or it stands down and every pane strands on a dead socket.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
-fn a_console_started_after_a_kill_spawns_the_daemon_in_its_recorded_mode() -> TestResult {
-    let dir = Scratch::new("yi-console-startup-respawn")?;
+fn a_pinned_console_restarts_a_killed_daemon_under_its_own_flags() -> TestResult {
+    let dir = Scratch::new("yi-console-pinned-respawn")?;
     let home = dir.join("home");
     std::fs::create_dir_all(&home)?;
     let (mut daemon, socket) =
         spawn_daemon_with(&dir, &home, &["--model", "faux/faux-1", "--confirm"])?;
+    let ledger = socket.with_extension("ledger.json");
     let invocation = socket.with_extension("invocation");
     let recorded = std::fs::read_to_string(&invocation)?;
-    daemon.kill()?;
-    let _ = daemon.wait();
-    let binary = crate::yi_bin::yi_command(&home);
-    let mut pty = crate::pty::pty_command(Path::new(binary.get_program()), &home, &dir)
-        .args(["--", "console", "--socket"])
-        .arg(&socket)
-        .stdin(Stdio::null())
-        .spawn()?;
+    let before = std::fs::read_to_string(&ledger).unwrap_or_default();
+    let mut pty = crate::pty::console_in_pty(&home, &dir, &socket, &["--yolo"])?;
     let outcome = (|| -> TestResult {
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(std::fs::read_to_string(&ledger).unwrap_or_default() != before)
+        })?;
+        daemon.kill()?;
+        let _ = daemon.wait();
         wait_until(Instant::now() + Duration::from_secs(20), || {
             Ok(UnixStream::connect(&socket).is_ok())
         })?;
         let replaced = std::fs::read_to_string(&invocation)?;
+        let flags: Vec<&str> = replaced.lines().collect();
         assert!(
-            replaced.lines().any(|flag| flag == "--confirm"),
-            "the console's startup spawn dropped the recorded --confirm: {replaced:?} (was {recorded:?})"
+            flags.contains(&"--yolo") && !flags.contains(&"--confirm"),
+            "the console's restart ignored its pinned --yolo: {replaced:?} (was {recorded:?})"
         );
         let mut client = DaemonClient::connect(&socket)?;
         client.request("s", "_yi/shutdown", json!({}))?;
