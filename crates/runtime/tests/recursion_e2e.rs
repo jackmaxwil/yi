@@ -2609,20 +2609,11 @@ async fn a_respawned_reader_service_keeps_its_write_wall() -> TestResult {
 #[tokio::test]
 async fn a_respawned_reader_service_keeps_its_family_seat() -> TestResult {
     if std::env::var_os("RLM_RESPAWN_SEAT_CHILD").is_none() {
-        let dir = crate::scratch::Scratch::new("yi-respawn-seat")?;
-        let overrides = dir.join("levers.json");
-        std::fs::write(&overrides, r#"{"family.cap":8,"family.max_children":8}"#)?;
-        let output = yi_tools::command(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "recursion_e2e::a_respawned_reader_service_keeps_its_family_seat",
-                "--nocapture",
-            ])
-            .env("RLM_RESPAWN_SEAT_CHILD", "1")
-            .env("YI_LEVERS", &overrides)
-            .output()?;
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        let output = crate::support::rerun_with_levers(
+            "recursion_e2e::a_respawned_reader_service_keeps_its_family_seat",
+            "RLM_RESPAWN_SEAT_CHILD",
+            r#"{"family.cap":8,"family.max_children":8}"#,
+        )?;
         assert!(
             output.status.success(),
             "respawn-seat child failed: {output:?}"

@@ -122,6 +122,26 @@ pub async fn wait_for_path(path: &Path, message: &str) -> Result<(), Box<dyn std
     Err(message.into())
 }
 
+/// Runs `test` again in a fresh test-binary process with `child` set and `levers` as its
+/// `YI_LEVERS` overrides, echoing its output: levers load once per process.
+pub fn rerun_with_levers(
+    test: &str,
+    child: &str,
+    levers: &str,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let dir = crate::scratch::Scratch::new("yi-levers-rerun")?;
+    let overrides = dir.join("levers.json");
+    std::fs::write(&overrides, levers)?;
+    let output = yi_tools::command(std::env::current_exe()?)
+        .args(["--exact", test, "--nocapture"])
+        .env(child, "1")
+        .env("YI_LEVERS", &overrides)
+        .output()?;
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    Ok(output)
+}
+
 /// `hold` makes every child run that shell command first, so its turn stays open; each
 /// reply bills 120 tokens and costs a quarter dollar.
 pub fn family(

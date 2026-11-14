@@ -471,20 +471,11 @@ async fn spawn_refuses_a_host_that_lacks_memory() -> TestResult {
 #[tokio::test]
 async fn held_readers_fill_the_family_cap() -> TestResult {
     if std::env::var_os("RLM_HELD_READERS_CHILD").is_none() {
-        let dir = crate::scratch::Scratch::new("yi-held-readers")?;
-        let overrides = dir.join("levers.json");
-        std::fs::write(&overrides, r#"{"family.cap":8,"family.max_children":8}"#)?;
-        let output = yi_tools::command(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "reader_e2e::held_readers_fill_the_family_cap",
-                "--nocapture",
-            ])
-            .env("RLM_HELD_READERS_CHILD", "1")
-            .env("YI_LEVERS", &overrides)
-            .output()?;
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        let output = crate::support::rerun_with_levers(
+            "reader_e2e::held_readers_fill_the_family_cap",
+            "RLM_HELD_READERS_CHILD",
+            r#"{"family.cap":8,"family.max_children":8}"#,
+        )?;
         assert!(
             output.status.success(),
             "held-readers child failed: {output:?}"

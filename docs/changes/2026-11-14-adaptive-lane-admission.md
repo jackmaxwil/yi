@@ -7,7 +7,7 @@ cut: none crates/runtime/tests/levers.rs
 cut: none evals/tests/test_levers.py
 shares: #2234 adds one `pub mod admission;` line to crates/runtime/src/lib.rs, away from its lines
 shares: #2205 adds one `pub mod admission;` line to crates/runtime/src/lib.rs, away from its lines
-raise: crate cli +1, crate runtime +386, tests +254, comments +2
+raise: crate cli +1, crate runtime +386, tests +244, comments +2
 ---
 A parent no longer stops at eight children, and a family no longer stops at sixteen live sessions. A new child or lane is admitted while the host has room: the one-minute load average per core, free memory (growing with each live child) and free disk on the lanes volume. The first child is always admitted on load, so work can start on a busy host. A refusal names the resource, what the host has and what it needs, and says to wait or reap a child with `rlm.delete_subagent`.
 
