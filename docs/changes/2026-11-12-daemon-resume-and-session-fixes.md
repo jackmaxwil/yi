@@ -1,4 +1,6 @@
 ---
+version: 0.1059.0
+decisions: D602
 issue: Closes #2166
 decision: Double Ctrl+C in the console detaches and leaves `yi serve` running (amends D356's parenthetical "ctrl+c twice in the console" and the console quit note of #1032/#1350); stopping the daemon stays on the command palette's `stop the daemon and quit` (`_yi/shutdown`) | a double Ctrl+C meant to leave a pane killed the shared daemon and every worker and background session on the machine | restore `self.stop_daemon_and_quit(outbound)` in `crates/console/src/app.rs` on the second Ctrl+C press
 ledger~: TUI | the daemon that second press stops ends the console when it hangs up, with no disconnect banner | the second press quits the console while leaving the daemon running, and stopping the daemon from the palette ends the console when it hangs up, with no disconnect banner

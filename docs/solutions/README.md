@@ -572,5 +572,6 @@ edited by hand.
 - [D599](adr/d599.md) - The console and TUI model pickers offer only providers that hold a credential
 - [D600](adr/d600.md) - provider `openai-codex` is compiled
 - [D601](adr/d601.md) - reclaim keeps a read or grep result past the age floor while every...
+- [D602](adr/d602.md) - Double Ctrl+C in the console detaches and leaves `yi serve` running (amends...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
