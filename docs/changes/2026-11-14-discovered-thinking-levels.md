@@ -1,4 +1,5 @@
 ---
+version: 0.1054.0
 issue: Refs #2204
 shares: #2220 crates/acp/src/lib.rs comes from the #2205 commits this branch is stacked on, not from this change
 raise: crate ai +7, crate runtime +79, crate types +60, tests +243

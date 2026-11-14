@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.1051.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.1054.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -354,6 +354,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D599 | The console and TUI model pickers offer only providers that hold a credential | An unkeyed provider's models were offered beside the ones the user can run, and picking one only failed at its first turn; with no credential anywhere the whole catalog is still offered so a fresh install can browse | Call the unfiltered registry list in both pickers again |
 | D598 | Custom providers with no explicit models discover their OpenAI-compatible model list on first use | Static model lists remain offline and unchanged, while an unavailable dynamic provider does not delay unrelated startup | Configure explicit models or restore the previous catalog-only resolver |
 | D597 | reclaim counts a cut's rewrite as the route's own cache write price over its read price when the catalog prices both, keeps ten reads for a route that prices cache at zero (twenty on that route's hour cache), counts an hour-cache rewrite at twice input over read, caps the ratio at 1,000 reads, and counts a cut's savings over at most forty requests, not the requests so far (amends D558) | in one 211-turn Sonnet 5.5 session 34 cuts made 35 turns rewrite the whole conversation, $9.11 of $18.61, because ten reads undercounts a 25-read write and a long session made every cut easier to approve | revert the change: `rewrite_reads` returns `REWRITE_READS` and the horizon is the requests so far |
 | D596 | a review round runs on any model family, so `just pr review` no longer refuses the authors' family (`anthropic`) and `AVOID_FAMILIES` and `family()` are deleted | the owner directed that review models should not block on being from the same family, and the refusal stopped a round from running in a session whose own model is Anthropic | restore `AVOID_FAMILIES = ("anthropic",)`, `family()` and the refusal at the top of `cmd_review` |

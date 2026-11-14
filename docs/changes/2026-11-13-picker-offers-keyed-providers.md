@@ -1,4 +1,6 @@
 ---
+version: 0.1053.0
+decisions: D599
 issue: Closes #2204
 decision: The console and TUI model pickers offer only providers that hold a credential | An unkeyed provider's models were offered beside the ones the user can run, and picking one only failed at its first turn; with no credential anywhere the whole catalog is still offered so a fresh install can browse | Call the unfiltered registry list in both pickers again
 cut: crates/ai/src/kimi.rs | let context_window = positive("context").ok_or("no positive limit.context")?; | the stacked review commit moved the limit parsing out of kimi.rs into the shared DiscoveredCustomLimit reader, one rule for the limit object
