@@ -667,16 +667,27 @@ def token_free():
     return {k: v for k, v in os.environ.items() if not re.search("TOKEN|SECRET", k)}
 
 
+def newest_source(root):
+    """Latest mtime of anything a yi build reads, 0.0 for a tree with none."""
+    times = [p.stat().st_mtime for name in ("Cargo.toml", "Cargo.lock") if (p := root / name).exists()]
+    times += [p.stat().st_mtime for p in (root / "crates").glob("*/src/**/*.rs")]
+    times += [p.stat().st_mtime for p in (root / "crates").glob("*/Cargo.toml")]
+    return max(times, default=0.0)
+
+
 def yi_bin():
     """The yi a model call runs; with none built and none on PATH, the first call builds it.
-    Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read."""
+    Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read.
+    Incident: a stale target/dist/yi rejected a newer config and voided rounds (2026-11-14); one older than the source is rebuilt."""
     with _BUILT:
         # Incident: the autofixer's worker builds into its own CARGO_TARGET_DIR, and every fix died looking
         # for target/debug/yi under the checkout (2026-11-05), so the search reads where cargo writes.
         target = ROOT / os.environ.get("CARGO_TARGET_DIR", "target")
+        newest = newest_source(ROOT)
         found = os.environ.get("YI_BIN") or next(
-            (str(p) for p in (target / "dist/yi", target / "release/yi", target / "debug/yi") if p.exists()), None)
-        if not (found or shutil.which("yi")):
+            (str(p) for p in (target / "dist/yi", target / "release/yi", target / "debug/yi")
+             if p.exists() and p.stat().st_mtime >= newest), None)
+        if not found and (any((target / name / "yi").exists() for name in ("dist", "release", "debug")) or not shutil.which("yi")):
             subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True)
             found = str(target / "debug/yi")
         found = found or "yi"
@@ -1551,6 +1562,23 @@ def selfcheck():
                 got = set(pool.map(lambda _: yi_bin(), range(8)))
             yi = str(pathlib.Path(target or root / "target") / "debug/yi")
             assert builds == [["cargo", "build", "-q", "-p", "yi-cli"], [yi, "catalog", "refresh", "openrouter"]] and got == {yi}, (target, builds, got)
+        os.environ.pop("CARGO_TARGET_DIR", None)
+        stale = root / "target/dist/yi"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("")
+        os.utime(stale, (1, 1))
+        source = root / "crates/x/src/lib.rs"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("")
+        shutil.which = lambda name: "/usr/bin/yi"
+        builds.clear()
+        _REFRESHED.clear()
+        got = yi_bin()
+        assert got == str(root / "target/debug/yi") and builds[0][0] == "cargo", ("a binary older than the source is rebuilt, never run", got, builds)
+        builds.clear()
+        _REFRESHED.clear()
+        os.utime(stale, (time.time() + 60, time.time() + 60))
+        assert yi_bin() == str(stale) and not any(b[0] == "cargo" for b in builds), "a binary newer than the source is run as it is"
     finally:
         _REFRESHED.clear()
         subprocess.run, shutil.which, globals()["ROOT"] = keep[:3]
