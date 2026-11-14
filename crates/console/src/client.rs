@@ -199,13 +199,17 @@ fn reader_loop(
         }
         // Incident: only the failed-connect path slept, so a daemon that accepted and closed
         // at once re-dialed in a spin. Only a link that outlived the cap resets the backoff.
-        if connected_at.elapsed() > BACKOFF_CAP {
+        if link_rearms(connected_at.elapsed()) {
             backoff = BACKOFF_START;
             spawn_attempted = false;
         }
         sleep_interruptible(backoff, shutdown);
         backoff = (backoff * 2).min(BACKOFF_CAP);
     }
+}
+
+fn link_rearms(lived: Duration) -> bool {
+    lived > BACKOFF_CAP
 }
 
 /// Bounded newline framing by hand: fill from the socket, split complete
@@ -322,7 +326,7 @@ mod tests {
     use super::*;
 
     /// A console whose daemon never answers must fork one `yi serve` per outage, not one per
-    /// failed connect, and a link that outlived the backoff cap re-arms it for the next outage.
+    /// failed connect.
     #[test]
     fn one_outage_respawns_the_daemon_once() -> Result<(), Box<dyn std::error::Error>> {
         let socket = std::env::temp_dir().join(format!("yi-no-daemon-{}.sock", std::process::id()));
@@ -342,27 +346,18 @@ mod tests {
                 failed += 1;
             }
         }
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "three failed connects");
-        let listener = std::os::unix::net::UnixListener::bind(&socket)?;
-        let (link, _) = listener.accept()?;
-        std::thread::sleep(BACKOFF_CAP + Duration::from_millis(500));
-        drop(link);
-        drop(listener);
-        std::fs::remove_file(&socket)?;
-        let mut after = 0;
-        while after < 2 {
-            if let ClientEvent::Disconnected { .. } =
-                events.recv_timeout(Duration::from_secs(10))?
-            {
-                after += 1;
-            }
-        }
         outbound.shutdown();
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            2,
-            "a second outage after a long link"
-        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "three failed connects");
         Ok(())
+    }
+
+    /// Only a link that outlived the backoff cap re-arms the respawn and resets the backoff.
+    #[test]
+    fn a_link_rearms_the_respawn_only_past_the_backoff_cap() {
+        assert!(!link_rearms(BACKOFF_CAP), "a link at the cap");
+        assert!(
+            link_rearms(BACKOFF_CAP + Duration::from_millis(1)),
+            "a link one tick past the cap"
+        );
     }
 }

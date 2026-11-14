@@ -1343,8 +1343,8 @@ fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult
         "the first daemon did not record --confirm: {recorded:?}"
     );
     let before = std::fs::read_to_string(&ledger).unwrap_or_default();
-    let yi = crate::yi_bin::yi_command(&home);
-    let mut pty = crate::pty::pty_command(Path::new(yi.get_program()), &home, &dir)
+    let binary = crate::yi_bin::yi_command(&home);
+    let mut pty = crate::pty::pty_command(Path::new(binary.get_program()), &home, &dir)
         .args(["--", "console", "--socket"])
         .arg(&socket)
         .stdin(Stdio::null())
@@ -1388,8 +1388,8 @@ fn a_console_started_after_a_kill_spawns_the_daemon_in_its_recorded_mode() -> Te
     let recorded = std::fs::read_to_string(&invocation)?;
     daemon.kill()?;
     let _ = daemon.wait();
-    let yi = crate::yi_bin::yi_command(&home);
-    let mut pty = crate::pty::pty_command(Path::new(yi.get_program()), &home, &dir)
+    let binary = crate::yi_bin::yi_command(&home);
+    let mut pty = crate::pty::pty_command(Path::new(binary.get_program()), &home, &dir)
         .args(["--", "console", "--socket"])
         .arg(&socket)
         .stdin(Stdio::null())
