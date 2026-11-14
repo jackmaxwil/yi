@@ -80,9 +80,16 @@ fn foldable(rig: &Rig) -> Result<bool, Box<dyn Error>> {
     )?))
 }
 
-/// The host git reads as another version. Tests emulate `merge-tree` only when a fold must run.
-/// Every other call is the real git.
-fn read_version_as(rig: &Rig, version: &str, emulate_merge: bool) -> Result<(), Box<dyn Error>> {
+/// What the shim does with `git merge-tree`: answer a successful trial, or fail it as an old git
+/// would (exit 129).
+#[derive(Clone, Copy)]
+enum MergeTree {
+    Succeeds,
+    Fails,
+}
+
+/// The host git reads as another version. Every call but `merge-tree` is the real git.
+fn read_version_as(rig: &Rig, version: &str, merge: MergeTree) -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt;
     let path = std::env::var_os("PATH").ok_or("no PATH")?;
     let real = std::env::split_paths(&path)
@@ -91,12 +98,13 @@ fn read_version_as(rig: &Rig, version: &str, emulate_merge: bool) -> Result<(), 
         .ok_or("no git on PATH")?;
     let dir = rig.repo.parent().ok_or("no scratch root")?.join("shim");
     std::fs::create_dir_all(&dir)?;
-    let merge = emulate_merge.then(|| {
-        format!(
+    let merge = match merge {
+        MergeTree::Succeeds => Some(format!(
             "case \"$*\" in *merge-tree*) for candidate do :; done; exec '{}' rev-parse \"${{candidate}}^{{tree}}\";; esac\n",
             real.display()
-        )
-    });
+        )),
+        MergeTree::Fails => Some("case \"$*\" in *merge-tree*) exit 129;; esac\n".to_owned()),
+    };
     let body = format!(
         "#!/bin/sh\n\
          [ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\n\
@@ -227,7 +235,7 @@ async fn would_conflict_names_the_path_and_is_empty_when_nothing_would() -> Test
 #[tokio::test]
 async fn an_old_git_is_refused_by_name_and_its_trial_is_not_read_as_no_conflict() -> TestResult {
     let rig = rig("oldgit")?;
-    read_version_as(&rig, "git version 2.34.1", false)?;
+    read_version_as(&rig, "git version 2.34.1", MergeTree::Fails)?;
     let at = rig.fork("oldgit").await?;
     std::fs::write(at.join("f0.txt"), "theirs\n")?;
     let seen = rig.ask("tree.diff", json!({"tree": "oldgit"})).await?;
@@ -486,7 +494,7 @@ async fn a_managed_child_fold_keeps_tree_and_names_discard_refusal() -> TestResu
     let rig = rig("managed-fold")?;
     let at = finished_kid_on_a_dirty_fork(&rig).await?;
     std::fs::write(at.join("f1.txt"), "kid's\n")?;
-    read_version_as(&rig, "git version 2.43.0", true)?;
+    read_version_as(&rig, "git version 2.43.0", MergeTree::Succeeds)?;
     rig.family.host.mark_managed("kid")?;
     let reply = rig
         .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))

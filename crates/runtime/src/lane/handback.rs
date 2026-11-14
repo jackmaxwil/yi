@@ -365,7 +365,7 @@ impl SubagentHost {
         if hand_back_live && live > 0 {
             self.put_back_worktree(target, lane);
             return Err(format!(
-                "{live} jobs are still running under its tree: rlm.discard_worktree(\"{target}\") once they finish"
+                "{live} jobs are still running under its tree: rlm.discard_worktree(\"{target}\", force=True) once they finish"
             ));
         }
         let settled = match lane.settle(&quiescence, self.deadline()) {
