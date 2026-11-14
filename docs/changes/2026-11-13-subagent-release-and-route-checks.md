@@ -13,3 +13,5 @@ A child that failed before its first tool call no longer counts toward the eight
 `rlm.run` now refuses a model whose `http` or `https` `base_url` is a loopback port that refuses connections, before taking a slot or a worktree.
 
 Folding a finished child whose tree still has a live job gives that job up to 250 ms to record its exit, where `rlm.discard_worktree` waits up to 5 s. A tree whose jobs outlive that is left in place, and the merge reply names `rlm.discard_worktree(name, force=True)`.
+
+The memory-label eval test that feeds `evals/memory_inject.py` a judge reply with no `usage.cost` now captures the refusal and asserts its exact text, so a reply that cannot be counted against `--cap-usd` is still refused by name. The refusal's `FAIL label:` line no longer reaches a gate log, where the commit hook read it as a failing gate and refused this branch's commits.
