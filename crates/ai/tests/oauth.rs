@@ -43,7 +43,31 @@ fn write_profile(home: &Home, provider: &str, profile: &serde_json::Value) -> Re
     Ok(())
 }
 
-fn serve_once() -> Result<(u16, std::thread::JoinHandle<String>), Box<dyn std::error::Error>> {
+fn save_oauth_credential(
+    access: &str,
+    refresh: Option<&str>,
+    expires: Option<std::time::SystemTime>,
+) -> Res {
+    Store::user().save(
+        "anthropic",
+        &Credential {
+            kind: Kind::Oauth,
+            access: access.to_owned(),
+            refresh: refresh.map(str::to_owned),
+            expires,
+            account: None,
+            org: None,
+            extra: Default::default(),
+        },
+    )?;
+    Ok(())
+}
+
+const EMPTY_REPLY: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n";
+
+fn serve_once(
+    reply: String,
+) -> Result<(u16, std::thread::JoinHandle<String>), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let handle = std::thread::spawn(move || {
@@ -52,9 +76,7 @@ fn serve_once() -> Result<(u16, std::thread::JoinHandle<String>), Box<dyn std::e
         };
         let mut reader = BufReader::new(stream);
         let request = crate::loopback::read_request(&mut reader);
-        let _ = reader
-            .get_mut()
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n");
+        let _ = reader.get_mut().write_all(reply.as_bytes());
         request
     });
     Ok((port, handle))
@@ -85,19 +107,7 @@ fn context() -> LlmContext {
 fn env_beats_the_store_and_logout_deletes() -> Res {
     let _serial = serial();
     let _home = home("env")?;
-    let store = Store::user();
-    store.save(
-        "anthropic",
-        &Credential {
-            kind: Kind::Oauth,
-            access: "stored-token".to_owned(),
-            refresh: None,
-            expires: None,
-            account: None,
-            org: None,
-            extra: Default::default(),
-        },
-    )?;
+    save_oauth_credential("stored-token", None, None)?;
     unsafe { std::env::set_var("ANTHROPIC_API_KEY", "env-key") };
     let resolved = auth::resolve("anthropic").ok_or("expected the env credential")?;
     assert_eq!(resolved.kind, AuthKind::ApiKey);
@@ -139,23 +149,12 @@ fn a_profile_puts_its_stream_headers_on_the_wire() -> Res {
             }
         }),
     )?;
-    Store::user().save(
-        "anthropic",
-        &Credential {
-            kind: Kind::Oauth,
-            access: "oauth-tok".to_owned(),
-            refresh: None,
-            expires: None,
-            account: None,
-            org: None,
-            extra: Default::default(),
-        },
-    )?;
+    save_oauth_credential("oauth-tok", None, None)?;
 
     let resolved = auth::resolve("anthropic").ok_or("expected the stored credential")?;
     assert_eq!(resolved.kind, AuthKind::Oauth);
 
-    let (port, handle) = serve_once()?;
+    let (port, handle) = serve_once(EMPTY_REPLY.to_owned())?;
     let model = model(port)?;
     let options = yi_ai::anthropic::AnthropicOptions {
         oauth: true,
@@ -193,22 +192,11 @@ fn a_profile_without_headers_sends_only_bearer() -> Res {
             "callback_port": 8765
         }),
     )?;
-    Store::user().save(
-        "anthropic",
-        &Credential {
-            kind: Kind::Oauth,
-            access: "bare-tok".to_owned(),
-            refresh: None,
-            expires: None,
-            account: None,
-            org: None,
-            extra: Default::default(),
-        },
-    )?;
+    save_oauth_credential("bare-tok", None, None)?;
     let resolved = auth::resolve("anthropic").ok_or("expected the stored credential")?;
     assert!(resolved.headers.is_empty(), "{:?}", resolved.headers);
 
-    let (port, handle) = serve_once()?;
+    let (port, handle) = serve_once(EMPTY_REPLY.to_owned())?;
     let model = model(port)?;
     let options = yi_ai::anthropic::AnthropicOptions {
         oauth: true,
@@ -233,20 +221,9 @@ fn a_profile_without_headers_sends_only_bearer() -> Res {
 fn the_claude_login_sends_the_beta_header_and_the_identity_line() -> Res {
     let _serial = serial();
     let _home = home("claude")?;
-    Store::user().save(
-        "anthropic",
-        &Credential {
-            kind: Kind::Oauth,
-            access: "claude-tok".to_owned(),
-            refresh: None,
-            expires: None,
-            account: None,
-            org: None,
-            extra: Default::default(),
-        },
-    )?;
+    save_oauth_credential("claude-tok", None, None)?;
     let resolved = auth::resolve("anthropic").ok_or("expected the stored credential")?;
-    let (port, handle) = serve_once()?;
+    let (port, handle) = serve_once(EMPTY_REPLY.to_owned())?;
     let model = model(port)?;
     let mut context = context();
     context.system_prompt = "Be brief.".to_owned();
@@ -279,7 +256,7 @@ fn the_claude_login_sends_the_beta_header_and_the_identity_line() -> Res {
 fn an_oauth_credential_without_the_claude_login_sends_no_identity_line() -> Res {
     let _serial = serial();
     let _home = home("kimi-wire")?;
-    let (port, handle) = serve_once()?;
+    let (port, handle) = serve_once(EMPTY_REPLY.to_owned())?;
     let model = model(port)?;
     let mut context = context();
     context.system_prompt = "Be brief.".to_owned();
@@ -304,25 +281,14 @@ fn an_oauth_credential_without_the_claude_login_sends_no_identity_line() -> Res 
 fn an_expired_claude_login_is_refreshed_before_it_is_sent() -> Res {
     let _serial = serial();
     let home = home("refresh")?;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let server = std::thread::spawn(move || -> String {
-        let Ok((stream, _)) = listener.accept() else {
-            return String::new();
-        };
-        let mut reader = BufReader::new(stream);
-        let request = crate::loopback::read_request(&mut reader);
-        let body = json!({
-            "access_token": "fresh-tok",
-            "refresh_token": "fresh-refresh",
-            "expires_in": 3600
-        })
-        .to_string();
-        let _ = reader
-            .get_mut()
-            .write_all(crate::loopback::reply("200 OK", "application/json", &body).as_bytes());
-        request
-    });
+    let body = json!({
+        "access_token": "fresh-tok",
+        "refresh_token": "fresh-refresh",
+        "expires_in": 3600
+    })
+    .to_string();
+    let reply = crate::loopback::reply("200 OK", "application/json", &body);
+    let (port, server) = serve_once(reply)?;
     write_profile(
         &home,
         "anthropic",
@@ -334,17 +300,10 @@ fn an_expired_claude_login_is_refreshed_before_it_is_sent() -> Res {
             "callback_port": 8765
         }),
     )?;
-    Store::user().save(
-        "anthropic",
-        &Credential {
-            kind: Kind::Oauth,
-            access: "stale-tok".to_owned(),
-            refresh: Some("old-refresh".to_owned()),
-            expires: Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
-            account: None,
-            org: None,
-            extra: Default::default(),
-        },
+    save_oauth_credential(
+        "stale-tok",
+        Some("old-refresh"),
+        Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
     )?;
 
     let resolved = auth::resolve("anthropic").ok_or("expected the refreshed credential")?;
