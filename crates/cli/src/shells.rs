@@ -206,12 +206,13 @@ pub fn serve_flags(args: &Args) -> Vec<String> {
 }
 
 #[cfg(feature = "tui")]
-fn ensure_daemon(args: &Args, socket: &std::path::Path) {
+fn ensure_daemon(flags: &[String], socket: &std::path::Path) {
     let _span = yi_types::trace::span("console.ensure_daemon");
     if std::os::unix::net::UnixStream::connect(socket).is_ok() {
         return;
     }
-    if let Err(error) = yi_acp::daemon::spawn_detached(socket, &serve_flags(args)) {
+    let _ = std::fs::remove_file(yi_acp::daemon::stopped_marker(socket));
+    if let Err(error) = yi_acp::daemon::spawn_detached(socket, flags) {
         eprintln!("yi: could not start the daemon: {error}");
         return;
     }
@@ -469,8 +470,19 @@ pub fn run_console_command(args: &Args) -> i32 {
     } else {
         None
     };
+    let socket = daemon_socket(args);
+    let ensure = (!args.headless).then(|| {
+        let args = args.clone();
+        let socket = socket.clone();
+        std::sync::Arc::new(move || {
+            let Some(flags) = yi_acp::daemon::restart_flags(&socket, &serve_flags(&args)) else {
+                return;
+            };
+            ensure_daemon(&flags, &socket);
+        }) as yi_console::client::RespawnDaemon
+    });
     let options = yi_console::ConsoleOptions {
-        socket: daemon_socket(args),
+        socket,
         root: effective_cwd(args).display().to_string(),
         autostart: !args.headless,
         auto_side: config()
@@ -500,13 +512,16 @@ pub fn run_console_command(args: &Args) -> i32 {
         chrome_pin: chrome_pin(),
         home: std::env::var("HOME").ok(),
         theme: config().theme.clone(),
+        ensure_daemon: ensure,
     };
     let control = match control(args) {
         Ok(control) => control,
         Err(code) => return code,
     };
     if !args.headless {
-        ensure_daemon(args, &options.socket);
+        let own = serve_flags(args);
+        let flags = yi_acp::daemon::restart_flags(&options.socket, &own).unwrap_or(own);
+        ensure_daemon(&flags, &options.socket);
     }
     if args.headless {
         let script = match load_drive_script(&args.keys, yi_console::parse_script) {

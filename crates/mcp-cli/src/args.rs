@@ -43,6 +43,7 @@ pub enum SessionOp {
 pub enum Command {
     Help,
     Skill,
+    Servers,
     Connect {
         server: String,
         session: Option<String>,
@@ -232,6 +233,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
                 }
             }
             "skill" => Command::Skill,
+            "servers" => Command::Servers,
             "connect" => {
                 let server = positional
                     .get(1)

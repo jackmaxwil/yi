@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use yi_types::mcp::McpServerSpec;
@@ -106,21 +106,76 @@ pub fn resolve_server(server: &str, home: &Path) -> Result<(String, McpServerSpe
     if Path::new(server).is_file() {
         return from_file(Path::new(server), None);
     }
-    let default_config = home.join(".yi").join("mcp.json");
-    if default_config.is_file()
-        && let Ok(found) = from_file(&default_config, Some(server))
-    {
-        return Ok(found);
-    }
-    for candidate in [".mcp.json", ".vscode/mcp.json", ".cursor/mcp.json"] {
-        let path = Path::new(candidate);
+    for (_, path) in config_sources(home) {
         if path.is_file()
-            && let Ok(found) = from_file(path, Some(server))
+            && let Ok(found) = from_file(&path, Some(server))
         {
             return Ok(found);
         }
     }
     Err(format!(
-        "cannot resolve server {server}: not a URL, config path, or entry in ~/.yi/mcp.json / .mcp.json / .vscode/mcp.json / .cursor/mcp.json"
+        "cannot resolve server {server}: not a URL, config path, or entry in {}",
+        CONFIG_SOURCES.join(" / ")
     ))
+}
+
+const CONFIG_SOURCES: [&str; 4] = [
+    "~/.yi/mcp.json",
+    ".mcp.json",
+    ".vscode/mcp.json",
+    ".cursor/mcp.json",
+];
+
+fn config_sources(home: &Path) -> impl Iterator<Item = (&'static str, PathBuf)> {
+    CONFIG_SOURCES.into_iter().map(move |source| {
+        let path = source
+            .strip_prefix("~/")
+            .map_or_else(|| Path::new(source).to_path_buf(), |rest| home.join(rest));
+        (source, path)
+    })
+}
+pub fn list_servers(home: &Path, store: &crate::sessions::SessionsStore) -> Value {
+    let mut rows = Vec::new();
+    for (source, path) in config_sources(home) {
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(config) = load_config(&path) else {
+            rows.push(serde_json::json!({"source": source, "error": "unreadable config"}));
+            continue;
+        };
+        let Some(entries) = entries_of(&config) else {
+            continue;
+        };
+        for (name, entry) in entries {
+            let transport = if entry.get("url").is_some() {
+                "http"
+            } else {
+                "stdio"
+            };
+            let session = crate::sessions::default_session_name(name);
+            let state = store
+                .get(&session)
+                .and_then(|record| serde_json::to_value(record.state).ok())
+                .unwrap_or(Value::Null);
+            let tools = store.read_snapshot(&session).and_then(|snapshot| {
+                snapshot
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+            });
+            rows.push(serde_json::json!({
+                "name": name,
+                "source": source,
+                "path": path.display().to_string(),
+                "transport": transport,
+                "target": entry.get("url").or_else(|| entry.get("command")).cloned().unwrap_or(Value::Null),
+                "enabled": entry.get("disabled").and_then(Value::as_bool) != Some(true),
+                "session": session,
+                "state": state,
+                "tools": tools,
+            }));
+        }
+    }
+    Value::Array(rows)
 }

@@ -387,6 +387,14 @@ pub fn run(
             println!("{HELP}");
             0
         }
+        Command::Servers => {
+            output::emit(
+                &config::list_servers(&home_dir(), &store),
+                parsed.flags.json,
+                parsed.flags.max_chars,
+            );
+            0
+        }
         Command::Skill => {
             println!("{SKILL}");
             0

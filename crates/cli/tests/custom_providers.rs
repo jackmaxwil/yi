@@ -41,7 +41,7 @@ const RESPONSES: &str = concat!(
     "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n",
 );
 
-const DISCOVERY: &str = r#"{"data":[{"id":"m2","object":"model","limit":{"context":64000,"output":16000},"capabilities":{"image_input":true}}]}"#;
+const DISCOVERY: &str = r#"{"data":[{"id":"m2","object":"model","limit":{"context":64000,"output":16000},"reasoning":true,"capabilities":{"image_input":true}}]}"#;
 
 /// Answers each request in the shape of the wire its path names and keeps each request whole,
 /// serving `discovery` as the model list.
@@ -184,7 +184,18 @@ fn a_provider_without_models_discovers_them_on_first_use() -> TestResult {
         "baseUrl": format!("http://127.0.0.1:{port}/v1"),
         "apiKey": "sk-placeholder", "models": []}});
     let home = Home::new("discover", &providers)?;
-    let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
+    let ask = home.yi(
+        &[
+            "ask",
+            "--here",
+            "--thinking",
+            "high",
+            "--model",
+            "localgw/m2",
+            "hi",
+        ],
+        &[],
+    )?;
     assert_eq!(ask.status.code(), Some(0), "{}", text(&ask));
     assert!(
         String::from_utf8_lossy(&ask.stdout).contains("pong"),
@@ -203,6 +214,7 @@ fn a_provider_without_models_discovers_them_on_first_use() -> TestResult {
     );
     let completion = requests.get(1).ok_or("no completion request")?;
     let body: Value = serde_json::from_str(completion.rsplit("\r\n").next().unwrap_or_default())?;
+    assert_eq!(body["reasoning_effort"], "high");
     assert_eq!(body["model"], "m2");
     assert_eq!(body["max_tokens"], 16000);
     let row = providers_row(&home, &[("YI_KERNEL_PYTHON", "/nonexistent/python3")])?;

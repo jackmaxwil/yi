@@ -712,6 +712,7 @@ fn created(fired: &Fired) -> usize {
     match fired {
         Fired::Created(ids) => ids.len(),
         Fired::Unblocked(_)
+        | Fired::Followed(..)
         | Fired::Held(_)
         | Fired::Delivered(..)
         | Fired::Idle

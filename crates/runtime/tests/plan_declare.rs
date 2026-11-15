@@ -1162,3 +1162,31 @@ fn a_set_that_opens_a_plan_carries_the_rows_in_its_record() -> TestResult {
     assert_eq!(labels, ["second", "first"]);
     Ok(())
 }
+
+/// Dies with "the contract was never frozen; start records it": setting a contracted todo to
+/// `running` through `plan set` bypassed `Op::Start`, so `contract_hash` stayed `None` and the
+/// subsequent `done` was refused on every attempt (observed in both Nov 12 fix sessions).
+#[test]
+fn setting_a_contracted_row_to_running_freezes_its_contract_for_done() -> TestResult {
+    let rig = rig("set-running-freezes")?;
+    let passing = json!({"class": "inline",
+        "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "ship it", "todos": [
+            {"label": "paint", "contract": passing, "state": "running"}]}),
+    );
+    assert!(!refused, "{text}");
+    assert_eq!(state_of(&rig, "paint")?, "Running");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "todos": [{"label": "paint", "state": "done"}]}),
+    );
+    assert!(!refused, "{text}");
+    assert!(
+        !text.contains("the contract was never frozen"),
+        "done refused an unfrozen contract after set running:\n{text}"
+    );
+    assert_eq!(state_of(&rig, "paint")?, "Done", "{text}");
+    Ok(())
+}

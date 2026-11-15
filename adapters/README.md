@@ -12,6 +12,11 @@ Yi runs `yi-adapter-<scheme> '<the whole URI>'` in the subscription's working di
   `id` is the idempotency key: an id the channel already holds is not appended again.
   `at` defaults to the time Yi read the line. `data` serialized is at most 16 KiB; a bigger
   one is kept as a refusal naming the cap, so send a `store://` or path reference instead.
+- **Threads and actors, by convention in `data`:** `"thread": "<key>"` names the conversation a
+  message belongs to (a PR, an issue). A subscription keeps one todo per open thread: a message
+  on a thread whose todo is still open joins that todo as follow-up input, and a new thread opens
+  its own, whatever the job's overlap. `"actor": "<source login>"` names who sent it, so a
+  filter like `actor=alice|bob` admits only those people before any model reads the message.
 - **stdin, one JSON object per line:** `{"ack": "<id>"}` once the message is synced to the
   channel's buffer, with `"refused": "<why>"` added when Yi kept a refusal in its place.
   Drop your copy (delete it from the queue) only on an ack; without one, send it again.
@@ -40,7 +45,7 @@ Each is stdlib Python, tested against a fake CLI by `test_adapters.py`:
 - `yi-adapter-github` — `github://<owner>/<repo>?every=60s`: each finished workflow run, via `gh api`.
 - `yi-adapter-forgejo` — `forgejo://<host>/<owner>/<repo>?every=60s`: each run whose jobs all
   ended, with its conclusion, via `fgj api`. `forgejo://<host>/<owner>/<repo>/pulls?every=60s`:
-  each open PR's head once per sha (`{pr, sha, branch, title, draft}`), which is what wakes the
-  PR review rounds (`just pr sweep`, docs/FORGE.md).
+  each open PR's head once per sha (`{pr, sha, branch, title, draft, thread, actor}`), which is
+  what wakes the PR review rounds (`just pr sweep`, docs/FORGE.md).
 
 Install one by copying it into `~/.yi/adapters/`.

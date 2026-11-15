@@ -655,6 +655,7 @@ pub fn tick(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::app::Command>,
 ) {
     app.poll_assist();
+    app.poll_mcp();
     app.pacing.receive(events);
     while let Some(ui_event) = app.pacing.held.pop_front() {
         // The end waits behind the reveal, and everything after it waits too, so a tool row
