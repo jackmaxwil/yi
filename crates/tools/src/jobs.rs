@@ -719,7 +719,7 @@ pub fn in_container(container: &str, cwd: &Path, command: &str) -> (String, Stri
         quote(command)
     );
     let sweep = format!(
-        "for p in /proc/[0-9]*; do grep -qsF {mark} $p/environ && kill -9 ${{p#/proc/}}; done; true"
+        "[ -d /proc/self ] || exit 1; for p in /proc/[0-9]*; do grep -qsF {mark} $p/environ || continue; kill -9 ${{p#/proc/}} || exit 1; done"
     );
     (run, format!("docker exec {name} sh -c {}", quote(&sweep)))
 }
@@ -911,17 +911,7 @@ mod tests {
     }
 
     fn exited() -> CommandCapture {
-        CommandCapture {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            cancelled: false,
-            truncated: false,
-            cut: None,
-            spill: None,
-            kill_error: None,
-            rows: Vec::new(),
-        }
+        capture(Some(0), false)
     }
 
     fn poll(id: JobId, cwd: &Path, owner: JobOwner) -> crate::ToolOutput {
@@ -1331,8 +1321,7 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the sweep's last grep: a swept container answers the exit of its final unmatched
-    /// pid, so a sweep that worked reads as a failure with exit code 1 (or 2 with no /proc).
+    /// Dies with a sweep that ends on its last unmatched pid's grep: that exit is no failure.
     #[test]
     fn a_completed_container_sweep_reports_completed() {
         let fake = r#"docker() { [ "$1" = exec ] || exit 9; shift 2; "$@"; }"#;
@@ -1340,6 +1329,17 @@ mod tests {
         assert!(matches!(
             run_sweep_within(&format!("{fake}; {sweep}"), None),
             SweepOutcome::Completed
+        ));
+    }
+
+    /// Dies with a sweep whose kill fails: the exit of the last grep must not hide that kill.
+    #[test]
+    fn a_container_sweep_whose_kill_fails_reports_failed() {
+        let fake = r#"docker() { [ "$1" = exec ] || exit 9; shift 2; sh -c "grep() { return 0; }; kill() { return 1; }; $3"; }"#;
+        let (_, sweep) = in_container("c", Path::new("/w"), "true");
+        assert!(matches!(
+            run_sweep_within(&format!("{fake}; {sweep}"), None),
+            SweepOutcome::Failed(reason) if reason == "failed with exit code 1"
         ));
     }
 
