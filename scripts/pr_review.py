@@ -55,7 +55,7 @@ REPORTED = ("high", "medium")
 INTAKE = ("template", "duplicate")
 DIFF_MAX = 150_000
 # The owner (2026-10-07): "increase glm 5.3 flash reasoning effort for yi review bot"; the default is medium.
-REVIEW_THINKING = "high"
+REVIEW_THINKING = "xhigh"
 # The fixer may not touch what judges it: the gates, the workflows and the baselines.
 # Incident: round 3 on #765 found the hooks outside the wall, and the commit hook is the
 # fixer's accept, so a fixer could weaken its own judge before the host committed.

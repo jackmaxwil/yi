@@ -1,8 +1,12 @@
+use std::collections::BTreeMap;
+
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_tui::colors::Theme;
 use yi_tui::diffview::{self, DiffBudget};
 use yi_types::kernel::{JSON_MIME, MARKDOWN_MIME, PYTHON_MIME};
+
+use crate::model::{NbCell, SessionId};
 
 /// An edit's patch names its file absolutely, while git and a model's read may name it from
 /// the repository root: one file either way.
@@ -914,6 +918,13 @@ pub fn notebook_lines(
         out.push(Line::default());
     }
     out
+}
+
+pub(crate) fn notebook_cells<'a>(
+    notebooks: &'a BTreeMap<SessionId, Vec<NbCell>>,
+    session: &SessionId,
+) -> &'a [NbCell] {
+    notebooks.get(session).map_or(&[][..], Vec::as_slice)
 }
 
 #[cfg(test)]

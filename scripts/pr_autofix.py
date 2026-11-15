@@ -59,10 +59,11 @@ PASS_SECS = forge_pr.job_secs("autofix") - SETUP_SECS
 CAP_DAY, CAP_PR = 60.0, 16.0
 # A cap that labels a PR stops the fixer until a person: these three only ever delay one.
 WINDOW, RETRY_AFTER, RETRIES = 24 * 3600, 12 * 3600, 2
-# The owner's tiers (2026-10-01; DeepSeek V4.1 Flash and Kimi K3.1 Pro replaced GLM 5.3 on 2026-10-27, and
-# GPT-6.1 Terra replaced Kimi on 2026-10-29), meant for roughly 60/30/10 of fixes: (model, thinking), cheapest
-# first. The medium tier uses the bundled Terra id at high; its thinking map does not advertise xhigh.
-TIERS = (("openrouter/deepseek/deepseek-v4.1-flash-1017", "high"), ("openrouter/openai/gpt-5.6-terra", "high"),
+# The owner's tiers (2026-10-01; DeepSeek V4.1 Flash and Kimi K3.1 Pro replaced GLM 5.3 on 2026-10-27,
+# GPT-6.1 Terra replaced Kimi on 2026-10-29 and Claude Haiku 5.5 replaced DeepSeek on 2026-11-13), meant for
+# roughly 60/30/10 of fixes: (model, thinking), cheapest first. The medium tier uses the bundled Terra id at
+# high; its thinking map does not advertise xhigh.
+TIERS = (("openrouter/anthropic/claude-haiku-5.5", "xhigh"), ("openrouter/openai/gpt-5.6-terra", "high"),
          ("openrouter/anthropic/claude-opus-5.5", "high"))
 TIER_NAMES = ("low", "medium", "high")
 # Points that move a fix up a tier: cut where 61/30/9 of the 44 fixable blocked rounds of

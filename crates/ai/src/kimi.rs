@@ -2,7 +2,7 @@
 //! catalog, so no Kimi id, window or price is compiled in.
 
 use serde_json::{Map, Value, json};
-use yi_types::config::DiscoveredCustomLimit;
+use yi_types::config::{DiscoveredCustomLimit, reasoning_kind_thinks};
 use yi_types::model::{Effort, Model, ModelCost};
 
 use crate::request::{ProxyConfig, get_json};
@@ -14,25 +14,6 @@ pub fn api_base() -> Option<String> {
             .map(|base| base.trim_end_matches('/').to_owned()),
         _ => None,
     }
-}
-
-/// `reasoning.effort.valid` as a level map; a model that thinks with no effort list takes one
-/// level, `on`, which the wire sends as thinking enabled with no effort.
-fn levels(always: bool, valid: &[&str]) -> Value {
-    let mut map = Map::new();
-    if always {
-        map.insert("off".to_owned(), Value::Null);
-    }
-    for effort in Effort::ALL.into_iter().skip(1) {
-        let name = effort.as_str();
-        let level = if valid.is_empty() {
-            (effort == Effort::Medium).then_some("on")
-        } else {
-            valid.contains(&name).then_some(name)
-        };
-        map.insert(name.to_owned(), level.map_or(Value::Null, Value::from));
-    }
-    Value::Object(map)
 }
 
 fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model, String> {
@@ -55,7 +36,7 @@ fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model,
     let kind = reasoning
         .and_then(|r| r.get("type"))
         .and_then(Value::as_str);
-    let thinks = matches!(kind, Some("only" | "both"));
+    let thinks = reasoning_kind_thinks(kind);
     let valid: Vec<&str> = reasoning
         .and_then(|r| r.pointer("/effort/valid"))
         .and_then(Value::as_array)
@@ -94,7 +75,21 @@ fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model,
         max_tokens: positive(limit.as_ref().and_then(|limit| limit.output))
             .unwrap_or(context_window),
         compat: None,
-        thinking_level_map: thinks.then(|| levels(kind == Some("only"), &valid)),
+        thinking_level_map: thinks.then(|| {
+            let levels = (kind == Some("only"))
+                .then_some((Effort::Off, None))
+                .into_iter()
+                .chain(Effort::ALL.into_iter().skip(1).map(|effort| {
+                    let name = effort.as_str();
+                    let level = if valid.is_empty() {
+                        (effort == Effort::Medium).then_some("on")
+                    } else {
+                        valid.contains(&name).then_some(name)
+                    };
+                    (effort, level)
+                }));
+            Effort::level_map(levels)
+        }),
         headers: None,
         read_timeout_secs: None,
     })

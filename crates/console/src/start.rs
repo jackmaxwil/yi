@@ -151,7 +151,7 @@ pub(crate) fn notebook(
     let empty = match app.state.panes.get(&pane).map(|pane| &pane.content) {
         Some(PaneContent::Notebook { session, .. }) => session
             .as_ref()
-            .is_none_or(|id| crate::model::notebook_cells(&app.state.notebooks, id).is_empty()),
+            .is_none_or(|id| crate::panes::notebook_cells(&app.state.notebooks, id).is_empty()),
         _ => false,
     };
     if !empty {

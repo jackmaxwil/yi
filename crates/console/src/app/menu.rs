@@ -10,6 +10,7 @@ use crate::keys::Action;
 use crate::layout::PaneId;
 use crate::menu::{Facts, Menu, Target, Verb};
 use crate::model::{Mode, PaneContent, SessionId, SessionRow, SessionStatus, Zone, now_ms};
+use ratatui::layout::Direction;
 
 use super::port::PortRequest;
 use super::{App, MouseKind, RequestKind};
@@ -86,6 +87,20 @@ impl App {
                 self.new_session_into(outbound, pane, root);
             }
             _ => self.open_menu(Target::NewSession(roots), at),
+        }
+    }
+
+    /// A new pane or tab opens a chat in the project of the pane it came from.
+    pub(super) fn open_chat_beside(&mut self, outbound: &Outbound, direction: Option<Direction>) {
+        let root = (self.state.focused_pane_id())
+            .and_then(|id| self.state.panes.get(&id)?.session().cloned())
+            .map_or_else(|| self.state.root.clone(), |session| self.root_of(&session));
+        match direction {
+            Some(direction) => self.split_share(direction, 0.5),
+            None => self.state.new_tab(),
+        }
+        if let Some(pane) = self.state.focused_pane_id() {
+            self.new_session_into(outbound, pane, root);
         }
     }
 
@@ -524,6 +539,20 @@ fn elide_images(value: &mut Value) {
 mod tests {
     use super::*;
     use yi_tui::colors::{ColorTier, Theme};
+    fn register_other_session(app: &mut App) -> SessionId {
+        let id = SessionId("other".to_owned());
+        app.state.upsert_row(SessionRow {
+            id: id.clone(),
+            root: "/other".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some("other".to_owned()),
+            created_ms: 0,
+            last_ms: 0,
+            pinned: None,
+        });
+        id
+    }
 
     #[test]
     fn a_verb_whose_pane_closed_under_the_menu_does_nothing() -> Result<(), String> {
@@ -561,16 +590,7 @@ mod tests {
     fn every_new_session_entry_asks_and_the_choice_sets_the_root() -> Result<(), String> {
         let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
         app.state.link = crate::model::Link::Connected;
-        app.state.upsert_row(SessionRow {
-            id: SessionId("other".to_owned()),
-            root: "/other".to_owned(),
-            status: SessionStatus::Idle,
-            attached: false,
-            name: Some("other".to_owned()),
-            created_ms: 0,
-            last_ms: 0,
-            pinned: None,
-        });
+        register_other_session(&mut app);
         let (events, _received) = crate::client::events();
         let socket = std::env::temp_dir().join("yi-menu-new-session-no-daemon.sock");
         let (outbound, _threads) = crate::client::spawn(socket, events);
@@ -593,6 +613,41 @@ mod tests {
             });
         outbound.shutdown();
         assert_eq!(started, roots.get(1).map(String::as_str));
+        Ok(())
+    }
+
+    /// A split or a new tab opened an empty pane with no chat, so the person had to start one
+    /// by hand in every pane they opened.
+    #[test]
+    fn a_new_pane_or_tab_opens_chat() -> Result<(), String> {
+        let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        app.state.link = crate::model::Link::Connected;
+        let other = register_other_session(&mut app);
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-menu-new-pane-chat-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        let first = app.state.focused_pane_id().ok_or("no focused pane")?;
+        app.bind_pane(first, &other);
+        let mut opened = Vec::new();
+        for action in [Action::SplitRight, Action::SplitDown, Action::NewTab] {
+            app.apply_action(&outbound, action);
+            let pane = app.state.focused_pane_id().ok_or("no focused pane")?;
+            app.bind_pane(pane, &other);
+            opened.push(pane);
+        }
+        let started: Vec<_> = (app.pending.values())
+            .filter_map(|pending| match &pending.kind {
+                RequestKind::NewSession(pane, root) => Some((*pane, root.clone())),
+                _ => None,
+            })
+            .collect();
+        outbound.shutdown();
+        for pane in opened {
+            assert!(
+                started.contains(&(pane, "/other".to_owned())),
+                "{pane:?} did not open in the focused pane's project /other: {started:?}"
+            );
+        }
         Ok(())
     }
 

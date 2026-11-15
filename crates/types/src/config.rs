@@ -148,6 +148,7 @@ pub struct CustomModel {
     pub id: String,
     pub name: Option<String>,
     pub reasoning: Option<bool>,
+    pub thinking_level_map: Option<serde_json::Value>,
     pub input: Option<Vec<CustomInput>>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
@@ -204,11 +205,14 @@ pub struct DiscoveredCustomModel {
     pub name: Option<String>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_reasoning")]
+    pub reasoning: Option<bool>,
     pub max_output_tokens: Option<u64>,
     #[serde(default, deserialize_with = "lenient_limit")]
     pub limit: Option<DiscoveredCustomLimit>,
     pub input: Option<Vec<CustomInput>>,
     pub capabilities: Option<DiscoveredCustomCapabilities>,
+    pub variants: Option<serde_json::Value>,
 }
 
 /// A model list's `limit` object. A field it does not carry is absent; a shape that is not this
@@ -232,6 +236,29 @@ where
     Ok(DiscoveredCustomLimit::from_value(&value))
 }
 
+/// A model list's `reasoning.type`: `only` and `both` think, any other value or none does not.
+pub fn reasoning_kind_thinks(kind: Option<&str>) -> bool {
+    matches!(kind, Some("only" | "both"))
+}
+
+fn lenient_reasoning<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match &value {
+        serde_json::Value::Bool(enabled) => Some(*enabled),
+        serde_json::Value::Object(map) => {
+            if reasoning_kind_thinks(map.get("type").and_then(serde_json::Value::as_str)) {
+                Some(true)
+            } else {
+                map.get("enabled").and_then(serde_json::Value::as_bool)
+            }
+        }
+        _ => None,
+    })
+}
+
 impl DiscoveredCustomLimit {
     pub fn from_value(value: &serde_json::Value) -> Option<Self> {
         value.as_object()?;
@@ -245,6 +272,24 @@ impl DiscoveredCustomLimit {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveredCustomCapabilities {
     pub image_input: Option<bool>,
+}
+
+/// Invariant: a level the list's `variants` omits maps to null, so it is unsupported rather than
+/// defaulted; `off` is left out because a variants table only names thinking levels.
+fn discovered_level_map(variants: &serde_json::Value) -> Option<serde_json::Value> {
+    let variants = variants.as_object().filter(|map| !map.is_empty())?;
+    Some(crate::model::Effort::level_map(
+        crate::model::Effort::ALL
+            .into_iter()
+            .filter(|effort| *effort != crate::model::Effort::Off)
+            .map(|effort| {
+                let sent = variants
+                    .get(effort.as_str())
+                    .and_then(|variant| variant.get("reasoningEffort"))
+                    .and_then(serde_json::Value::as_str);
+                (effort, sent)
+            }),
+    ))
 }
 
 /// The first limit a model list advertises positively; a zero is a sentinel, not a cap, so it
@@ -289,7 +334,8 @@ impl CustomProvider {
                 Some(CustomModel {
                     id: model.id,
                     name: model.name,
-                    reasoning: None,
+                    reasoning: model.reasoning,
+                    thinking_level_map: model.variants.as_ref().and_then(discovered_level_map),
                     input,
                     cost: None,
                     context_window,
@@ -338,7 +384,7 @@ impl CustomProvider {
                     context_window: model.context_window.unwrap_or(128_000),
                     max_tokens: model.max_tokens.unwrap_or(16_384),
                     compat: compat.clone(),
-                    thinking_level_map: None,
+                    thinking_level_map: model.thinking_level_map.clone(),
                     headers: None,
                     read_timeout_secs: None,
                 }

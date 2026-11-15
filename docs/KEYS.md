@@ -8,11 +8,11 @@ Two ways out:
 
 | keys | what happens |
 |---|---|
-| `⌥q` (or `ctrl+b q`, `/quit`) | the console closes; the daemon and its sessions keep running |
-| `ctrl+c` `ctrl+c` | the first press warns, the second stops the daemon and every worker, then quits |
+| `⌥q` (or `ctrl+b q`, `/quit`, `ctrl+c` `ctrl+c`) | the console closes; the daemon and its sessions keep running (`ctrl+c` warns on the first press) |
+| palette (`⌥/`): `stop the daemon and quit` | stops the daemon and every worker, then quits |
 
-A console attached to a daemon from an older build says so in the pane: restart it
-with `ctrl+c` `ctrl+c` and run `yi` again.
+A console attached to a daemon from an older build says so in the pane: stop the
+daemon from the palette (`⌥/` → `stop the daemon and quit`) and run `yi` again.
 
 ## The workspace
 

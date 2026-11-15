@@ -605,8 +605,9 @@ TUI | `tui_drive::plan_and_undo_answer_for_the_session_the_turn_ran_in` (T2)
 TUI | `tui_drive::reverse_search_enter_accepts_a_match_without_submitting` (T2)
 TUI | `input::a_steer_leaves_the_queued_row_when_the_loop_injects_it` (T0)
 TUI | `drive::ctrl_c_closes_an_open_popup_without_arming_the_quit` (T2)
-TUI | `drive::ctrl_c_over_a_pending_approval_still_stops_the_daemon` (T2)
+TUI | `drive::ctrl_c_over_a_pending_approval_still_quits_without_stopping_the_daemon` (T2)
 TUI | `drive::stopping_the_daemon_quits_without_a_disconnect_banner` (T2)
+daemon (ACP-router supervisor + worker/root) | `serve_daemon::prompting_a_session_after_the_daemon_was_killed_resumes_and_answers` (T2)
 TUI | `composer_box::a_typed_paragraph_wraps_inside_the_box_and_keeps_every_word` (T0)
 TUI | `composer_box::cmd_delete_and_ctrl_u_clear_the_whole_line_the_cursor_is_on` (T0)
 TUI | `drive::option_left_over_a_draft_moves_by_word_in_ghostty` (T2)
@@ -772,3 +773,11 @@ console notebook pane | `notebook_text::notebook_text_colours_codes_json_and_pat
 openai-codex login | `codex_login::the_login_opens_the_codex_authorize_url_and_exchanges_the_code`
 openai-codex login | `codex_login::a_refresh_keeps_the_account_id_the_response_does_not_repeat`
 openai-codex login | `codex_login::the_codex_login_is_built_in_and_a_user_profile_file_wins`
+claude login | `claude_login::a_pasted_code_is_exchanged_as_a_json_body_with_state_and_verifier`
+claude login | `claude_login::a_pasted_state_that_is_not_ours_is_refused_before_any_request`
+claude login | `claude_login::claude_is_built_in_until_a_profile_file_exists_and_anthropic_stays_a_key`
+claude login | `oauth::the_claude_login_sends_the_beta_header_and_the_identity_line`
+TUI | `composer_box::a_pasted_image_rides_the_submission_that_names_it` (T0)
+channels: buffer, subscriptions, adapters | `channel_e2e::a_message_on_an_open_threads_todo_joins_it_and_a_new_thread_opens_its_own`
+channels: buffer, subscriptions, adapters | `channel_e2e::a_filter_with_alternatives_admits_each_listed_actor_and_no_other`
+console editor and viewers | `app::menu::tests::a_new_pane_or_tab_opens_chat`

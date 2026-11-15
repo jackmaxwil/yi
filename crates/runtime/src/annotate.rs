@@ -63,7 +63,7 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
     };
     let named: Vec<(usize, String, String)> = (pairs.iter().enumerate())
         .filter_map(|(index, call)| {
-            call.map(|(name, args)| (index, brief(name, args), full(name, args)))
+            call.map(|(name, args)| (index, brief((name, args)), full(name, args)))
         })
         .collect();
     // A placeholder quotes the argument in backticks; a copy without them matches in full.
