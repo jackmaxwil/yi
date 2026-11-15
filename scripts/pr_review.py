@@ -43,6 +43,7 @@ import forge_pr  # noqa: E402
 import forge_tracking  # noqa: E402
 from check_commit_style import subject_errors  # noqa: E402
 from check_pr_metadata import CITE, DRAFT, section, template_problems  # noqa: E402
+import tui_see  # noqa: E402
 
 # Shadow posts every round and blocks nothing; blocking makes `just pr ready` and `just pr merge`
 # refuse a draft whose rounds are not clean. `just pr calibrate` reads the replay on the labelled set.
@@ -667,14 +668,6 @@ def token_free():
     return {k: v for k, v in os.environ.items() if not re.search("TOKEN|SECRET", k)}
 
 
-def newest_source(root):
-    """Latest mtime of anything a yi build reads, 0.0 for a tree with none."""
-    times = [p.stat().st_mtime for name in ("Cargo.toml", "Cargo.lock") if (p := root / name).exists()]
-    times += [p.stat().st_mtime for p in (root / "crates").glob("*/src/**/*.rs")]
-    times += [p.stat().st_mtime for p in (root / "crates").glob("*/Cargo.toml")]
-    return max(times, default=0.0)
-
-
 def yi_bin():
     """The yi a model call runs; with none built and none on PATH, the first call builds it.
     Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read.
@@ -683,14 +676,15 @@ def yi_bin():
         # Incident: the autofixer's worker builds into its own CARGO_TARGET_DIR, and every fix died looking
         # for target/debug/yi under the checkout (2026-11-05), so the search reads where cargo writes.
         target = ROOT / os.environ.get("CARGO_TARGET_DIR", "target")
-        newest = newest_source(ROOT)
+        newest = tui_see.newest_mtime(tui_see.binary_inputs(ROOT))
+        path_yi = shutil.which("yi")
+        debug = target / "debug/yi"
+        candidates = [target / "dist/yi", target / "release/yi", debug, *([pathlib.Path(path_yi)] if path_yi else [])]
         found = os.environ.get("YI_BIN") or next(
-            (str(p) for p in (target / "dist/yi", target / "release/yi", target / "debug/yi")
-             if p.exists() and p.stat().st_mtime >= newest), None)
-        if not found and (any((target / name / "yi").exists() for name in ("dist", "release", "debug")) or not shutil.which("yi")):
-            subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True)
-            found = str(target / "debug/yi")
-        found = found or "yi"
+            (str(p) for p in candidates if p.exists() and p.stat().st_mtime >= newest), None)
+        if not found:
+            subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True, env=token_free())
+            found = str(debug)
         if not _REFRESHED and not os.environ.get("YI_BIN"):
             # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the reviewer's
             # model as unknown; a failed refresh falls back to the bundle, and a pinned YI_BIN is left alone.
