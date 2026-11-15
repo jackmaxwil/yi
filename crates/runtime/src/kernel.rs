@@ -276,6 +276,7 @@ pub struct KernelService {
     last_error: Mutex<Option<String>>,
     on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     died: std::sync::atomic::AtomicBool,
+    disposed: std::sync::atomic::AtomicBool,
     names: Mutex<Option<Vec<String>>>,
     restarted: Mutex<Option<String>>,
     surface: Mutex<Option<String>>,
@@ -310,6 +311,7 @@ impl KernelService {
             last_error: Mutex::new(None),
             on_death: Mutex::new(None),
             died: std::sync::atomic::AtomicBool::new(false),
+            disposed: std::sync::atomic::AtomicBool::new(false),
             names: Mutex::new(None),
             restarted: Mutex::new(None),
             surface: Mutex::new(None),
@@ -669,7 +671,13 @@ impl KernelService {
         Some(crate::kernel_bootstrap::compaction_notice(names.as_deref()))
     }
 
+    pub fn is_disposed(&self) -> bool {
+        self.disposed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub async fn dispose(&self) {
+        self.disposed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.kill().await;
         if let Ok(mut held) = self.snapshot_lock.lock() {
             *held = None;
