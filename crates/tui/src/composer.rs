@@ -31,6 +31,8 @@ pub struct Composer {
     assist: crate::assist::Assist,
     recalled: bool,
     group: Option<Group>,
+    foot: Option<ratatui::text::Line<'static>>,
+    pub(crate) rewrite: crate::rewrite::Rewrite,
 }
 
 /// A replacement's textarea steps, whether undo or redo takes them next, the lines they left
@@ -60,6 +62,8 @@ impl Default for Composer {
             assist: crate::assist::Assist::default(),
             recalled: false,
             group: None,
+            foot: None,
+            rewrite: crate::rewrite::Rewrite::default(),
         }
     }
 }
@@ -112,7 +116,14 @@ impl Composer {
         if let Some(title) = self.search_title().map(Into::into).or(title) {
             block = block.title(title);
         }
+        if let Some(foot) = self.foot.clone() {
+            block = block.title_bottom(foot);
+        }
         self.textarea.set_block(block);
+    }
+
+    pub(crate) fn set_foot(&mut self, foot: Option<ratatui::text::Line<'static>>) {
+        self.foot = foot;
     }
 
     pub fn set_typo_style(&mut self, style: ratatui::style::Style) {
@@ -572,6 +583,10 @@ impl Composer {
             return;
         }
         self.textarea.delete_char();
+    }
+
+    pub(crate) fn has_attachments(&self) -> bool {
+        !self.pastes.is_empty() || !self.images.is_empty()
     }
 
     pub fn take_submission(&mut self) -> Option<String> {

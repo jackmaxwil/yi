@@ -367,6 +367,9 @@ pub fn layout_chat(
     let title = reply
         .map(ratatui::text::Line::from)
         .or_else(|| on_rule.then(|| status_row.clone()));
+    let held = app.composer.text();
+    let foot = app.composer.rewrite.marker(&theme, width, &held);
+    app.composer.set_foot(foot);
     app.composer
         .set_frame(border, theme.dim_style(), cursor, title);
     app.composer

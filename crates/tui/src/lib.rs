@@ -41,6 +41,7 @@ pub mod reflow;
 pub mod render;
 pub mod result_paint;
 pub mod reveal;
+mod rewrite;
 pub mod rows;
 pub mod status;
 pub mod table;

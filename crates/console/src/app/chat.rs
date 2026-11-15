@@ -726,6 +726,11 @@ impl App {
                 "_yi/child_replay",
                 json!({"sessionId": id, "childId": child}),
             ),
+            // ponytail: no console pane is told of a rewriter yet, so this answers rather than hangs.
+            Command::Rewrite { ask, .. } => self.fan_out(session, || {
+                let outcome = Err("the console does not rewrite drafts yet".to_owned());
+                UiEvent::Reply(Reply::Rewritten { ask, outcome })
+            }),
             Command::Slash(line) => self.send_request(
                 outbound,
                 RequestKind::Slash(session.clone()),

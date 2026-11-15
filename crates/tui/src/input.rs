@@ -9,6 +9,7 @@ use crate::focus::{FocusMove, focus_move, set_focus};
 use crate::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey};
 use crate::plantree::PlanTreeResult;
 use crate::popup::{BottomView, PopupResult};
+use crate::rewrite::{Effect, Event};
 use crate::tree::TreeResult;
 
 pub(crate) const ESC_WINDOW: Duration = Duration::from_secs(1);
@@ -28,7 +29,9 @@ pub fn handle_terminal_event(
             } else if let Some(bottom) = app.bottom.as_mut() {
                 paste_into(bottom, &text);
             } else if !app.composer.search_active() {
-                if text.is_empty() {
+                let held = app.composer.text();
+                if app.composer.rewrite.locked(&held) {
+                } else if text.is_empty() {
                     attach_clipboard_image(app, false);
                 } else {
                     app.composer.handle_paste(&text);
@@ -69,6 +72,16 @@ pub fn handle_terminal_event(
             let ctx = EvalContext {
                 input_empty: app.composer.is_empty(),
             };
+            let held = app.composer.text();
+            if app.composer.rewrite.locked(&held) {
+                let key = KeyInput::Single(key);
+                if let Some(action @ (Action::Submit | Action::Abort | Action::Quit)) =
+                    app.keymap.resolve(&key, &ctx)
+                {
+                    handle_action(app, cmd_tx, action);
+                }
+                return;
+            }
             if app.composer.search_active() {
                 match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
                     Some(
@@ -233,6 +246,28 @@ fn attach_clipboard_image(app: &mut App, say_none: bool) {
     app.clip_read = Some((rx, say_none));
 }
 
+fn enter(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>) {
+    let held = app.composer.text();
+    // ponytail: a draft with a paste or an image goes as typed; rewrite around markers if asked.
+    let eligible = app.reply_bound.is_none()
+        && !app.composer.has_attachments()
+        && matches!(slash_line(held.clone()), Slash::Prompt(_));
+    match app.composer.rewrite.step(Event::Enter, &held, eligible) {
+        Effect::Ask => {
+            if let Some((ask, length)) = app.composer.rewrite.asking() {
+                let draft = held;
+                let _ = cmd_tx.send(Command::Rewrite { ask, length, draft });
+            }
+        }
+        Effect::Hold => {}
+        Effect::Send | Effect::Restore | Effect::Pass => {
+            if let Some((text, images)) = app.composer.take_message() {
+                submit_line(app, cmd_tx, text, images);
+            }
+        }
+    }
+}
+
 /// Invariant: Enter in the composer and in the `/` list both submit here, so `//word` prompts.
 fn submit_line(
     app: &mut App,
@@ -296,19 +331,19 @@ pub(crate) fn handle_action(
                 let _ = app.composer.accept_search();
                 return;
             }
-            if let Some(submit) = app.composer.enter_assist() {
-                if submit && let Some((text, images)) = app.composer.take_message() {
-                    submit_line(app, cmd_tx, text, images);
-                }
-                return;
-            }
-            if let Some((text, images)) = app.composer.take_message() {
-                submit_line(app, cmd_tx, text, images);
+            if app.composer.enter_assist() != Some(false) {
+                enter(app, cmd_tx);
             }
         }
         Action::InsertNewline => app.composer.insert_newline(),
         Action::Abort => {
             if app.composer.dismiss_assist() {
+                return;
+            }
+            let held = app.composer.text();
+            if app.composer.rewrite.step(Event::Escape, &held, false) == Effect::Restore {
+                let typed = app.composer.rewrite.typed().map(str::to_owned);
+                app.composer.set_text(&typed.unwrap_or(held));
                 return;
             }
             handle_escape(app, cmd_tx);
@@ -347,6 +382,7 @@ pub(crate) fn handle_action(
         }
         Action::HistorySearch => app.composer.begin_search(),
         Action::PasteImage => attach_clipboard_image(app, true),
+        Action::CycleRewrite => app.composer.rewrite.cycle(),
         Action::ToggleExpand => app.cycle_mode(),
         Action::ToggleHud => app.hud_hidden = !app.hud_hidden,
         Action::ExternalEditor => app.pending_editor = true,

@@ -196,7 +196,8 @@ pub struct AgentSession {
     wall: Mutex<crate::wall::Wall>,
     spills: Mutex<Option<std::path::PathBuf>>,
     tool_cwd: Mutex<Option<std::path::PathBuf>>,
-    selector: Mutex<Option<Arc<crate::select::Selector>>>,
+    pub(crate) selector: Mutex<Option<Arc<crate::select::Selector>>>,
+    pub(crate) rewriter: Mutex<Option<Arc<crate::rewrite::Rewriter>>>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
     on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
 }
@@ -276,6 +277,7 @@ impl AgentSession {
             spills: Mutex::new(None),
             tool_cwd: Mutex::new(None),
             selector: Mutex::new(None),
+            rewriter: Mutex::new(None),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
         };
@@ -463,13 +465,6 @@ impl AgentSession {
 
     pub(crate) fn reclaimed(&self) -> Arc<Mutex<crate::reclaim::Cut>> {
         Arc::clone(&self.shared.reclaimed)
-    }
-
-    /// The model that picks the lines of a cut bash output, read when tools are installed.
-    pub fn set_selector(&self, selector: Option<crate::select::Selector>) {
-        if let Ok(mut slot) = self.selector.lock() {
-            *slot = selector.map(Arc::new);
-        }
     }
 
     /// Where cut tool output is kept whole, read when tools are installed; unset keeps nothing.

@@ -2,8 +2,9 @@ use serde_json::{Value, json};
 use yi_types::config::{
     BashConfig, BrowserConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig,
     EditConfig, KernelConfig, MailConfig, McpConfig, MemoryConfig, ModelRoles, NodeConfig,
-    PermissionsConfig, PlanConfig, PlansConfig, RlmConfig, SandboxConfig, SkillsConfig,
-    SpendConfig, TelemetryConfig, ThemeConfig, TuiConfig, UserConfig, WebSearchConfig,
+    PermissionsConfig, PlanConfig, PlansConfig, RewriteConfig, RlmConfig, SandboxConfig,
+    SkillsConfig, SpendConfig, TelemetryConfig, ThemeConfig, TuiConfig, UserConfig,
+    WebSearchConfig,
 };
 use yi_types::lane::LanesConfig;
 use yi_types::settings::{SettingKind, SettingRow, refusal, rows};
@@ -62,6 +63,7 @@ fn leaves() -> Vec<String> {
         browser,
         providers,
         web_search,
+        rewrite,
     });
     let nested = [
         (
@@ -73,7 +75,8 @@ fn leaves() -> Vec<String> {
                 auto_review,
                 classifier,
                 selector,
-                web_search
+                web_search,
+                rewriter
             }),
         ),
         ("web_search", fields!(WebSearchConfig { engine })),
@@ -177,6 +180,14 @@ fn leaves() -> Vec<String> {
         ),
         ("mail", fields!(MailConfig { hop_limit })),
         ("memory", fields!(MemoryConfig { import_claude })),
+        (
+            "rewrite",
+            fields!(RewriteConfig {
+                skill,
+                length,
+                thinking
+            }),
+        ),
         ("routing", vec!["order", "only"]),
     ];
     top.into_iter()
