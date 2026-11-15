@@ -268,9 +268,8 @@ def cmd_commit(args):
         print("commit: nothing staged; name the paths to commit:" if left else "commit: nothing to commit")
         print(left)
         return 1 if left else 0
-    if lost := unrecorded_cuts(staged=True):
-        print("\n".join(lost) + "\ncommit: refused — say what this commit deletes on purpose, so no later branch puts it back")
-        return 1
+    if lost := unrecorded_cuts(staged=True, paths=args.paths):
+        return refuse_cuts("commit", lost, "this commit")
     message = ["-m", args.subject.strip()]
     if args.body:
         message += ["-m", read_body(args.body)]
@@ -301,11 +300,17 @@ def zig_env():
     }
 
 
-def unrecorded_cuts(staged=False):
+def refuse_cuts(verb, lost, scope):
+    print("\n".join(lost) + f"\n{verb}: refused — say what {scope} deletes on purpose, so no later branch puts it back")
+    return 1
+
+
+def unrecorded_cuts(staged=False, paths=()):
     base = base_commit()[1]
     if base is None:
         return []
-    return check_intent.unrecorded(check_intent.branch_diff(base, staged), [f for _, f in pending(base)])
+    diff = git("-c", "core.quotePath=false", "diff", *(("--cached",) if staged else ()), "--unified=0", "--no-color", "--no-ext-diff", base, "--", *paths)
+    return check_intent.unrecorded(diff, [f for _, f in pending(base)])
 
 
 def linux_clippy_command(crates, no_tui=False):
@@ -361,8 +366,7 @@ def cmd_push(args):
         print("push: the tree is dirty — just commit first")
         return 1
     if lost := unrecorded_cuts():
-        print("\n".join(lost) + "\npush: refused — say what this branch deletes on purpose, so no later branch puts it back")
-        return 1
+        return refuse_cuts("push", lost, "this branch")
     if linux_clippy():
         return 1
     print(f"push: {name}; the forge gate runs the lanes — `just pr status N` reads the verdict")
@@ -445,10 +449,8 @@ def cmd_open(args):
             print(err)
         print("open: refused — the title job would fail; fix the above first")
         return 1
-    lost = unrecorded_cuts()
-    if lost:
-        print("\n".join(lost) + "\nopen: refused — say what this branch deletes on purpose, so no later branch puts it back")
-        return 1
+    if lost := unrecorded_cuts():
+        return refuse_cuts("open", lost, "this branch")
     import owners
 
     if taken := owners.taken():
@@ -1277,12 +1279,17 @@ def commit_selfcheck():
                 done = cmd_commit(parse(["commit", "Add with inline body", "d.txt", "--body", long_prose]))
             assert done == 0 and "inline prose" in git("log", "-1", "--format=%b"), "inline --body text was rejected as a filename"
             asked = []
-            globals()["unrecorded_cuts"] = lambda staged=False: asked.append(staged) or ["e.txt: 6 substantive line(s) deleted on net"]
+            globals()["unrecorded_cuts"] = lambda staged=False, paths=(): asked.append((staged, tuple(paths))) or (["e.txt: 6 substantive line(s) deleted on net"] if not paths or "e.txt" in paths else [])
             (pathlib.Path(scratch) / "e.txt").write_text("e\n")
             with contextlib.redirect_stdout(io.StringIO()) as said:
                 refused = cmd_commit(parse(["commit", "Delete six lines", "e.txt"]))
-            assert refused == 1 and asked == [True] and "e.txt: 6 substantive" in said.getvalue(), ("commit judges the staged net deletion", refused, asked)
+            assert refused == 1 and asked == [(True, ("e.txt",))] and "e.txt: 6 substantive" in said.getvalue(), ("commit judges the staged net deletion", refused, asked)
             assert git("log", "-1", "--format=%s") != "Delete six lines", "a net deletion with no cut line was committed"
+            (pathlib.Path(scratch) / "g.txt").write_text("g\n")
+            git("add", "--", "e.txt", check=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add the clean file", "g.txt"]))
+            assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "g.txt", "a clean named file is refused over an unnamed staged deletion"
             git("reset", "-q", "--", "e.txt", check=True)
             (pathlib.Path(scratch) / "e.txt").unlink()
             globals()["unrecorded_cuts"] = saved["unrecorded_cuts"]
