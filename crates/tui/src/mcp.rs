@@ -24,7 +24,6 @@ pub struct McpPage {
     note: String,
     error: Option<String>,
     busy: Option<(String, Slot)>,
-    cli: Option<(PathBuf, PathBuf)>,
 }
 
 impl crate::app::App {
@@ -82,13 +81,7 @@ impl McpPage {
             note: String::new(),
             error: None,
             busy: None,
-            cli: None,
         }
-    }
-
-    pub fn with_cli(mut self, exe: PathBuf, home: PathBuf) -> Self {
-        self.cli = Some((exe, home));
-        self
     }
 
     pub fn rows(&self) -> &[McpRow] {
@@ -161,13 +154,8 @@ impl McpPage {
             return;
         };
         let name = row.name.clone();
-        let cli = self.cli.clone();
         self.spawn(format!("probing {name}"), move || {
-            let probed = match &cli {
-                Some((exe, home)) => mcp_page::probe_via(exe, Some(home), &row),
-                None => mcp_page::probe(&row),
-            };
-            match probed {
+            match mcp_page::probe(&row) {
                 Ok(rows) => Outcome::Rows(format!("probed {name}"), rows),
                 Err(error) => Outcome::Failed(format!("probe {name}: {error}")),
             }

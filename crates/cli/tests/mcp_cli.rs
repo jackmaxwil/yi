@@ -781,25 +781,44 @@ fn mcp_page_probe_connects_the_fixture_and_the_list_then_carries_its_tool_count(
 
 #[test]
 fn mcp_page_probe_key_moves_the_tool_count_to_the_result() -> TestResult {
-    use yi_tui::popup::BottomView;
     let home = mcp_home()?;
-    let command = crate::yi_bin::yi_command(&home.home);
-    let exe = PathBuf::from(command.get_program());
-    let rows = yi_runtime::mcp_page::servers_via(&exe, Some(&home.home))?;
-    let mut page =
-        yi_tui::mcp::McpPage::from_rows(None, true, rows).with_cli(exe, home.home.to_path_buf());
-    assert_eq!(page.rows().first().and_then(|row| row.tools), None);
-    let key = yi_tui::keymap::SingleKey::parse("p")?;
-    page.handle_key(&key);
-    while page.is_busy() {
-        page.poll();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    let keys = home.home.join("mcp.keys");
+    std::fs::write(
+        &keys,
+        "type /mcp\nkey enter\nwait-frame 20000 not probed\nkey p\n\
+         wait-frame 30000 probed fixture\nwait-frame 5000 tools     2\nquit\n",
+    )?;
+    let frames = home.home.join("frames");
+    let output = yi_command(&home.home)
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+        ])
+        .arg(home.home.join("sessions"))
+        .arg("--keys")
+        .arg(&keys)
+        .arg("--frames")
+        .arg(&frames)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "drive must reach the probed tool count: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut drawn = String::new();
+    for entry in std::fs::read_dir(&frames)? {
+        drawn.push_str(&std::fs::read_to_string(entry?.path())?);
     }
-    let probed = page
-        .rows()
-        .iter()
-        .find(|row| row.name == "fixture")
-        .ok_or("no fixture row after probe")?;
-    assert_eq!(probed.tools, Some(2));
+    assert!(
+        drawn.contains("not probed"),
+        "the page must open with the fixture unprobed"
+    );
+    assert!(
+        drawn.contains("tools     2"),
+        "the probe must carry the fixture's two tools"
+    );
     Ok(())
 }
