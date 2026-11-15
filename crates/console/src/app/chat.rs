@@ -696,6 +696,18 @@ impl App {
                 "_yi/steer",
                 json!({"sessionId": id, "text": text}),
             ),
+            Command::PromptImages(text, images) => self.send_request(
+                outbound,
+                RequestKind::Prompt,
+                "session/prompt",
+                prompt_images_params(id, &text, &images),
+            ),
+            Command::SteerImages(text, images) => self.send_request(
+                outbound,
+                RequestKind::Steer,
+                "_yi/steer",
+                steer_images_params(id, &text, &images),
+            ),
             Command::Abort => self.send_request(
                 outbound,
                 RequestKind::Cancel,
@@ -833,11 +845,42 @@ impl App {
     }
 }
 
+fn prompt_images_params(id: &str, text: &str, images: &[yi_tui::clipboard::ClipImage]) -> Value {
+    let mut blocks = vec![json!({"type": "text", "text": text})];
+    blocks.extend(images.iter().map(image_block));
+    json!({"sessionId": id, "prompt": blocks})
+}
+
+fn steer_images_params(id: &str, text: &str, images: &[yi_tui::clipboard::ClipImage]) -> Value {
+    json!({"sessionId": id, "text": text, "prompt": images.iter().map(image_block).collect::<Vec<_>>()})
+}
+
+fn image_block(image: &yi_tui::clipboard::ClipImage) -> Value {
+    json!({"type": "image", "mimeType": image.mime_type, "data": image.data})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Zone;
     use yi_types::subagent::{ChildActivity, ChildId};
+
+    /// Dies with a pasted screenshot missing from the prompt or steer request the agent reads:
+    /// the agent reads `type`, `mimeType` and `data` of each image block, so a drifted key drops it.
+    #[test]
+    fn a_pasted_image_rides_the_prompt_and_the_steer_request() {
+        let image = yi_tui::clipboard::ClipImage {
+            mime_type: "image/png".to_owned(),
+            data: "iVBORw0KGgo=".to_owned(),
+        };
+        let wanted = json!({"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="});
+        let prompt = prompt_images_params("s1", "look", std::slice::from_ref(&image));
+        assert_eq!(prompt["prompt"][0], json!({"type": "text", "text": "look"}));
+        assert_eq!(prompt["prompt"][1], wanted);
+        let steer = steer_images_params("s1", "look", &[image]);
+        assert_eq!(steer["text"], "look");
+        assert_eq!(steer["prompt"][0], wanted);
+    }
 
     /// Dies with Tab leaving a drawn gray ending in place and moving focus out of the chat, or
     /// with Tab held in the chat by a ghost nobody sees once the draft ends in a space.

@@ -19,11 +19,10 @@ use crate::frame::FrameScheduler;
 use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
 use crate::motion::elapsed_ms;
-use crate::orb;
 use crate::port::SessionPort;
-use crate::term;
 use crate::transcript::{arg_summary, result_preview, text_of, user_text};
 use crate::tree::TreeView;
+use crate::{orb, term};
 pub enum UiEvent {
     Agent(AgentEvent),
     Child { child_id: String, event: AgentEvent },
@@ -32,27 +31,11 @@ pub enum UiEvent {
     Ask(AskRequest),
     Reply(crate::port::Reply),
 }
-pub enum Command {
-    Prompt(String),
-    Steer(String),
-    /// E1: the rewind itself is synchronous on the render thread; the
-    /// summarizer call it earns is not.
-    SummarizeBranch(yi_runtime::BranchStub),
-    Slash(String),
-    StopChild(String),
-    ChildHistory(String),
-    Answer {
-        child_id: String,
-        question: String,
-        text: String,
-    },
-    Abort,
-    Shutdown,
-}
 pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
     Question(crate::question::QuestionView),
     Agents(crate::agents::AgentsPopup),
+    Mcp(Box<crate::mcp::McpPage>),
     Model(Box<crate::model::ModelPopup>),
     Theme(Box<crate::theme_file::Picker>),
 }
@@ -68,6 +51,11 @@ pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 10;
 pub(crate) const ORB_ROWS: u16 = 5;
 pub(crate) const ORB_PX: usize = 320;
+
+pub(crate) type ClipRead = (
+    Receiver<Result<Option<crate::clipboard::ClipImage>, String>>,
+    bool,
+);
 
 pub struct App {
     pub(crate) theme: Theme,
@@ -95,6 +83,7 @@ pub struct App {
     pub(crate) pending_summary: Option<yi_runtime::BranchStub>,
     pub(crate) pending_stop: Option<String>,
     pub(crate) pending_focus: Option<String>,
+    pub(crate) clip_read: Option<ClipRead>,
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) answer: AnswerTrack,
@@ -208,7 +197,9 @@ pub struct App {
 mod asks;
 mod bridge;
 mod children;
+mod command;
 pub use children::TaskState;
+pub use command::Command;
 mod clock;
 mod pane;
 pub(crate) use crate::transcript::AnswerTrack;
@@ -250,6 +241,7 @@ impl App {
             pending_summary: None,
             pending_stop: None,
             pending_focus: None,
+            clip_read: None,
             selection: crate::model::Selection::new(options.model.clone()),
             pending_repaint: false,
             answer: AnswerTrack::default(),

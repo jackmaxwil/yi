@@ -1242,3 +1242,168 @@ fn replacing_a_worker_keeps_the_session_and_the_daemon_serving_it() -> TestResul
     let _ = daemon.wait();
     outcome
 }
+
+/// Killing the daemon mid-session and starting a new one (or killing its worker) leaves the
+/// session on disk without a loaded worker handle; a prompt on that sessionId must still
+/// spawn the worker, open the session from disk, and answer instead of refusing with
+/// "unknown sessionId" or "unknown session".
+#[test]
+fn prompting_a_session_after_the_daemon_was_killed_resumes_and_answers() -> TestResult {
+    let dir = Scratch::new("yi-serve-kill-resume")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let mut first = DaemonClient::connect(&socket)?;
+        first.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let session_id = new_session(&mut first, "2", &dir)?;
+        drop(first);
+
+        daemon.kill()?;
+        let _ = daemon.wait();
+        let _ = std::fs::remove_file(socket.with_extension("ledger.json"));
+
+        let respawner = {
+            let dir = dir.to_path_buf();
+            std::sync::Arc::new(move || {
+                if let Ok((mut child, _)) = spawn_daemon(&dir) {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
+            })
+        };
+        let (event_tx, events) = yi_console::client::events();
+        let (outbound, _threads) =
+            yi_console::client::spawn_restarting(socket.clone(), event_tx, Some(respawner));
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+        let mut app = yi_console::app::App::new(dir.display().to_string(), theme);
+        let pane_id = app.state.focused_pane_id().ok_or("no pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&pane_id) {
+            pane.content = yi_console::model::PaneContent::Session {
+                session: Some(yi_console::model::SessionId(session_id.clone())),
+                chat: None,
+            };
+        }
+        wait_until(Instant::now() + Duration::from_secs(10), || {
+            while let Ok(event) = events.try_recv() {
+                app.reduce_client(&outbound, event);
+            }
+            app.tick(&outbound);
+            Ok(app.state.link == yi_console::model::Link::Connected
+                && app
+                    .state
+                    .sessions
+                    .get(&yi_console::model::SessionId(session_id.clone()))
+                    .is_some_and(|row| row.attached))
+        })?;
+        outbound.shutdown();
+
+        let mut second = DaemonClient::connect(&socket)?;
+        second.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let frames = second.request_with_notifications(
+            "3",
+            "session/prompt",
+            json!({"sessionId": session_id, "prompt": [{"type": "text", "text": "still here"}]}),
+        )?;
+        let reply = frames.last().ok_or("no prompt response")?;
+        assert!(
+            reply.get("error").is_none(),
+            "prompt after daemon kill failed: {reply}"
+        );
+        let chunk = |frame: &Value| {
+            frame["method"] == "session/update"
+                && frame["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        };
+        if !frames.iter().any(chunk) {
+            second.read_until(chunk)?;
+        }
+        second.request("s", "_yi/shutdown", json!({}))?;
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
+/// The console's own restart hook, not a test-supplied one: killing `yi serve` under a live
+/// `yi console` must bring a daemon back on its socket in its recorded mode, or panes strand
+/// on unknown sessionIds and later sessions silently lose the pinned `--confirm`.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_console_restarts_the_daemon_it_was_attached_to_after_a_kill() -> TestResult {
+    let dir = Scratch::new("yi-console-respawn")?;
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home)?;
+    let (mut daemon, socket) =
+        spawn_daemon_with(&dir, &home, &["--model", "faux/faux-1", "--confirm"])?;
+    let ledger = socket.with_extension("ledger.json");
+    let invocation = socket.with_extension("invocation");
+    let recorded = std::fs::read_to_string(&invocation)?;
+    assert!(
+        recorded.lines().any(|flag| flag == "--confirm"),
+        "the first daemon did not record --confirm: {recorded:?}"
+    );
+    let before = std::fs::read_to_string(&ledger).unwrap_or_default();
+    let mut pty = crate::pty::console_in_pty(&home, &dir, &socket, &[])?;
+    let outcome = (|| -> TestResult {
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(std::fs::read_to_string(&ledger).unwrap_or_default() != before)
+        })?;
+        daemon.kill()?;
+        let _ = daemon.wait();
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(UnixStream::connect(&socket).is_ok())
+        })?;
+        let replaced = std::fs::read_to_string(&invocation)?;
+        assert_eq!(
+            replaced, recorded,
+            "the replacement daemon dropped the dead daemon's recorded invocation"
+        );
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("s", "_yi/shutdown", json!({}))?;
+        Ok(())
+    })();
+    let _ = pty.kill();
+    let _ = pty.wait();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
+/// A console pinning `--yolo` that loses its `--confirm` daemon to a kill must restart it under
+/// its own flags, or it stands down and every pane strands on a dead socket.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_pinned_console_restarts_a_killed_daemon_under_its_own_flags() -> TestResult {
+    let dir = Scratch::new("yi-console-pinned-respawn")?;
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home)?;
+    let (mut daemon, socket) =
+        spawn_daemon_with(&dir, &home, &["--model", "faux/faux-1", "--confirm"])?;
+    let ledger = socket.with_extension("ledger.json");
+    let invocation = socket.with_extension("invocation");
+    let recorded = std::fs::read_to_string(&invocation)?;
+    let before = std::fs::read_to_string(&ledger).unwrap_or_default();
+    let mut pty = crate::pty::console_in_pty(&home, &dir, &socket, &["--yolo"])?;
+    let outcome = (|| -> TestResult {
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(std::fs::read_to_string(&ledger).unwrap_or_default() != before)
+        })?;
+        daemon.kill()?;
+        let _ = daemon.wait();
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(UnixStream::connect(&socket).is_ok())
+        })?;
+        let replaced = std::fs::read_to_string(&invocation)?;
+        let flags: Vec<&str> = replaced.lines().collect();
+        assert!(
+            flags.contains(&"--yolo") && !flags.contains(&"--confirm"),
+            "the console's restart ignored its pinned --yolo: {replaced:?} (was {recorded:?})"
+        );
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("s", "_yi/shutdown", json!({}))?;
+        Ok(())
+    })();
+    let _ = pty.kill();
+    let _ = pty.wait();
+    outcome
+}

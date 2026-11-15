@@ -20,7 +20,7 @@ mod run;
 
 pub(crate) use answer::{AnswerHandle, FINISH, StatusLine, headed};
 use deadline::Deadline;
-use prompt::assembled_prompt;
+use prompt::{assembled_prompt, prompt_text};
 use run::Queued;
 pub use run::StillNews;
 
@@ -33,12 +33,15 @@ pub enum Status {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionError {
     Busy,
+    /// No Tokio handle was captured at construction and none is entered now.
+    Detached,
 }
 
 impl std::fmt::Display for SessionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Busy => formatter.write_str("a run is already in progress"),
+            Self::Detached => formatter.write_str("no Tokio runtime is attached to this session"),
         }
     }
 }
@@ -104,6 +107,7 @@ struct Shared {
     job_owner: yi_tools::jobs::JobOwner,
     retired: std::sync::atomic::AtomicBool,
     ended: Mutex<Vec<String>>,
+    reactor: Mutex<Option<tokio::runtime::Handle>>,
 }
 
 pub type PromptChoiceFn =
@@ -255,6 +259,7 @@ impl AgentSession {
                 job_owner: yi_tools::jobs::JobOwner::mint(),
                 retired: false.into(),
                 ended: Mutex::new(Vec::new()),
+                reactor: Mutex::new(tokio::runtime::Handle::try_current().ok()),
             }),
             config,
             provider,
@@ -1021,20 +1026,6 @@ impl AgentSession {
 
     pub fn provider_arc(&self) -> &Arc<ProviderStream> {
         &self.provider
-    }
-}
-
-fn prompt_text(prompt: &AgentMessage) -> String {
-    match prompt {
-        AgentMessage::User {
-            content: UserContent::Text(text),
-            ..
-        } => text.clone(),
-        AgentMessage::User {
-            content: UserContent::Blocks(blocks),
-            ..
-        } => yi_types::message::join_text(blocks, "\n"),
-        _ => String::new(),
     }
 }
 

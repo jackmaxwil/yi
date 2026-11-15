@@ -7,6 +7,7 @@ use tokio::sync::broadcast::error::RecvError;
 use yi_runtime::{AgentSession, SubagentHost, lease::SHUTDOWN_GRACE, session::user_input};
 use yi_types::event::AgentEvent;
 use yi_types::mail::Delivery;
+use yi_types::message::AgentMessage;
 
 use super::{AskRequest, Command, UiEvent};
 use crate::port::Reply;
@@ -46,13 +47,22 @@ pub async fn forward(
 /// Starts a turn. Invariant: the UI learns of a start from `AgentStart`, so a second Enter
 /// before it arrives meets a busy session; that text steers the run, never vanishes.
 pub fn submit(session: &AgentSession, text: &str) -> Option<String> {
-    let message = user_input(text);
+    submit_message(session, user_input(text))
+}
+
+fn submit_message(session: &AgentSession, message: AgentMessage) -> Option<String> {
     if session.prompt_message(message.clone()).is_ok() {
         return None;
     }
     // `wakes`: a run that ended since the refusal starts a turn rather than parking the text.
     (session.deliver(message, true) == Delivery::Queued)
         .then(|| "a turn was already running · your message steers it".to_owned())
+}
+
+fn image_parts(images: Vec<crate::clipboard::ClipImage>) -> impl Iterator<Item = (String, String)> {
+    images
+        .into_iter()
+        .map(|image| (image.mime_type, image.data))
 }
 
 type Bridge = (
@@ -124,6 +134,16 @@ pub(crate) fn spawn_runtime_bridge(
                         }
                     }
                     Command::Steer(text) => driver_session.steer_message(user_input(&text)),
+                    Command::PromptImages(text, images) => {
+                        let message =
+                            AgentMessage::user_input_with_images(&text, image_parts(images));
+                        if let Some(notice) = submit_message(&driver_session, message) {
+                            let _ = reply_tx.send(UiEvent::Reply(Reply::Notice(notice)));
+                        }
+                    }
+                    Command::SteerImages(text, images) => driver_session.steer_message(
+                        AgentMessage::user_input_with_images(&text, image_parts(images)),
+                    ),
                     Command::SummarizeBranch(stub) => {
                         let session = Arc::clone(&driver_session);
                         tokio::spawn(

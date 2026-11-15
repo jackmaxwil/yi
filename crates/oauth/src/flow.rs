@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use crate::Result;
 use crate::loopback;
 use crate::pkce;
-use crate::registry::{Login, OauthCode};
+use crate::registry::{Login, OauthCode, PasteLogin};
 use crate::store::{self, Credential, Kind, Store};
 use crate::url::{base64url_decode, https_or_local, urlencode};
 
@@ -113,21 +113,28 @@ fn post_token(
     parse_tokens(&serde_json::from_str(&text).map_err(|error| format!("token response: {error}"))?)
 }
 
-pub(crate) fn open_url(url: &str, no_browser: bool) {
+pub fn desktop_opener() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    }
+}
+
+pub fn open_url(url: &str, no_browser: bool) {
     if no_browser {
         println!("Open this URL to authorize: {url}");
         return;
     }
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
     #[expect(
         clippy::disallowed_methods,
         reason = "launching the user's browser for the interactive login is this fn's job"
     )]
-    if std::process::Command::new(opener).arg(url).spawn().is_err() {
+    if std::process::Command::new(desktop_opener())
+        .arg(url)
+        .spawn()
+        .is_err()
+    {
         println!("Open this URL to authorize: {url}");
     }
 }
@@ -139,6 +146,15 @@ pub fn login_oauth(
 ) -> Result<Credential> {
     let login = match &spec.login {
         Login::Code(login) => login,
+        Login::Paste(login) => {
+            return login_paste(
+                spec,
+                login,
+                options,
+                proxy,
+                &mut std::io::BufReader::new(std::io::stdin()),
+            );
+        }
         Login::Device {
             device_authorization,
         } => {
@@ -154,15 +170,7 @@ pub fn login_oauth(
     let listener = loopback::bind(login.callback_port, login.port_fallback)?;
     let redirect = loopback::redirect_uri(&listener, &login.redirect_host, &login.callback_path)?;
     let pkce = pkce::generate()?;
-    let mut auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}&scope={}",
-        &login.authorize,
-        urlencode(&spec.client_id),
-        urlencode(&redirect),
-        pkce.challenge,
-        pkce.state,
-        urlencode(&spec.scopes),
-    );
+    let mut auth_url = authorize_url(spec, &login.authorize, &redirect, &pkce);
     for (key, value) in &login.extra_authorize {
         auth_url.push_str(&format!("&{key}={}", urlencode(value)));
     }
@@ -171,18 +179,46 @@ pub fn login_oauth(
     if callback.state != pkce.state {
         return Err("state mismatch in OAuth callback (possible CSRF); aborting".into());
     }
-    // Anthropic's token JSON requires `state`. `code=true` may return `code#state`.
-    let (code, hash_state) = callback
-        .code
+    exchange_code(
+        spec,
+        proxy,
+        &callback.code,
+        &callback.state,
+        &redirect,
+        &pkce,
+    )
+}
+
+fn authorize_url(spec: &OauthCode, authorize: &str, redirect: &str, pkce: &pkce::Pkce) -> String {
+    format!(
+        "{authorize}?response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}&scope={}",
+        urlencode(&spec.client_id),
+        urlencode(redirect),
+        pkce.challenge,
+        pkce.state,
+        urlencode(&spec.scopes),
+    )
+}
+
+/// Anthropic's token JSON requires `state`, and its code page shows `code#state`.
+fn exchange_code(
+    spec: &OauthCode,
+    proxy: Option<&ureq::Proxy>,
+    code: &str,
+    state: &str,
+    redirect: &str,
+    pkce: &pkce::Pkce,
+) -> Result<Credential> {
+    let (code, hash_state) = code
         .split_once('#')
-        .map(|(code, state)| (code.to_owned(), Some(state.to_owned())))
-        .unwrap_or_else(|| (callback.code.clone(), None));
-    let state = hash_state.unwrap_or(callback.state.clone());
+        .map(|(code, state)| (code, Some(state)))
+        .unwrap_or((code, None));
+    let state = hash_state.unwrap_or(state);
     let mut fields = vec![
         ("grant_type", "authorization_code"),
-        ("code", code.as_str()),
-        ("state", state.as_str()),
-        ("redirect_uri", redirect.as_str()),
+        ("code", code),
+        ("state", state),
+        ("redirect_uri", redirect),
         ("client_id", spec.client_id.as_str()),
         ("code_verifier", pkce.verifier.as_str()),
     ];
@@ -190,6 +226,35 @@ pub fn login_oauth(
         fields.push(("client_secret", secret));
     }
     post_token(spec, proxy, &fields, false)
+}
+
+/// The provider's own page shows the code; the user pastes `code#state` back here.
+pub fn login_paste(
+    spec: &OauthCode,
+    login: &PasteLogin,
+    options: &LoginOptions,
+    proxy: Option<&ureq::Proxy>,
+    input: &mut impl std::io::BufRead,
+) -> Result<Credential> {
+    let pkce = pkce::generate()?;
+    let mut auth_url = authorize_url(spec, &login.authorize, &login.redirect_uri, &pkce);
+    auth_url.push_str("&code=true");
+    open_url(&auth_url, options.no_browser);
+    eprint!("Paste the code shown after you authorize: ");
+    let mut pasted = String::new();
+    input
+        .read_line(&mut pasted)
+        .map_err(|error| format!("failed to read the pasted code: {error}"))?;
+    let pasted = pasted.trim();
+    if pasted.is_empty() {
+        return Err("no code pasted".into());
+    }
+    if let Some((_, state)) = pasted.split_once('#')
+        && state != pkce.state
+    {
+        return Err("state mismatch in the pasted code (possible CSRF); aborting".into());
+    }
+    exchange_code(spec, proxy, pasted, &pkce.state, &login.redirect_uri, &pkce)
 }
 
 pub fn login_api_key(key: String) -> Result<Credential> {
