@@ -44,9 +44,13 @@ def marked(d):
     return gd
 
 
+def file_sha256(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
 def digest(d, rel):
     path = pathlib.Path(d) / rel
-    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "absent"
+    return file_sha256(path) if path.is_file() else "absent"
 
 
 def state(d):
