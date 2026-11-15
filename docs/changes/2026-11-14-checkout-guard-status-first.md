@@ -1,4 +1,5 @@
 ---
+version: 0.1067.0
 issue: Closes #2179
 cut: none scripts/checkout_guard.py
 ---
