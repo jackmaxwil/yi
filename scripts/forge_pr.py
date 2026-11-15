@@ -309,8 +309,9 @@ def unrecorded_cuts(staged=False, paths=()):
     base = base_commit()[1]
     if base is None:
         return []
-    diff = git("-c", "core.quotePath=false", "diff", *(("--cached",) if staged else ()), "--unified=0", "--no-color", "--no-ext-diff", base, "--", *paths)
-    return check_intent.unrecorded(diff, [f for _, f in pending(base)])
+    lost = check_intent.unrecorded(check_intent.branch_diff(base, staged), [f for _, f in pending(base)])
+    named = [os.path.normpath(path) for path in paths]
+    return [line for line in lost if not named or any(n == "." or (p := line.split(": ", 1)[0]) == n or p.startswith(n + "/") for n in named)]
 
 
 def linux_clippy_command(crates, no_tui=False):
@@ -1248,11 +1249,13 @@ def commit_selfcheck():
     import contextlib, io, os
 
     names = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
-    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths", "unrecorded_cuts")}
+    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths", "unrecorded_cuts", "base_commit", "pending")}
+    real_git = check_intent.git
     with tempfile.TemporaryDirectory() as scratch:
         os.environ.update(names)
         subprocess.run(("git", "-C", scratch, "init", "-q"), check=True)
         globals().update(ROOT=pathlib.Path(scratch), baseline_paths=lambda: [])
+        check_intent.git = lambda *args: subprocess.run(("git", "-C", scratch) + args, capture_output=True, text=True, check=False)
         parse = build_parser().parse_args
         try:
             (pathlib.Path(scratch) / "a.txt").write_text("a\n")
@@ -1293,12 +1296,30 @@ def commit_selfcheck():
             git("reset", "-q", "--", "e.txt", check=True)
             (pathlib.Path(scratch) / "e.txt").unlink()
             globals()["unrecorded_cuts"] = saved["unrecorded_cuts"]
+            moved = [f"a substantive line number {i} that moves to another file" for i in range(6)]
+            (pathlib.Path(scratch) / "m.txt").write_text("\n".join(moved) + "\n")
+            (pathlib.Path(scratch) / "n.txt").write_text("\n".join(line.replace("moves", "is cut") for line in moved) + "\n")
+            git("add", "--", "m.txt", "n.txt", check=True)
+            git("commit", "-q", "-m", "Seed the fork", check=True)
+            fork = ("main", git("rev-parse", "HEAD"))
+            globals().update(base_commit=lambda: fork, pending=lambda base: [])
+            (pathlib.Path(scratch) / "o.txt").write_text("\n".join(moved) + "\n")
+            git("add", "--", "o.txt", check=True)
+            git("commit", "-q", "-m", "Move the lines", check=True)
+            (pathlib.Path(scratch) / "m.txt").write_text("")
+            (pathlib.Path(scratch) / "n.txt").write_text("")
+            git("add", "--", "m.txt", "n.txt", check=True)
+            assert unrecorded_cuts(staged=True, paths=["m.txt"]) == [], "lines another committed file re-adds were refused as a cut"
+            lost = unrecorded_cuts(staged=True, paths=["n.txt"])
+            assert len(lost) == 1 and lost[0].startswith("n.txt: 6 substantive"), ("a named net deletion was not reported", lost)
+            git("reset", "-q", "--hard", check=True)
             plans = pathlib.Path(scratch) / ".yi/plans/demo"
             plans.mkdir(parents=True)
             (plans / "ops.jsonl").write_text("{}\n")
             assert not dirty_tree(), "untracked .yi/plans dirtied the push check"
         finally:
             globals().update(saved)
+            check_intent.git = real_git
             for name in names:
                 del os.environ[name]
 
