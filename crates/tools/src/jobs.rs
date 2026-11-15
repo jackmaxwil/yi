@@ -719,7 +719,7 @@ pub fn in_container(container: &str, cwd: &Path, command: &str) -> (String, Stri
         quote(command)
     );
     let sweep = format!(
-        "[ -d /proc/self ] || exit 1; for p in /proc/[0-9]*; do grep -qsF {mark} $p/environ || continue; kill -9 ${{p#/proc/}} || exit 1; done"
+        "[ -d /proc/self ] || exit 1; for p in /proc/[0-9]*; do grep -qsF {mark} $p/environ || continue; kill -9 ${{p#/proc/}} || test ! -d \"$p\" || exit 1; done"
     );
     (run, format!("docker exec {name} sh -c {}", quote(&sweep)))
 }
@@ -1325,6 +1325,16 @@ mod tests {
     #[test]
     fn a_completed_container_sweep_reports_completed() {
         let fake = r#"docker() { [ "$1" = exec ] || exit 9; shift 2; "$@"; }"#;
+        let (_, sweep) = in_container("c", Path::new("/w"), "true");
+        assert!(matches!(
+            run_sweep_within(&format!("{fake}; {sweep}"), None),
+            SweepOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn a_container_sweep_with_a_gone_process_reports_completed() {
+        let fake = r#"docker() { [ "$1" = exec ] || exit 9; shift 2; sh -c "grep() { return 0; }; kill() { return 1; }; test() { command test \"\$1\" = ! && return 0; command test \"\$@\"; }; $3"; }"#;
         let (_, sweep) = in_container("c", Path::new("/w"), "true");
         assert!(matches!(
             run_sweep_within(&format!("{fake}; {sweep}"), None),
