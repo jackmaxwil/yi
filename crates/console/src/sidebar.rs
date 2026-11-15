@@ -653,7 +653,12 @@ fn child_rows(
             "  ├"
         };
         let name = leaf_name(&child.name);
-        let hue = app.accent_of(child.id.as_str(), name);
+        let parent_seed = app
+            .state
+            .sessions
+            .get(id)
+            .map_or(id.0.as_str(), crate::avatar::hue_seed);
+        let hue = app.accent_of(&id.0, parent_seed);
         let mut spans = vec![
             Span::styled(connector.to_owned(), theme.dim_style()),
             tile_span(app, name_tile(name), hue),
