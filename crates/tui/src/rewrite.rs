@@ -218,25 +218,60 @@ impl Rewrite {
             Phase::Proposed { .. } => note("improved · enter sends · esc restores"),
             Phase::AsTyped { .. } => note("as typed · enter sends"),
             Phase::Draft if width < 52 => note(&format!("improve: {}", label(self.position))),
-            Phase::Draft => {
-                let mut spans = vec![Span::styled(" improve: ", dim)];
-                for (index, slot) in ORDER.iter().enumerate() {
-                    if index > 0 {
-                        spans.push(Span::styled(" · ", dim));
-                    }
-                    spans.push(if *slot == self.position {
-                        Span::styled(
-                            format!("[{}]", label(*slot)),
-                            theme.accent_style().add_modifier(Modifier::BOLD),
-                        )
-                    } else {
-                        Span::styled(label(*slot), dim)
-                    });
-                }
-                spans.push(Span::styled(" ", dim));
-                Line::from(spans)
-            }
+            Phase::Draft => Line::from(
+                (self.draft_cells().into_iter())
+                    .map(|(shown, slot)| match slot {
+                        Some(index) if ORDER.get(index) == Some(&self.position) => {
+                            Span::styled(shown, theme.accent_style().add_modifier(Modifier::BOLD))
+                        }
+                        _ => Span::styled(shown, dim),
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         })
+    }
+
+    /// The idle control as text cells, each slot tagged with its place in [`ORDER`]: what is
+    /// drawn and where a press lands both read this one list.
+    fn draft_cells(&self) -> Vec<(String, Option<usize>)> {
+        let mut cells = vec![(" improve: ".to_owned(), None)];
+        for (index, slot) in ORDER.iter().enumerate() {
+            if index > 0 {
+                cells.push((" · ".to_owned(), None));
+            }
+            let shown = match *slot == self.position {
+                true => format!("[{}]", label(*slot)),
+                false => label(*slot).to_owned(),
+            };
+            cells.push((shown, Some(index)));
+        }
+        cells.push((" ".to_owned(), None));
+        cells
+    }
+
+    /// Where each position sits in the border title: column offset, width and position. Only
+    /// the wide idle control has them; the narrow form and the working notes are not pickable.
+    pub(crate) fn slots(&self, width: usize) -> Vec<(u16, u16, Option<RewriteLength>)> {
+        if !self.available || width < 52 || !matches!(self.phase, Phase::Draft) {
+            return Vec::new();
+        }
+        let mut at = 0_u16;
+        let mut found = Vec::new();
+        for (shown, slot) in self.draft_cells() {
+            let wide = u16::try_from(shown.chars().count()).unwrap_or(0);
+            if let Some(position) = slot.and_then(|index| ORDER.get(index)) {
+                found.push((at, wide, *position));
+            }
+            at = at.saturating_add(wide);
+        }
+        found
+    }
+
+    /// A press on a position of the idle control; ignored while a rewrite is on its way.
+    pub(crate) fn pick(&mut self, slot: Option<RewriteLength>) {
+        if self.available && !matches!(self.phase, Phase::Rewriting { .. }) {
+            self.position = slot;
+        }
     }
 }
 
@@ -244,6 +279,8 @@ impl Rewrite {
 mod tests {
     use super::{Effect, Event, Rewrite};
     use yi_types::config::RewriteLength;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn text(line: &ratatui::text::Line<'_>) -> String {
         line.spans
@@ -389,5 +426,50 @@ mod tests {
             wide,
             "an emptied box is a new draft"
         );
+    }
+
+    #[test]
+    fn each_position_rectangle_covers_its_label_in_the_painted_border() -> TestResult {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::style::Style;
+        let theme = crate::colors::Theme::new(crate::colors::ColorTier::Ansi16, true);
+        let mut composer = crate::composer::Composer::default();
+        composer.rewrite = Rewrite::ready(RewriteLength::Medium);
+        let foot = composer.rewrite.marker(&theme, 100, "");
+        composer.set_foot(foot);
+        composer.set_frame(Style::default(), Style::default(), Style::default(), None);
+        let height = composer.layout(100, 30);
+        let rect = Rect::new(0, 0, 100, height);
+        let mut buffer = Buffer::empty(rect);
+        composer.render(rect, &mut buffer);
+
+        let (left, row) = composer.foot_at().ok_or("the paint left no foot")?;
+        let under = |at: u16, wide: u16| -> String {
+            (0..wide)
+                .filter_map(|dx| buffer.cell((left + at + dx, row)))
+                .map(|cell| cell.symbol())
+                .collect()
+        };
+        let slots = composer.rewrite.slots(100);
+        let seen: Vec<String> = slots
+            .iter()
+            .map(|(at, wide, _)| under(*at, *wide))
+            .collect();
+        assert_eq!(seen, ["off", "short", "[medium]", "long"]);
+        let picks: Vec<_> = slots.iter().map(|slot| slot.2).collect();
+        assert_eq!(picks[2], Some(RewriteLength::Medium));
+
+        composer.rewrite.pick(Some(RewriteLength::Long));
+        let moved = composer.rewrite.slots(100);
+        assert_eq!(moved.len(), 4, "a pick keeps every position pickable");
+        let narrow = composer.rewrite.slots(51);
+        assert!(narrow.is_empty(), "the narrow form is not pickable");
+        composer.rewrite.step(Event::Enter, "typed", true);
+        assert!(
+            composer.rewrite.slots(100).is_empty(),
+            "nor is a working one"
+        );
+        Ok(())
     }
 }

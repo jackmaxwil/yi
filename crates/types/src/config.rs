@@ -92,7 +92,7 @@ pub struct RewriteConfig {
 }
 
 /// How much a rewrite may add to the draft and how long it may run.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RewriteLength {
     Short,

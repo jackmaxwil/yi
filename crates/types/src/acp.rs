@@ -375,6 +375,9 @@ pub struct AcpYiMeta {
     /// What the person typed in the entry a `before` fork left out, to ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefill: Option<String>,
+    /// Present when the session has a rewriter model: the length its composer control starts at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewriter: Option<crate::config::RewriteLength>,
 }
 
 /// `_yi/fork` params: a new session branched from `entryId`, leaving it out (`before`) or

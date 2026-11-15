@@ -22,6 +22,7 @@ pub mod focus;
 pub mod frame;
 pub mod highlight;
 pub mod history;
+pub mod hits;
 pub mod hud;
 pub mod input;
 pub mod keymap;

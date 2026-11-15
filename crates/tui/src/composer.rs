@@ -32,6 +32,7 @@ pub struct Composer {
     recalled: bool,
     group: Option<Group>,
     foot: Option<ratatui::text::Line<'static>>,
+    foot_at: std::cell::Cell<Option<(u16, u16)>>,
     pub(crate) rewrite: crate::rewrite::Rewrite,
 }
 
@@ -63,6 +64,7 @@ impl Default for Composer {
             recalled: false,
             group: None,
             foot: None,
+            foot_at: std::cell::Cell::new(None),
             rewrite: crate::rewrite::Rewrite::default(),
         }
     }
@@ -585,6 +587,10 @@ impl Composer {
         self.textarea.delete_char();
     }
 
+    pub(crate) fn foot_at(&self) -> Option<(u16, u16)> {
+        self.foot_at.get()
+    }
+
     pub(crate) fn has_attachments(&self) -> bool {
         !self.pastes.is_empty() || !self.images.is_empty()
     }
@@ -673,6 +679,11 @@ impl Composer {
 
     /// Paints the wrapped text with its cursor and selection; [`Composer::layout`] runs first.
     pub fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let foot = (
+            area.left().saturating_add(1),
+            area.bottom().saturating_sub(1),
+        );
+        self.foot_at.set(Some(foot));
         let inner = match self.textarea.block() {
             Some(block) => {
                 let inner = block.inner(area);

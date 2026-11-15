@@ -9,6 +9,7 @@ mod forward;
 pub mod replay;
 mod resident;
 pub mod review;
+mod rewrite;
 pub(crate) mod swap;
 pub mod update;
 
@@ -325,6 +326,9 @@ impl AcpState {
             .and_then(|store| session_name(&store));
         let mut meta = AcpMeta::default();
         meta.yi.name = name;
+        meta.yi.rewriter = handle
+            .and_then(|handle| handle.session.rewriter())
+            .map(|rewriter| rewriter.start());
         AcpSessionResult {
             session_id: Some(session_id.to_owned()),
             config_options: options,
@@ -378,6 +382,10 @@ impl AcpState {
                 (
                     "contextWindow",
                     Value::from(handle.session.model().context_window),
+                ),
+                (
+                    "rewriter",
+                    json!(handle.session.rewriter().map(|rewriter| rewriter.start())),
                 ),
             ],
         );
@@ -930,6 +938,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
                         "session/prompt" => state.prompt(id.clone(), &params),
                         "_yi/prepare_replace" => Some(Ok(state.prepare_replace().await)),
                         "_yi/restore" => Some(Ok(state.restore(&params))),
+                        "_yi/rewrite" => state.rewrite(id.clone(), &params),
                         _ => Some(state.handle(&incoming.method, &params)),
                     };
                     if let Some(outcome) = outcome {

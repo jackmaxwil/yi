@@ -17,7 +17,7 @@ Config in `~/.yi/config.json`; all of it is optional and unset means the feature
                  "thinking": "<level>" }              unset, low, clamped to the model
 
 The composer's bottom border carries the control: `improve: off · short · [medium] · long`.
-`alt-i` (keymap action `cycle-rewrite`) steps it. At any position but off, Enter sends the draft
+`alt-i` (keymap action `cycle-rewrite`) steps it, and in the console a click on a position picks it. At any position but off, Enter sends the draft
 to the rewriter, the box then holds the rewrite over the typed words, a second Enter sends it and
 Esc puts the typed words back.
 
