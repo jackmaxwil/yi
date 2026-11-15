@@ -372,6 +372,11 @@ pub fn name_accent(name: &str) -> Color {
     accent(accent_index(name))
 }
 
+/// A plan child is named `<plan>/<todo>`: its own name is the part after the last slash.
+pub fn leaf_name(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
+}
+
 /// Two-letter tile: the first two alphanumerics, uppercased; `··` for nothing to say.
 pub fn name_tile(name: &str) -> String {
     let letters: String = name
