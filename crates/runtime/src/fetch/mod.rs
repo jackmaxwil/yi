@@ -1257,6 +1257,7 @@ mod tests {
         read_via(&map, "main").await?;
         Ok(())
     }
+
     #[test]
     fn a_retired_session_still_held_leaves_the_family_count() -> TestResult {
         let provider = Arc::new(crate::provider::ProviderStream::new(None));
