@@ -160,11 +160,11 @@ impl KernelServiceMap {
         Arc::new(Self::default())
     }
 
-    /// Every session still held, by its kernel or else by itself: the family cap counts these.
+    /// Incident: a reaped child something still referenced kept its seat at the family cap.
     pub fn live(&self) -> usize {
         let kernels = {
             let mut kernels = self.lock();
-            kernels.retain(|_, service| service.strong_count() > 0);
+            kernels.retain(|_, service| service.upgrade().is_some_and(|k| !k.is_disposed()));
             kernels.len()
         };
         kernels.saturating_add(self.kernelless().len())
@@ -183,7 +183,7 @@ impl KernelServiceMap {
             .kernelless
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        held.retain(|session| session.strong_count() > 0);
+        held.retain(|session| session.upgrade().is_some_and(|s| !s.is_retired()));
         held
     }
 
@@ -1255,6 +1255,26 @@ mod tests {
             "a finished session leaves no entry behind"
         );
         read_via(&map, "main").await?;
+        Ok(())
+    }
+    #[test]
+    fn a_retired_session_still_held_leaves_the_family_count() -> TestResult {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        let session = Arc::new(crate::session::AgentSession::new(
+            crate::session::SessionConfig {
+                system_prompt: String::new(),
+                model: yi_ai::faux::faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            provider,
+        ));
+        let map = KernelServiceMap::new();
+        map.enroll(&session);
+        assert_eq!(map.live(), 1);
+        session.retire();
+        assert_eq!(map.live(), 0);
+        drop(session);
         Ok(())
     }
 }
