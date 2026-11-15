@@ -662,6 +662,25 @@ fn the_command_list_leaves_the_box_on_a_short_screen() -> TestResult {
     Ok(())
 }
 
+/// Dies with a card row reserved the screen does not have: on a kitty screen where the orb and
+/// the box already fill every row, the list's notice pushed the floor past the screen and the
+/// box lost its text row.
+#[test]
+fn the_command_list_yields_when_the_orb_and_box_fill_the_screen() -> TestResult {
+    let mut app = app();
+    app.set_width(60);
+    app.set_rows(8);
+    app.set_kitty(true);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/");
+    let rows = common::rows_sized(&mut app, 60, 8)?;
+    assert!(
+        rows.iter().any(|row| row.starts_with(" │/")),
+        "the box with the typed `/` is on screen: {rows:#?}"
+    );
+    Ok(())
+}
+
 /// Dies with the console's pane painter handing the layout an unbounded height: the list never
 /// trimmed there and the box vanished on a short pane.
 #[test]

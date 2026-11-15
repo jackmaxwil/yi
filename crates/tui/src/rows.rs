@@ -10,20 +10,42 @@ pub(crate) fn strip_hashline(line: &str) -> &str {
 /// `None` for a line with no number, which is how the hashline header and every
 /// non-file tool fall through to a plain row.
 pub(crate) fn numbered(line: &str) -> Option<(&str, &str)> {
-    let (number, text) = line.split_once(':')?;
+    numbered_by(line, ':')
+}
+
+/// A grep context row, `19-text`: the same grammar as a hit with the other separator.
+pub(crate) fn context_numbered(line: &str) -> Option<(&str, &str)> {
+    numbered_by(line, '-')
+}
+
+fn numbered_by(line: &str, sep: char) -> Option<(&str, &str)> {
+    let (number, text) = line.split_once(sep)?;
     (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some((number, text))
 }
 
 /// Split so consecutive hits in one file print the path once, not once per row.
 pub(crate) fn grep_row(line: &str) -> Option<(&str, &str, &str)> {
-    let (colon, _) = line.match_indices(':').find(|(colon, _)| {
-        let rest = line.get(colon.saturating_add(1)..).unwrap_or_default();
+    pathed_row(line, ':')
+}
+
+/// The context-row twin of [`grep_row`], `path-19-text`, which grep prints once it stops
+/// tagging files; a row that is tagless context already is not read as a path.
+pub(crate) fn grep_context_row(line: &str) -> Option<(&str, &str, &str)> {
+    if context_numbered(line).is_some() {
+        return None;
+    }
+    pathed_row(line, '-')
+}
+
+fn pathed_row(line: &str, sep: char) -> Option<(&str, &str, &str)> {
+    let (at, _) = line.match_indices(sep).find(|(at, _)| {
+        let rest = line.get(at.saturating_add(1)..).unwrap_or_default();
         let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-        digits > 0 && rest.get(digits..).is_some_and(|tail| tail.starts_with(':'))
+        digits > 0 && rest.get(digits..).is_some_and(|tail| tail.starts_with(sep))
     })?;
-    let path = line.get(..colon)?;
-    let rest = line.get(colon.saturating_add(1)..)?;
-    let (number, text) = rest.split_once(':')?;
+    let path = line.get(..at)?;
+    let rest = line.get(at.saturating_add(1)..)?;
+    let (number, text) = rest.split_once(sep)?;
     Some((path, number, text))
 }
 

@@ -751,8 +751,6 @@ impl App {
                 attribution == yi_types::message::Attribution::User,
             )),
             AgentEvent::MessageEnd { message } => self.reduce_child_end(&message),
-            AgentEvent::ToolExecutionEnd { tool_name, .. }
-                if tool_name == crate::transcript::ANSWER_TOOL => {}
             AgentEvent::ToolExecutionEnd {
                 tool_name,
                 result,

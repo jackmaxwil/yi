@@ -210,11 +210,31 @@ fn search_context_rows_keep_the_separator_that_marks_the_hit() {
         ],
     );
     assert!(
-        spans.iter().any(|(content, _)| content == "  19- "),
+        spans.iter().any(|(content, _)| content == "  19-"),
         "{spans:?}"
     );
     assert!(
         spans.iter().any(|(content, _)| content == "  20 "),
+        "{spans:?}"
+    );
+    assert_eq!("  19-".chars().count(), "  20 ".chars().count());
+}
+
+#[test]
+fn search_rows_past_the_tag_cap_are_coloured_with_their_context() {
+    let spans = done(
+        "grep",
+        "fn ",
+        &[
+            "src/paint.rs-19-impl Palette {",
+            "src/paint.rs:20:    pub fn new() -> Self {",
+        ],
+    );
+    assert!(pathed(&spans, "src/paint.rs"), "{spans:?}");
+    assert!(carries(&spans, "impl", Token::Keyword), "{spans:?}");
+    assert!(carries(&spans, "pub", Token::Keyword), "{spans:?}");
+    assert!(
+        spans.iter().any(|(content, _)| content == "  19-"),
         "{spans:?}"
     );
 }
