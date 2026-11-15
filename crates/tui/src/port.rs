@@ -439,8 +439,8 @@ impl App {
                     let typed = attribution.reads_as_typed(*timestamp);
                     if typed {
                         self.open_user_turn();
-                        self.answer = crate::app::AnswerTrack::default();
                     }
+                    self.answer = crate::app::AnswerTrack::default();
                     self.commit_cell(&user_cell(user_text(content), typed));
                 }
                 AgentMessage::Custom {
@@ -486,8 +486,11 @@ impl App {
                     }
                     self.answer.close_message(message);
                 }
-                AgentMessage::ToolResult { tool_name, .. }
-                    if tool_name == crate::transcript::ANSWER_TOOL => {}
+                AgentMessage::ToolResult {
+                    tool_name,
+                    is_error,
+                    ..
+                } if tool_name == crate::transcript::ANSWER_TOOL => self.answer.refused(*is_error),
                 AgentMessage::ToolResult {
                     tool_call_id,
                     tool_name,

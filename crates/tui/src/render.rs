@@ -389,9 +389,11 @@ pub fn layout_chat(
         // The pane painter passes an unbounded `total` so the live tail is not clipped; the
         // screen the list must fit is `app.rows`.
         let screen = u16::try_from(app.rows).unwrap_or(u16::MAX);
-        let room = usize::from(screen.saturating_sub(fixed).saturating_sub(composer_height)).max(1);
+        let room = usize::from(screen.saturating_sub(fixed).saturating_sub(composer_height));
         let existed = lines.len();
-        if existed > room {
+        if room == 0 {
+            lines.clear();
+        } else if existed > room {
             let keep = room - 1;
             let from = (app.composer.assist_selected_line() + 1)
                 .saturating_sub(keep)

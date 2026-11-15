@@ -641,6 +641,71 @@ fn replayed_messages_stay_apart(pane: bool) {
     );
 }
 
+/// Dies when a host-attributed turn inherits the last turn's withheld draft: the appended answer
+/// of a mail-started turn removed a draft that belonged to the turn before it.
+#[test]
+fn a_host_turn_never_takes_back_the_previous_turns_draft() {
+    use yi_types::entry::Entry;
+    use yi_types::message::{Attribution, HostSource, UserContent};
+    let entry = |seq: u64, message: AgentMessage| Entry::Message {
+        id: format!("e{seq}"),
+        message,
+        terminate: None,
+        parent_id: None,
+        seq,
+        timestamp: 0,
+    };
+    let mut appended = assistant(vec![text("Later answer.")], StopReason::Stop);
+    if let AgentMessage::Assistant { usage, .. } = &mut appended {
+        *usage = Usage::unknown();
+    }
+    let mut app = app(40);
+    app.replay_entries(&[
+        entry(
+            1,
+            AgentMessage::User {
+                content: UserContent::Text("go".to_owned()),
+                timestamp: 1,
+                attribution: Attribution::User,
+            },
+        ),
+        entry(
+            2,
+            assistant(
+                vec![text("Draft one."), answer_call(Some("Body one."))],
+                StopReason::ToolUse,
+            ),
+        ),
+        entry(
+            3,
+            AgentMessage::ToolResult {
+                tool_call_id: "call_answer".to_owned(),
+                tool_name: "answer".to_owned(),
+                content: vec![text("held")],
+                details: None,
+                usage: None,
+                added_tool_names: None,
+                is_error: false,
+                timestamp: 1,
+            },
+        ),
+        entry(
+            4,
+            AgentMessage::User {
+                content: UserContent::Text("mail arrived".to_owned()),
+                timestamp: 2,
+                attribution: Attribution::Host(HostSource::Mail),
+            },
+        ),
+        entry(5, appended),
+    ]);
+    let rows = flat(&app.reflowed(200));
+    assert!(
+        rows.iter().any(|row| row.contains("Draft one.")),
+        "{rows:?}"
+    );
+}
+
 #[test]
 fn a_forced_cut_never_opens_a_slice_on_a_block_marker() {
     let cases = [
@@ -1474,6 +1539,23 @@ fn a_held_plain_reply_resubmitted_by_a_summary_shows_once() {
     app.reduce_agent(AgentEvent::AgentStart);
     app.reduce_agent(AgentEvent::TurnStart);
     stream(&mut app, BODY);
+    answer_alone(&mut app, answer_call(None));
+    stream(&mut app, BODY);
+    assert_eq!(history_rows(&app, "Third."), 1);
+}
+
+/// A summary-only answer refused with a held draft, then resubmitted by summary alone after an
+/// edit, appends the patched draft: the streamed prose is the copy that leaves.
+#[test]
+fn a_summary_only_answer_resubmitting_a_held_draft_shows_once() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::AgentStart);
+    prose_then_answer(
+        &mut app,
+        answer_call(None),
+        StopReason::ToolUse,
+        Some(false),
+    );
     answer_alone(&mut app, answer_call(None));
     stream(&mut app, BODY);
     assert_eq!(history_rows(&app, "Third."), 1);
