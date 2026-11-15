@@ -111,7 +111,12 @@ pub fn sample(lanes_volume: &Path) -> HostSample {
     }
 }
 
+pub const SUSPEND_ENV: &str = "YI_ADMISSION_SUSPENDED";
+
 pub fn check(lanes_volume: &Path, live: usize) -> Result<(), Refusal> {
+    if std::env::var_os(SUSPEND_ENV).is_some() {
+        return Ok(());
+    }
     match admit(&sample(lanes_volume), live) {
         Admission::Admit => Ok(()),
         Admission::Refuse(refusal) => Err(refusal),
