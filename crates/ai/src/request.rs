@@ -409,14 +409,34 @@ const CACHE_FIELDS: [&str; 6] = [
 ];
 
 fn cache_field(text: &str) -> Option<&'static str> {
-    let error = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    let error = error.get("error")?;
-    let named = |key: &str| error.get(key).and_then(serde_json::Value::as_str);
-    let message = named("message").unwrap_or_default();
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(text) else {
+        return CACHE_FIELDS
+            .into_iter()
+            .find(|field| prose_names(text, field));
+    };
+    let error = body.get("error").unwrap_or(&body);
+    let identifiers = [
+        string_at(error.get("param")),
+        string_at(error.get("code")),
+        string_at(body.get("param")),
+        string_at(body.get("code")),
+    ];
+    let message = error
+        .as_str()
+        .or_else(|| string_at(error.get("message")))
+        .or_else(|| string_at(body.get("message")));
     CACHE_FIELDS.into_iter().find(|field| {
-        [named("param"), named("code")].contains(&Some(field))
-            || (*field != "cache" && names_token(message, field))
+        identifiers.contains(&Some(*field))
+            || message.is_some_and(|message| prose_names(message, field))
     })
+}
+
+fn prose_names(text: &str, field: &str) -> bool {
+    field != "cache" && names_token(text, field)
+}
+
+fn string_at(value: Option<&serde_json::Value>) -> Option<&str> {
+    value.and_then(serde_json::Value::as_str)
 }
 
 fn names_token(text: &str, token: &str) -> bool {

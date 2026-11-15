@@ -15,11 +15,17 @@ use crate::loopback_server::serve;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn refused(message: &str) -> String {
-    let body = json!({"error": {"message": message}}).to_string();
+fn refused_as(content_type: &str, body: &str) -> String {
     format!(
-        "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+        "HTTP/1.1 400 Bad Request\r\ncontent-type: {content_type}\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
         body.len()
+    )
+}
+
+fn refused(message: &str) -> String {
+    refused_as(
+        "application/json",
+        &json!({"error": {"message": message}}).to_string(),
     )
 }
 
@@ -187,6 +193,56 @@ fn a_400_that_names_no_cache_field_is_not_resent() -> TestResult {
     assert!(failed.starts_with("HTTP 400"), "{failed}");
     assert_eq!(stripped.take(), None);
     Ok(())
+}
+
+fn resends_without_cache_field(refusal: String) -> TestResult {
+    let (port, count, server) = serve(vec![refusal, answer()])?;
+    let stripped = Stripped::default();
+    let quiet = |_| {};
+    let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
+    let reply = yi_ai::request::send_stripping_cache(
+        &url(port),
+        &[],
+        &marked_body(),
+        None,
+        &retry,
+        &stripped,
+    )?;
+    let _ = reply.into_string();
+    let requests = server.join().map_err(|_| "server thread panicked")?;
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "the refusal was not resent"
+    );
+    assert!(
+        !requests[1].contains("cache_control"),
+        "the resend kept the field the route refused: {}",
+        requests[1]
+    );
+    assert_eq!(stripped.take(), Some("cache_control"));
+    Ok(())
+}
+
+#[test]
+fn a_400_with_a_string_error_naming_a_cache_field_is_resent() -> TestResult {
+    resends_without_cache_field(refused_as(
+        "application/json",
+        &json!({"error": "cache_control is not supported"}).to_string(),
+    ))
+}
+
+#[test]
+fn a_400_with_a_top_level_message_naming_a_cache_field_is_resent() -> TestResult {
+    resends_without_cache_field(refused_as(
+        "application/json",
+        &json!({"message": "cache_control is not supported"}).to_string(),
+    ))
+}
+
+#[test]
+fn a_plain_text_400_naming_a_cache_field_is_resent() -> TestResult {
+    resends_without_cache_field(refused_as("text/plain", "cache_control is not supported"))
 }
 
 fn context() -> LlmContext {
