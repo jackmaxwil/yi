@@ -470,6 +470,10 @@ async fn stream_assistant_response<S: StreamFn>(
         *timestamp = stream.now_ms().unwrap_or(*timestamp);
         let mut details = Map::new();
         details.insert("stable".to_owned(), stable_key.into());
+        details.insert(
+            "route".to_owned(),
+            format!("{}/{}", model.provider, model.id).into(),
+        );
         // A TTL runs from the request's start; the record's timestamp is its end (#873).
         let elapsed = std::time::Instant::now().saturating_duration_since(requested);
         let elapsed = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);

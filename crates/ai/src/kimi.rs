@@ -5,6 +5,7 @@ use serde_json::{Map, Value, json};
 use yi_types::config::{DiscoveredCustomLimit, reasoning_kind_thinks};
 use yi_types::model::{Effort, Model, ModelCost};
 
+use crate::catalog::Catalog;
 use crate::request::{ProxyConfig, get_json};
 
 pub fn api_base() -> Option<String> {
@@ -97,7 +98,7 @@ fn model_from(id: &str, entry: &Map<String, Value>, base: &str) -> Result<Model,
 
 /// `GET /models` as the on-disk catalog and the count that loads; an entry that does not map
 /// is kept under `rejected` as its reason.
-pub fn catalog(list: &Value, base: &str) -> Result<(Value, usize), String> {
+pub fn catalog(list: &Value, base: &str, known: &Catalog) -> Result<(Value, usize), String> {
     let rows = list
         .get("data")
         .and_then(Value::as_array)
@@ -113,7 +114,10 @@ pub fn catalog(list: &Value, base: &str) -> Result<(Value, usize), String> {
         ))
     }) {
         match model_from(id, entry, base) {
-            Ok(model) => {
+            Ok(mut model) => {
+                model.read_timeout_secs = known
+                    .get("kimi", id)
+                    .and_then(|known| known.read_timeout_secs);
                 let value = serde_json::to_value(&model).map_err(|error| error.to_string())?;
                 if let Value::Object(group) = by_api.entry(model.api).or_insert_with(|| json!({})) {
                     group.insert(id.to_owned(), value);
@@ -151,7 +155,7 @@ pub fn refresh(
         proxy,
         crate::refresh::CAP_BYTES,
     )?;
-    let (written, loaded) = catalog(&list, &base)?;
+    let (written, loaded) = catalog(&list, &base, &Catalog::bundled().with_cache(dir))?;
     crate::refresh::write_atomic(&crate::refresh::cache_path(dir, "kimi"), &written)?;
     Ok(loaded)
 }

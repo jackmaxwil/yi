@@ -409,7 +409,25 @@ const CACHE_FIELDS: [&str; 6] = [
 ];
 
 fn cache_field(text: &str) -> Option<&'static str> {
-    CACHE_FIELDS.into_iter().find(|field| text.contains(field))
+    let error = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let error = error.get("error")?;
+    let named = |key: &str| error.get(key).and_then(serde_json::Value::as_str);
+    let message = named("message").unwrap_or_default();
+    CACHE_FIELDS.into_iter().find(|field| {
+        [named("param"), named("code")].contains(&Some(field))
+            || (*field != "cache" && names_token(message, field))
+    })
+}
+
+fn names_token(text: &str, token: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(token).any(|(at, _)| {
+        let before = text.get(..at).and_then(|head| head.chars().next_back());
+        let after = text
+            .get(at.saturating_add(token.len())..)
+            .and_then(|tail| tail.chars().next());
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
 }
 
 pub fn send_with_retry(
