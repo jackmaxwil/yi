@@ -232,6 +232,15 @@ pub fn judge_command_paths<T>(
                 if let Some(hit) = judge(&paths) {
                     return Ok(Some(hit));
                 }
+                if head != spelled {
+                    let literal: Vec<PathBuf> = dirs
+                        .iter()
+                        .map(|dir| resolve_target(spelled, dir))
+                        .collect();
+                    if let Some(hit) = judge(&literal) {
+                        return Ok(Some(hit));
+                    }
+                }
                 for path in paths.into_iter().filter(|_| cd) {
                     if !dirs.contains(&path) {
                         dirs.push(path);
@@ -920,9 +929,9 @@ fn wildcard(glob: &[char], name: &[char]) -> bool {
 }
 
 /// Wrappers that run another command: argv0 alone lets `nice rm -rf .git` past the belt (D205).
-const WRAPPERS: [&str; 14] = [
-    "builtin", "command", "doas", "env", "exec", "ionice", "nice", "nohup", "stdbuf", "strace",
-    "sudo", "time", "timeout", "xargs",
+const WRAPPERS: [&str; 15] = [
+    "builtin", "command", "doas", "env", "eval", "exec", "ionice", "nice", "nohup", "stdbuf",
+    "strace", "sudo", "time", "timeout", "xargs",
 ];
 
 pub(crate) const SEPARATORS: [char; 7] = [';', '&', '|', '\n', '(', ')', '`'];
