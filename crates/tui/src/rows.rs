@@ -25,13 +25,16 @@ fn numbered_by(line: &str, sep: char) -> Option<(&str, &str)> {
 
 /// Split so consecutive hits in one file print the path once, not once per row.
 pub(crate) fn grep_row(line: &str) -> Option<(&str, &str, &str)> {
+    if numbered(line).is_some() {
+        return None;
+    }
     pathed_row(line, ':')
 }
 
 /// The context-row twin of [`grep_row`], `path-19-text`, which grep prints once it stops
 /// tagging files; a row that is tagless context already is not read as a path.
 pub(crate) fn grep_context_row(line: &str) -> Option<(&str, &str, &str)> {
-    if context_numbered(line).is_some() {
+    if numbered(line).is_some() || context_numbered(line).is_some() {
         return None;
     }
     pathed_row(line, '-')
