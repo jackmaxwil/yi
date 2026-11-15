@@ -45,6 +45,7 @@ from check_changes import pending  # noqa: E402
 BASELINES = ROOT / "scripts/guardrails/baselines"
 SUBJECT_LIMIT = 72
 LINUX_TARGET = "x86_64-unknown-linux-gnu"
+PLATFORM = sys.platform
 POLL = 20
 WEB = "https://git.example.invalid"
 HOST = WEB.removeprefix("https://")
@@ -235,6 +236,20 @@ def cmd_ratchet(args):
     return 0
 
 
+def read_body(arg):
+    path = pathlib.Path(arg)
+    try:
+        return path.read_text().strip() if path.is_file() else arg.strip()
+    except OSError:
+        return arg.strip()
+
+
+def dirty_tree():
+    return [line for line in git("status", "--porcelain", "--untracked-files=all").splitlines()
+            if not line[3:].startswith(".yi/plans/")]
+
+
+
 def cmd_commit(args):
     from check_commit_style import subject_errors
 
@@ -255,7 +270,7 @@ def cmd_commit(args):
         return 1 if left else 0
     message = ["-m", args.subject.strip()]
     if args.body:
-        message += ["-m", pathlib.Path(args.body).read_text().strip()]
+        message += ["-m", read_body(args.body)]
     out = subprocess.run(("git", "-C", str(ROOT), "commit", "-q", *message, *(("--", *args.paths) if args.paths else ())), check=False)
     if out.returncode != 0:
         return out.returncode
@@ -266,6 +281,28 @@ def cmd_commit(args):
 def changed_crates(text):
     paths = (line.split("/") for line in text.splitlines())
     return sorted({f"yi-{parts[1]}" for parts in paths if len(parts) > 2 and parts[0] == "crates" and parts[1]})
+
+
+def zig_env():
+    import shutil
+
+    if PLATFORM == "linux" or not shutil.which("zig"):
+        return {}
+    scripts = ROOT / "scripts"
+    triple = LINUX_TARGET.replace("-", "_")
+    return {
+        "ZIG_TARGET": LINUX_TARGET.replace("-unknown", ""),
+        f"CC_{triple}": str(scripts / "zigcc.sh"),
+        f"AR_{triple}": str(scripts / "zigar.sh"),
+        f"CARGO_TARGET_{triple.upper()}_LINKER": str(scripts / "zigcc.sh"),
+    }
+
+
+def unrecorded_cuts():
+    base = base_commit()[1]
+    if base is None:
+        return []
+    return check_intent.unrecorded(check_intent.branch_diff(base), [f for _, f in pending(base)])
 
 
 def linux_clippy_command(crates, no_tui=False):
@@ -302,9 +339,12 @@ def linux_clippy():
             return 0
         crates = changed_crates(diff)
         print(f"linux-clippy: {', '.join(crates) if crates else 'workspace'}")
+        env = {**zig_env(), **os.environ}
         for command in (linux_clippy_command(crates), linux_clippy_command(crates, no_tui=True)):
-            result = subprocess.run(command, cwd=ROOT, check=False)
+            result = subprocess.run(command, cwd=ROOT, env=env, check=False)
             if result.returncode:
+                if PLATFORM != "linux" and not zig_env():
+                    print("hint: if the failure above was a C build (a missing sysroot or assert.h), install zig (brew install zig) and rerun")
                 return result.returncode
         return 0
     except OSError as error:
@@ -314,8 +354,11 @@ def linux_clippy():
 
 def cmd_push(args):
     name = branch()
-    if git("status", "--porcelain"):
+    if dirty_tree():
         print("push: the tree is dirty — just commit first")
+        return 1
+    if lost := unrecorded_cuts():
+        print("\n".join(lost) + "\npush: refused — say what this branch deletes on purpose, so no later branch puts it back")
         return 1
     if linux_clippy():
         return 1
@@ -377,7 +420,7 @@ def dedupe_counted(body, counted):
 
 
 def compose_body(args):
-    body = pathlib.Path(args.body).read_text().strip() if args.body else ""
+    body = read_body(args.body) if args.body else ""
     cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
     if cites:
         body = ", ".join(cites) + ("\n\n" + body if body else "")
@@ -399,8 +442,7 @@ def cmd_open(args):
             print(err)
         print("open: refused — the title job would fail; fix the above first")
         return 1
-    base = base_commit()[1]
-    lost = check_intent.unrecorded(check_intent.branch_diff(base), [f for _, f in pending(base)]) if base else []
+    lost = unrecorded_cuts()
     if lost:
         print("\n".join(lost) + "\nopen: refused — say what this branch deletes on purpose, so no later branch puts it back")
         return 1
@@ -438,7 +480,7 @@ def cmd_edit(args):
             return 1
         payload["title"] = args.title
     if args.body:
-        body = pathlib.Path(args.body).read_text().strip()
+        body = read_body(args.body)
         errs = check_problems(payload.get("title", pull(args.number)["title"]), body)
         if errs:
             for err in errs:
@@ -1091,12 +1133,13 @@ def land_guard_selfcheck():
 def linux_clippy_selfcheck():
     import contextlib, io
 
-    saved = {name: globals()[name] for name in ("base_commit", "branch", "git")}
+    saved = {name: globals()[name] for name in ("base_commit", "branch", "git", "unrecorded_cuts")}
     real_run = subprocess.run
 
-    def drive(diff, installed=LINUX_TARGET, add=0, cargo=0, absent="", base=("main", "base"), push=False):
+    def drive(diff, installed=LINUX_TARGET, add=0, cargo=0, absent="", base=("main", "base"), push=False, cuts=()):
         calls = []
         globals()["base_commit"] = lambda: base
+        globals()["unrecorded_cuts"] = lambda: list(cuts)
 
         def fake_git(*args, check=False):
             if args[0] == "merge-base":
@@ -1115,6 +1158,7 @@ def linux_clippy_selfcheck():
             if command[:3] == ("rustup", "target", "add"):
                 return subprocess.CompletedProcess(command, add, "", "error: toolchain download failed\n" if add else "")
             assert command[0] == "cargo", command
+            drive.env = kwargs.get("env")
             if absent == "cargo":
                 raise FileNotFoundError("cargo")
             return subprocess.CompletedProcess(command, cargo, "", "")
@@ -1155,6 +1199,40 @@ def linux_clippy_selfcheck():
         code, calls, said = drive("crates/cli/src/main.rs\n", base=(None, None))
         assert code == 1 and "no origin/main or main" in said, (code, said)
         assert not [call for call in calls if call[0] == "cargo"], calls
+        lost = ["crates/x.rs: 6 substantive line(s) deleted on net; record why with `cut: crates/x.rs | <line> | <why>`"]
+        code, calls, said = drive("crates/cli/src/main.rs\n", push=True, cuts=lost)
+        assert code == 1 and "push: refused" in said and "cut: crates/x.rs" in said, (code, said)
+        assert not [call for call in calls if call[0] == "cargo"], "a push refused for its cuts must not run clippy first"
+        wanted = {"ZIG_TARGET", "CC_x86_64_unknown_linux_gnu", "AR_x86_64_unknown_linux_gnu", "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"}
+
+        def driven(zig, cargo=0, own=None):
+            with tempfile.TemporaryDirectory() as bin_dir:
+                if zig:
+                    fake = pathlib.Path(bin_dir) / "zig"
+                    fake.write_text("#!/bin/sh\n")
+                    fake.chmod(0o755)
+                path, platform = os.environ["PATH"], PLATFORM
+                os.environ["PATH"] = bin_dir
+                os.environ.update(own or {})
+                globals()["PLATFORM"] = "darwin"
+                try:
+                    code, _, said = drive("crates/cli/src/main.rs\n", cargo=cargo)
+                    return code, said, drive.env
+                finally:
+                    os.environ["PATH"] = path
+                    globals()["PLATFORM"] = platform
+                    for key in own or {}:
+                        os.environ.pop(key, None)
+
+        code, said, passed = driven(zig=True)
+        assert code == 0 and wanted <= set(passed), (code, passed)
+        code, said, passed = driven(zig=True, own={"ZIG_TARGET": "mine"})
+        assert passed["ZIG_TARGET"] == "mine", "a variable the developer exported must win over the repo's default"
+        code, said, passed = driven(zig=True, cargo=1)
+        assert code == 1 and "hint:" not in said, (code, said)
+        code, said, passed = driven(zig=False, cargo=1)
+        assert code == 1 and "hint:" in said and "brew install zig" in said, (code, said)
+        assert not (wanted & set(passed) - set(os.environ)), "without zig the repo exports nothing"
     finally:
         subprocess.run = real_run
         globals().update(saved)
@@ -1190,6 +1268,15 @@ def commit_selfcheck():
             with contextlib.redirect_stdout(io.StringIO()):
                 done = cmd_commit(parse(["commit", "Add the staged file"]))
             assert done == 0 and git("show", "--name-only", "--format=", "HEAD") == "b.txt", "no paths named commits what is staged"
+            long_prose = " inline prose " * 30
+            (pathlib.Path(scratch) / "d.txt").write_text("d\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                done = cmd_commit(parse(["commit", "Add with inline body", "d.txt", "--body", long_prose]))
+            assert done == 0 and "inline prose" in git("log", "-1", "--format=%b"), "inline --body text was rejected as a filename"
+            plans = pathlib.Path(scratch) / ".yi/plans/demo"
+            plans.mkdir(parents=True)
+            (plans / "ops.jsonl").write_text("{}\n")
+            assert not dirty_tree(), "untracked .yi/plans dirtied the push check"
         finally:
             globals().update(saved)
             for name in names:
@@ -1215,7 +1302,7 @@ def build_parser():
     def opener(name, run):
         sub = pr.add_parser(name) if name != "land" else verbs.add_parser(name)
         sub.add_argument("title")
-        sub.add_argument("--body")
+        sub.add_argument("--body", help="path of a file holding the PR body")
         sub.add_argument("--closes", action="append", default=[])
         sub.add_argument("--refs", action="append", default=[])
         sub.add_argument("--timeout", type=int, default=40)

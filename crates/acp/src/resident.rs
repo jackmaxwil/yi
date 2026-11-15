@@ -221,6 +221,7 @@ mod tests {
             sessions: HashMap::new(),
             building: HashMap::new(),
             failed: HashMap::new(),
+            closed: std::collections::HashSet::new(),
             wake: sender.downgrade(),
             defaults: Arc::new(|| None),
             build: Arc::new(|_, _| Err("not built".to_owned())),

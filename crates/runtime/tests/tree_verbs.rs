@@ -80,29 +80,28 @@ fn foldable(rig: &Rig) -> Result<bool, Box<dyn Error>> {
     )?))
 }
 
-/// The host git read as one that cannot fold: `--version` answers the version asked for and
-/// `merge-tree` fails as 2.34's does, every other call is the real git.
-fn read_version_as(rig: &Rig, version: &str) -> Result<(), Box<dyn Error>> {
-    use std::os::unix::fs::PermissionsExt;
-    let path = std::env::var_os("PATH").ok_or("no PATH")?;
-    let real = std::env::split_paths(&path)
-        .map(|dir| dir.join("git"))
-        .find(|candidate| candidate.is_file())
-        .ok_or("no git on PATH")?;
-    let dir = rig.repo.parent().ok_or("no scratch root")?.join("shim");
-    std::fs::create_dir_all(&dir)?;
-    let body = format!(
-        "#!/bin/sh\n\
-         [ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\n\
-         case \"$*\" in *merge-tree*) echo 'error: unknown option write-tree' >&2; exit 129;; esac\n\
-         exec '{}' \"$@\"\n",
-        real.display()
+/// What the shim does with `git merge-tree`: answer a successful trial, or fail it as an old git
+/// would (exit 129).
+#[derive(Clone, Copy)]
+enum MergeTree {
+    Succeeds,
+    Fails,
+}
+
+/// The host git reads as another version, and answers `merge-tree` the way `merge` says.
+fn read_version_as(rig: &Rig, version: &str, merge: MergeTree) -> Result<(), Box<dyn Error>> {
+    let answer = match merge {
+        MergeTree::Succeeds => format!(
+            "for candidate do :; done; exec '{}' rev-parse \"${{candidate}}^{{tree}}\"",
+            support::real_git()?.display()
+        ),
+        MergeTree::Fails => "exit 129".to_owned(),
+    };
+    let script = format!(
+        "[ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\ncase \"$*\" in *merge-tree*) {answer};; esac"
     );
-    std::fs::write(dir.join("git"), body)?;
-    std::fs::set_permissions(dir.join("git"), std::fs::Permissions::from_mode(0o755))?;
-    let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))?;
-    unsafe { std::env::set_var("PATH", joined) };
-    Ok(())
+    let shim = rig.repo.parent().ok_or("no scratch root")?.join("shim");
+    support::shim_git(&shim, &script)
 }
 
 fn read(path: &Path) -> Result<String, Box<dyn Error>> {
@@ -221,7 +220,7 @@ async fn would_conflict_names_the_path_and_is_empty_when_nothing_would() -> Test
 #[tokio::test]
 async fn an_old_git_is_refused_by_name_and_its_trial_is_not_read_as_no_conflict() -> TestResult {
     let rig = rig("oldgit")?;
-    read_version_as(&rig, "git version 2.34.1")?;
+    read_version_as(&rig, "git version 2.34.1", MergeTree::Fails)?;
     let at = rig.fork("oldgit").await?;
     std::fs::write(at.join("f0.txt"), "theirs\n")?;
     let seen = rig.ask("tree.diff", json!({"tree": "oldgit"})).await?;
@@ -404,22 +403,15 @@ async fn a_discard_removes_a_free_tree_and_a_childs_is_refused() -> TestResult {
 #[tokio::test]
 async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> TestResult {
     let rig = rig("given")?;
-    std::fs::write(rig.repo.join("f0.txt"), "a person's\n")?;
-    let at = rig.fork("given").await?;
-    let mut asked = Map::new();
-    asked.insert("name".to_owned(), "kid".into());
-    asked.insert("role".to_owned(), "root".into());
-    asked.insert("tree".to_owned(), "given".into());
-    rig.family.host.spawn("look".to_owned(), asked)?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
     assert_eq!(rig.family.host.cwd_of("kid"), Some(at.clone()));
-    assert!(rig.family.reaches("kid", "finished").await);
     let refused = rig
         .family
         .host
         .merge_worktree("kid", None)
         .err()
         .ok_or("a dirty fork was merged")?;
-    assert!(refused.contains("h.tree.merge()"), "{refused}");
+    assert!(refused.contains("rlm.tree().merge(h.tree)"), "{refused}");
     if !foldable(&rig)? {
         let why = rig
             .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
@@ -435,6 +427,146 @@ async fn a_child_on_a_dirty_fork_cannot_merge_by_commit_and_merges_by_tree() -> 
         .await?;
     assert_eq!(reply["summary"], "merged 1 of 1", "{reply:?}");
     assert_eq!(read(&rig.repo.join("f1.txt"))?, "kid's\n");
+    rig.family.host.delete("kid")?;
+    assert!(!at.exists(), "the folded child's tree went with it");
+    Ok(())
+}
+
+/// Dies with the fold discarding past a live job: a finished child's background command still
+/// ran in the tree the fold settled, and the slot it held was released under it.
+#[tokio::test]
+async fn a_fold_leaves_a_tree_with_a_live_job_in_place_for_the_named_release() -> TestResult {
+    let rig = rig("fold-live-job")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    if !foldable(&rig)? {
+        return Ok(());
+    }
+    std::fs::write(at.join("f1.txt"), "kid's\n")?;
+    let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+    yi_tools::jobs::spawn_job("setsid sleep 3", &at, &never, None, None)?;
+    let reply = rig
+        .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
+        .await?;
+    let note = (reply.get("notes").and_then(Value::as_array))
+        .and_then(|notes| notes.first())
+        .and_then(Value::as_str)
+        .ok_or("a tree with a live job was released without a note")?;
+    assert!(note.contains("kid"), "{note}");
+    assert!(
+        note.contains("rlm.discard_worktree(\"kid\", force=True)"),
+        "{note}"
+    );
+    assert!(at.exists(), "the tree was discarded under a live job");
+    support::wait_until(15_000, || {
+        yi_tools::jobs::registry().running_under(&at).is_empty()
+    })
+    .await;
+    let again = rig
+        .ask(
+            "rlm.discard_worktree",
+            json!({"target": "kid", "force": true}),
+        )
+        .await?;
+    assert_eq!(again["discarded"], true, "{again:?}");
+    assert!(
+        !at.exists(),
+        "the named release kept a tree whose jobs had finished"
+    );
+    Ok(())
+}
+
+/// Dies with the fold handing back a tree whose job the kill reaches: a plain background command
+/// dies inside the grace, so the tree goes with no note and no slot held.
+#[tokio::test]
+async fn a_fold_discards_a_tree_whose_job_the_kill_reaches() -> TestResult {
+    let rig = rig("fold-killed-job")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    if !foldable(&rig)? {
+        return Ok(());
+    }
+    std::fs::write(at.join("f1.txt"), "kid's\n")?;
+    let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+    yi_tools::jobs::spawn_job("sleep 3", &at, &never, None, None)?;
+    let reply = rig
+        .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
+        .await?;
+    assert_eq!(reply["summary"], "merged 1 of 1", "{reply:?}");
+    assert_eq!(reply.get("notes"), None, "{reply:?}");
+    assert!(
+        !at.exists(),
+        "the fold kept a tree whose job the kill reached"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_managed_child_fold_keeps_tree_and_names_discard_refusal() -> TestResult {
+    let rig = rig("managed-fold")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    std::fs::write(at.join("f1.txt"), "kid's\n")?;
+    read_version_as(&rig, "git version 2.43.0", MergeTree::Succeeds)?;
+    rig.family.host.mark_managed("kid")?;
+    let reply = rig
+        .ask("tree.merge", json!({"tree": "self", "others": ["kid"]}))
+        .await?;
+    let notes = reply
+        .get("notes")
+        .and_then(Value::as_array)
+        .ok_or("a managed child's discard refusal was not named")?;
+    let note = notes
+        .first()
+        .and_then(Value::as_str)
+        .ok_or("the managed child had no discard-refusal note")?;
+    assert!(note.contains("kid"), "{note}");
+    assert!(note.contains("was dispatched by the plan"), "{note}");
+    assert!(at.exists(), "the managed child's tree was discarded");
+    assert!(note.contains("tree was left in place"), "{note}");
+    Ok(())
+}
+
+async fn finished_kid_on_a_dirty_fork(rig: &Rig) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    std::fs::write(rig.repo.join("f0.txt"), "a person's\n")?;
+    let at = rig.fork("given").await?;
+    let mut asked = Map::new();
+    asked.insert("name".to_owned(), "kid".into());
+    asked.insert("role".to_owned(), "root".into());
+    asked.insert("tree".to_owned(), "given".into());
+    rig.family.host.spawn("look".to_owned(), asked)?;
+    assert!(rig.family.reaches("kid", "finished").await);
+    Ok(at)
+}
+
+/// A child that never touched its fork holds only the files its parent carried in: discarding it
+/// loses nothing, so a failed child can always be released.
+#[tokio::test]
+async fn a_dirty_fork_the_child_never_changed_discards_without_force() -> TestResult {
+    let rig = rig("given")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    rig.family.host.discard_worktree("kid", false)?;
+    assert!(!at.exists());
+    rig.family.host.delete("kid")?;
+    Ok(())
+}
+
+/// A dirty fork the child wrote to refuses a plain discard, names what drops it, and yields to force.
+#[tokio::test]
+async fn a_dirty_fork_the_child_changed_discards_only_with_force() -> TestResult {
+    let rig = rig("given")?;
+    let at = finished_kid_on_a_dirty_fork(&rig).await?;
+    std::fs::write(at.join("kid.txt"), "kid's own work\n")?;
+    let refused = rig
+        .ask("rlm.discard_worktree", json!({"target": "kid"}))
+        .await
+        .err()
+        .ok_or("a dirty fork the child wrote to was discarded without force")?;
+    assert!(refused.contains("force=True"), "{refused}");
+    assert!(at.exists());
+    rig.ask(
+        "rlm.discard_worktree",
+        json!({"target": "kid", "force": true}),
+    )
+    .await?;
+    assert!(!at.exists());
     Ok(())
 }
 

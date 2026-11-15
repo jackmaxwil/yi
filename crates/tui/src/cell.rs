@@ -747,7 +747,7 @@ impl TaskCell {
             (TaskStatus::Done, None) => ('↳', "done", theme.purple),
             (TaskStatus::Failed, None) => (StatusMark::Failed.symbol(), "failed", theme.error),
         };
-        let (name, hash) = humanize(&self.description);
+        let (name, hash) = humanize(crate::colors::leaf_name(&self.description));
         let hash = if hash.is_empty() {
             hash
         } else {

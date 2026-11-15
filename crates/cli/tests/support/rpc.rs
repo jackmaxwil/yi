@@ -13,20 +13,31 @@ pub fn spawn_rpc(
     dir: &Path,
     cassette: Option<&Path>,
 ) -> Result<(Child, ChildStdin, Receiver<Value>), Box<dyn Error>> {
+    spawn_rpc_in(dir, &dir.join("sessions"), dir, cassette)
+}
+
+/// [`spawn_rpc`] with its session store and working directory named by the caller.
+pub fn spawn_rpc_in(
+    dir: &Path,
+    session_dir: &Path,
+    cwd: &Path,
+    cassette: Option<&Path>,
+) -> Result<(Child, ChildStdin, Receiver<Value>), Box<dyn Error>> {
     let mut command = yi_command(&dir.join("home"));
     command.args([
         "rpc",
         "--model",
         "faux/faux-1",
         "--session-dir",
-        &dir.join("sessions").display().to_string(),
+        &session_dir.display().to_string(),
         "--cwd",
-        &dir.display().to_string(),
+        &cwd.display().to_string(),
     ]);
     if let Some(cassette) = cassette {
         command.args(["--faux", &cassette.display().to_string()]);
     }
     let mut child = command
+        .current_dir(cwd)
         .env_remove("HTTPS_PROXY")
         .env_remove("HTTP_PROXY")
         .env_remove("NO_PROXY")
@@ -54,7 +65,17 @@ pub fn spawn_rpc(
 
 /// Every frame `yi rpc` writes for `commands`, sent one a line before stdin closes.
 pub fn run_rpc(dir: &Path, commands: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
-    let (mut child, mut stdin, frames) = spawn_rpc(dir, None)?;
+    run_rpc_in(dir, &dir.join("sessions"), dir, commands)
+}
+
+/// [`run_rpc`] with its session store and working directory named by the caller.
+pub fn run_rpc_in(
+    dir: &Path,
+    session_dir: &Path,
+    cwd: &Path,
+    commands: &[Value],
+) -> Result<Vec<Value>, Box<dyn Error>> {
+    let (mut child, mut stdin, frames) = spawn_rpc_in(dir, session_dir, cwd, None)?;
     for command in commands {
         serde_json::to_writer(&mut stdin, command)?;
         stdin.write_all(b"\n")?;

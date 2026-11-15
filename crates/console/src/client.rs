@@ -31,6 +31,7 @@ pub enum ClientEvent {
 pub struct Outbound {
     lines: SyncSender<String>,
     shutdown: Arc<AtomicBool>,
+    no_restart: Arc<AtomicBool>,
 }
 
 impl Outbound {
@@ -44,9 +45,14 @@ impl Outbound {
         }
     }
 
+    pub fn stop_restarting(&self) {
+        self.no_restart.store(true, Ordering::SeqCst);
+    }
+
     /// Two-phase shutdown, phase one: stop reconnecting and unblock both IO
     /// threads.
     pub fn shutdown(&self) {
+        self.no_restart.store(true, Ordering::SeqCst);
         self.shutdown.store(true, Ordering::SeqCst);
     }
 }
@@ -60,21 +66,40 @@ pub fn events() -> (SyncSender<ClientEvent>, Receiver<ClientEvent>) {
     std::sync::mpsc::sync_channel::<ClientEvent>(4096)
 }
 
+pub type RespawnDaemon = Arc<dyn Fn() + Send + Sync>;
+
 /// Spawn the IO threads; the bounded event queue backpressures the
 /// socket when the UI lags, never growing a queue.
 pub fn spawn(socket: PathBuf, event_tx: SyncSender<ClientEvent>) -> (Outbound, ClientThreads) {
+    spawn_restarting(socket, event_tx, None)
+}
+
+pub fn spawn_restarting(
+    socket: PathBuf,
+    event_tx: SyncSender<ClientEvent>,
+    respawn: Option<RespawnDaemon>,
+) -> (Outbound, ClientThreads) {
     let (line_tx, line_rx) = std::sync::mpsc::sync_channel::<String>(64);
     let (stream_tx, stream_rx) = std::sync::mpsc::channel::<UnixStream>();
     let shutdown = Arc::new(AtomicBool::new(false));
+    let no_restart = Arc::new(AtomicBool::new(false));
 
     let outbound = Outbound {
         lines: line_tx,
         shutdown: Arc::clone(&shutdown),
+        no_restart: Arc::clone(&no_restart),
     };
 
     let reader_shutdown = Arc::clone(&shutdown);
     let reader = std::thread::spawn(move || {
-        reader_loop(&socket, &event_tx, &stream_tx, &reader_shutdown);
+        reader_loop(
+            &socket,
+            &event_tx,
+            &stream_tx,
+            &reader_shutdown,
+            &no_restart,
+            respawn.as_deref(),
+        );
     });
 
     let writer_shutdown = Arc::clone(&shutdown);
@@ -113,10 +138,25 @@ fn reader_loop(
     events: &SyncSender<ClientEvent>,
     streams: &std::sync::mpsc::Sender<UnixStream>,
     shutdown: &AtomicBool,
+    no_restart: &AtomicBool,
+    respawn: Option<&(dyn Fn() + Send + Sync)>,
 ) {
     let mut backoff = BACKOFF_START;
+    let mut spawn_attempted = false;
     while !shutdown.load(Ordering::SeqCst) {
-        let stream = match UnixStream::connect(socket) {
+        let stream = UnixStream::connect(socket).or_else(|error| {
+            if let Some(respawn) = respawn
+                && !spawn_attempted
+                && !shutdown.load(Ordering::SeqCst)
+                && !no_restart.load(Ordering::SeqCst)
+            {
+                spawn_attempted = true;
+                respawn();
+                return UnixStream::connect(socket);
+            }
+            Err(error)
+        });
+        let stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
                 if events
@@ -159,12 +199,17 @@ fn reader_loop(
         }
         // Incident: only the failed-connect path slept, so a daemon that accepted and closed
         // at once re-dialed in a spin. Only a link that outlived the cap resets the backoff.
-        if connected_at.elapsed() > BACKOFF_CAP {
+        if link_rearms(connected_at.elapsed()) {
             backoff = BACKOFF_START;
+            spawn_attempted = false;
         }
         sleep_interruptible(backoff, shutdown);
         backoff = (backoff * 2).min(BACKOFF_CAP);
     }
+}
+
+fn link_rearms(lived: Duration) -> bool {
+    lived > BACKOFF_CAP
 }
 
 /// Bounded newline framing by hand: fill from the socket, split complete
@@ -273,5 +318,46 @@ fn sleep_interruptible(total: Duration, shutdown: &AtomicBool) {
         let slice = remaining.min(step);
         std::thread::sleep(slice);
         remaining = remaining.saturating_sub(slice);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A console whose daemon never answers must fork one `yi serve` per outage, not one per
+    /// failed connect.
+    #[test]
+    fn one_outage_respawns_the_daemon_once() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = std::env::temp_dir().join(format!("yi-no-daemon-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let respawn: RespawnDaemon = Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let (event_tx, events) = events();
+        let (outbound, _threads) = spawn_restarting(socket.clone(), event_tx, Some(respawn));
+        let mut failed = 0;
+        while failed < 3 {
+            if let ClientEvent::Disconnected { .. } =
+                events.recv_timeout(Duration::from_secs(10))?
+            {
+                failed += 1;
+            }
+        }
+        outbound.shutdown();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "three failed connects");
+        Ok(())
+    }
+
+    /// Only a link that outlived the backoff cap re-arms the respawn and resets the backoff.
+    #[test]
+    fn a_link_rearms_the_respawn_only_past_the_backoff_cap() {
+        assert!(!link_rearms(BACKOFF_CAP), "a link at the cap");
+        assert!(
+            link_rearms(BACKOFF_CAP + Duration::from_millis(1)),
+            "a link one tick past the cap"
+        );
     }
 }

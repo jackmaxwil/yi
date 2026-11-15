@@ -624,3 +624,21 @@ fn replayed_rows_reach_a_nonzero_vt100_offset_once() -> TestResult {
     assert!(rows[1].starts_with("── subagent scout (sub-5c90b1bb) · done · 0ms · 0 tokens · start sub-5c90b1bb · The child has two persistent rows."), "{rows:?}");
     Ok(())
 }
+
+#[test]
+fn a_plan_child_end_rule_shows_its_todo_name() -> TestResult {
+    let mut app = app();
+    app.reduce_agent(AgentEvent::AgentStart);
+    app.reduce_agent(tool_start("cell-1"));
+    let mut started = running("sub-1", "session-1");
+    started.name = "plan/todo".to_owned();
+    app.adopt(&started, None, Some("cell-1"));
+    let mut ended = finished("sub-1", "session-1", ChildExit::Completed);
+    ended.name = "plan/todo".to_owned();
+    app.reduce_child_update(&ended);
+    app.reduce_agent(tool_end("cell-1"));
+    let rows = child_rows(&mut app);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows[1].starts_with("── subagent todo (sub-1) · done"));
+    Ok(())
+}

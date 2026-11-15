@@ -2228,12 +2228,45 @@ fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
             .map(|frame| &frame["params"]["update"]["content"][0]["text"]),
         Some(&json!(
             "what is in this screenshot?\n[…] prompt block 2 of 4 (image) was \
-                     dropped: this agent reads text and resource_link blocks; send the file \
-                     as a resource_link\n[…] prompt block 3 of 4 (text) was dropped: it has \
-                     no text field\n[…] prompt block 4 of 4 (resource_link) was dropped: it \
-                     has no uri field"
+                     dropped: the image has no whole header for its type\n[…] prompt block 3 \
+                     of 4 (text) was dropped: it has no text field\n[…] prompt block 4 of 4 \
+                     (resource_link) was dropped: it has no uri field"
         )),
         "{frames:?}"
+    );
+    prompt(
+        &mut client,
+        "5",
+        &session_id,
+        json!([
+            {"type": "text", "text": "and this one?"},
+            {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"},
+        ]),
+    )?;
+    let frames = read_allowing(&mut client, is_idle)?;
+    let inserted = updates_of(&frames, "user_message");
+    assert_eq!(
+        inserted
+            .first()
+            .map(|frame| &frame["params"]["update"]["content"][0]["text"]),
+        Some(&json!("and this one?")),
+        "a whole image is read, not named as dropped: {frames:?}"
+    );
+    let read_image = updates_of(&frames, "_yi/event")
+        .into_iter()
+        .find_map(|frame| {
+            let event = &frame["params"]["update"]["event"];
+            (event["type"] == "message_end" && event["message"]["role"] == "user")
+                .then(|| event["message"]["content"][1].clone())
+        });
+    assert_eq!(
+        read_image,
+        Some(json!({
+            "type": "image",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+            "mimeType": "image/png"
+        })),
+        "the image reaches the agent's message, not only its text: {frames:?}"
     );
     let resumed = client.request(
         "4",

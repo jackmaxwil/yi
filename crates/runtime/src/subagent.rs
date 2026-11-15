@@ -97,21 +97,6 @@ pub(crate) struct Children {
 const REMOVED_KEPT: usize = 64;
 
 impl Children {
-    /// Tokens out on lease: every record still held, and every build in flight.
-    pub(crate) fn reserved(&self) -> u64 {
-        let held = self
-            .records
-            .values()
-            .filter_map(|record| record.lease.tokens);
-        held.chain(self.building.iter().map(|(_, tokens, _)| *tokens))
-            .fold(0, u64::saturating_add)
-    }
-
-    /// A build whose record is listed: its reservation is the record's from here on.
-    pub(crate) fn release_build(&mut self, name: &str) {
-        self.building.retain(|(held, _, _)| held != name);
-    }
-
     pub(crate) fn touch(&mut self, key: &str, cause: crate::family::Cause) -> u64 {
         self.epoch = self.epoch.saturating_add(1);
         self.stirred.notify_waiters();
@@ -974,6 +959,7 @@ impl SubagentHost {
             registry.register(method, move |payload| {
                 let target = payload.str_of("target").map(str::to_owned);
                 let check = optional_string(&payload, "check");
+                let force = payload.bool_of("force").unwrap_or(false);
                 let host = Arc::clone(&host);
                 Box::pin(async move {
                     let target = target.ok_or_else(|| format!("{method} requires a target"))?;
@@ -982,7 +968,7 @@ impl SubagentHost {
                         if merges {
                             host.merge_worktree(&target, check.as_deref())
                         } else {
-                            host.discard_worktree(&target)
+                            host.discard_worktree(&target, force)
                         }
                     })
                     .await

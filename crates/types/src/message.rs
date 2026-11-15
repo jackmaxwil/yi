@@ -478,6 +478,26 @@ impl AgentMessage {
         }
     }
 
+    pub fn user_input_with_images(
+        text: &str,
+        images: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        let mut blocks = vec![Content::Text {
+            text: text.to_owned(),
+            text_signature: None,
+        }];
+        blocks.extend(
+            images
+                .into_iter()
+                .map(|(mime_type, data)| Content::Image { data, mime_type }),
+        );
+        let content = match blocks.len() {
+            1 => UserContent::Text(text.to_owned()),
+            _ => UserContent::Blocks(blocks),
+        };
+        Self::user_input(content, 0)
+    }
+
     /// Every text this message carries, for search and for a brief line: assistant tool calls
     /// read `name {args}`, bash reads `command\noutput`, thinking is excluded.
     pub fn plain_text(&self) -> String {

@@ -908,8 +908,10 @@ async def subscribe(
     ``file://<path>`` (its ``{exists, size, mtimeMs}``), or ``<scheme>://…`` for an
     installed ``yi-adapter-<scheme>``. ``create`` is ``{label, note, intent?}``: a match
     appends one todo and wakes you with the messages as data, never as a prompt.
-    ``filter`` is ``key=value`` terms joined by ``&``, or a substring. At most ``batch``
-    messages (20) ride one todo, at most one a ``window``/``min_interval`` (60 s).
+    ``filter`` is ``key=value`` terms joined by ``&`` (``key=a|b`` matches any of them), or
+    a substring. A message whose data names a ``thread`` joins the open todo of that thread
+    instead of making a new one. At most ``batch`` messages (20) ride one todo, at most one a
+    ``window``/``min_interval`` (60 s).
     ``retention`` (``{count}`` or ``{age}`` seconds; 256 messages) is set by the first
     subscription to a source. To wait instead, block a todo ``on`` the address.
     """
@@ -1162,9 +1164,12 @@ async def merge_worktree(target: "str | RLMSubagent", *, check: str | None = Non
 
 
 @_public
-async def discard_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
-    """Throw an isolated child's worktree and branch away without merging."""
-    return await host_request("rlm.discard_worktree", {"target": _worktree_target(target)})
+async def discard_worktree(target: "str | RLMSubagent", force: bool = False) -> dict[str, Any]:
+    """Throw an isolated child's worktree and branch away without merging.
+
+    A tree cut with uncommitted files is discarded freely while it holds only those files;
+    `force=True` drops changes the child made on top of them."""
+    return await host_request("rlm.discard_worktree", {"target": _worktree_target(target), "force": force})
 
 
 _KERNEL_SCHEME = "kernel://"

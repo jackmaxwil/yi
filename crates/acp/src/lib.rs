@@ -12,7 +12,7 @@ pub mod review;
 pub(crate) mod swap;
 pub mod update;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -121,6 +121,8 @@ struct AcpState {
     sessions: HashMap<String, SessionHandle>,
     building: HashMap<String, attach::Building>,
     failed: HashMap<String, String>,
+    /// Incident: [`Self::ensure_loaded`] opened disk sessions after close, so cancel put them back.
+    closed: HashSet<String>,
     wake: tokio::sync::mpsc::WeakUnboundedSender<attach::Incoming>,
     defaults: Arc<dyn Fn() -> Option<SessionDefaults> + Send + Sync>,
     build: SessionBuilder,
@@ -330,12 +332,20 @@ impl AcpState {
         }
     }
 
+    fn ensure_loaded(&mut self, id: &str) {
+        self.reload(id);
+        if self.store_of(id).is_none() && !self.failed.contains_key(id) && !self.closed.contains(id)
+        {
+            let _missing_fails_in_session = self.open_later(id);
+        }
+        self.settle(id);
+    }
+
     /// Answered by the forwarder once the prompt is inserted; only a refusal answers here.
     fn prompt(&mut self, request: Value, params: &Value) -> Option<Result<Value, (i64, String)>> {
         if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
             let id = id.to_owned();
-            self.reload(&id);
-            self.settle(&id);
+            self.ensure_loaded(&id);
         }
         self.prompt_serial = self.prompt_serial.saturating_add(1);
         let message_id = format!("msg_p{}", self.prompt_serial);
@@ -344,13 +354,13 @@ impl AcpState {
             Err(refused) => return Some(Err(refused)),
         };
         (handle.last_active).store(daemon::now_ms(), std::sync::atomic::Ordering::Relaxed);
-        let text = crate::replay::prompt_text(params);
+        let (text, images) = crate::replay::prompt_parts(params);
         crate::update::queued(&handle.prompts).push(PendingPrompt {
             text: text.clone(),
             message_id,
             request,
         });
-        let prompt = yi_runtime::session::user_input(&text);
+        let prompt = yi_types::message::AgentMessage::user_input_with_images(&text, images);
         if handle.session.prompt_message(prompt.clone()).is_err() {
             handle.session.follow_up_message(prompt);
         }
@@ -438,8 +448,7 @@ impl AcpState {
         ) && let Some(id) = params.get("sessionId").and_then(Value::as_str)
         {
             let id = id.to_owned();
-            self.reload(&id);
-            self.settle(&id);
+            self.ensure_loaded(&id);
         }
         match method {
             "initialize" => {
@@ -513,6 +522,7 @@ impl AcpState {
             }
             "session/resume" => {
                 let id = Self::session_id(params)?;
+                self.closed.remove(&id);
                 let store = match self.store_of(&id) {
                     Some(store) => store,
                     None => self
@@ -554,6 +564,7 @@ impl AcpState {
                 }
                 self.user_cells.close(&id);
                 self.drop_session(&id);
+                self.closed.insert(id);
                 Ok(json!({}))
             }
             "session/delete" => {
@@ -565,6 +576,7 @@ impl AcpState {
                     self.release_parked(&id);
                 }
                 crate::resident::forget(&id);
+                self.closed.insert(id.clone());
                 self.repo
                     .delete(&id)
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
@@ -585,7 +597,9 @@ impl AcpState {
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
         match method {
             "_yi/steer" => {
-                let prompt = yi_runtime::session::user_input(text("text"));
+                let (_, images) = crate::replay::prompt_parts(params);
+                let prompt =
+                    yi_types::message::AgentMessage::user_input_with_images(text("text"), images);
                 handle.session.steer_message(prompt);
                 Ok(json!({}))
             }
@@ -842,6 +856,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
         sessions: HashMap::new(),
         building: HashMap::new(),
         failed: HashMap::new(),
+        closed: HashSet::new(),
         wake: line_tx.downgrade(),
         defaults: options.defaults,
         build: options.build,

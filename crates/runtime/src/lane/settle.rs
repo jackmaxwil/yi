@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 pub use yi_types::plan::acceptance::{Conflict, Published, Quiescence};
@@ -23,6 +23,26 @@ pub fn quiescence_of_jobs(root: &Path) -> Quiescence {
         at: crate::session_store::now_ms(),
         running: yi_tools::jobs::registry().running_under(root),
     }
+}
+
+/// Stops every job under `root`, then gives the signalled ones up to `grace` to record their
+/// exits; the row names what was stopped, and the answer is what still runs after the grace.
+pub(crate) fn stop_jobs_under(root: &Path, grace: Duration) -> (Option<String>, Quiescence) {
+    let stopped = yi_tools::jobs::registry().kill_under(root);
+    let until = Instant::now().checked_add(grace);
+    let mut quiescence = quiescence_of_jobs(root);
+    while !quiescence.running.is_empty() && until.is_some_and(|until| Instant::now() < until) {
+        std::thread::sleep(Duration::from_millis(20));
+        quiescence = quiescence_of_jobs(root);
+    }
+    let row = (!stopped.is_empty()).then(|| {
+        format!(
+            "stopped {} jobs under the tree: {}; a process that left its job keeps running",
+            stopped.len(),
+            stopped.join(", ")
+        )
+    });
+    (row, quiescence)
 }
 
 /// A lane settled: the candidate on its branch, the slot handed back.

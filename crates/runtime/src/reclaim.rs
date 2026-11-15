@@ -11,10 +11,15 @@ use yi_types::model::{CACHE_DIAGNOSTIC, Model, Ttl};
 use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 
 pub(crate) const KEEP_TURNS: u64 = 5;
+pub(crate) const KEEP_BELOW_PCT: u64 = 30;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
 const MIN_DROPPED: u64 = 2_000;
-/// A cut rewrites the cached prefix after it, which costs as many tokens as this many cache reads.
+/// Cache reads a rewrite counts as on a route with no catalog cache prices.
 const REWRITE_READS: u64 = 10;
+/// A session's age says nothing about requests left: savings count over at most this many.
+const MAX_HORIZON_TURNS: u64 = 40;
+/// A route priced above this many reads per write is treated as this.
+const MAX_REWRITE_READS: f64 = 1_000.0;
 const MIN_RESULT_CHARS: usize = 1_200;
 /// The newest image results no cut takes: the model is still working from them.
 const KEEP_IMAGES: usize = 3;
@@ -35,32 +40,65 @@ pub(crate) struct Cut {
     pins: BTreeMap<Key, ()>,
     discards: BTreeMap<Key, ()>,
     sections: Sections,
+    disk: Disk,
+    cwd: std::path::PathBuf,
 }
 
-/// Invariant: keyed by the text's hash, never the call id, which leaked calls reuse. The paths
-/// each read, edit or write result's `[path#TAG]` headers name, parsed once per text.
+/// Invariant: keyed by the text's hash, never the call id, which leaked calls reuse. The
+/// (path, tag) pairs each read, edit or write result's `[path#TAG]` headers name, parsed once per text.
 #[derive(Default)]
-pub(crate) struct Sections(Mutex<BTreeMap<u64, Vec<String>>>);
+pub(crate) struct Sections(Mutex<BTreeMap<u64, Vec<(String, String)>>>);
 
 impl Sections {
     pub(crate) fn paths(&self, content: &[Content]) -> Vec<String> {
+        (self.tags(content).into_iter())
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    pub(crate) fn tags(&self, content: &[Content]) -> Vec<(String, String)> {
         self.memo(content, |text| {
             text.lines()
                 .filter_map(yi_tools::hashline::tokenizer::try_parse_header)
-                .filter(|header| header.file_hash.is_some())
-                .map(|header| header.path)
+                .filter_map(|header| Some((header.path, header.file_hash?)))
                 .collect()
         })
     }
 
     /// The lock is held across `parse`, so readers of one new text at once parse it once.
-    fn memo(&self, content: &[Content], parse: impl FnOnce(&str) -> Vec<String>) -> Vec<String> {
+    fn memo(
+        &self,
+        content: &[Content],
+        parse: impl FnOnce(&str) -> Vec<(String, String)>,
+    ) -> Vec<(String, String)> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         texts(content).for_each(|text| text.hash(&mut hasher));
         let mut memo = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let parsed = || parse(&yi_types::message::join_text(content, "\n"));
         memo.entry(hasher.finish()).or_insert_with(parsed).clone()
+    }
+}
+
+/// Invariant: a file is rehashed only when its mtime or length moved, so a request costs one stat
+/// per kept result; an edit that keeps both is unseen until the file changes again.
+#[derive(Default)]
+struct Disk(Mutex<BTreeMap<(std::path::PathBuf, std::time::SystemTime, u64), String>>);
+
+impl Disk {
+    fn tag(&self, path: &std::path::Path) -> Option<String> {
+        let meta = std::fs::metadata(path)
+            .ok()
+            .filter(std::fs::Metadata::is_file)?;
+        let key = (path.to_path_buf(), meta.modified().ok()?, meta.len());
+        let mut memo = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tag) = memo.get(&key) {
+            return Some(tag.clone());
+        }
+        let text = std::fs::read_to_string(path).ok()?;
+        let tag = yi_tools::hashline::format::compute_file_hash(&text).to_string();
+        memo.insert(key, tag.clone());
+        Some(tag)
     }
 }
 
@@ -156,7 +194,15 @@ pub(crate) struct Overlay {
 }
 
 impl Overlay {
-    pub(crate) fn new(cut: Arc<Mutex<Cut>>, store: Box<StoreFn>, model: Model) -> Self {
+    pub(crate) fn new(
+        cut: Arc<Mutex<Cut>>,
+        store: Box<StoreFn>,
+        model: Model,
+        cwd: Option<std::path::PathBuf>,
+    ) -> Self {
+        if let Some(cwd) = cwd {
+            cut.lock().unwrap_or_else(PoisonError::into_inner).cwd = cwd;
+        }
         Self { cut, store, model }
     }
 
@@ -325,7 +371,9 @@ pub(crate) fn calls<M: std::borrow::Borrow<AgentMessage>>(
         })
         .collect()
 }
-
+fn reads_files(call: Option<(&str, &Args)>) -> bool {
+    matches!(call, Some(("read" | "grep", _)))
+}
 /// Every annotation on the branch, in the order the model wrote them.
 pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationRecord> + '_ {
     entries.iter().filter_map(|entry| match entry {
@@ -434,6 +482,37 @@ pub(crate) fn decide(
         }
         turns.push(turn);
     }
+    let pct = crate::levers::get().reclaim_keep_below_pct;
+    let used = (messages.iter().rev())
+        .find_map(|message| match message {
+            AgentMessage::Assistant { usage, .. }
+                if usage.input.saturating_add(usage.cache_read) > 0 =>
+            {
+                Some(
+                    [usage.input, usage.cache_read, usage.cache_write]
+                        .map(|n| u64::try_from(n).unwrap_or(0)),
+                )
+            }
+            _ => None,
+        })
+        .map_or(u64::MAX, |parts| {
+            parts.iter().fold(0, |sum, n| u64::saturating_add(sum, *n))
+        });
+    let roomy = used.saturating_mul(100) < model.context_window.saturating_mul(pct);
+    let unchanged = |index: usize| -> bool {
+        let Some(AgentMessage::ToolResult { content, .. }) = messages.get(index) else {
+            return false;
+        };
+        let reads = reads_files(calls.get(index).copied().flatten());
+        if !roomy || !reads {
+            return false;
+        }
+        let tags = cut.sections.tags(content);
+        !tags.is_empty()
+            && tags.iter().all(|(path, tag)| {
+                cut.disk.tag(&cut.cwd.join(path)).as_deref() == Some(tag.as_str())
+            })
+    };
     let eligible = |index: usize| -> bool {
         let Some(message) = messages.get(index) else {
             return false;
@@ -450,10 +529,11 @@ pub(crate) fn decide(
         if !floors {
             return false;
         }
+        let held = !marked(&cut.discards) && unchanged(index);
         let kept = marks.get(index).copied().unwrap_or(false)
             || marked(&cut.pins)
             || never_cut(message, newest.contains(&index), images.contains(&index)).is_some();
-        !kept
+        !kept && !held
     };
     // A result already cut costs its placeholder, so a new cut's rewrite is the view's own size.
     let sizes: Vec<u64> = (messages.iter().zip(&marks))
@@ -506,8 +586,23 @@ pub(crate) fn decide(
     None
 }
 
+/// Cache reads a rewrite costs: the route's own write price (twice input on an hour cache) over
+/// its read price when the catalog prices both, else [`REWRITE_READS`], doubled on an hour cache.
+fn rewrite_reads(model: &Model, hour: bool) -> u64 {
+    let write = match hour {
+        true => model.cost.input.as_f64().map(|input| input * 2.0),
+        false => model.cost.cache_write.as_f64(),
+    };
+    match (model.cost.cache_read.as_f64(), write) {
+        (Some(read), Some(write)) if read > 0.0 && write > read => {
+            (write / read).ceil().min(MAX_REWRITE_READS) as u64
+        }
+        _ => REWRITE_READS * if hour { 2 } else { 1 },
+    }
+}
+
 /// Why a cut pays now, if it does: the cache lapsed, or the tokens it saves over as many more
-/// requests as were sent so far outweigh ten reads of everything after the first cut result.
+/// requests as were sent so far (at most forty) outweigh a rewrite of everything after the cut.
 fn reason(
     messages: &[AgentMessage],
     model: &Model,
@@ -544,13 +639,13 @@ fn reason(
     if lapsed {
         return (dropped >= MIN_DROPPED).then_some("expired");
     }
-    // An hour-cache write costs twice a five-minute one.
     let hour = replies
         .first()
         .is_some_and(|(usage, _, _)| usage.cache_write1h.unwrap_or(0) > 0);
-    let reads = REWRITE_READS * if hour { 2 } else { 1 };
+    let reads = rewrite_reads(model, hour);
+    let horizon = turns.min(MAX_HORIZON_TURNS);
     let pays = dropped >= MIN_DROPPED
-        && (!caches || dropped.saturating_mul(turns) > rewritten.saturating_mul(reads));
+        && (!caches || dropped.saturating_mul(horizon) > rewritten.saturating_mul(reads));
     pays.then_some("breakeven")
 }
 
@@ -574,20 +669,31 @@ fn render(
     if cut.marks.is_empty() {
         return messages;
     }
-    let briefs: Vec<Option<String>> = (calls(&messages).into_iter())
-        .map(|call| call.map(|(name, args)| brief(name, args)))
+    let calls: Vec<(Option<String>, bool)> = calls(&messages)
+        .into_iter()
+        .map(|call| (call.map(brief), reads_files(call)))
         .collect();
-    for (message, call) in messages.iter_mut().zip(briefs) {
+    for (message, (call, reads)) in messages.iter_mut().zip(calls) {
         let Some(mark) = find(&cut.marks, message) else {
             continue;
         };
         // A discard is refused once its result is cut, so this reads the same on every request.
         let rule = match find(&cut.discards, message) {
             Some(()) => format!("{who} discarded it"),
-            None => format!(
-                "results older than {} requests (reclaim.keep_turns) are cut once dropping them costs less than resending them",
-                crate::levers::get().reclaim_keep_turns
-            ),
+            None => {
+                let keep = format!(
+                    "results older than {} requests (reclaim.keep_turns) are cut once dropping them costs less than resending them",
+                    crate::levers::get().reclaim_keep_turns
+                );
+                if reads {
+                    format!(
+                        "{keep}, unless they read files that are unchanged while context use is under {}% of the window (reclaim.keep_below_pct)",
+                        crate::levers::get().reclaim_keep_below_pct
+                    )
+                } else {
+                    keep
+                }
+            }
         };
         let Ok(image) = reattach(message) else {
             continue;
@@ -640,7 +746,7 @@ fn render(
     messages
 }
 
-pub(crate) fn brief(name: &str, args: &Args) -> String {
+pub(crate) fn brief((name, args): (&str, &Args)) -> String {
     let field = ["path", "command", "pattern", "url"]
         .iter()
         .find_map(|key| args.get(*key).and_then(serde_json::Value::as_str));
@@ -711,8 +817,12 @@ pub(crate) mod tests {
         let ends: Vec<usize> = ends.collect();
         let views = |fresh: bool| -> Result<Vec<Vec<AgentMessage>>, Box<dyn std::error::Error>> {
             let cut = std::sync::Arc::new(std::sync::Mutex::new(Cut::default()));
-            let overlay =
-                super::Overlay::new(std::sync::Arc::clone(&cut), Box::new(|| None), opus()?);
+            let overlay = super::Overlay::new(
+                std::sync::Arc::clone(&cut),
+                Box::new(|| None),
+                opus()?,
+                None,
+            );
             let mut sent = Vec::new();
             for end in &ends {
                 if fresh {
@@ -768,14 +878,14 @@ pub(crate) mod tests {
                     sections.memo(&content, |_| {
                         parses.fetch_add(1, Ordering::SeqCst);
                         std::thread::sleep(std::time::Duration::from_millis(50));
-                        vec!["src/lib.rs".to_owned()]
+                        vec![("src/lib.rs".to_owned(), "BDF3".to_owned())]
                     })
                 })
             })
             .collect();
         for reader in readers {
             let paths = reader.join().map_err(|_| "a reader panicked")?;
-            assert_eq!(paths, ["src/lib.rs"]);
+            assert_eq!(paths, [("src/lib.rs".to_owned(), "BDF3".to_owned())]);
         }
         assert_eq!(
             parses.load(Ordering::SeqCst),
@@ -814,14 +924,34 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    fn model(
+        (id, name, max_tokens): (&str, &str, u64),
+        [input, output, cache_read, cache_write]: [f64; 4],
+    ) -> Result<Model, serde_json::Error> {
+        serde_json::from_value(json!({
+            "id": id, "name": name, "api": "anthropic-messages",
+            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
+            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": max_tokens,
+            "cost": {"input": input, "output": output, "cacheRead": cache_read, "cacheWrite": cache_write}
+        }))
+    }
+
     /// Opus 5.5's catalog rates: a read costs a tenth of input, a write 1.25 times it.
     fn opus() -> Result<Model, serde_json::Error> {
-        serde_json::from_value(json!({
-            "id": "claude-opus-5-5", "name": "Opus", "api": "anthropic-messages",
-            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": true,
-            "input": ["text"], "contextWindow": 1_000_000, "maxTokens": 128_000,
-            "cost": {"input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25}
-        }))
+        model(("claude-opus-5-5", "Opus", 128_000), [5.0, 25.0, 0.5, 6.25])
+    }
+
+    /// Sonnet 5.5's catalog rates: a read costs a twentieth of input, a write 1.25 times it, so a
+    /// rewrite costs twenty-five reads.
+    fn sonnet() -> Result<Model, serde_json::Error> {
+        model(
+            ("claude-sonnet-5-5", "Sonnet", 64_000),
+            [2.0, 10.0, 0.1, 2.5],
+        )
+    }
+
+    fn unpriced() -> Result<Model, serde_json::Error> {
+        model(("subscription", "Subscription", 64_000), [0.0; 4])
     }
 
     /// A reply's time as Pi's own writer stamps it (`v4-golden.jsonl`); `at` counts from it.
@@ -864,22 +994,57 @@ pub(crate) mod tests {
         }
     }
 
-    /// `turns` requests, each a bash call answered with 10,000 chars, a minute apart.
-    fn bash_session(turns: usize) -> Vec<AgentMessage> {
-        let mut messages = vec![AgentMessage::user_input(
-            UserContent::Text("fix the build".to_owned()),
-            0,
-        )];
-        for turn in 0..turns {
+    /// Requests `turns`, each a bash call answered with `chars` chars, a minute apart.
+    fn calls(turns: std::ops::Range<usize>, chars: usize, messages: &mut Vec<AgentMessage>) {
+        for turn in turns {
             let id = format!("call-{turn}");
             let args = json!({"command": format!("cargo build -p crate{turn}")});
             messages.push(assistant(
                 &[(id.clone(), "bash", args)],
                 60_000 * turn as u64,
             ));
-            messages.push(result(&id, "bash", 10_000));
+            messages.push(result(&id, "bash", chars));
         }
+    }
+
+    /// `turns` requests, each a bash call answered with 10,000 chars, a minute apart.
+    fn bash_session(turns: usize) -> Vec<AgentMessage> {
+        let mut messages = vec![AgentMessage::user_input(
+            UserContent::Text("fix the build".to_owned()),
+            0,
+        )];
+        calls(0..turns, 10_000, &mut messages);
         messages
+    }
+
+    /// One 10,000-char result up front, then `tail` requests answered with results too small to
+    /// cut: the only cut is the first result, and everything after it is rewritten.
+    fn one_big_then_small(tail: usize) -> Vec<AgentMessage> {
+        let mut messages = bash_session(1);
+        calls(1..tail + 1, 300, &mut messages);
+        set_usage(&mut messages, |usage| usage.cache_read = 5_000);
+        messages
+    }
+
+    /// Incident: 34 cuts in 211 Sonnet requests each rewrote the conversation. A cut that pays
+    /// at ten reads (the unpriced fallback) does not pay at this route's own twenty-five.
+    #[test]
+    fn a_cut_is_priced_by_the_routes_own_write_over_read_ratio() -> Fallible {
+        let messages = one_big_then_small(39);
+        let now = REPLIED + 60_000 * 39 + 1_000;
+        let record = decide(&messages, &Cut::default(), &unpriced()?, now).ok_or("no cut")?;
+        assert_eq!(record.reason, "breakeven");
+        assert_eq!(decide(&messages, &Cut::default(), &sonnet()?, now), None);
+        Ok(())
+    }
+
+    /// A long session has no more requests left than a young one: past forty, savings stop growing.
+    #[test]
+    fn a_long_session_does_not_make_a_cut_easier_to_pay_for() -> Fallible {
+        let messages = one_big_then_small(399);
+        let now = REPLIED + 60_000 * 399 + 1_000;
+        assert_eq!(decide(&messages, &Cut::default(), &unpriced()?, now), None);
+        Ok(())
     }
 
     /// The replay that set the rule: cutting every turn rewrote the cache each time, so the
@@ -1151,13 +1316,17 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn with_usage(turns: usize, set: impl Fn(&mut yi_types::message::Usage)) -> Vec<AgentMessage> {
-        let mut messages = bash_session(turns);
-        for message in &mut messages {
+    fn set_usage(messages: &mut [AgentMessage], set: impl Fn(&mut yi_types::message::Usage)) {
+        for message in messages {
             if let AgentMessage::Assistant { usage, .. } = message {
                 set(usage);
             }
         }
+    }
+
+    fn with_usage(turns: usize, set: impl Fn(&mut yi_types::message::Usage)) -> Vec<AgentMessage> {
+        let mut messages = bash_session(turns);
+        set_usage(&mut messages, set);
         messages
     }
 
@@ -1201,6 +1370,8 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Seen red under the removed double count (`rewrite_reads(model) * 2`): opus's hour route at
+    /// 27 turns drops 22 results over a horizon of 27, which clears 20 reads and not 26.
     #[test]
     fn an_hour_cache_waits_twice_as_long_for_its_rewrite() -> Fallible {
         let model = opus()?;
@@ -1209,6 +1380,12 @@ pub(crate) mod tests {
         assert!(decide(&five, &Cut::default(), &model, now).is_some());
         let hour = with_usage(22, |usage| usage.cache_write1h = Some(1_000));
         assert_eq!(decide(&hour, &Cut::default(), &model, now), None);
+        let later = REPLIED + 60_000 * 26 + 1_000;
+        let hour = with_usage(27, |usage| usage.cache_write1h = Some(1_000));
+        assert_eq!(
+            decide(&hour, &Cut::default(), &model, later).map(|record| record.reason),
+            Some("breakeven".to_owned())
+        );
         Ok(())
     }
 
@@ -1554,6 +1731,92 @@ pub(crate) mod tests {
         std::fs::remove_file(&paths[0])?;
         let ids = cut(&messages)?;
         assert!(!ids.contains(&"call-0".to_owned()), "{ids:?}");
+        Ok(())
+    }
+
+    fn tagged_read_session(path: &std::path::Path, tag_of: &str) -> Vec<AgentMessage> {
+        let header = yi_tools::hashline::format::format_hashline_header(
+            &path.display().to_string(),
+            yi_tools::hashline::format::compute_file_hash(tag_of),
+        );
+        let mut messages = vec![AgentMessage::user_input(
+            UserContent::Text("read it".to_owned()),
+            0,
+        )];
+        let args = json!({"path": path.display().to_string()});
+        messages.push(assistant(&[("call-0".to_owned(), "read", args)], 0));
+        messages.push(AgentMessage::ToolResult {
+            tool_call_id: "call-0".to_owned(),
+            tool_name: "read".to_owned(),
+            content: vec![Content::Text {
+                text: format!("{header}\n{}", "1:fn main() {}\n".repeat(700)),
+                text_signature: None,
+            }],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        });
+        calls(1..10, 10_000, &mut messages);
+        messages
+    }
+
+    fn cuts_call_zero(messages: &[AgentMessage]) -> Result<bool, Box<dyn std::error::Error>> {
+        let late = REPLIED + 60_000 * 9 + 6 * 60_000;
+        let record = decide(messages, &Cut::default(), &opus()?, late).ok_or("no cut")?;
+        Ok((record.items.iter()).any(|item| item.tool_call_id == "call-0"))
+    }
+
+    /// Incident: ten children reread files 518 times after their reads aged out at five requests.
+    #[test]
+    fn an_old_read_of_an_unchanged_file_stays_while_the_window_is_roomy() -> Fallible {
+        let scratch = crate::scratch::Scratch::new("yi-reclaim-reads")?;
+        let path = scratch.join("lib.rs");
+        std::fs::write(&path, "fn main() {}\n")?;
+        let messages = tagged_read_session(&path, "fn main() {}\n");
+        assert!(
+            !cuts_call_zero(&messages)?,
+            "an unchanged file's read was cut"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_old_read_is_cut_once_its_file_changed_even_at_the_same_size() -> Fallible {
+        let scratch = crate::scratch::Scratch::new("yi-reclaim-reads")?;
+        let path = scratch.join("lib.rs");
+        std::fs::write(&path, "fn main() {}\n")?;
+        let messages = tagged_read_session(&path, "fn main() {}\n");
+        std::fs::write(&path, "fn mine() {}\n")?;
+        let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000))?;
+        assert!(cuts_call_zero(&messages)?, "a rewritten file's read stayed");
+        Ok(())
+    }
+
+    #[test]
+    fn an_old_read_of_a_deleted_file_is_cut() -> Fallible {
+        let scratch = crate::scratch::Scratch::new("yi-reclaim-reads")?;
+        let path = scratch.join("lib.rs");
+        std::fs::write(&path, "fn main() {}\n")?;
+        let messages = tagged_read_session(&path, "fn main() {}\n");
+        std::fs::remove_file(&path)?;
+        assert!(cuts_call_zero(&messages)?, "a deleted file's read stayed");
+        Ok(())
+    }
+
+    #[test]
+    fn an_old_read_is_cut_when_the_window_is_not_roomy() -> Fallible {
+        let scratch = crate::scratch::Scratch::new("yi-reclaim-reads")?;
+        let path = scratch.join("lib.rs");
+        std::fs::write(&path, "fn main() {}\n")?;
+        let mut messages = tagged_read_session(&path, "fn main() {}\n");
+        set_usage(&mut messages, |usage| usage.input = 400_000);
+        assert!(
+            cuts_call_zero(&messages)?,
+            "a read stayed at 40% of the window"
+        );
         Ok(())
     }
 }

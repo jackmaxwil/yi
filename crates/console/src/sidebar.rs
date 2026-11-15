@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
-use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
+use yi_tui::colors::{Theme, accent_rgb, leaf_name, name_tile, tile_style_at};
 
 use crate::app::App;
 use crate::avatar::Placement;
@@ -157,7 +157,7 @@ fn name_cols(app: &App) -> usize {
             let (children, _) = shown_children(app, id);
             children
                 .into_iter()
-                .map(|child| drawn_width(&child.name))
+                .map(|child| drawn_width(leaf_name(&child.name)))
                 .chain(std::iter::once(drawn_width(&row.label())))
                 .max()
         })
@@ -652,17 +652,20 @@ fn child_rows(
         } else {
             "  ├"
         };
-        let hue = app.accent_of(&id.0, &id.0);
+        let name = leaf_name(&child.name);
+        let parent_seed = app
+            .state
+            .sessions
+            .get(id)
+            .map_or(id.0.as_str(), crate::avatar::hue_seed);
+        let hue = app.accent_of(&id.0, parent_seed);
         let mut spans = vec![
             Span::styled(connector.to_owned(), theme.dim_style()),
-            tile_span(app, name_tile(&child.name), hue),
+            tile_span(app, name_tile(name), hue),
             Span::raw(" "),
         ];
         if !rail {
-            spans.push(Span::styled(
-                pad_cells(&child.name, cols),
-                theme.dim_style(),
-            ));
+            spans.push(Span::styled(pad_cells(name, cols), theme.dim_style()));
             spans.push(Span::raw(" "));
         }
         spans.push(Span::styled(
