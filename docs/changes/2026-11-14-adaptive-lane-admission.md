@@ -5,6 +5,8 @@ decision: Admit children and lanes by host headroom, never by a fixed count | a 
 cut: none crates/runtime/src/subagent.rs
 cut: none crates/runtime/tests/levers.rs
 cut: none evals/tests/test_levers.py
+cut: crates/runtime/src/plan/ops.rs | pub const WIDTH_MAX: usize = 8; | a fixed fan-out of eight refused work a roomy host could run; the default is now no bound and admission measures the host
+cut: crates/runtime/tests/plan_ops.rs | fn width_is_the_family_cap_not_the_host() -> TestResult { | pinned a default width that no longer exists; width_is_unbounded_until_a_ceiling_is_set replaces it
 shares: #2234 adds one `pub mod admission;` line to crates/runtime/src/lib.rs, away from its lines
 shares: #2205 adds one `pub mod admission;` line to crates/runtime/src/lib.rs, away from its lines
 raise: crate cli +1, crate runtime +391, tests +244, comments +2
