@@ -236,6 +236,21 @@ fn search_hit_with_a_dash_digit_dash_in_its_text_is_a_hit() {
 }
 
 #[test]
+fn search_hit_with_a_colon_digit_colon_in_its_text_is_a_hit() {
+    let spans = done("grep", "x", &["12:at 10:30:00"]);
+    assert!(
+        spans.iter().any(|(content, _)| content == "  12 "),
+        "{spans:?}"
+    );
+    assert!(
+        !spans
+            .iter()
+            .any(|(content, _)| content.contains("12:at 10")),
+        "{spans:?}"
+    );
+}
+
+#[test]
 fn search_rows_past_the_tag_cap_are_coloured_with_their_context() {
     let spans = done(
         "grep",
