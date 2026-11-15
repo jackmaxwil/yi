@@ -709,3 +709,23 @@ fn slash_mcp_opens_the_mcp_page() -> TestResult {
     assert!(has_row(&rows, "MCP"), "{rows:#?}");
     Ok(())
 }
+
+#[test]
+fn escape_after_a_proposal_puts_the_typed_words_back() -> TestResult {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = app();
+    app.apply(Reply::Rewriter(yi_types::config::RewriteLength::Medium));
+    type_text(&mut app, &tx, "fix the tset");
+    press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+    let Ok(Command::Rewrite { ask, .. }) = rx.try_recv() else {
+        return Err("Enter on a typed draft asked no rewrite".into());
+    };
+    app.apply(Reply::Rewritten {
+        ask,
+        outcome: Ok("Fix the test.".to_owned()),
+    });
+    press(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+    press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(sent(&mut rx), vec!["prompt fix the tset".to_owned()]);
+    Ok(())
+}

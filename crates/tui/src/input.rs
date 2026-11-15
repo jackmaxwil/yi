@@ -251,7 +251,8 @@ fn enter(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>) {
     // ponytail: a draft with a paste or an image goes as typed; rewrite around markers if asked.
     let eligible = app.reply_bound.is_none()
         && !app.composer.has_attachments()
-        && matches!(slash_line(held.clone()), Slash::Prompt(_));
+        && matches!(slash_line(held.clone()), Slash::Prompt(_))
+        && !held.trim().is_empty();
     match app.composer.rewrite.step(Event::Enter, &held, eligible) {
         Effect::Ask => {
             if let Some((ask, length)) = app.composer.rewrite.asking() {

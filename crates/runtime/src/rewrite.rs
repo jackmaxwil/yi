@@ -1,13 +1,13 @@
 //! Prompt rewriting: a cheap model restates the composer's draft before it is sent, and the
 //! host puts the typed words under the rewrite, so no model is trusted to quote them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use yi_loop::interrupt::InterruptSignal;
 use yi_types::config::RewriteLength;
-use yi_types::message::{AgentMessage, Usage, UserContent};
+use yi_types::message::{AgentMessage, Usage};
 use yi_types::model::{Effort, LlmContext, Model};
 
 use crate::provider::ProviderStream;
@@ -71,17 +71,7 @@ fn system_prompt(length: RewriteLength, guidance: Option<&str>) -> String {
 }
 
 fn body(source: &str) -> &str {
-    source
-        .strip_prefix("---\n")
-        .and_then(|rest| rest.split_once("\n---\n"))
-        .map_or(source, |(_, body)| body)
-}
-
-fn typed(content: &UserContent) -> String {
-    match content {
-        UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, "\n"),
-    }
+    crate::plan::import::split_frontmatter(source).map_or(source, |(_, body)| body)
 }
 
 fn excerpt(recent: &[String]) -> String {
@@ -114,6 +104,13 @@ fn request(facts: &str, recent: &[String], draft: &str) -> String {
         "<facts>\n{facts}\n</facts>\n\n{}\n\n<draft>\n{draft}\n</draft>",
         excerpt(recent)
     )
+}
+
+fn folder_facts(cwd: &Path) -> String {
+    let git = crate::environment::git_summary(cwd).map_or_else(String::new, |found| {
+        crate::environment::git_line(&found.0, found.1, found.2)
+    });
+    format!("folder: {}{git}", cwd.display())
 }
 
 /// Invariant: the typed words ride under the rewrite line for line, typos included.
@@ -172,13 +169,6 @@ impl Rewriter {
         Ok(Some(body(&source).to_owned()))
     }
 
-    fn facts(&self) -> String {
-        let git = crate::environment::git_summary(&self.cwd).map_or_else(String::new, |found| {
-            crate::environment::git_line(&found.0, found.1, found.2)
-        });
-        format!("folder: {}{git}", self.cwd.display())
-    }
-
     pub async fn rewrite(
         &self,
         length: RewriteLength,
@@ -189,14 +179,15 @@ impl Rewriter {
             Ok(guidance) => guidance,
             Err(reason) => return (Err(reason), Usage::zero()),
         };
+        let folder = self.cwd.clone();
+        let facts = tokio::task::spawn_blocking(move || folder_facts(&folder))
+            .await
+            .unwrap_or_else(|_| format!("folder: {}", self.cwd.display()));
         let context = LlmContext {
             cache_ttl: yi_types::model::Ttl::Min5,
             cache_tail: true,
             system_prompt: system_prompt(length, guidance.as_deref()),
-            messages: vec![AgentMessage::task(
-                &request(&self.facts(), recent, draft),
-                0,
-            )],
+            messages: vec![AgentMessage::task(&request(&facts, recent, draft), 0)],
             transient: Vec::new(),
             schema: None,
             shared_through: None,
@@ -255,7 +246,10 @@ impl crate::session::AgentSession {
             .and_then(|store| crate::fetch::user_entries(store).ok())
             .unwrap_or_default()
             .iter()
-            .map(|(_, content)| typed(content))
+            .rev()
+            .take(RECENT)
+            .rev()
+            .map(|(_, content)| crate::rewind::user_text_joined(content, "\n"))
             .collect();
         let (reply, usage) = rewriter.rewrite(length, draft, &recent).await;
         if let Some(store) = &store {
