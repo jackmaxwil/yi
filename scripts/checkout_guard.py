@@ -3,8 +3,9 @@
 
 Incident: on 2026-11-06 a session discarded the owner's uncommitted README edits in the main checkout, and
 land-fix deletes whatever sits at its worktree path, a worktree an earlier run kept for a person included.
-A checkout is the caller's when it carries the mark `made` wrote in its git dir; `kept` hands it to a
-person with a mark of its own, after which no script may discard it, clean or not.
+A checkout is the caller's while it carries the mark `made` wrote in its git dir and its HEAD and
+uncommitted paths and their bytes still equal the snapshot the mark holds; work added after the mark is a person's.
+`kept` hands it to a person with a mark of its own, after which no script may discard it, clean or not.
 
     checkout_guard.py made <dir> --by NAME    mark a checkout NAME just created
     checkout_guard.py kept <dir>              leave it for a person: no script discards it again
@@ -13,6 +14,9 @@ person with a mark of its own, after which no script may discard it, clean or no
 It guards the scripts that call it; a person or agent running git by hand is outside it.
 """
 import argparse
+import contextlib
+import hashlib
+import io
 import pathlib
 import subprocess
 import sys
@@ -40,8 +44,53 @@ def marked(d):
     return gd
 
 
+def file_sha256(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def digest(d, rel):
+    path = pathlib.Path(d) / rel
+    return file_sha256(path) if path.is_file() else "absent"
+
+
+def state(d):
+    """HEAD and the NUL-separated status of `d`, each uncommitted path tagged with the digest of its bytes; None when git cannot read either; an unborn HEAD is empty."""
+    head = git(d, "rev-parse", "--verify", "-q", "HEAD")
+    status = git(d, "status", "--porcelain", "-z", "--untracked-files=all")
+    if head.returncode > 1 or status.returncode:
+        return None
+    return head.stdout.strip(), "\0".join(f"{e}\t{digest(d, e[3:])}" for e in status.stdout.split("\0") if e)
+
+
 def made(d, by):
-    (marked(d) / MARK).write_text(by + "\n")
+    gd = marked(d)
+    head, status = state(d) or ("", "")
+    (gd / MARK).write_text(f"{by}\n{head}\n{status}")
+
+
+def marked_by(mark):
+    """The script a mark names and the (HEAD, status) it snapshotted, None for a mark written without one."""
+    if not mark.is_file():
+        return None, None
+    by, _, rest = mark.read_text().partition("\n")
+    head, sep, status = rest.partition("\n")
+    return by.strip(), (head, status) if sep else None
+
+
+def tracked(status):
+    return {e.rpartition("\t")[0][3:]: e.rpartition("\t")[2] for e in status.split("\0") if e}
+
+
+def listed(label, paths):
+    return [f"{label} {', '.join(paths[:5])}" + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")] if paths else []
+
+
+def drift(was, now):
+    before, after = tracked(was[1]), tracked(now[1])
+    moved = [f"HEAD moved from {was[0][:9] or 'unborn'} to {now[0][:9] or 'unborn'}"] * (was[0] != now[0])
+    added = sorted(after.keys() - before.keys())
+    edited = sorted(p for p in after.keys() & before.keys() if after[p] != before[p])
+    return "; ".join(moved + listed("new paths", added) + listed("edited paths", edited)) or "its uncommitted state changed"
 
 
 def kept(d):
@@ -61,9 +110,13 @@ def refusal(d, by, off=""):
         return None if off == "bare" else f"{d} is no git checkout, so its files cannot be told from scratch; a person removes it"
     if off != "held" and (gd / HELD).is_file():
         return f"{d} was kept for a person, so no script discards it; a person removes it"
-    mark = gd / MARK
-    if off != "owner" and mark.is_file() and mark.read_text().strip() == by:
-        return None
+    owner, snap = marked_by(gd / MARK)
+    if off != "owner" and owner == by:
+        now = state(d)
+        if off == "snapshot" or (snap is not None and now == snap):
+            return None
+        if snap is not None and now is not None:
+            return f"{d} changed after {by} made it ({drift(snap, now)}); commit or move that work first"
     untracked = "no" if off == "untracked" else "all"
     status = git(d, "status", "--porcelain", f"--untracked-files={untracked}")
     if status.returncode and off != "status":
@@ -78,7 +131,7 @@ def refusal(d, by, off=""):
 
 def selfcheck():
     errs = []
-    for off in ("", "owner", "dirty", "untracked", "bare", "held", "status"):
+    for off in ("", "owner", "snapshot", "dirty", "untracked", "bare", "held", "status"):
         bad = []
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
@@ -86,13 +139,28 @@ def selfcheck():
             git(repo, "init", "-q")
             git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "a")
             (repo / "README.md").write_text("the owner's edit\n")
-            if not refusal(repo, "land-fix", off):
-                bad.append("a dirty checkout the caller did not make may be discarded")
+            if not off:
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    if main(["check", str(repo), "--by", "land-fix"]) != 1:
+                        bad.append("check exits 0 on a dirty checkout")
+                if "README.md" not in out.getvalue():
+                    bad.append("check does not name the dirty path")
             made(repo, "land-fix")
             if refusal(repo, "land-fix", off):
                 bad.append("the caller's own dirty checkout is refused")
             if not refusal(repo, "conflict-fix", off):
                 bad.append("another script may discard a checkout land-fix made")
+            (repo / "README.md").write_text("the owner's EDIT\n")
+            if not refusal(repo, "land-fix", off):
+                bad.append("an edit to a file the script already changed, after made, may be discarded")
+            if not off and "edited paths README.md" not in refusal(repo, "land-fix"):
+                bad.append("an edited tracked path is not named as an edited path")
+            (repo / "README.md").write_text("the owner's edit\n")
+            (repo / "later.txt").write_text("a person's edit after the mark\n")
+            if not refusal(repo, "land-fix", off):
+                bad.append("work added to a marked checkout after the mark may be discarded")
+            (repo / "later.txt").unlink()
             kept(repo)
             if not refusal(repo, "land-fix", off):
                 bad.append("a checkout kept for a person may be discarded")
