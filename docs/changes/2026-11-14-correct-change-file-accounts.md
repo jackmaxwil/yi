@@ -1,4 +1,5 @@
 ---
+version: 0.1065.0
 issue: Closes #2195
 ---
 Seven change files recorded an account that the code or the repository does not bear out. The rows the recorder wrote for them stay as history, and this is the correction.
