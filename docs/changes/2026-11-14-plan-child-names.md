@@ -1,4 +1,5 @@
 ---
+version: 0.1062.0
 issue: #2227
 cut: none crates/console/src/sidebar.rs
 cut: none crates/tui/src/agents.rs
