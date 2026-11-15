@@ -1278,4 +1278,31 @@ mod tests {
         drop(session);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn a_disposed_kernel_still_held_leaves_the_family_count() -> TestResult {
+        let dir = Scratch::new("yi-fetch-disposed-kernel")?;
+        let service = Arc::new(crate::kernel::KernelService::new(
+            crate::kernel::KernelServiceOptions {
+                cwd: dir.to_path_buf(),
+                home: dir.to_path_buf(),
+                session_dir: None,
+                family_dir: None,
+                host: Arc::new(NoHost),
+                on_restore: None,
+                on_boot: None,
+                sandbox: None,
+                snapshot_key: None,
+                per_session_state: false,
+                cell_ceiling: None,
+            },
+        ));
+        let map = KernelServiceMap::new();
+        map.insert("child", &service);
+        assert_eq!(map.live(), 1);
+        service.dispose().await;
+        assert_eq!(map.live(), 0);
+        drop(service);
+        Ok(())
+    }
 }
