@@ -237,13 +237,6 @@ pub struct NbCell {
     pub running: bool,
 }
 
-pub(crate) fn notebook_cells<'a>(
-    notebooks: &'a BTreeMap<SessionId, Vec<NbCell>>,
-    session: &SessionId,
-) -> &'a [NbCell] {
-    notebooks.get(session).map_or(&[][..], Vec::as_slice)
-}
-
 /// Invariant: rows drawn under a key (the width, and for Review its scope, note and the diff's
 /// revision) and the palette that painted them, redrawn when either moves; a new pane starts empty.
 pub type Drawn<K, V = Rows> = Option<(K, u64, V)>;
@@ -284,6 +277,7 @@ pub enum PaneContent {
     Terminal(Box<crate::pty::Pty>),
     Editor(Box<crate::editor_view::Tabs>),
     Settings(Box<crate::settings::Settings>),
+    Mcp(Box<yi_tui::mcp::McpPage>),
     Browser(Box<crate::browser::BrowserPane>),
 }
 
@@ -469,6 +463,7 @@ impl Pane {
             | PaneContent::Terminal(_)
             | PaneContent::Editor(_)
             | PaneContent::Settings(_)
+            | PaneContent::Mcp(_)
             | PaneContent::Browser(_) => None,
         }
     }

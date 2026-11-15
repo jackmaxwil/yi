@@ -12,7 +12,7 @@ pub mod review;
 pub(crate) mod swap;
 pub mod update;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -24,7 +24,7 @@ use tokio::task::JoinHandle;
 use yi_runtime::session_store::{
     CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
-use yi_runtime::{AgentSession, Asker, SubagentHost, available_models, select_model};
+use yi_runtime::{AgentSession, Asker, SubagentHost, pickable_models, select_model};
 use yi_types::acp::AcpMeta;
 use yi_types::event::AgentEvent;
 use yi_types::subagent::ChildId;
@@ -118,6 +118,8 @@ struct AcpState {
     sessions: HashMap<String, SessionHandle>,
     building: HashMap<String, attach::Building>,
     failed: HashMap<String, String>,
+    /// Incident: [`Self::ensure_loaded`] opened disk sessions after close, so cancel put them back.
+    closed: HashSet<String>,
     wake: tokio::sync::mpsc::WeakUnboundedSender<attach::Incoming>,
     defaults: Arc<dyn Fn() -> Option<SessionDefaults> + Send + Sync>,
     build: SessionBuilder,
@@ -147,7 +149,7 @@ fn options_for(
     mode: &str,
 ) -> Vec<acp::SessionConfigOption> {
     let choice = |value: String, name: String| acp::SessionConfigSelectOption::new(value, name);
-    let models: Vec<_> = available_models()
+    let models: Vec<_> = pickable_models(model)
         .iter()
         .map(|candidate| {
             let value = format!("{}/{}", candidate.provider, candidate.id);
@@ -330,12 +332,20 @@ impl AcpState {
             .meta(meta_map(&self.session_meta(session_id)))
     }
 
+    fn ensure_loaded(&mut self, id: &str) {
+        self.reload(id);
+        if self.store_of(id).is_none() && !self.failed.contains_key(id) && !self.closed.contains(id)
+        {
+            let _missing_fails_in_session = self.open_later(id);
+        }
+        self.settle(id);
+    }
+
     /// Answered by the forwarder once the prompt is inserted; only a refusal answers here.
     fn prompt(&mut self, request: Value, params: &Value) -> Option<Result<Value, (i64, String)>> {
         if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
             let id = id.to_owned();
-            self.reload(&id);
-            self.settle(&id);
+            self.ensure_loaded(&id);
         }
         self.prompt_serial = self.prompt_serial.saturating_add(1);
         let message_id = format!("msg_p{}", self.prompt_serial);
@@ -453,8 +463,7 @@ impl AcpState {
         ) && let Some(id) = params.get("sessionId").and_then(Value::as_str)
         {
             let id = id.to_owned();
-            self.reload(&id);
-            self.settle(&id);
+            self.ensure_loaded(&id);
         }
         match method {
             "initialize" => self.initialize(params),
@@ -512,6 +521,7 @@ impl AcpState {
             }
             "session/resume" => {
                 let id = Self::session_id(params)?;
+                self.closed.remove(&id);
                 let store = match self.store_of(&id) {
                     Some(store) => store,
                     None => self
@@ -555,6 +565,7 @@ impl AcpState {
                 }
                 self.user_cells.close(&id);
                 self.drop_session(&id);
+                self.closed.insert(id);
                 Ok(json!({}))
             }
             "session/delete" => {
@@ -566,6 +577,7 @@ impl AcpState {
                     self.release_parked(&id);
                 }
                 crate::resident::forget(&id);
+                self.closed.insert(id.clone());
                 self.repo
                     .delete(&id)
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
@@ -845,6 +857,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
         sessions: HashMap::new(),
         building: HashMap::new(),
         failed: HashMap::new(),
+        closed: HashSet::new(),
         wake: line_tx.downgrade(),
         defaults: options.defaults,
         build: options.build,

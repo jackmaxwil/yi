@@ -13,7 +13,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Session file | Pi's v4 session JSONL format: a header, then one `Mutation` per line; any other version is rejected (§4.1) | D32 |
 | Pi RPC | `yi rpc` serves Pi's RPC JSONL command names plus Yi's own (§17.1) | |
 | Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog, plus providers `config.json` declares on any of the first three (§5) | |
-| Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor` | D191 |
+| Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor`, `openai-codex` and `claude` | D191 |
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
@@ -211,6 +211,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `read` of a file the session edited, by the `[path#TAG]` headers the tools print) is cut once the
   tokens dropped × requests so far beat ten reads of the tokens after the first cut, or the cache
   lapsed; at least 2,000 tokens, on every route whatever its price.
+  A `read` or `grep` result whose `[path#TAG]` headers all still match the files on disk is kept past
+  the age floor while the last reply's context use is under `reclaim.keep_below_pct` (30) of the window.
   A `custom{reclaim}` entry names the cut results, which render from then on as one
   `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
 - `annotate` writes `custom{annotation}`: `pin` keeps the newest result whose call contains
@@ -305,7 +307,15 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
 - yi-oauth: PKCE S256 from `/dev/urandom`, a `127.0.0.1` loopback, `login`/`logout`; tokens in
   `~/.yi/providers/tokens/<provider>.json` (0600, tmp+rename), refreshed 30 s before expiry under
   a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`. Yi ships no client
-  id except `cursor`: `yi login cursor` polls `api2.cursor.sh` and a turn posts Connect protobuf
+  id except `cursor`, `openai-codex` and `claude`: `yi login claude` is the Claude Pro/Max subscription login,
+  a built-in paste profile stored as the `anthropic` credential (Claude Code's public client, authorize `claude.ai`,
+  token `console.anthropic.com`, redirect the console's code page: the user pastes `code#state`, JSON token body);
+  an Anthropic turn on that credential sends Bearer, `anthropic-beta: oauth-2025-04-20` and the Claude Code identity
+  line first in `system`; a profile file at `anthropic` wins and `yi login anthropic` stays the API-key path.
+  `yi login openai-codex` is the ChatGPT Plus/Pro subscription
+  login, a built-in `oauth-code` profile (the Codex CLI's public client, `auth.openai.com`, fixed redirect
+  `http://localhost:1455/auth/callback`, no port fallback); the `chatgpt-account-id` is read from the id_token
+  into the credential's `org` and survives refresh. `yi login cursor` polls `api2.cursor.sh` and a turn posts Connect protobuf
   over HTTP/2 to `agentn.us.api5.cursor.sh`'s agent `Run` method. Text frames are sent on as they
   arrive, a native shell frame runs bash, and the stream closes when the session aborts. The model
   list is that account's `AvailableModels`, cached under `~/.yi/catalog`; a typed id still runs
@@ -1174,8 +1184,11 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   It is never authority once delivered: the target's log is written first, then the ack.
 - A channel job carries `channel: {address, path, filter?, batch?}` and ticks on its cadence (60 s
   unasked); a landing message pokes it due, and a tick on a channel no adapter feeds with nothing
-  past its ack re-arms in memory, with no claim and no ledger write. It filters on the host, creates one todo per batch
-  (stamped `channel: {job, ids}`) or unblocks its waiter, and wakes with the messages fenced as data.
+  past its ack re-arms in memory, with no claim and no ledger write. It filters on the host (`key=a|b`
+  admits any listed value, which is how `actor=alice|bob` gates who can start work), creates one todo
+  per batch (stamped `channel: {job, ids, thread?}`) or unblocks its waiter, and wakes with the
+  messages fenced as data. A message whose `data.thread` has an open todo joins that todo's stamp as
+  follow-up input; one on a new thread opens its own todo whatever the job's overlap.
   `External {probe}` is an `exec` wait on `ok=true`. [`plan/timer.rs`](../crates/runtime/src/plan/timer.rs)
   runs only leases, stuck children and the dispatch backstop.
 - Adapters: `exec://` and `file://` in the host; any other scheme is `yi-adapter-<scheme>`

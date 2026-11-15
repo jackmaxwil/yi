@@ -19,11 +19,10 @@ use crate::frame::FrameScheduler;
 use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
 use crate::motion::elapsed_ms;
-use crate::orb;
 use crate::port::SessionPort;
-use crate::term;
 use crate::transcript::{arg_summary, result_preview, text_of, user_text};
 use crate::tree::TreeView;
+use crate::{orb, term};
 pub enum UiEvent {
     Agent(AgentEvent),
     Child { child_id: String, event: AgentEvent },
@@ -36,6 +35,7 @@ pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
     Question(crate::question::QuestionView),
     Agents(crate::agents::AgentsPopup),
+    Mcp(Box<crate::mcp::McpPage>),
     Model(Box<crate::model::ModelPopup>),
     Theme(Box<crate::theme_file::Picker>),
 }

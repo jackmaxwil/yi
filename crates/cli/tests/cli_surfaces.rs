@@ -1425,6 +1425,49 @@ fn an_unknown_model_names_itself_over_acp() -> TestResult {
     Ok(())
 }
 
+/// The console picker is `session/new`'s `model` option; an unkeyed provider's models were offered
+/// beside the one the user can run, and picking one only failed at its first turn.
+#[test]
+fn a_model_picker_offers_only_providers_that_hold_a_credential() -> TestResult {
+    let workspace = Workspace::new("acp-picker-credentials")?;
+    let providers = serde_json::json!({"localgw": {"baseUrl": "http://127.0.0.1:9/v1",
+        "apiKey": "sk-placeholder", "models": [{"id": "m1"}]}});
+    let config = serde_json::json!({"kernel": {"prewarm": false}, "providers": providers});
+    std::fs::write(
+        workspace.0.home()?.join(".yi/config.json"),
+        config.to_string(),
+    )?;
+    let frames = workspace.acp(
+        &["--model", "faux/faux-1"],
+        &[
+            serde_json::json!({"jsonrpc": "2.0", "id": "1", "method": "initialize",
+                "params": {"protocolVersion": 2}}),
+            serde_json::json!({"jsonrpc": "2.0", "id": "2", "method": "session/new",
+                "params": {"cwd": workspace.project(), "mcpServers": []}}),
+        ],
+    )?;
+    let reply = frames
+        .iter()
+        .find(|frame| frame["id"] == "2")
+        .ok_or_else(|| format!("no reply to session/new in {frames:?}"))?;
+    let options = reply["result"]["configOptions"]
+        .as_array()
+        .ok_or("no configOptions")?;
+    let model = options
+        .iter()
+        .find(|option| option["configId"] == "model")
+        .ok_or("no model option")?;
+    let choices: Vec<&str> = (model["options"].as_array().ok_or("no choices")?.iter())
+        .filter_map(|choice| choice["value"].as_str())
+        .collect();
+    assert_eq!(
+        choices,
+        ["localgw/m1"],
+        "only the keyed provider is offered"
+    );
+    Ok(())
+}
+
 /// Dies with `final` printed only inside the loop's stream: a driver waiting on the closing
 /// line of `ask --json` saw nothing when the model was unknown.
 #[test]

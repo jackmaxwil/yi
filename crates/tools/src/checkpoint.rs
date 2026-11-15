@@ -377,6 +377,14 @@ impl Checkpoints {
             }
         }
         let _index_is_scratch = std::fs::remove_file(&index);
+        // Incident: `scripts/wt_home.sh` calls `git rev-parse --show-toplevel` and exited 128 in
+        // a materialized tree (`01a1d35e`); a disposable `.git` keeps `into` as its own toplevel.
+        if !yi_permission::git_dirs(&self.work_tree).is_empty()
+            && !into.join(".git").exists()
+            && let Ok(mut init) = host_git(&self.work_tree)
+        {
+            let _disposable = init.args(["init", "-q"]).current_dir(into).output();
+        }
         Ok(())
     }
 

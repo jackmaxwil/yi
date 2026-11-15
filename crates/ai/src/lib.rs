@@ -10,6 +10,7 @@ pub mod cursor;
 pub mod decide;
 pub mod faux;
 pub mod kimi;
+pub use yi_oauth::flow::desktop_opener;
 pub use yi_types::json_salvage;
 pub mod leak;
 pub mod openai;

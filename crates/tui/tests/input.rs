@@ -698,3 +698,14 @@ fn the_command_list_leaves_the_box_in_a_short_pane() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn slash_mcp_opens_the_mcp_page() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/mcp");
+    press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+    let rows = common::live_rows(&mut app)?;
+    assert!(has_row(&rows, "MCP"), "{rows:#?}");
+    Ok(())
+}

@@ -10,6 +10,8 @@ use crate::settings::{Intent, Settings, Target, ThemePreview};
 use yi_tui::colors::Theme;
 use yi_tui::theme_file::{BUILT_IN, ground_id, themes_dir};
 
+mod mcp;
+
 impl App {
     pub(super) fn on_settings(&self) -> bool {
         self.state

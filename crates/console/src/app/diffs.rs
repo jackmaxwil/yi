@@ -260,7 +260,7 @@ impl App {
         }
     }
 
-    fn root_of(&self, session: &SessionId) -> String {
+    pub(super) fn root_of(&self, session: &SessionId) -> String {
         self.state
             .sessions
             .get(session)
@@ -311,7 +311,7 @@ impl App {
             let session = match self.state.panes.get(&id).map(|pane| &pane.content) {
                 Some(PaneContent::Notebook { session, .. }) => {
                     let running = session.as_ref().is_some_and(|session| {
-                        crate::model::notebook_cells(&self.state.notebooks, session)
+                        crate::panes::notebook_cells(&self.state.notebooks, session)
                             .iter()
                             .any(|cell| cell.running)
                     });

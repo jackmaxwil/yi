@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use yi_tui::SessionPort;
-use yi_tui::colors::{ColorTier, Theme, name_tile, tile_style_at};
+use yi_tui::colors::{ColorTier, Theme, leaf_name, name_tile, tile_style_at};
 use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
@@ -166,13 +166,14 @@ fn lift(buffer: &mut Buffer, rect: Rect, theme: &Theme) {
         if let Some(cell) = buffer.cell_mut(at) {
             if cell.modifier.contains(Modifier::REVERSED) {
                 cell.fg = crate::chrome::lighten(cell.fg);
+            } else if cell.bg == theme.selection_bg() {
+                cell.bg = crate::chrome::lighten(cell.bg);
             } else {
                 cell.bg = theme.selection_bg();
             }
         }
     }
 }
-
 pub struct ViewState {
     pub sidebar: Rect,
     pub editor_cursor: Option<(u16, u16)>,
@@ -519,6 +520,10 @@ fn pane_view_content(
             let (title, lines) = browser.view(inner, view.kitty, theme);
             (title, lines, None)
         }
+        PaneContent::Mcp(page) => {
+            use yi_tui::popup::BottomView;
+            ("MCP".to_owned(), page.lines(width, theme), None)
+        }
         PaneContent::Settings(settings) => {
             let options = settings
                 .session
@@ -567,7 +572,7 @@ fn pane_view_content(
             );
             let all = cached(drawn, width, theme.palette(), || {
                 let cells = session.as_ref().map_or(&[][..], |id| {
-                    crate::model::notebook_cells(view.notebooks, id)
+                    crate::panes::notebook_cells(view.notebooks, id)
                 });
                 crate::panes::notebook_lines(cells, width, *full, theme)
             });
@@ -577,23 +582,8 @@ fn pane_view_content(
     }
 }
 
-pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
-            out.push(String::new());
-        }
-        for chunk in chars.chunks(width) {
-            out.push(chunk.iter().collect());
-        }
-    }
-    out
-}
-
 pub(crate) fn short_path(path: &str) -> String {
-    path.rsplit('/').next().unwrap_or(path).to_owned()
+    leaf_name(path).to_owned()
 }
 
 pub(crate) fn status_style(theme: &Theme, status: SessionStatus) -> Style {
@@ -834,7 +824,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         down: bool,
         left: bool,
         right: bool,
-        hue: Option<Color>,
     }
     let mut raster: HashMap<(u16, u16), EdgeCell> = HashMap::new();
     if let Some(x) = view.rail_edge {
@@ -858,7 +847,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                 let cell = raster.entry((x, y)).or_default();
                 cell.left |= left_arm;
                 cell.right |= right_arm;
-                cell.hue = cell.hue.or(pane.focused.then_some(pane.hue));
             }
         }
         for y in r.y..=bottom {
@@ -868,7 +856,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                 let cell = raster.entry((x, y)).or_default();
                 cell.up |= up_arm;
                 cell.down |= down_arm;
-                cell.hue = cell.hue.or(pane.focused.then_some(pane.hue));
             }
         }
     }
@@ -877,10 +864,7 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         let symbol = glyph(cell.up, cell.down, cell.left, cell.right);
         if let Some(target) = buffer.cell_mut((*x, *y)) {
             target.set_symbol(symbol);
-            target.set_style(
-                cell.hue
-                    .map_or_else(|| theme.dim_style(), |hue| Style::default().fg(hue)),
-            );
+            target.set_style(theme.dim_style());
         }
     }
     let closable = app

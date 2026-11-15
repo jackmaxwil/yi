@@ -118,3 +118,36 @@ fn only_the_top_two_tiers_are_advanced() {
         .collect();
     assert_eq!(advanced, vec![Effort::XHigh, Effort::Max]);
 }
+
+#[test]
+fn discovered_variants_advertise_xhigh_and_max() -> Result<(), Box<dyn std::error::Error>> {
+    let provider: yi_types::config::CustomProvider =
+        serde_json::from_value(json!({"baseUrl": "http://127.0.0.1:1/v1"}))?;
+    let list: yi_types::config::CustomModelList = serde_json::from_value(json!({"data": [
+        {"id": "opus", "reasoning": true, "variants": {
+            "low": {"reasoningEffort": "low"}, "medium": {"reasoningEffort": "medium"},
+            "high": {"reasoningEffort": "high"}, "xhigh": {"reasoningEffort": "xhigh"},
+            "max": {"reasoningEffort": "max"}}},
+        {"id": "plain", "reasoning": true},
+        {"id": "dumb"}
+    ]}))?;
+    let models = provider.discovered_catalog("relay", list);
+    let efforts = |index: usize| models.get(index).map(Model::supported_efforts);
+    assert_eq!(
+        efforts(0),
+        Some(vec![
+            Effort::Off,
+            Effort::Low,
+            Effort::Medium,
+            Effort::High,
+            Effort::XHigh,
+            Effort::Max
+        ])
+    );
+    assert_eq!(
+        efforts(1).map(|levels| levels.contains(&Effort::Max)),
+        Some(false)
+    );
+    assert_eq!(efforts(2), Some(vec![Effort::Off]));
+    Ok(())
+}
