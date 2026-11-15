@@ -1,4 +1,5 @@
 ---
+version: 0.1066.0
 issue: Closes #2175
 raise: crate permission +7, tests +8
 ---
