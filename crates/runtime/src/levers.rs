@@ -108,6 +108,7 @@ levers! {
     review_timeout_s: u64 = "review.timeout_s", auto_review::REVIEW_TIMEOUT.as_secs(), 10..=120, true;
     graph_next_lines: usize = "graph.next_lines", crate::todo::text::NEXT_LINES, 1..=5, true;
     reclaim_keep_turns: u64 = "reclaim.keep_turns", crate::reclaim::KEEP_TURNS, 1..=1000, true;
+    reclaim_keep_below_pct: u64 = "reclaim.keep_below_pct", crate::reclaim::KEEP_BELOW_PCT, 0..=100, true;
     compaction_render: u8 = "compaction.render", crate::compaction::RENDER, 0..=1, true;
 }
 

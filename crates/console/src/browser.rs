@@ -186,10 +186,7 @@ impl BrowserPane {
         };
         let mut lines = vec![bar];
         let width = usize::from(inner.width);
-        for row in status
-            .iter()
-            .flat_map(|text| crate::render::wrap(text, width))
-        {
+        for row in status.iter().flat_map(|text| wrap(text, width)) {
             lines.push(Line::styled(row, theme.dim_style()));
         }
         let host = yi_types::url::url_authority(&self.url).unwrap_or(self.url.as_str());
@@ -646,6 +643,21 @@ pub fn place(app: &mut App, out: &mut impl Write) {
             let _ = yi_tui::orb::kitty::delete_id(&mut *out.borrow_mut(), id);
         },
     );
+}
+
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            out.push(String::new());
+        }
+        for chunk in chars.chunks(width) {
+            out.push(chunk.iter().collect());
+        }
+    }
+    out
 }
 
 #[cfg(test)]

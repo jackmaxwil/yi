@@ -1154,4 +1154,51 @@ mod caps {
         assert!(text.contains("spawned agent://ship-it/child"), "{text}");
         Ok(())
     }
+
+    /// Dies with `git rev-parse --show-toplevel` exiting 128 inside a decider (`scripts/wt_home.sh`
+    /// in session `01a1d35e`): `ShadowTree::materialize` wrote files into a scratch dir with no
+    /// `.git` link, so git-aware scripts inside the materialized snapshot could not resolve the
+    /// repository.
+    #[test]
+    fn a_materialized_shadow_snapshot_runs_git_rev_parse_without_exiting_128() -> TestResult {
+        let temp = Scratch::new("yi-shadow-git-decider")?;
+        let home = temp.join("home");
+        let repo = temp.join("repo");
+        std::fs::create_dir_all(&home)?;
+        std::fs::create_dir_all(&repo)?;
+        let status = yi_tools::keyless_command("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .status()?;
+        assert!(status.success());
+        std::fs::write(repo.join("README.md"), "hi\n")?;
+        let plans_dir = repo.join(".yi/plans");
+        let store = PlanStore::open(plans_dir.clone())?;
+        let snapshotter = yi_runtime::plan::snapshot::shadow_tree(&home, &repo, &plans_dir)
+            .ok_or("shadow_tree unavailable")?;
+        let engine = Arc::new(
+            PlanEngine::new(store, Arc::new(yi_runtime::plan::authority::Unhosted))
+                .with_cwd(repo.clone())
+                .with_snapshotter(snapshotter),
+        );
+        let tool = PlanTool::new(engine, Actor::Owner);
+        let contract = json!({"class": "inline", "items": [
+            {"id": "git-check", "critical": true, "weight": 1,
+             "decider": {"cmd": "git rev-parse --show-toplevel >/dev/null"}}
+        ]});
+        let set = json!({"op": "set", "goal": "check git", "todos": [
+            {"label": "run", "contract": contract, "state": "running"}
+        ]});
+        let ctx = ToolContext::new(repo);
+        let out = tool.execute(set.as_object().cloned().unwrap_or_default(), &ctx);
+        assert!(!out.is_error);
+        let done = json!({"op": "set", "todos": [{"label": "run", "state": "done"}]});
+        let out = tool.execute(done.as_object().cloned().unwrap_or_default(), &ctx);
+        let text = yi_types::message::join_text(&out.result.content, "\n");
+        assert!(
+            !text.contains("done refused"),
+            "decider failed git rev-parse in materialized snapshot:\n{text}"
+        );
+        Ok(())
+    }
 }

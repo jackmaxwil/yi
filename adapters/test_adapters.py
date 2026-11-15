@@ -99,7 +99,8 @@ class ExampleAdapterTests(unittest.TestCase):
 
     def test_forgejo_pulls_emits_each_open_head_once_per_sha(self):
         pulls = [
-            {"number": 733, "title": "WIP: Open PRs as drafts", "head": {"sha": "0813a8ef5b2c77d1", "ref": "claude/x"}},
+            {"number": 733, "title": "WIP: Open PRs as drafts", "head": {"sha": "0813a8ef5b2c77d1", "ref": "claude/x"},
+             "user": {"login": "jack"}},
             {"number": 700, "title": "Search past sessions", "head": {"sha": "9ab77e1c0ffee000", "ref": "jack/y"}},
         ]
         adapter = Adapter(
@@ -110,8 +111,10 @@ class ExampleAdapterTests(unittest.TestCase):
             first, second = adapter.next(), adapter.next()
             self.assertEqual(first["id"], "pr-733-0813a8ef5b2c")
             self.assertEqual(first["data"], {"pr": 733, "sha": "0813a8ef5b2c77d1", "branch": "claude/x",
-                                             "title": "WIP: Open PRs as drafts", "draft": True})
+                                             "title": "WIP: Open PRs as drafts", "draft": True,
+                                             "thread": "pr-733", "actor": "jack"})
             self.assertFalse(second["data"]["draft"])
+            self.assertEqual(second["data"]["actor"], "")
             with self.assertRaises(queue.Empty):
                 adapter.lines.get(timeout=1.5)
         finally:

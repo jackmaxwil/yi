@@ -139,6 +139,22 @@ fn the_roster_marks_each_child_in_the_status_vocabulary() -> TestResult {
     Ok(())
 }
 
+/// Plan children are named `<plan>/<todo>`: the shared plan prefix filled the 20-cell name
+/// column, so every child of one plan showed the same name.
+#[test]
+fn plan_children_show_their_own_names() -> TestResult {
+    let named = |name: &str| AgentRow {
+        name: format!("nine-owner-requests-logins-mcp-acp/{name}"),
+        ..row(name, AgentState::Running, 1, None)
+    };
+    let popup = AgentsPopup::new(vec![named("claude"), named("codex")], 200_000);
+    let rendered = flat(&popup.lines(100, &theme())).join("\n");
+    for mark in ["◐ claude", "◐ codex"] {
+        assert!(rendered.contains(mark), "{mark}: {rendered}");
+    }
+    Ok(())
+}
+
 /// Dies with ctrl+c ignored over an open agents popup: the key that cancels everywhere else
 /// left it open.
 #[test]

@@ -55,6 +55,13 @@ A discard on one of these is refused, and no retry changes that:
   so the refusal reads "the newest read of a file this session edited is never cut". Older
   reads of the same file are still cuttable; name one by a fragment unique to it.
 
+## What reclaim keeps on its own
+
+A `read` or `grep` result is not cut at the age floor while every `[path#TAG]` it printed still
+matches the file on disk and the last reply used under `reclaim.keep_below_pct` (30) of the window.
+A file that changed, a deleted file, or a fuller window ages it out as before. `bash` output
+(`sed -n`, `cat`, `head`) carries no tag and ages out at the floor, so `read` is the call that stays.
+
 ## Getting a cut result back
 
 A cut result is replaced by one row:

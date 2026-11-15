@@ -2786,6 +2786,78 @@ async fn an_in_loop_compaction_repeats_the_loops_reclaimed_prefix() -> Result<()
     Ok(())
 }
 
+/// A `read` tool that prints a real file under the header the hashline reader prints.
+struct TaggedRead(std::path::PathBuf);
+
+impl yi_loop::AgentTool for TaggedRead {
+    fn definition(&self) -> yi_types::model::ToolDef {
+        LongResult("read").definition()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _id: &'a str,
+        _args: serde_json::Map<String, serde_json::Value>,
+        _signal: &'a yi_loop::interrupt::InterruptSignal,
+    ) -> yi_loop::tool::ToolFuture<'a> {
+        Box::pin(async move {
+            let on_disk = std::fs::read_to_string(&self.0).unwrap_or_default();
+            let header = yi_tools::hashline::format::format_hashline_header(
+                &self.0.display().to_string(),
+                yi_tools::hashline::format::compute_file_hash(&on_disk),
+            );
+            yi_loop::tool::ToolOutcome {
+                result: yi_types::event::ToolResult {
+                    content: vec![yi_types::message::Content::Text {
+                        text: format!("{header}\n{}", "1:probe line\n".repeat(400)),
+                        text_signature: None,
+                    }],
+                    details: serde_json::json!({}),
+                    usage: None,
+                    added_tool_names: None,
+                    terminate: None,
+                },
+                is_error: false,
+            }
+        })
+    }
+}
+
+/// The `[reclaimed: read …]` lines in the last request of 26 reads of one file, with the file
+/// removed before the run when `delete` is set (every tag then names a file that is gone).
+async fn last_request_cuts(delete: bool) -> Result<usize, Box<dyn Error>> {
+    let scratch = Scratch::new("yi-reclaim-tagged")?;
+    let path = scratch.join("probe.rs");
+    std::fs::write(&path, "fn probe() {}\n")?;
+    let mut replies = read_calls(26);
+    replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
+    let (port, served) = openrouter_stand_in(replies)?;
+    let session = priced_session(port)?;
+    session.set_tools(vec![Arc::new(TaggedRead(path.clone()))]);
+    session.attach_store(crate::support::memory_store("reclaim-tagged"))?;
+    if delete {
+        std::fs::remove_file(&path)?;
+    }
+    session.prompt("read the probe many times")?;
+    session.wait_idle().await;
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let last = bodies.last().ok_or("no request")?;
+    Ok(cut_lines(&serde_json::from_str(last)?).len())
+}
+
+/// #2211: a read of a file that is unchanged is still in the request after 25 later requests.
+#[tokio::test(flavor = "multi_thread")]
+async fn old_reads_of_an_unchanged_file_are_not_reclaimed() -> Result<(), Box<dyn Error>> {
+    assert_eq!(last_request_cuts(false).await?, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn old_reads_of_a_deleted_file_are_reclaimed() -> Result<(), Box<dyn Error>> {
+    assert!(last_request_cuts(true).await? > 0);
+    Ok(())
+}
+
 /// #1517: a manual `/compact` on a session whose cuts are on record sends them, and its own
 /// request records no new cut.
 #[tokio::test(flavor = "multi_thread")]

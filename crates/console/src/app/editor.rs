@@ -4,6 +4,7 @@ use std::time::{Instant, SystemTime};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use tui_textarea::{CursorMove, TextArea};
+use yi_tui::colors::leaf_name;
 
 use crate::client::Outbound;
 use crate::editor_view::Tabs;
@@ -20,10 +21,6 @@ const DISK_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn mtime_of(path: &str) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
-}
-
-fn short(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }
 
 pub(super) fn load(path: &str, workdir: String) -> Result<Editor, String> {
@@ -85,7 +82,7 @@ impl Editor {
             self.stale = true;
             return Err(STALE.to_owned());
         }
-        let fail = |error: std::io::Error| format!("save {}: {error}", short(&self.path));
+        let fail = |error: std::io::Error| format!("save {}: {error}", leaf_name(&self.path));
         let target = std::fs::canonicalize(&self.path).map_err(fail)?;
         let mut tmp = target.clone().into_os_string();
         tmp.push(".yi-tmp");
@@ -105,7 +102,7 @@ impl Editor {
         }
         self.dirty = false;
         self.mtime = mtime_of(&self.path);
-        Ok(format!("saved {}", short(&self.path)))
+        Ok(format!("saved {}", leaf_name(&self.path)))
     }
 
     fn reload(&mut self) -> Result<(), String> {

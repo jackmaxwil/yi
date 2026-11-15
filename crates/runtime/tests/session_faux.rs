@@ -2237,3 +2237,43 @@ async fn learn_starts_a_turn_that_opens_its_skill_with_the_users_focus()
     );
     Ok(())
 }
+
+/// Dies with `there is no reactor running` (`daemon.worker.log`): an OS thread outside tokio
+/// (`LaneHandle::land`, adapter supervisor, background slash) waking or queuing an idle session
+/// panicked in `session::run::launch` when calling `tokio::spawn`.
+#[test]
+fn a_wake_or_follow_up_from_a_plain_thread_spawns_on_the_sessions_runtime()
+-> Result<(), Box<dyn Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let session = {
+        let _entered = runtime.enter();
+        let provider = Arc::new(ProviderStream::new(None));
+        provider.queue_faux(vec![
+            faux_assistant_message(vec![faux_text("woken")], StopReason::Stop),
+            faux_assistant_message(vec![faux_text("followed")], StopReason::Stop),
+        ]);
+        session(provider)
+    };
+    let beat = session.heartbeat_hook();
+    std::thread::spawn(move || {
+        beat(
+            yi_runtime::session::user_input("first"),
+            yi_types::schedule::DeliveryMode::Steer,
+        );
+    })
+    .join()
+    .map_err(|_| "steer from plain thread panicked")?;
+    runtime.block_on(session.wait_idle());
+    let session = Arc::new(session);
+    let follow = Arc::clone(&session);
+    std::thread::spawn(move || {
+        follow.follow_up("second");
+    })
+    .join()
+    .map_err(|_| "follow_up from plain thread panicked")?;
+    runtime.block_on(session.wait_idle());
+    assert_eq!(session.messages().len(), 4);
+    Ok(())
+}
