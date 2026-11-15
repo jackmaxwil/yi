@@ -21,6 +21,7 @@ from forgejo_pr_comment import send, upsert
 
 # The sizing the register was written in and the labels carry: S = a day, M = three, L = a week.
 WEIGHTS = {"size:S": 1, "size:M": 3, "size:L": 7}
+PRIORITIES = ("priority:first", "priority:next", "priority:later")
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Forgejo's own default keywords, because they are what closed the issue: a
 # wider pattern would annotate issues this merge only mentioned.
@@ -179,6 +180,14 @@ def hygiene(transport, api, repo, window, today):
                     f"fgj issue edit {number} --add-label size:M -R {repo}",
                 )
             )
+        ranks = sorted((name for name in names if name in PRIORITIES), key=PRIORITIES.index)
+        if len(ranks) > 1:
+            misses.append(
+                (
+                    f"#{number} carries {len(ranks)} priority labels ({', '.join(ranks)})",
+                    f"fgj issue edit {number} {' '.join('--remove-label ' + r for r in ranks[1:])} -R {repo}",
+                )
+            )
         if not [name for name in names if name.startswith("area:")]:
             misses.append(
                 (
@@ -227,6 +236,15 @@ def hygiene(transport, api, repo, window, today):
         misses.append((f"pinned Tracking #{number} was last written {age} days ago", read))
     return misses, notes
 
+
+def by_priority(transport, api, repo):
+    """Open issues that carry a priority label, as (label, number, title), first before next before later."""
+    ranked = []
+    for issue in paged(transport, f"{api}/repos/{repo}/issues?type=issues&state=open"):
+        names = [label["name"] for label in issue["labels"] if label["name"] in PRIORITIES]
+        if names:
+            ranked.append((min(names, key=PRIORITIES.index), issue["number"], issue.get("title") or ""))
+    return sorted(ranked, key=lambda row: (PRIORITIES.index(row[0]), row[1]))
 
 def selfcheck():
     def recorder(pages):
@@ -338,6 +356,32 @@ def selfcheck():
     assert notes == ["no pinned issue titled Tracking; the estate timer has not landed"], notes
     assert misses[1][1] == "fgj issue edit 21 --add-label area:runtime -R apex/yi", misses
 
+    pages["issues?type=issues&state=open"] = [
+        [
+            {"number": 30, "title": "later one", "labels": [{"name": "priority:later"}], "milestone": None},
+            {"number": 31, "title": "plain", "labels": [], "milestone": None},
+            {"number": 32, "title": "first one", "labels": [{"name": "priority:first"}], "milestone": None},
+            {"number": 33, "title": "next one", "labels": [{"name": "priority:next"}], "milestone": None},
+            {
+                "number": 34,
+                "title": "both",
+                "labels": [{"name": "priority:later"}, {"name": "priority:first"}],
+                "milestone": None,
+            },
+        ]
+    ]
+    misses, _notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    twice = [m for m in misses if m[0].startswith("#34 carries")]
+    assert twice == [
+        (
+            "#34 carries 2 priority labels (priority:first, priority:later)",
+            "fgj issue edit 34 --remove-label priority:later -R apex/yi",
+        )
+    ], misses
+    assert not [m for m in misses if m[0].startswith(("#30 carries", "#32 carries", "#33 carries"))], misses
+    order = by_priority(recorder(pages)[0], "https://git.example/api/v1", "apex/yi")
+    assert [number for _label, number, _title in order] == [32, 34, 33, 30], order
+
     # The pinned verdict is read against the estate timer's real contract
     # (the infra repository scripts/forgejo_tracking_check.py, verdict_body()):
     #     verdict: green|red · <ISO timestamp> · <n> cards checked
@@ -448,6 +492,8 @@ def main(argv):
         print(f"{args.repo}: {sha[:12]} closed {numbers or 'nothing'}")
         return 0
     if args.hygiene:
+        for label, number, title in by_priority(send, args.api, args.repo):
+            print(f"{label:15} #{number} {title}")
         misses, notes = hygiene(send, args.api, args.repo, args.window, today)
         for note in notes:
             print(f"warn {args.repo}: {note}")
