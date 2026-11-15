@@ -125,6 +125,7 @@ fn paste_into(bottom: &mut Bottom, text: &str) {
         Bottom::Approval(view, _) => view.paste(text),
         Bottom::Question(view) => view.paste(text),
         Bottom::Agents(popup) => popup.paste(text),
+        Bottom::Mcp(page) => page.paste(text),
         Bottom::Model(popup) => popup.paste(text),
         Bottom::Theme(picker) => picker.list.paste(text),
     }
@@ -174,6 +175,7 @@ pub(crate) fn handle_bottom_key(
         Bottom::Approval(view, _) => view.handle_key(key),
         Bottom::Question(view) => view.handle_key(key),
         Bottom::Agents(popup) => popup.handle_key(key),
+        Bottom::Mcp(page) => page.handle_key(key),
         Bottom::Model(popup) => popup.handle_key(key),
         Bottom::Theme(picker) => picker.list.handle_key(key),
     };
@@ -199,6 +201,8 @@ pub(crate) fn handle_bottom_key(
                     app.stop_child(&child);
                 }
             }
+            Bottom::Mcp(page) if page.is_busy() => app.bottom = Some(Bottom::Mcp(page)),
+            Bottom::Mcp(_) => {}
             Bottom::Model(popup) => {
                 if let Some((model, effort)) = popup.chosen {
                     app.select(model, effort);
@@ -213,7 +217,7 @@ pub(crate) fn handle_bottom_key(
             }
             Bottom::Question(_) => send_message(app, cmd_tx, text, Vec::new()),
             Bottom::Theme(mut picker) => app.commit_theme(&mut picker, text.trim()),
-            Bottom::Agents(_) | Bottom::Model(_) => {}
+            Bottom::Agents(_) | Bottom::Mcp(_) | Bottom::Model(_) => {}
         },
     }
 }
@@ -390,6 +394,7 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "plantree" => app.pending_open_plan_tree = true,
         "editor" => app.pending_editor = true,
         "agents" => app.open_agents(),
+        "mcp" => app.open_mcp(),
         "model" => app.open_model_picker(),
         "theme" => app.open_theme_list(),
         "advisor" | "plan" | "goal" | "permissions" | "compact" | "sessions" | "heartbeat"

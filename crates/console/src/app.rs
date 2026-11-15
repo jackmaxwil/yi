@@ -283,7 +283,7 @@ impl App {
         self.check_editors(now);
         self.poll_terminals();
         self.pump_chats(outbound);
-        self.pump_browsers();
+        self.pump_panes();
         if self
             .shutdown_at
             .is_some_and(|at| now.saturating_duration_since(at) > Duration::from_secs(2))
@@ -958,7 +958,7 @@ impl App {
                 }
             }
             Zone::Panes if self.on_review().is_some() => self.review_key(key),
-            Zone::Panes if self.on_settings() => self.settings_key(outbound, key),
+            Zone::Panes if self.on_page() => self.page_key(outbound, key),
             Zone::Panes => self.chat_event(CtEvent::Key(key)),
         }
     }

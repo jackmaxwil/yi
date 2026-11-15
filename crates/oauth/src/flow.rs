@@ -113,21 +113,28 @@ fn post_token(
     parse_tokens(&serde_json::from_str(&text).map_err(|error| format!("token response: {error}"))?)
 }
 
-pub(crate) fn open_url(url: &str, no_browser: bool) {
+pub fn desktop_opener() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    }
+}
+
+pub fn open_url(url: &str, no_browser: bool) {
     if no_browser {
         println!("Open this URL to authorize: {url}");
         return;
     }
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
     #[expect(
         clippy::disallowed_methods,
         reason = "launching the user's browser for the interactive login is this fn's job"
     )]
-    if std::process::Command::new(opener).arg(url).spawn().is_err() {
+    if std::process::Command::new(desktop_opener())
+        .arg(url)
+        .spawn()
+        .is_err()
+    {
         println!("Open this URL to authorize: {url}");
     }
 }

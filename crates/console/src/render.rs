@@ -520,6 +520,10 @@ fn pane_view_content(
             let (title, lines) = browser.view(inner, view.kitty, theme);
             (title, lines, None)
         }
+        PaneContent::Mcp(page) => {
+            use yi_tui::popup::BottomView;
+            ("MCP".to_owned(), page.lines(width, theme), None)
+        }
         PaneContent::Settings(settings) => {
             let options = settings
                 .session
@@ -568,7 +572,7 @@ fn pane_view_content(
             );
             let all = cached(drawn, width, theme.palette(), || {
                 let cells = session.as_ref().map_or(&[][..], |id| {
-                    crate::model::notebook_cells(view.notebooks, id)
+                    crate::panes::notebook_cells(view.notebooks, id)
                 });
                 crate::panes::notebook_lines(cells, width, *full, theme)
             });
@@ -576,21 +580,6 @@ fn pane_view_content(
             (title, lines, scroll)
         }
     }
-}
-
-pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
-            out.push(String::new());
-        }
-        for chunk in chars.chunks(width) {
-            out.push(chunk.iter().collect());
-        }
-    }
-    out
 }
 
 pub(crate) fn short_path(path: &str) -> String {

@@ -27,6 +27,7 @@ pub mod input;
 pub mod keymap;
 pub mod logos;
 pub mod markdown;
+pub mod mcp;
 pub mod model;
 pub mod motion;
 pub mod orb;
