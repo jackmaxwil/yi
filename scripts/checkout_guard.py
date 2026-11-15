@@ -45,8 +45,8 @@ def marked(d):
 
 
 def digest(d, rel):
-    p = pathlib.Path(d) / rel
-    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else "absent"
+    path = pathlib.Path(d) / rel
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "absent"
 
 
 def state(d):
@@ -136,11 +136,12 @@ def selfcheck():
             git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "a")
             (repo / "README.md").write_text("the owner's edit\n")
             if not off:
-                with contextlib.redirect_stdout(io.StringIO()):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
                     if main(["check", str(repo), "--by", "land-fix"]) != 1:
                         bad.append("check exits 0 on a dirty checkout")
-            if not refusal(repo, "land-fix", off):
-                bad.append("a dirty checkout the caller did not make may be discarded")
+                if "README.md" not in out.getvalue():
+                    bad.append("check does not name the dirty path")
             made(repo, "land-fix")
             if refusal(repo, "land-fix", off):
                 bad.append("the caller's own dirty checkout is refused")
@@ -149,6 +150,8 @@ def selfcheck():
             (repo / "README.md").write_text("the owner's EDIT\n")
             if not refusal(repo, "land-fix", off):
                 bad.append("an edit to a file the script already changed, after made, may be discarded")
+            if not off and "edited paths README.md" not in refusal(repo, "land-fix"):
+                bad.append("an edited tracked path is not named as an edited path")
             (repo / "README.md").write_text("the owner's edit\n")
             (repo / "later.txt").write_text("a person's edit after the mark\n")
             if not refusal(repo, "land-fix", off):

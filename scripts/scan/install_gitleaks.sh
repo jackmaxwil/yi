@@ -32,6 +32,7 @@ tar -xzf "$work/gitleaks.tar.gz" -C "$work" gitleaks
 chmod +x "$work/gitleaks"
 [ "$(sha256 "$work/gitleaks")" = "$binary" ] || { echo "gitleaks: extracted binary is not the pinned artifact"; exit 1; }
 cp "$work/gitleaks" "$staged"
+chmod 700 "$staged"
 mv -f "$staged" "$dest/gitleaks"
 [ "$(sha256 "$dest/gitleaks")" = "$binary" ] || { echo "gitleaks: installed binary is not the pinned artifact"; exit 1; }
 "$dest/gitleaks" version
