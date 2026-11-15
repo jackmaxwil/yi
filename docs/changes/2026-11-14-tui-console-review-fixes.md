@@ -1,4 +1,5 @@
 ---
+version: 0.1070.0
 issue: #2180
 growth: +105 correctness repairs for six merged PRs, weighed against deleting the paths they patch (none removable)
 cut: none crates/console/src/sidebar.rs
