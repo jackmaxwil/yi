@@ -415,12 +415,7 @@ fn cache_field(text: &str) -> Option<&'static str> {
             .find(|field| prose_names(text, field));
     };
     let error = body.get("error").unwrap_or(&body);
-    let identifiers = [
-        string_at(error.get("param")),
-        string_at(error.get("code")),
-        string_at(body.get("param")),
-        string_at(body.get("code")),
-    ];
+    let identifiers = [string_at(error.get("param")), string_at(error.get("code"))];
     let message = error
         .as_str()
         .or_else(|| string_at(error.get("message")))

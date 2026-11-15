@@ -195,6 +195,32 @@ fn a_400_that_names_no_cache_field_is_not_resent() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_400_with_a_top_level_identifier_is_not_resent_when_error_exists() -> TestResult {
+    for identifier in ["param", "code"] {
+        let body =
+            format!(r#"{{"error":{{"message":"unsupported"}},"{identifier}":"cache_control"}}"#);
+        let (port, count, server) = serve(vec![refused_as("application/json", &body)])?;
+        let stripped = Stripped::default();
+        let quiet = |_| {};
+        let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
+        let failed = yi_ai::request::send_stripping_cache(
+            &url(port),
+            &[],
+            &marked_body(),
+            None,
+            &retry,
+            &stripped,
+        )
+        .err()
+        .ok_or("a top-level identifier caused a resend")?;
+        let _ = server.join().map_err(|_| "server thread panicked")?;
+        assert_eq!(count.load(Ordering::SeqCst), 1, "{identifier}: {failed}");
+        assert_eq!(stripped.take(), None, "{identifier}");
+    }
+    Ok(())
+}
+
 fn resends_without_cache_field(refusal: String) -> TestResult {
     let (port, count, server) = serve(vec![refusal, answer()])?;
     let stripped = Stripped::default();
