@@ -268,6 +268,9 @@ def cmd_commit(args):
         print("commit: nothing staged; name the paths to commit:" if left else "commit: nothing to commit")
         print(left)
         return 1 if left else 0
+    if lost := unrecorded_cuts(staged=True):
+        print("\n".join(lost) + "\ncommit: refused — say what this commit deletes on purpose, so no later branch puts it back")
+        return 1
     message = ["-m", args.subject.strip()]
     if args.body:
         message += ["-m", read_body(args.body)]
@@ -298,11 +301,11 @@ def zig_env():
     }
 
 
-def unrecorded_cuts():
+def unrecorded_cuts(staged=False):
     base = base_commit()[1]
     if base is None:
         return []
-    return check_intent.unrecorded(check_intent.branch_diff(base), [f for _, f in pending(base)])
+    return check_intent.unrecorded(check_intent.branch_diff(base, staged), [f for _, f in pending(base)])
 
 
 def linux_clippy_command(crates, no_tui=False):
@@ -1243,7 +1246,7 @@ def commit_selfcheck():
     import contextlib, io, os
 
     names = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
-    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths")}
+    saved = {name: globals()[name] for name in ("ROOT", "baseline_paths", "unrecorded_cuts")}
     with tempfile.TemporaryDirectory() as scratch:
         os.environ.update(names)
         subprocess.run(("git", "-C", scratch, "init", "-q"), check=True)
@@ -1273,6 +1276,16 @@ def commit_selfcheck():
             with contextlib.redirect_stdout(io.StringIO()):
                 done = cmd_commit(parse(["commit", "Add with inline body", "d.txt", "--body", long_prose]))
             assert done == 0 and "inline prose" in git("log", "-1", "--format=%b"), "inline --body text was rejected as a filename"
+            asked = []
+            globals()["unrecorded_cuts"] = lambda staged=False: asked.append(staged) or ["e.txt: 6 substantive line(s) deleted on net"]
+            (pathlib.Path(scratch) / "e.txt").write_text("e\n")
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                refused = cmd_commit(parse(["commit", "Delete six lines", "e.txt"]))
+            assert refused == 1 and asked == [True] and "e.txt: 6 substantive" in said.getvalue(), ("commit judges the staged net deletion", refused, asked)
+            assert git("log", "-1", "--format=%s") != "Delete six lines", "a net deletion with no cut line was committed"
+            git("reset", "-q", "--", "e.txt", check=True)
+            (pathlib.Path(scratch) / "e.txt").unlink()
+            globals()["unrecorded_cuts"] = saved["unrecorded_cuts"]
             plans = pathlib.Path(scratch) / ".yi/plans/demo"
             plans.mkdir(parents=True)
             (plans / "ops.jsonl").write_text("{}\n")
@@ -1302,7 +1315,7 @@ def build_parser():
     def opener(name, run):
         sub = pr.add_parser(name) if name != "land" else verbs.add_parser(name)
         sub.add_argument("title")
-        sub.add_argument("--body", help="path of a file holding the PR body")
+        sub.add_argument("--body", metavar="PATH", help="path of a file holding the PR body, not the text itself")
         sub.add_argument("--closes", action="append", default=[])
         sub.add_argument("--refs", action="append", default=[])
         sub.add_argument("--timeout", type=int, default=40)
