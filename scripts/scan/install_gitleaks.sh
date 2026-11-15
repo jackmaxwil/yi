@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 version=$(cat "$(dirname "$0")/gitleaks.version")
-dest="${TMPDIR:-/tmp}/yi-gitleaks-$(id -u)-$version"
-mkdir -p "$dest"
+dest="${XDG_CACHE_HOME:-$HOME/.cache}/yi/gitleaks-$version"
+mkdir -p "$(dirname "$dest")"
+mkdir -m 700 "$dest" 2>/dev/null || true
+[ -d "$dest" ] && [ ! -L "$dest" ] && [ -O "$dest" ] && [ -z "$(find "$dest" -maxdepth 0 -perm -022)" ] || { echo "gitleaks: $dest is not private to this user"; exit 1; }
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) asset=linux_x64
     hash=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -21,7 +23,7 @@ if [ -x "$dest/gitleaks" ] && [ "$(sha256 "$dest/gitleaks")" = "$binary" ]; then
   exit 0
 fi
 work=$(mktemp -d)
-staged="$dest/.gitleaks.$$"
+staged=$(mktemp "$dest/.gitleaks.XXXXXX")
 trap 'rm -rf "$work" "$staged"' EXIT
 url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_${asset}.tar.gz"
 curl -fsSL -o "$work/gitleaks.tar.gz" "$url"
@@ -31,5 +33,6 @@ chmod +x "$work/gitleaks"
 [ "$(sha256 "$work/gitleaks")" = "$binary" ] || { echo "gitleaks: extracted binary is not the pinned artifact"; exit 1; }
 cp "$work/gitleaks" "$staged"
 mv -f "$staged" "$dest/gitleaks"
+[ "$(sha256 "$dest/gitleaks")" = "$binary" ] || { echo "gitleaks: installed binary is not the pinned artifact"; exit 1; }
 "$dest/gitleaks" version
 printf '%s\n' "$dest/gitleaks"
