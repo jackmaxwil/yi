@@ -224,22 +224,20 @@ pub fn judge_command_paths<T>(
             let cd = cd_target(word, &mut after_cd);
             let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
             for spelled in std::iter::once(word.as_str()).chain(glued) {
+                let resolve = |part: &str| -> Vec<PathBuf> {
+                    dirs.iter().map(|dir| resolve_target(part, dir)).collect()
+                };
                 let head: String = (spelled.split_inclusive('/'))
                     .take_while(|part| !part.contains(['*', '?', '[']))
                     .collect();
-                let paths: Vec<PathBuf> =
-                    dirs.iter().map(|dir| resolve_target(&head, dir)).collect();
-                if let Some(hit) = judge(&paths) {
+                let paths = resolve(head.as_str());
+                let literal = if head != spelled {
+                    resolve(spelled)
+                } else {
+                    Vec::new()
+                };
+                if let Some(hit) = judge(&[paths.as_slice(), literal.as_slice()].concat()) {
                     return Ok(Some(hit));
-                }
-                if head != spelled {
-                    let literal: Vec<PathBuf> = dirs
-                        .iter()
-                        .map(|dir| resolve_target(spelled, dir))
-                        .collect();
-                    if let Some(hit) = judge(&literal) {
-                        return Ok(Some(hit));
-                    }
                 }
                 for path in paths.into_iter().filter(|_| cd) {
                     if !dirs.contains(&path) {
