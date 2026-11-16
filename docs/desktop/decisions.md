@@ -1,0 +1,21 @@
+# Yi Desktop: owner answers and server asks
+
+The owner's answers and the server asks stay here. Yi-facing decisions are recorded in the canonical [decision log](../ARCHITECTURE.md#decision-log). `just adr <N>` renders each decision's ADR.
+
+## The owner's answers
+
+| Question | Answer |
+|---|---|
+| Where the code lives | "Inside Yi" |
+| Where pieces Rune lacks get built | "In the app first" |
+| Rune source | "i forked rune / use my fork as dependency / we will continue to pull upstream, but patch where needed" |
+| Behaviour the mockup never drew | "I choose, you veto" |
+| Scope | "keep this rust rune app lean", "focus on ui and ux", "i want mobile but later" |
+| The Rust | "Verify HAR compliance throughout build" |
+| The dogfood round | "Run through 10 major user journeys. Additionally, drive real sessions with real Yi spend and verify the app is actually usable for normal software engineering development." |
+
+## What the app asks of Yi's server
+
+Each pane works without its ask and gets better with it. Filed on the forge; none is built.
+
+The server asks are the forge's issues #2258 to #2282 and #2191, one per row of the ask: approvals, threads and turns, agents and events, findings and logs, the browser and usage.
