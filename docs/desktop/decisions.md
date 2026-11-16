@@ -50,31 +50,4 @@ Taken by the lead; the owner may veto any.
 
 Each pane works without its ask and gets better with it. Filed on the forge; none is built.
 
-| Area | Issue | Ask |
-|---|---|---|
-| Approvals | #2261 | Name the agent that asks in a permission request |
-| Approvals | #2262 | Let a client answer a permission request with an edited command |
-| Approvals | #2263 | List pending permission requests and re-send ones a client lost |
-| Approvals | #2276 | Carry the title of the gate on the permission request it answers |
-| Approvals | #2280 | Release a waiting permission request on cancel and store it as a stop |
-| Threads and turns | #2264 | Add a request that renames a thread |
-| Threads and turns | #2265 | Add a request that archives and restores a thread |
-| Threads and turns | #2266 | Report a failed thread as its own state in the thread list |
-| Threads and turns | #2267 | Push state changes for threads a client is not attached to |
-| Threads and turns | #2273 | Add a title to each turn in the event stream |
-| Threads and turns | #2274 | Mark an empty draft thread in the thread list |
-| Threads and turns | #2277 | Put the parent session id on each session list row |
-| Threads and turns | #2279 | Tell every client a session's working folder, not only those attached |
-| Threads and turns | #2281 | Keep a prompt sent while a turn runs, and say what happened to it |
-| Agents and events | #2260 | Stamp each session update with the time it happened |
-| Agents and events | #2268 | Add parent, model, start time and budget to child updates |
-| Agents and events | #2269 | Add pause, resume and more budget for a thread's agents |
-| Agents and events | #2272 | Give agent events an Other case a newer server can use |
-| Agents and events | #2275 | Mark whether a command that reaches a client source came from an agent |
-| Findings, logs, settings, plugins | #2258 | Add a finding record a client and an agent can both write |
-| Findings, logs, settings, plugins | #2259 | Serve Yi's own log lines to a client over the ACP socket |
-| Findings, logs, settings, plugins | #2270 | Add a project scope to the settings the server serves |
-| Findings, logs, settings, plugins | #2271 | Serve the plugin list and its state over the ACP socket |
-| The browser | #2278 | Let a client ask the browser page any CDP method and read the answer |
-| The browser | #2282 | Start Chrome with a mock keychain, free fds and its stderr kept |
-| Usage | #2191 | Usage reads zero for a model reached through a relay (added to the existing issue) |
+The server asks are the forge's issues #2258 to #2282 and #2191, one per row of the ask: approvals, threads and turns, agents and events, findings and logs, the browser and usage.
