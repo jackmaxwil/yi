@@ -7,7 +7,7 @@ This folder documents the app while it is built outside this tree. The code is n
 | Document | What it holds |
 |---|---|
 | [progress.md](progress.md) | How the app was built, what each wave and each dogfood round found, and the measured numbers |
-| [decisions.md](decisions.md) | The owner's answers that bind the build, the decisions taken under "I choose, you veto", and what the app asks of Yi's server |
+| [decisions.md](decisions.md) | The owner's answers, the canonical decision log, and what the app asks of Yi's server |
 
 ## Status, 2026-11-16
 

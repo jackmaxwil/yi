@@ -1,6 +1,6 @@
-# Yi Desktop: decisions
+# Yi Desktop: owner answers and server asks
 
-What binds the app's build, in the owner's own words where they gave them, and what the lead decided under their standing rule "I choose, you veto". A decision here that the owner vetoes changes the code, and the change cites this file.
+The owner's answers and the server asks stay here. Yi-facing decisions are recorded in the canonical [decision log](../ARCHITECTURE.md#decision-log). `just adr <N>` renders each decision's ADR.
 
 ## The owner's answers
 
@@ -13,38 +13,6 @@ What binds the app's build, in the owner's own words where they gave them, and w
 | Scope | "keep this rust rune app lean", "focus on ui and ux", "i want mobile but later" |
 | The Rust | "Verify HAR compliance throughout build" |
 | The dogfood round | "Run through 10 major user journeys. Additionally, drive real sessions with real Yi spend and verify the app is actually usable for normal software engineering development." |
-
-## How it lives in Yi
-
-| Decision | Why |
-|---|---|
-| The app lands as `desktop/`, its own cargo workspace with its own lock file, toolchain and gate, never a member of Yi's workspace | Yi caps its dependency count; Rune alone locks several hundred crates |
-| It is built in a staging repository and imported in one reviewed change | Yi's hook would run on hundreds of agent commits, and a structural change to Yi carries a decision row, a scope edit and a change file that belong in one landing the owner sees |
-| Rune is a dependency on the owner's fork, pinned by revision; a patch is small, additive, one commit, and recorded | "patch where needed" while upstream pulls stay cheap. One patch so far: markdown paragraphs break a word too long for their line |
-| v1 runs on today's server unchanged | Server changes go through Yi's strictest review; what the app wants from the server is filed as issues (below), and each pane works without its ask |
-| The app talks to Docker, launchd, the debugger and language servers directly | Yi's own scope keeps these out of the server |
-| Plugin panes are Luau scripts run inside the app | The only route where the machinery already exists |
-| Findings are a view over what Yi already records, with triage kept by the app | The session is the one ledger; every other store is a view |
-
-## Behaviour the mockup never drew
-
-Taken by the lead; the owner may veto any.
-
-| Area | Decision |
-|---|---|
-| Layouts | A menu on the top bar's layout icon and ⌥⌘1 to ⌥⌘5; when a pane leaves, its neighbours fill the space and no hole is ever left; minimum pane 160 by 120 points, minimum window 720 by 480 |
-| Keys | One shortcut map generated from the command table; a chord belongs to one command; a key without a modifier outside a text field never runs a global command |
-| Approvals | Return allows once, ⌘Return answers with Yi's first standing option (Yi orders them narrowest first and never offers the whole repository first), Esc denies; Return answers only a card the person can see |
-| Stop | Answers the turn's waiting approvals as cancelled and holds queued prompts until the person sends them |
-| Restart | A waiting approval is kept on disk so a crash or kill shows it again; a clean quit answers it cancelled; only the main window reopens, on the thread it showed |
-| Projects | New chat starts on the folder the chip names (the shown thread's project, the folder the app was started in, the most recent project, else home); a Yi checkout is never offered as a project |
-| The agent's checkout | When a thread works in its own Yi checkout, Files, Changes and Code show that copy and say so, with a button to the project folder; Changes diffs it against the branch it came from; "Merge into main" is a local `git merge --no-ff` that asks first, refuses when the project has uncommitted work, and is never a push |
-| Shells | Each thread keeps its own shells while the app runs and starts them in its folder |
-| Language servers | Start with build scripts and proc-macros off, since rust-analyzer would otherwise run a project's code outside Yi's sandbox |
-| The web pane | Starts the Chrome Yi's config names (`browser.path`), as the console does; pick and design mode take the whole page on a live site until Yi can ask a page about one element |
-| Windows | Settings and Themes open as their own 760 by 560 window; closing the main window with menu-bar items on keeps its thread running; only quitting cancels |
-| Plugins | "Read your files" and "Run commands" are off by default; a script reaches the web only through the app's own fetch source for hosts the person granted |
-| Left out of v1 | The Agents graph view, the plugin Browse and Updates tabs, the findings board, editing a command in an approval (the server cannot take one yet) |
 
 ## What the app asks of Yi's server
 
