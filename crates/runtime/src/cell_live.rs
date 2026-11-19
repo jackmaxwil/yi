@@ -22,7 +22,12 @@ struct Piece {
 pub(crate) struct LiveOutput {
     call_id: String,
     events: Sender<AgentEvent>,
-    pending: Mutex<Vec<Piece>>,
+    pending: Mutex<Pending>,
+}
+
+struct Pending {
+    pieces: Vec<Piece>,
+    closed: bool,
 }
 
 impl LiveOutput {
@@ -30,7 +35,10 @@ impl LiveOutput {
         Self {
             call_id,
             events,
-            pending: Mutex::new(Vec::new()),
+            pending: Mutex::new(Pending {
+                pieces: Vec::new(),
+                closed: false,
+            }),
         }
     }
 
@@ -40,7 +48,11 @@ impl LiveOutput {
             "stderr" => "stderr",
             _ => return,
         };
-        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.closed {
+            return;
+        }
+        let pending = &mut state.pieces;
         let at = match pending.iter().position(|piece| piece.stream == stream) {
             Some(at) => at,
             None => {
@@ -64,9 +76,20 @@ impl LiveOutput {
     }
 
     pub(crate) fn flush(&self) {
-        let pieces =
-            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner));
-        for piece in pieces {
+        self.drain(false);
+    }
+
+    pub(crate) fn close(&self) {
+        self.drain(true);
+    }
+
+    fn drain(&self, close: bool) {
+        let mut state = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.closed {
+            return;
+        }
+        state.closed |= close;
+        for piece in std::mem::take(&mut state.pieces) {
             let mut text = piece.text;
             if piece.seen > piece.kept {
                 text.push_str(&format!(
@@ -146,7 +169,7 @@ impl Drop for LiveCell {
             tick.abort();
         }
         if let Some(out) = &self.out {
-            out.flush();
+            out.close();
         }
     }
 }
@@ -200,5 +223,22 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("the cell's result"), "{text}");
+    }
+
+    #[test]
+    fn nothing_is_sent_once_the_cell_has_ended() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let out = Arc::new(LiveOutput::new("c1".to_owned(), tx));
+        let live = LiveCell {
+            out: Some(out.clone()),
+            tick: None,
+        };
+        drop(live);
+        out.push("stdout", "late\n");
+        out.flush();
+        assert!(
+            drain(&mut rx).is_empty(),
+            "output sent after the cell ended"
+        );
     }
 }
