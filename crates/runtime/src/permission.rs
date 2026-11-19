@@ -65,6 +65,7 @@ pub struct PermissionBroker {
     rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
     stop: std::sync::OnceLock<Stop>,
+    agent: std::sync::OnceLock<String>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
     /// A walled holder's retry never leaves the sandbox for a protected dir.
     walled: bool,
@@ -184,6 +185,7 @@ impl PermissionBroker {
             rule_journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
             stop: std::sync::OnceLock::new(),
+            agent: std::sync::OnceLock::new(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
             walled: false,
             unattended: false,
@@ -201,10 +203,6 @@ impl PermissionBroker {
 
     pub fn set_journal(&self, journal: Journal) {
         let _first_wiring_wins = self.journal.set(journal);
-    }
-
-    pub fn set_stop(&self, stop: Stop) {
-        let _first_wiring_wins = self.stop.set(stop);
     }
 
     pub fn set_approver(&self, approver: Arc<crate::classifier::Approver>) {
@@ -605,6 +603,7 @@ impl PermissionBroker {
                 grants: &[],
                 tool_call_id: Some(tool_call_id),
                 stop: None,
+                agent: None,
             };
             return self.hook_answered(&ask, &reason, command);
         }
@@ -640,6 +639,7 @@ impl PermissionBroker {
                 grants: &grants,
                 tool_call_id: Some(tool_call_id),
                 stop: self.stop.get(),
+                agent: self.agent.get().map(String::as_str),
             },
             Reviewed {
                 reviewable,
@@ -971,6 +971,7 @@ impl PermissionBroker {
         };
         let ask = PermissionAsk {
             stop: self.stop.get(),
+            agent: self.agent.get().map(String::as_str),
             ..crate::auto_review::ask_text(&stored)
         };
         let _ = self.events.send(AgentEvent::PermissionRequested {

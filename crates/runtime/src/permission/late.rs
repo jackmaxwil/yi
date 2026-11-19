@@ -17,6 +17,7 @@ struct OwnedAsk {
     grants: Vec<yi_permission::Grant>,
     tool_call_id: Option<String>,
     stop: Option<super::Stop>,
+    agent: Option<String>,
 }
 
 impl OwnedAsk {
@@ -29,6 +30,7 @@ impl OwnedAsk {
             grants: ask.grants.to_vec(),
             tool_call_id: ask.tool_call_id.map(str::to_owned),
             stop: ask.stop.cloned(),
+            agent: ask.agent.map(str::to_owned),
         }
     }
 
@@ -41,6 +43,7 @@ impl OwnedAsk {
             grants: &self.grants,
             tool_call_id: self.tool_call_id.as_deref(),
             stop: self.stop.as_ref(),
+            agent: self.agent.as_deref(),
         }
     }
 }
@@ -123,6 +126,7 @@ impl PermissionBroker {
         let ask = &PermissionAsk {
             tool_call_id: Some(&tool_call_id),
             stop: self.stop.get(),
+            agent: self.agent.get().map(String::as_str),
             ..*ask
         };
         let _ = self.events.send(AgentEvent::PermissionRequested {
