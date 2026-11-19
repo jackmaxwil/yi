@@ -1,4 +1,5 @@
 ---
+version: 0.1077.0
 issue: Closes #1915, Closes #2288
 growth: +180 the display reducer (kernel 155, one function absorbing a bundle, one building the cell's notices), the two result fields (types 13) and the result's details and notices (tools 2); weighed for deletion: images reuse the attachment path and its checks instead of a second image store, and the aborted-result literal was replaced by `finish`, which dropped 5 lines
 shares: #2295 it edits crates/acp/src/update.rs and crates/runtime/src/lib.rs; the stacked #2294 below this branch adds one line there, and this branch adds nothing to it
