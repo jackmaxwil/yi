@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.1073.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.1074.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -356,6 +356,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D605 | a reported zero is an unknown turn when it counts no tokens and no charge | a relay's zero counts are not a measured free turn, so the session cost header must not read them as complete | revert by clearing usage.unknown in openai.rs and openai_responses.rs |
 | D604 | Yi Desktop's command, approval, restart, project, checkout, shell, language-server, browser, window, plugin and v1-scope defaults are the settled choices in its staging design | the owner delegated behavior absent from the mockup under "I choose, you veto" | change the staging design before import |
 | D603 | Yi Desktop lands as `desktop/`, its own Cargo workspace, after a staged build on the owner's pinned Rune fork, keeps its own gate, v1 uses today's server unchanged, and the app owns its direct local integrations and Luau panes | the owner chose an in-tree native Rust app, a Rune fork that pulls upstream and may take small patches, and a lean UI-first v1, Yi's dependency cap and review rules make a separate staging repository necessary | do not import the staged tree |
 | D602 | Double Ctrl+C in the console detaches and leaves `yi serve` running (amends D356's parenthetical "ctrl+c twice in the console" and the console quit note of #1032/#1350); stopping the daemon stays on the command palette's `stop the daemon and quit` (`_yi/shutdown`) | a double Ctrl+C meant to leave a pane killed the shared daemon and every worker and background session on the machine | restore `self.stop_daemon_and_quit(outbound)` in `crates/console/src/app.rs` on the second Ctrl+C press |

@@ -1,4 +1,6 @@
 ---
+version: 0.1074.0
+decisions: D605
 issue: Closes #2191
 cut: none crates/ai/src/request.rs
 growth: +17 one shared check, one deleted override, two tests
