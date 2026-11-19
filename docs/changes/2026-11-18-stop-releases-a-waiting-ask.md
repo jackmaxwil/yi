@@ -1,4 +1,5 @@
 ---
+version: 0.1078.0
 issue: Closes #2280, Closes #2291
 shares: #2294 both edit acp_unit.rs and runtime/src/lib.rs: this branch adds a stop test and re-exports `Stop`, so the two merge as separate hunks
 shares: #2256 both edit runtime/src/lib.rs and session.rs: this branch adds one re-export and one call in `use_tools_with_background`
