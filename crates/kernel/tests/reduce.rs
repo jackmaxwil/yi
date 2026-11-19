@@ -1,6 +1,8 @@
 use serde_json::{Map, Value, json};
 use yi_kernel::ATTACHMENT_DISPLAY_MIME;
-use yi_kernel::reduce::{CellState, Reduction, finish, reduce};
+use yi_kernel::reduce::{
+    CellState, MAX_DISPLAY_CHARS, MAX_DISPLAY_IMAGES, Reduction, finish, reduce,
+};
 use yi_types::kernel::{ExecuteStatus, JupyterHeader, JupyterMessage};
 
 fn message(msg_type: &str, parent: &str, content: Value) -> JupyterMessage {
@@ -375,4 +377,95 @@ fn a_bundle_past_the_cells_cap_falls_back_to_its_plain_text() {
     let shown = kept.result.unwrap_or_default();
     assert!(shown.contains("DEFAULT_MAX_OUTPUT_CHARS 256"), "{shown}");
     assert_eq!(kept.result_mime.as_deref(), Some("application/json"));
+}
+
+const PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
+
+fn display(cell: &mut CellState, kind: &str, data: Value) {
+    reduce(cell, &message(kind, "req", json!({ "data": data })), None);
+}
+
+/// Incident (#1915): `display(Image(...))` and an HTML table returned only the cell's prints.
+/// Jupyter wraps the PNG's base64 in a trailing newline, which strict base64 would refuse.
+#[test]
+fn a_displayed_png_reaches_the_model_and_an_invalid_one_says_so() {
+    let mut cell = cell(65_536);
+    let bundle = json!({"image/png": format!("{PNG}\n"), "text/plain": "<IPython.core.display.Image object>"});
+    display(&mut cell, "display_data", bundle);
+    display(
+        &mut cell,
+        "display_data",
+        json!({"image/png": "bm90LWEtcG5n", "text/plain": "<Image>"}),
+    );
+    assert_eq!(cell.attachments.len(), 1);
+    assert_eq!(cell.attachments[0].data, PNG);
+    let done = finish(cell, 1, false);
+    assert_eq!(done.status, ExecuteStatus::Ok);
+    assert!(!done.stdout.contains("IPython.core"), "{}", done.stdout);
+    assert!(
+        done.notices.len() == 1 && done.notices[0].starts_with("[image/png display not shown: "),
+        "{:?}",
+        done.notices
+    );
+}
+
+/// An HTML display with a `text/plain` fallback reads as that fallback and stays whole for a
+/// client; one with none is named in the cell's one notice, counted per type.
+#[test]
+fn an_html_display_reads_as_its_fallback_and_stays_for_clients() {
+    let mut cell = cell(65_536);
+    display(
+        &mut cell,
+        "display_data",
+        json!({"text/html": "<table>é</table>", "text/plain": "   a\n0  1"}),
+    );
+    display(&mut cell, "display_data", json!({"text/html": "<b>x</b>"}));
+    display(
+        &mut cell,
+        "display_data",
+        json!({"application/javascript": "1", "text/plain": "t"}),
+    );
+    display(
+        &mut cell,
+        "update_display_data",
+        json!({"text/plain": "progress 2"}),
+    );
+    let done = finish(cell, 1, false);
+    assert!(done.stdout.contains("   a\n0  1\n"), "{}", done.stdout);
+    assert!(!done.stdout.contains("progress 2"), "{}", done.stdout);
+    let kept: Vec<_> = done
+        .displays
+        .iter()
+        .map(|d| (d.mime_type.as_str(), d.data.as_str()))
+        .collect();
+    assert_eq!(
+        kept,
+        [("text/html", "<table>é</table>"), ("text/html", "<b>x</b>")]
+    );
+    assert_eq!(done.notices.len(), 1, "{:?}", done.notices);
+    assert!(
+        done.notices[0].contains("application/javascript x1"),
+        "{:?}",
+        done.notices
+    );
+}
+
+/// Every cap speaks, at the limit and one past it.
+#[test]
+fn display_caps_name_what_was_kept_and_the_cap() {
+    let mut cell = cell(65_536);
+    for _ in 0..=MAX_DISPLAY_IMAGES {
+        display(&mut cell, "display_data", json!({"image/png": PNG}));
+    }
+    assert_eq!(cell.attachments.len(), MAX_DISPLAY_IMAGES);
+    let at = "é".repeat(MAX_DISPLAY_CHARS);
+    display(&mut cell, "display_data", json!({"text/html": at}));
+    assert_eq!(cell.displays.len(), 1);
+    display(&mut cell, "display_data", json!({"text/html": "x"}));
+    let done = finish(cell, 1, false);
+    assert_eq!(done.displays.len(), 1);
+    let rows = done.notices.join("\n");
+    assert!(rows.contains(&format!("[… {MAX_DISPLAY_IMAGES} of 9 image displays shown (MAX_DISPLAY_IMAGES {MAX_DISPLAY_IMAGES})")), "{rows}");
+    assert!(rows.contains(&format!("1 text/html or image/svg+xml displays not kept for clients (MAX_DISPLAY_CHARS {MAX_DISPLAY_CHARS} per cell)")), "{rows}");
 }

@@ -1,13 +1,19 @@
 use serde_json::Value;
 use yi_types::image::{has_magic_number, strict_base64_head};
 use yi_types::kernel::{
-    ExecuteResult, ExecuteStatus, JSON_MIME, JupyterMessage, KernelAttachment, KernelError,
-    RESULT_MIMES,
+    ExecuteResult, ExecuteStatus, JSON_MIME, JupyterMessage, KernelAttachment, KernelDisplay,
+    KernelError, RESULT_MIMES,
 };
 
 use crate::{ATTACHMENT_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS};
 
 const PLAIN_MIME: &str = "text/plain";
+const IMAGE_MIMES: [&str; 2] = ["image/png", "image/jpeg"];
+const DISPLAY_MIMES: [&str; 2] = ["text/html", "image/svg+xml"];
+/// Images one cell's displays may add to the model's view, so a plotting loop sends few.
+pub const MAX_DISPLAY_IMAGES: usize = 8;
+/// Characters of html and svg one cell keeps for clients; the details are stored with the session.
+pub const MAX_DISPLAY_CHARS: usize = 262_144;
 
 #[derive(Debug)]
 pub struct CellState {
@@ -23,6 +29,13 @@ pub struct CellState {
     pub attachments: Vec<KernelAttachment>,
     pub status: ExecuteStatus,
     pub error: Option<KernelError>,
+    pub displays: Vec<KernelDisplay>,
+    display_chars: usize,
+    over_budget: usize,
+    shown_images: usize,
+    over_images: usize,
+    refused: Vec<String>,
+    unseen: std::collections::BTreeMap<String, usize>,
 }
 
 impl CellState {
@@ -40,6 +53,13 @@ impl CellState {
             attachments: Vec::new(),
             status: ExecuteStatus::Ok,
             error: None,
+            displays: Vec::new(),
+            display_chars: 0,
+            over_budget: 0,
+            shown_images: 0,
+            over_images: 0,
+            refused: Vec::new(),
+            unseen: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -97,9 +117,13 @@ pub enum AttachmentParse {
 }
 
 pub fn parse_attachment_display(payload: &Value) -> AttachmentParse {
-    let Ok(attachment) = serde_json::from_value::<KernelAttachment>(payload.clone()) else {
-        return AttachmentParse::Malformed;
-    };
+    match serde_json::from_value::<KernelAttachment>(payload.clone()) {
+        Ok(attachment) => check_attachment(attachment),
+        Err(_) => AttachmentParse::Malformed,
+    }
+}
+
+fn check_attachment(attachment: KernelAttachment) -> AttachmentParse {
     if attachment.data.len() > MAX_ATTACHMENT_DATA_CHARS {
         return AttachmentParse::Rejected(format!(
             "exceeds {MAX_ATTACHMENT_DATA_CHARS} base64 chars"
@@ -173,6 +197,87 @@ impl std::io::Write for Capped {
     }
 }
 
+/// An update replaces a display the model already read, so it adds no text to the model's view.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Result,
+    Display,
+    Update,
+}
+
+/// A displayed bundle's images attach, its html and svg stay for clients, and its text reads as
+/// an `execute_result`'s does; a member nothing carries is counted for the cell's one notice.
+fn absorb_bundle(cell: &mut CellState, data: &Value, from: Source) {
+    let Some(bundle) = data.as_object() else {
+        return;
+    };
+    let mut pictured = false;
+    for mime in IMAGE_MIMES {
+        let Some(raw) = bundle.get(mime).and_then(Value::as_str) else {
+            continue;
+        };
+        if cell.shown_images >= MAX_DISPLAY_IMAGES {
+            cell.over_images = cell.over_images.saturating_add(1);
+            continue;
+        }
+        let image = KernelAttachment {
+            mime_type: mime.to_owned(),
+            data: raw.split_whitespace().collect(),
+            path: None,
+            bytes: None,
+            modified_ns: None,
+        };
+        match check_attachment(image) {
+            AttachmentParse::Attachment(image) => {
+                cell.attachments.push(image);
+                cell.shown_images = cell.shown_images.saturating_add(1);
+                pictured = true;
+            }
+            AttachmentParse::Rejected(reason) => cell
+                .refused
+                .push(format!("[{mime} display not shown: {reason}]")),
+            AttachmentParse::Malformed => {}
+        }
+    }
+    for mime in DISPLAY_MIMES {
+        let Some(text) = bundle.get(mime).and_then(Value::as_str) else {
+            continue;
+        };
+        let chars = text.chars().count();
+        if cell.display_chars.saturating_add(chars) > MAX_DISPLAY_CHARS {
+            cell.over_budget = cell.over_budget.saturating_add(1);
+            continue;
+        }
+        cell.display_chars = cell.display_chars.saturating_add(chars);
+        cell.displays.push(KernelDisplay {
+            mime_type: mime.to_owned(),
+            data: text.to_owned(),
+        });
+    }
+    let picked = picked_result(data, cell.max_chars).map(|(_, text)| text);
+    let appended =
+        from == Source::Display && !pictured && !bundle.contains_key(ATTACHMENT_DISPLAY_MIME);
+    if let Some(text) = picked.as_deref().filter(|_| appended) {
+        append_capped(
+            &mut cell.stdout,
+            &mut cell.stdout_chars,
+            &format!("{text}\n"),
+            cell.max_chars,
+        );
+    }
+    let shown = picked.is_some() && (from == Source::Result || appended);
+    for mime in bundle.keys() {
+        let carried = IMAGE_MIMES.contains(&mime.as_str())
+            || mime == PLAIN_MIME
+            || mime == ATTACHMENT_DISPLAY_MIME
+            || RESULT_MIMES.contains(&mime.as_str());
+        let model_sees = shown && DISPLAY_MIMES.contains(&mime.as_str());
+        if !carried && !model_sees {
+            *cell.unseen.entry(mime.clone()).or_default() += 1;
+        }
+    }
+}
+
 /// Fold one iopub message into the active cell (design §9). `on_stream` sees every stream chunk
 /// and the displayed value (named `execute_result`) uncapped; only the model's capture is capped.
 pub fn reduce(
@@ -213,6 +318,9 @@ pub fn reduce(
             Reduction::Continue
         }
         "execute_result" => {
+            if let Some(data) = message.content.get("data") {
+                absorb_bundle(cell, data, Source::Result);
+            }
             if let Some(data) = message.content.get("data")
                 && let Some((mime, text)) = picked_result(data, cell.max_chars)
             {
@@ -229,6 +337,17 @@ pub fn reduce(
         }
         "display_data" | "update_display_data" => {
             let data = message.content.get("data");
+            if let Some(data) = data {
+                absorb_bundle(
+                    cell,
+                    data,
+                    if message.header.msg_type == "display_data" {
+                        Source::Display
+                    } else {
+                        Source::Update
+                    },
+                );
+            }
             if let Some(payload) = data.and_then(|data| data.get(ATTACHMENT_DISPLAY_MIME)) {
                 match parse_attachment_display(payload) {
                     AttachmentParse::Attachment(attachment) => cell.attachments.push(attachment),
@@ -284,6 +403,12 @@ pub fn finish(cell: CellState, duration_ms: u64, aborted: bool) -> ExecuteResult
     } else {
         cell.status
     };
+    let notices = notices(
+        &cell.refused,
+        cell.over_images,
+        cell.over_budget,
+        &cell.unseen,
+    );
     ExecuteResult {
         stdout,
         stderr,
@@ -293,5 +418,38 @@ pub fn finish(cell: CellState, duration_ms: u64, aborted: bool) -> ExecuteResult
         status,
         error: cell.error,
         duration_ms,
+        displays: cell.displays,
+        notices,
     }
+}
+
+fn notices(
+    refused: &[String],
+    over_images: usize,
+    over_budget: usize,
+    unseen: &std::collections::BTreeMap<String, usize>,
+) -> Vec<String> {
+    let mut rows = refused.to_vec();
+    if over_images > 0 {
+        rows.push(format!(
+            "[\u{2026} {MAX_DISPLAY_IMAGES} of {} image displays shown (MAX_DISPLAY_IMAGES {MAX_DISPLAY_IMAGES}); display fewer, or save the rest to files]",
+            MAX_DISPLAY_IMAGES.saturating_add(over_images)
+        ));
+    }
+    if over_budget > 0 {
+        rows.push(format!(
+            "[\u{2026} {over_budget} text/html or image/svg+xml displays not kept for clients (MAX_DISPLAY_CHARS {MAX_DISPLAY_CHARS} per cell); the model never reads them, write the data to a file to keep it]"
+        ));
+    }
+    if !unseen.is_empty() {
+        let list: Vec<String> = unseen
+            .iter()
+            .map(|(mime, n)| format!("{mime} x{n}"))
+            .collect();
+        rows.push(format!(
+            "[\u{2026} display output not shown to the model: {}; it reads images (png, jpeg) and text, so print the data or display it as a PNG]",
+            list.join(", ")
+        ));
+    }
+    rows
 }
