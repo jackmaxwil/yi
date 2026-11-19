@@ -85,6 +85,33 @@ fn cache_write_tokens_come_off_input() -> TestResult {
 }
 
 #[test]
+fn a_zero_usage_object_is_unknown() -> TestResult {
+    let model = model(true);
+    let mut mapper = EventMapper::new(&model);
+    let mut payloads = canned();
+    payloads.pop();
+    payloads.push(
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed",
+        "usage":{"input_tokens":0,"output_tokens":0}}}),
+    );
+    for payload in payloads {
+        let _ = mapper.push(&payload);
+    }
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected done: {:?}", events.last()).into());
+    };
+    let AgentMessage::Assistant { usage, .. } = message else {
+        return Err("not assistant".into());
+    };
+    assert!(
+        usage.unknown,
+        "zero tokens and zero charge is not a free turn"
+    );
+    Ok(())
+}
+
+#[test]
 fn responses_params_are_not_chat_completions() -> TestResult {
     let options = OpenAiOptions {
         max_tokens: Some(4096),
