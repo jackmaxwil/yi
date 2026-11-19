@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::broadcast::Sender;
 use yi_kernel::client::StreamFn;
+use yi_tools::cut_row;
 use yi_types::event::{AgentEvent, ToolResult};
 use yi_types::message::Content;
 
@@ -69,9 +70,14 @@ impl LiveOutput {
         for piece in pieces {
             let mut text = piece.text;
             if piece.seen > piece.kept {
-                text.push_str(&format!(
-                    "\n[\u{2026} {} of {} chars shown live (LIVE_CHUNK_CHARS {LIVE_CHUNK_CHARS} per tick); the full output arrives with the cell's result]",
-                    piece.kept, piece.seen
+                text.push('\n');
+                text.push_str(&cut_row(
+                    piece.kept,
+                    piece.seen,
+                    "chars shown live per tick",
+                    "LIVE_CHUNK_CHARS",
+                    LIVE_CHUNK_CHARS,
+                    "the full output arrives with the cell's result",
                 ));
             }
             let _ = self.events.send(AgentEvent::ToolExecutionUpdate {
@@ -196,7 +202,7 @@ mod tests {
         let text = &seen[0].1;
         assert!(text.starts_with(&"é".repeat(LIVE_CHUNK_CHARS)), "{text}");
         assert!(
-            text.contains(&format!("[… {LIVE_CHUNK_CHARS} of {seen_chars} chars shown live (LIVE_CHUNK_CHARS {LIVE_CHUNK_CHARS} per tick)")),
+            text.contains(&format!("[… {LIVE_CHUNK_CHARS} of {seen_chars} chars shown live per tick (LIVE_CHUNK_CHARS {LIVE_CHUNK_CHARS});")),
             "{text}"
         );
         assert!(text.contains("the cell's result"), "{text}");

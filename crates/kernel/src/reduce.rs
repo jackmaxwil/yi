@@ -207,10 +207,12 @@ enum Source {
 
 /// A displayed bundle's images attach, its html and svg stay for clients, and its text reads as
 /// an `execute_result`'s does; a member nothing carries is counted for the cell's one notice.
-fn absorb_bundle(cell: &mut CellState, data: &Value, from: Source) {
-    let Some(bundle) = data.as_object() else {
-        return;
-    };
+fn absorb_bundle(
+    cell: &mut CellState,
+    data: &Value,
+    from: Source,
+) -> Option<(&'static str, String)> {
+    let bundle = data.as_object()?;
     let mut pictured = false;
     for mime in IMAGE_MIMES {
         let Some(raw) = bundle.get(mime).and_then(Value::as_str) else {
@@ -254,10 +256,14 @@ fn absorb_bundle(cell: &mut CellState, data: &Value, from: Source) {
             data: text.to_owned(),
         });
     }
-    let picked = picked_result(data, cell.max_chars).map(|(_, text)| text);
     let appended =
         from == Source::Display && !pictured && !bundle.contains_key(ATTACHMENT_DISPLAY_MIME);
-    if let Some(text) = picked.as_deref().filter(|_| appended) {
+    let picked = if from == Source::Result || appended {
+        picked_result(data, cell.max_chars)
+    } else {
+        None
+    };
+    if let Some((_, text)) = picked.as_ref().filter(|_| appended) {
         append_capped(
             &mut cell.stdout,
             &mut cell.stdout_chars,
@@ -265,7 +271,7 @@ fn absorb_bundle(cell: &mut CellState, data: &Value, from: Source) {
             cell.max_chars,
         );
     }
-    let shown = picked.is_some() && (from == Source::Result || appended);
+    let shown = picked.is_some();
     for mime in bundle.keys() {
         let carried = IMAGE_MIMES.contains(&mime.as_str())
             || mime == PLAIN_MIME
@@ -276,6 +282,7 @@ fn absorb_bundle(cell: &mut CellState, data: &Value, from: Source) {
             *cell.unseen.entry(mime.clone()).or_default() += 1;
         }
     }
+    picked
 }
 
 /// Fold one iopub message into the active cell (design §9). `on_stream` sees every stream chunk
@@ -318,11 +325,8 @@ pub fn reduce(
             Reduction::Continue
         }
         "execute_result" => {
-            if let Some(data) = message.content.get("data") {
-                absorb_bundle(cell, data, Source::Result);
-            }
             if let Some(data) = message.content.get("data")
-                && let Some((mime, text)) = picked_result(data, cell.max_chars)
+                && let Some((mime, text)) = absorb_bundle(cell, data, Source::Result)
             {
                 cell.result = Some(text);
                 cell.result_mime = Some(mime.to_owned());

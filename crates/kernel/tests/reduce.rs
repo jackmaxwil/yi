@@ -44,6 +44,30 @@ fn cut_row(kept: usize, total: usize) -> String {
 }
 
 #[test]
+fn last_line_image_and_html_reach_the_model_and_clients() {
+    let mut cell = cell(1000);
+    let data =
+        json!({"image/png": "iVBORw0KGgo=", "text/html": "<b>table</b>", "text/plain": "Image"});
+    reduce(
+        &mut cell,
+        &message("execute_result", "req", json!({"data": data})),
+        None,
+    );
+    let result = finish(cell, 5, false);
+    assert_eq!(
+        result.attachments.len(),
+        1,
+        "the last line's image must reach the model"
+    );
+    assert_eq!(
+        result.displays.len(),
+        1,
+        "the last line's html must reach clients"
+    );
+    assert_eq!(result.result.as_deref(), Some("Image"));
+}
+
+#[test]
 fn stream_capture_caps_at_max_chars_but_ui_sees_everything() {
     let mut cell = cell(10);
     let mut ui = String::new();
