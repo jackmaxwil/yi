@@ -1,4 +1,6 @@
 ---
+version: 0.1079.0
+decisions: D607
 issue: Refs #2255
 shares: #2250 crates/tui/src/port.rs and crates/tui/src/render.rs each take one addition here: a reply arm for the rewrite answer, and the composer's footer draw call
 shares: #2239 crates/console/src/app/chat.rs takes one match arm here, so the exhaustive command match still compiles
