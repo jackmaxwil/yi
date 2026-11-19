@@ -498,10 +498,25 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         AgentEvent::LandingState { landing } => {
             object_extension("_yi/landing", serde_json::to_value(landing))
         }
-        AgentEvent::ToolExecutionUpdate { .. } | AgentEvent::Wait { .. } | AgentEvent::Other(_) => {
-            Vec::new()
-        }
+        AgentEvent::ToolExecutionUpdate {
+            tool_call_id,
+            partial_result,
+            ..
+        } => vec![tool_progress(tool_call_id, partial_result)],
+        AgentEvent::Wait { .. } | AgentEvent::Other(_) => Vec::new(),
     }
+}
+
+fn tool_progress(tool_call_id: &str, partial: &yi_types::event::ToolResult) -> AcpSessionUpdate {
+    let stream = partial.details.get("stream").cloned();
+    extension(
+        "_yi/tool_progress",
+        [
+            ("toolCallId", Value::from(tool_call_id)),
+            ("text", Value::from(text_of(&partial.content))),
+            ("stream", stream.unwrap_or(Value::Null)),
+        ],
+    )
 }
 
 fn object_extension(name: &str, value: serde_json::Result<Value>) -> Vec<AcpSessionUpdate> {

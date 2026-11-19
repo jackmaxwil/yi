@@ -679,6 +679,7 @@ fn attach_kernel(
     let (tools_now, root) = (session.tools_handle(), wiring.parent_link.is_none());
     crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
     let service = wire_kernel(session, wiring, registry);
+    service.attach_events(session.events_sender());
     session.set_kernel_service(Arc::clone(&service));
     wiring.kernels.insert(
         wiring
