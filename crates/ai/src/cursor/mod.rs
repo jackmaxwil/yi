@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, UNREAD_CONTENT, Usage};
+use yi_types::message::{AgentMessage, Content, StopReason, UNREAD_CONTENT};
 use yi_types::model::{LlmContext, Model};
 
 use crate::request::{empty_assistant, fail_message};
@@ -186,13 +186,11 @@ fn finish(model: &Model, blocks: Blocks) -> AgentMessage {
     let AgentMessage::Assistant {
         content,
         stop_reason,
-        usage,
         ..
     } = &mut message
     else {
         return message;
     };
-    *usage = Usage::zero();
     content.extend(blocks.content);
     *stop_reason = if content
         .iter()
@@ -432,6 +430,17 @@ mod tests {
         AgentMessage, AssistantMessageEvent, Blocks, Map, empty_assistant, failed, finish,
         model_for, text_events, tool_event,
     };
+
+    /// Incident: the cursor stream carries no token counts, yet every turn was stored as a measured
+    /// zero, so session cost read as complete while it was blind.
+    #[test]
+    fn a_cursor_turn_reports_unknown_usage_not_zero() {
+        let AgentMessage::Assistant { usage, .. } = finish(&model_for("m"), Blocks::default())
+        else {
+            return;
+        };
+        assert!(usage.unknown, "{usage:?}");
+    }
 
     #[test]
     fn prose_after_a_tool_call_is_a_block_of_its_own() {
