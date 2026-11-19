@@ -1,4 +1,5 @@
 ---
+version: 0.1076.0
 issue: Closes #2272
 shares: #2295 both add a match arm in crates/acp/src/update.rs; this adds one arm for the `Other` event case
 shares: #2294 both add a match arm in crates/acp/src/update.rs; this adds one arm for the `Other` event case
