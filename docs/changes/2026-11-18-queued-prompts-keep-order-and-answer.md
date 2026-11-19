@@ -6,6 +6,6 @@ shares: #2256 both touch the session/prompt path in acp lib.rs and types acp.rs;
 shares: #2239 both touch acp forward.rs, update.rs and the acp_protocol test file; separate hunks
 shares: #2237 both add one re-export line to runtime lib.rs
 decision: A `session/prompt` that arrives mid-turn is queued and answered at once with `{messageId, queuePlace}`, and starts-or-queues is one decision under the session's status lock (amends D351's answer-only-after-insertion for queued prompts) | a client could not tell a queued prompt from a lost one, and the start-then-queue pair of calls let a prompt sent between them start ahead of the queue | answer queued prompts at insertion again and restore the two-call fallback in `crates/acp/src/lib.rs`
-raise: crate acp +38, crate runtime +30, crate types +3, tests +90, comments +6
+raise: crate acp +73, crate runtime +30, crate types +3, tests +128, comments +6
 ---
 A prompt sent while a turn runs is answered at once with its place in the queue (`queuePlace`, 1 is next) and runs in the order it was sent. The session decides start-or-queue under one lock, so no prompt can start between the two. A queued prompt closed before it ran gets no second answer.

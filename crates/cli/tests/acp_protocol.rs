@@ -1436,6 +1436,7 @@ fn a_prompt_queued_mid_turn_is_answered_at_once_and_dropped_by_a_close() -> Test
         frame["id"] == "queued" && frame.get("method").is_none()
     })?;
     let answer = frames.last().ok_or("no answer to the queued prompt")?;
+    let queued_message_id = answer["result"]["messageId"].clone();
     assert_eq!(
         answer["result"]["queuePlace"], 1,
         "a mid-turn prompt is answered with its place at once: {answer}"
@@ -1457,7 +1458,18 @@ fn a_prompt_queued_mid_turn_is_answered_at_once_and_dropped_by_a_close() -> Test
         "a second mid-turn prompt is answered with place 2: {second}"
     );
     client.send(&json!({"jsonrpc": "2.0", "id": "close", "method": "session/close", "params": {"sessionId": session_id}}))?;
-    // No frame follows a close, so the transcript says whether the cancelled prompt ran: unfixed,
+    let frames = client.read_until(|frame| {
+        frame["method"] == "session/update"
+            && frame["params"]["update"]["sessionUpdate"] == "_yi/prompt_dropped"
+    })?;
+    let dropped = frames
+        .last()
+        .ok_or("no prompt dropped update after close")?;
+    assert_eq!(
+        dropped["params"]["update"]["messageId"], queued_message_id,
+        "the close must name the prompt it dropped: {dropped}"
+    );
+    // The transcript says whether the cancelled prompt ran: unfixed,
     // it lands once `sleep 2` ends; a negative wait has no state to wait on, so it is 4x that.
     let sessions = dir.join("sessions");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
