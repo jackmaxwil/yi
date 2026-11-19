@@ -67,7 +67,7 @@ path = "timing.xml"
 inherits = "local"
 default-filter = '''
 not (
-  (binary_id(=yi-cli::integration) & test(=acp_protocol::a_prompt_dropped_before_insertion_is_answered_cancelled)) |
+  (binary_id(=yi-cli::integration) & test(=acp_protocol::a_prompt_queued_mid_turn_is_answered_at_once_and_dropped_by_a_close)) |
   (binary_id(=yi-cli::integration) & test(=cli_surfaces::a_run_past_its_deadline_answers_and_exits_inside_it)) |
   (binary_id(=yi-cli::integration) & test(=console_drive::a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_whole)) |
   (binary_id(=yi-console::integration) & test(=drive::agent_edit_reloads_clean_editor_silently)) |
@@ -147,7 +147,7 @@ not (
 inherits = "default"
 default-filter = '''
 not (
-  (binary_id(=yi-cli::integration) & test(=acp_protocol::a_prompt_dropped_before_insertion_is_answered_cancelled)) |
+  (binary_id(=yi-cli::integration) & test(=acp_protocol::a_prompt_queued_mid_turn_is_answered_at_once_and_dropped_by_a_close)) |
   (binary_id(=yi-cli::integration) & test(=cli_surfaces::a_run_past_its_deadline_answers_and_exits_inside_it)) |
   (binary_id(=yi-cli::integration) & test(=console_drive::a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_whole)) |
   (binary_id(=yi-console::integration) & test(=drive::agent_edit_reloads_clean_editor_silently)) |

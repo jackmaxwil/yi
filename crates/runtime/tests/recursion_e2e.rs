@@ -497,7 +497,7 @@ fn inbound_texts(messages: &[AgentMessage]) -> Vec<String> {
         .collect()
 }
 
-fn user_texts(messages: &[AgentMessage]) -> Vec<String> {
+pub(crate) fn user_texts(messages: &[AgentMessage]) -> Vec<String> {
     messages
         .iter()
         .filter_map(|message| match message {
