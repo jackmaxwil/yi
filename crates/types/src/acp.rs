@@ -378,6 +378,9 @@ pub struct AcpYiMeta {
     /// The child that raised a `session/request_permission`; absent for the root session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asker: Option<AcpAsker>,
+    /// Present when the session has a rewriter model: the length its composer control starts at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewriter: Option<crate::config::RewriteLength>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
