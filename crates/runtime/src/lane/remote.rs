@@ -427,6 +427,7 @@ fn asked(label: &str, stat: &str, broker: &PermissionBroker) -> bool {
         changes: &[],
         grants: &[],
         tool_call_id: None,
+        stop: None,
     };
     let (outcome, _classifier) = broker.confirm_judged(&ask, None);
     !matches!(outcome, AskOutcome::Reject)

@@ -87,7 +87,7 @@ pub use kernel_doctor::{
     doctor_boot, doctor_toolchain, listeners_detail, reachable_listeners, sandbox_listeners,
 };
 pub use mailbox::ParentLink;
-pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
+pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker, Stop};
 pub use provider::{
     CATALOG_PROVIDERS, DEFAULT_REFRESH_HOURS, MODELS_DEV, ProviderStream, available_models,
     catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, catalog_needs_credential,

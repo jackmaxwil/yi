@@ -16,6 +16,7 @@ struct OwnedAsk {
     changes: Vec<PathBuf>,
     grants: Vec<yi_permission::Grant>,
     tool_call_id: Option<String>,
+    stop: Option<super::Stop>,
 }
 
 impl OwnedAsk {
@@ -27,6 +28,7 @@ impl OwnedAsk {
             changes: ask.changes.to_vec(),
             grants: ask.grants.to_vec(),
             tool_call_id: ask.tool_call_id.map(str::to_owned),
+            stop: ask.stop.cloned(),
         }
     }
 
@@ -38,6 +40,7 @@ impl OwnedAsk {
             changes: &self.changes,
             grants: &self.grants,
             tool_call_id: self.tool_call_id.as_deref(),
+            stop: self.stop.as_ref(),
         }
     }
 }
@@ -119,6 +122,7 @@ impl PermissionBroker {
         // The asker's prompt carries the id it settles under, so a front end can close it.
         let ask = &PermissionAsk {
             tool_call_id: Some(&tool_call_id),
+            stop: self.stop.get(),
             ..*ask
         };
         let _ = self.events.send(AgentEvent::PermissionRequested {
@@ -159,7 +163,10 @@ impl PermissionBroker {
                 (AskOutcome::AllowOnce, Some(safe))
             }
             Answered::Person(outcome) => {
-                let by = if self.asker.is_some() {
+                let stopped = ask.stop.is_some_and(|stop| stop());
+                let by = if stopped && matches!(outcome, AskOutcome::Reject) {
+                    Answerer::Stopped
+                } else if self.asker.is_some() {
                     Answerer::User
                 } else {
                     Answerer::Nobody

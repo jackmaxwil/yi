@@ -77,7 +77,14 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             params: serde_json::to_value(&params).ok(),
         };
         sink(&json!(request));
-        let response = receiver.recv();
+        // Polled, not parked: the session's abort has no channel to this receiver.
+        let response = loop {
+            match receiver.recv_timeout(std::time::Duration::from_millis(100)) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if !ask.stop.is_some_and(|s| s()) => {}
+                other => break other.map_err(|_| ()),
+            }
+        };
         if let Some(map) = pending.lock().ok().as_mut().and_then(|map| map.as_mut()) {
             map.remove(&id);
         }
