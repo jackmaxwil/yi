@@ -192,6 +192,7 @@ fn confirmed(
             // channel per op, so "always" here is the one answer, not a rule kept.
             grants: &[],
             tool_call_id: None,
+            stop: None,
         },
         call.as_ref(),
     );

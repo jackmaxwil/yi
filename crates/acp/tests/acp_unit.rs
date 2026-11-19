@@ -521,6 +521,7 @@ fn permission_options_keep_their_bytes_for_zero_one_and_two_grants() -> TestResu
             changes: &[],
             grants: grants.get(..count).ok_or("grants")?,
             tool_call_id: None,
+            stop: None,
         });
         let log = seen.lock().map_err(|error| error.to_string())?;
         let request = log.first().ok_or("no request")?;
@@ -573,6 +574,7 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         changes: &changes,
         grants: &grants,
         tool_call_id: None,
+        stop: None,
     });
     assert!(
         matches!(outcome, yi_runtime::AskOutcome::AllowAlways(1)),
@@ -902,6 +904,40 @@ fn a_replayed_block_this_build_cannot_read_reaches_the_client_as_its_notice() ->
         "the prompt's and the reply's two; replay sends no tool results: {replayed}"
     );
     assert!(!replayed.contains("webSearchToolResult"), "{replayed}");
+    Ok(())
+}
+
+#[test]
+fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stopped);
+    let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || flag.load(Ordering::SeqCst));
+    let sink: yi_acp::LineSink = Arc::new(|_: &Value| {});
+    let asker = yi_acp::bridge_asker("s1".to_owned(), sink, Arc::clone(&pending));
+    let raise = stopped.clone();
+    let stopper = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        raise.store(true, Ordering::SeqCst);
+    });
+    let outcome = asker(&yi_runtime::PermissionAsk {
+        title: "bash requires permission",
+        description: "run a command",
+        patch: None,
+        changes: &[],
+        grants: &[],
+        tool_call_id: None,
+        stop: Some(&stop),
+    });
+    stopper.join().map_err(|_| "stopper panicked")?;
+    assert!(matches!(outcome, yi_runtime::AskOutcome::Reject));
+    let left = pending.lock().map_err(|e| e.to_string())?;
+    assert!(
+        left.as_ref()
+            .is_some_and(std::collections::HashMap::is_empty)
+    );
     Ok(())
 }
 

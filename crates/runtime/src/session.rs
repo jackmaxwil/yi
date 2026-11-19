@@ -651,7 +651,7 @@ impl AgentSession {
             *slot = Some(cwd.clone());
         }
         if let Some(broker) = &permission {
-            broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
+            self.wire_broker(broker);
         }
         let spills = self.spills.lock().ok().and_then(|dir| dir.clone());
         let selector = self.selector.lock().ok().and_then(|slot| slot.clone());
