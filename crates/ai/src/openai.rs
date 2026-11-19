@@ -549,6 +549,7 @@ pub(crate) fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
     {
         usage.cost.total = total;
     }
+    usage.unknown = crate::request::nothing_reported(&usage);
     usage
 }
 

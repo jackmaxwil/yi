@@ -1,6 +1,5 @@
 ---
 issue: Closes #2261, Closes #2263
-raise: comments +4, crate acp +177, crate runtime +28, crate types +40, tests +118
 cut: crates/acp/src/daemon.rs | flush_parked | moved to daemon/pending.rs, which also sends the held requests a client lacks; the worker_requests comment went with the insert into hold_request
 shares: #2300 both edit acp_unit.rs and runtime/src/lib.rs: this branch adds one test and no change to lib.rs beyond the stacked #2298 re-export
 growth: +298 the daemon's held-request table with its listing and resend, the asker meta, and the wire types; nothing deletable, the daemon kept only an id-to-root map
