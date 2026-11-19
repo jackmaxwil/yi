@@ -1,4 +1,6 @@
 ---
+version: 0.1075.0
+decisions: D606
 issue: Closes #2113, Closes #2281
 cut: crates/cli/tests/acp_protocol.rs | fn a_prompt_dropped_before_insertion_is_answered_cancelled() -> TestResult { | a queued prompt is now answered at queueing with its place, so the test pins that answer and that a close still drops it unrun
 shares: #2294 both add a field beside the prompt answer in update.rs and a re-export in lib.rs; the edits are disjoint lines
