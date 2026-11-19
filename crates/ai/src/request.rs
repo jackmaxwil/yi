@@ -32,6 +32,12 @@ pub fn empty_assistant(model: &Model) -> AgentMessage {
     }
 }
 
+/// Invariant: a request that ran spent at least one token, so a usage object counting none and
+/// charging nothing is a provider that reported nothing, not a free turn.
+pub(crate) fn nothing_reported(usage: &Usage) -> bool {
+    usage.total_tokens == 0 && usage.cost.total.as_f64().is_none_or(|cost| cost <= 0.0)
+}
+
 pub(crate) fn assistant_content_mut(message: &mut AgentMessage) -> Option<&mut Vec<Content>> {
     match message {
         AgentMessage::Assistant { content, .. } => Some(content),
