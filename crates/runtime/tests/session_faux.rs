@@ -2,6 +2,7 @@ use crate::scratch;
 use scratch::Scratch;
 
 use crate::faux_model::faux_model;
+use crate::recursion_e2e;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2297,17 +2298,7 @@ async fn prompts_sent_at_any_spacing_start_turns_in_the_order_sent() -> Result<(
             std::thread::sleep(Duration::from_micros(((round + n) % 5 * 150) as u64));
         }
         session.wait_idle().await;
-        let order: Vec<String> = session
-            .messages()
-            .iter()
-            .filter_map(|message| match message {
-                AgentMessage::User {
-                    content: yi_types::message::UserContent::Text(text),
-                    ..
-                } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
+        let order = recursion_e2e::user_texts(&session.messages());
         let sent: Vec<String> = (0..SENT).map(|n| format!("p{n}")).collect();
         assert_eq!(order, sent, "round {round}");
     }

@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::WeakUnboundedSender;
 use yi_types::subagent::ChildStatus;
 
 use crate::attach::Incoming;
-use crate::update::PendingPrompts;
+use crate::update::{PendingPrompts, extension, update_notification};
 use crate::{AcpState, LineSink, SessionHandle, respond};
 
 /// Idle sessions a worker keeps loaded, the console's own count of parked chats.
@@ -79,11 +79,27 @@ pub(crate) fn kernel_pins(kernel: Option<&yi_runtime::KernelService>) -> bool {
     kernel.is_some_and(|kernel| kernel.unsaved() || kernel.user_cell_running())
 }
 
-pub(crate) fn refuse(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
+pub(crate) fn refuse(
+    sink: &LineSink,
+    session_id: &str,
+    prompts: &PendingPrompts,
+    code: i64,
+    why: &str,
+) {
     let waiting = std::mem::take(&mut *crate::update::queued(prompts));
     for prompt in waiting {
-        if let Some(request) = prompt.request {
-            respond(sink, request, Err((code, why.to_owned())));
+        match prompt.request {
+            Some(request) => respond(sink, request, Err((code, why.to_owned()))),
+            None => {
+                let dropped = extension(
+                    "_yi/prompt_dropped",
+                    [
+                        ("messageId", json!(prompt.message_id)),
+                        ("reason", json!(why)),
+                    ],
+                );
+                sink(&update_notification(session_id, dropped));
+            }
         }
     }
 }
@@ -102,6 +118,7 @@ impl AcpState {
             let closed = "the session closed before this prompt was inserted";
             refuse(
                 &self.sink,
+                session_id,
                 &handle.prompts,
                 crate::REQUEST_CANCELLED,
                 closed,

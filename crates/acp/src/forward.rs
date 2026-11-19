@@ -346,7 +346,13 @@ pub(crate) async fn forward_parent(
                 parent.forward.gap(gap.dropped);
                 // Invariant: a lag may have dropped an insertion; a refusal beats a success naming it.
                 let lost = "the update stream lagged past this prompt's insertion";
-                crate::resident::refuse(&parent.forward.sink, parent.ids.waiting(), -32603, lost);
+                crate::resident::refuse(
+                    &parent.forward.sink,
+                    &parent.forward.session_id,
+                    parent.ids.waiting(),
+                    -32603,
+                    lost,
+                );
             }
         }
     }

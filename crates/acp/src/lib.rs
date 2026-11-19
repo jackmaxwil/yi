@@ -363,7 +363,7 @@ impl AcpState {
         crate::update::queued(&handle.prompts).push(pending);
         let prompt = yi_types::message::AgentMessage::user_input_with_images(&text, images);
         match handle.session.submit_message(prompt) {
-            Ok(yi_runtime::Submitted::Queued { place }) => {
+            Ok(Some(place)) => {
                 // The forwarder may have inserted it first and answered with the request.
                 crate::update::queued(&handle.prompts)
                     .iter_mut()

@@ -69,8 +69,9 @@ impl super::AgentSession {
         steer.saturating_add(follow)
     }
 
-    /// Starts an idle session's turn or queues behind the running one, never reordering.
-    pub fn submit_message(&self, prompt: AgentMessage) -> Result<Submitted, SessionError> {
+    /// Starts an idle session's turn, or queues behind the running one.
+    /// `Some(place)` is the queue place (1 is next after the turn); `None` means it started.
+    pub fn submit_message(&self, prompt: AgentMessage) -> Result<Option<usize>, SessionError> {
         if self.status() == Status::Idle {
             super::start_ext(&self.shared, &super::prompt::prompt_text(&prompt));
         }
@@ -300,16 +301,9 @@ pub(super) fn follow(parts: &RunParts, message: AgentMessage, news: Option<Still
     false
 }
 
-/// What [`super::AgentSession::submit_message`] did with a prompt; `place` 1 is next after the turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Submitted {
-    Started,
-    Queued { place: usize },
-}
-
 /// Incident: starting, then queuing on Busy, let a prompt sent between the two calls start
 /// ahead of the queue. One status lock decides both.
-fn submit(parts: RunParts, prompt: AgentMessage) -> Result<Submitted, SessionError> {
+fn submit(parts: RunParts, prompt: AgentMessage) -> Result<Option<usize>, SessionError> {
     {
         let Ok(mut status) = parts.shared.status.lock() else {
             return Err(SessionError::Busy);
@@ -317,12 +311,12 @@ fn submit(parts: RunParts, prompt: AgentMessage) -> Result<Submitted, SessionErr
         if *status == Status::Running {
             let mut queue = (parts.shared.follow_up.lock()).map_err(|_| SessionError::Busy)?;
             queue.push(Queued::new(prompt, false, None));
-            return Ok(Submitted::Queued { place: queue.len() });
+            return Ok(Some(queue.len()));
         }
         admit(&parts.shared, &mut status);
     }
     if launch(parts, prompt, None) {
-        Ok(Submitted::Started)
+        Ok(None)
     } else {
         Err(SessionError::Detached)
     }

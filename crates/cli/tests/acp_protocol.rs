@@ -1440,6 +1440,22 @@ fn a_prompt_queued_mid_turn_is_answered_at_once_and_dropped_by_a_close() -> Test
         answer["result"]["queuePlace"], 1,
         "a mid-turn prompt is answered with its place at once: {answer}"
     );
+    prompt(
+        &mut client,
+        "queued2",
+        &session_id,
+        json!([{"type": "text", "text": "never runs either"}]),
+    )?;
+    let frames = read_allowing(&mut client, |frame| {
+        frame["id"] == "queued2" && frame.get("method").is_none()
+    })?;
+    let second = frames
+        .last()
+        .ok_or("no answer to the second queued prompt")?;
+    assert_eq!(
+        second["result"]["queuePlace"], 2,
+        "a second mid-turn prompt is answered with place 2: {second}"
+    );
     client.send(&json!({"jsonrpc": "2.0", "id": "close", "method": "session/close", "params": {"sessionId": session_id}}))?;
     // No frame follows a close, so the transcript says whether the cancelled prompt ran: unfixed,
     // it lands once `sleep 2` ends; a negative wait has no state to wait on, so it is 4x that.
