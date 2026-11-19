@@ -3978,7 +3978,7 @@ fn a_pick_is_announced_once() -> TestResult {
 fn malformed_event() -> Vec<Value> {
     vec![update(
         "s-alpha",
-        json!({"sessionUpdate": "_yi/event", "event": {"type": "nonsense"}, "seq": 0}),
+        json!({"sessionUpdate": "_yi/event", "event": {"type": "agent_end", "messages": "nonsense"}, "seq": 0}),
     )]
 }
 
