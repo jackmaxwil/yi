@@ -914,7 +914,7 @@ fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
     let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
     let stopped = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stopped);
-    let stop: yi_runtime::Stop = Arc::new(move || flag.load(Ordering::SeqCst));
+    let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || flag.load(Ordering::SeqCst));
     let sink: yi_acp::LineSink = Arc::new(|_: &Value| {});
     let asker = yi_acp::bridge_asker("s1".to_owned(), sink, Arc::clone(&pending));
     let raise = stopped.clone();

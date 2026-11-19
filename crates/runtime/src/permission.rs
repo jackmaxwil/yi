@@ -10,8 +10,8 @@ use yi_permission::{
     PermissionMode, RequestId, ReviewedAsk, SessionRules, ToolCall, UserVerdict,
     canonical_command_identity, canonical_tool_identity, decide,
 };
-use yi_tools::ToolKind;
 use yi_tools::hashline::types::FileOp;
+use yi_tools::{CancelFlag, ToolKind};
 use yi_types::event::AgentEvent;
 use yi_types::permission::{
     Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
@@ -26,10 +26,10 @@ pub(crate) use hooked::claude_dir;
 mod kept;
 pub(crate) use kept::protected;
 mod late;
-use late::{Answered, Late};
+use late::{Answered, Late, stop_released};
 
 mod ask;
-pub use ask::{AskOutcome, Asker, PermissionAsk, Stop};
+pub use ask::{AskOutcome, Asker, PermissionAsk};
 pub type Journal<T = PermissionRecord> = Arc<dyn Fn(T) + Send + Sync>;
 
 /// What the reviewer is told about a call, and whether it may see it at all.
@@ -64,7 +64,7 @@ pub struct PermissionBroker {
     /// Appends each kept rule to the holder's own session JSONL, the one ledger of them.
     rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
-    stop: std::sync::OnceLock<Stop>,
+    stop: std::sync::OnceLock<CancelFlag>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
     /// A walled holder's retry never leaves the sandbox for a protected dir.
     walled: bool,
@@ -203,7 +203,7 @@ impl PermissionBroker {
         let _first_wiring_wins = self.journal.set(journal);
     }
 
-    pub fn set_stop(&self, stop: Stop) {
+    pub fn set_stop(&self, stop: CancelFlag) {
         let _first_wiring_wins = self.stop.set(stop);
     }
 
@@ -1084,7 +1084,11 @@ impl PermissionBroker {
 
     fn answered_or_person(&self, ask: &PermissionAsk<'_>, answered: Option<Answered>) -> Answered {
         answered.unwrap_or_else(|| {
-            Answered::Person(self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask)))
+            let outcome = self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask));
+            Answered::Person {
+                outcome,
+                stopped: stop_released(ask),
+            }
         })
     }
 }

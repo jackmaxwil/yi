@@ -14,7 +14,7 @@ pub enum AskOutcome {
 /// (ACP, §17.2) sends the patch as content while a text one renders `text()` over both.
 pub struct PermissionAsk<'a> {
     /// True once the asking session is aborted: the asker releases the wait as a rejection.
-    pub stop: Option<&'a Stop>,
+    pub stop: Option<&'a yi_tools::CancelFlag>,
     pub title: &'a str,
     pub description: &'a str,
     pub patch: Option<&'a str>,
@@ -36,5 +36,4 @@ impl PermissionAsk<'_> {
     }
 }
 
-pub type Stop = yi_tools::CancelFlag;
 pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
