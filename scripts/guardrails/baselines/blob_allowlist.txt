@@ -1,1 +1,3 @@
 docs/ARCHITECTURE.md
+desktop/assets/icon.icns
+desktop/fixtures/wire/kernel-cells.jsonl
