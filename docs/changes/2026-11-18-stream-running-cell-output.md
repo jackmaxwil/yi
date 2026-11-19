@@ -1,4 +1,5 @@
 ---
+version: 0.1073.0
 issue: Closes #2286
 growth: +268 the live-output buffer with its tick and loud cap and its two unit tests (cell_live.rs, the bulk of runtime +211) and the ACP projection (acp +17); weighed for deletion: nothing emitted ToolExecutionUpdate at all, so the producer is new, and reusing the kernel's existing uncapped on_stream hook and the session event stream avoided any change to the loop or the tool trait
 shares: #2256 it edits crates/runtime/src/lib.rs; this adds one `mod cell_live;` line to the module list
