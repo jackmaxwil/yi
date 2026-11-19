@@ -8,6 +8,7 @@ mod answer;
 mod args;
 pub mod auto_review;
 pub mod cache_miss;
+mod cell_live;
 pub mod checkpoint;
 pub mod classifier;
 pub mod claude_hooks;

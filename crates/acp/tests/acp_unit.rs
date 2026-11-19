@@ -940,3 +940,33 @@ fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
     );
     Ok(())
 }
+
+/// A standard-ACP client sees a running tool's output as `_yi/tool_progress` chunks keyed by
+/// its call id; the same event still rides `_yi/event` verbatim (#2286).
+#[test]
+fn a_tool_execution_update_projects_to_tool_progress() -> TestResult {
+    let event = AgentEvent::ToolExecutionUpdate {
+        tool_call_id: "call_1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        args: serde_json::json!({}),
+        partial_result: yi_types::event::ToolResult {
+            content: vec![yi_types::message::Content::Text {
+                text: "héllo\n".to_owned(),
+                text_signature: None,
+            }],
+            details: serde_json::json!({"stream": "stdout"}),
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+    };
+    let mut ids = yi_acp::update::IdMap::default();
+    let updates = yi_acp::update::to_updates(&event, &mut ids);
+    let wire = yi_acp::update::update_notification("s", updates.into_iter().next().ok_or("none")?);
+    let update = &wire["params"]["update"];
+    assert_eq!(update["sessionUpdate"], "_yi/tool_progress");
+    assert_eq!(update["toolCallId"], "call_1");
+    assert_eq!(update["text"], "héllo\n");
+    assert_eq!(update["stream"], "stdout");
+    Ok(())
+}

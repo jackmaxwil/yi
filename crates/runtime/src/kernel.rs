@@ -289,6 +289,8 @@ pub struct KernelService {
     user_cells: std::sync::atomic::AtomicUsize,
     pub(crate) cell_calls: std::sync::OnceLock<Arc<dyn yi_tools::CellCalls>>,
     pub(crate) running_cell: Mutex<Option<String>>,
+    pub(crate) events:
+        std::sync::OnceLock<tokio::sync::broadcast::Sender<yi_types::event::AgentEvent>>,
 }
 
 impl KernelService {
@@ -323,6 +325,7 @@ impl KernelService {
             user_cells: std::sync::atomic::AtomicUsize::new(0),
             cell_calls: std::sync::OnceLock::new(),
             running_cell: Mutex::new(None),
+            events: std::sync::OnceLock::new(),
         }
     }
 
@@ -782,6 +785,7 @@ impl KernelService {
             notes.extend(self.waited.lock().ok().and_then(|mut waited| waited.take()));
             self.refresh_path(&manager).await;
             let abort = AbortFlag::default();
+            let live = self.live_cell();
             let watcher = {
                 let abort = abort.clone();
                 let cancelled = Arc::clone(cancelled);
@@ -802,7 +806,7 @@ impl KernelService {
                     code,
                     ExecuteOptions {
                         abort: Some(abort),
-                        on_stream: Some(spill.sink()),
+                        on_stream: Some(live.tee(spill.sink())),
                         on_request: (calls.clone())
                             .map(|calls| Box::new(move |id: &str| calls.open(id)) as Box<_>),
                         ..ExecuteOptions::default()
@@ -810,6 +814,7 @@ impl KernelService {
                 )
                 .await;
             watcher.abort();
+            drop(live);
             match outcome {
                 Ok(result) => {
                     notes.extend(spill.note(yi_kernel::DEFAULT_MAX_OUTPUT_CHARS));
