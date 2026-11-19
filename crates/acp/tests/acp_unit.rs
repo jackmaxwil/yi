@@ -916,7 +916,7 @@ fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
     let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
     let stopped = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stopped);
-    let stop: yi_runtime::CancelFlag = Arc::new(move || flag.load(Ordering::SeqCst));
+    let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || flag.load(Ordering::SeqCst));
     let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let record = Arc::clone(&seen);
     let sink: yi_acp::LineSink = Arc::new(move |frame: &Value| {
@@ -968,7 +968,7 @@ fn a_childs_ask_names_the_child_and_the_roots_does_not() -> TestResult {
             log.push(frame.clone());
         }
     });
-    let release: yi_runtime::CancelFlag = Arc::new(|| true);
+    let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
     let asker = yi_acp::bridge_asker("s1".to_owned(), sink, pending);
     for agent in [Some("sub-655c3f0b"), None] {
         asker(&yi_runtime::PermissionAsk {

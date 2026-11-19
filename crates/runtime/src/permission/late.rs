@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use yi_tools::CancelFlag;
 use yi_types::event::AgentEvent;
 
 use super::{Answerer, AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
@@ -16,7 +17,7 @@ struct OwnedAsk {
     changes: Vec<PathBuf>,
     grants: Vec<yi_permission::Grant>,
     tool_call_id: Option<String>,
-    stop: Option<yi_tools::CancelFlag>,
+    stop: Option<CancelFlag>,
     agent: Option<String>,
 }
 
@@ -72,8 +73,12 @@ impl<'a> Late<'a> {
 }
 
 pub(super) enum Answered {
-    Person(AskOutcome),
+    Person { outcome: AskOutcome, stopped: bool },
     Classifier(f64),
+}
+
+pub(super) fn stop_released(ask: &PermissionAsk<'_>) -> bool {
+    ask.stop.is_some_and(|stop| stop())
 }
 
 /// Invariant: only a confident allow answers for the person; anything else keeps the ask open
@@ -84,20 +89,25 @@ pub(super) fn ask_or_judge(
     late: &Late<'_>,
 ) -> Answered {
     let Some(asker) = asker else {
-        return Answered::Person(AskOutcome::Reject);
+        return Answered::Person {
+            outcome: AskOutcome::Reject,
+            stopped: stop_released(ask),
+        };
     };
     let (owned, asker) = (OwnedAsk::of(ask), Arc::clone(asker));
     let (sender, receiver) = std::sync::mpsc::channel();
     let claimed = Arc::new(AtomicBool::new(false));
     let theirs = Arc::clone(&claimed);
     std::thread::spawn(move || {
-        let outcome = asker(&owned.ask());
+        let ask = owned.ask();
+        let outcome = asker(&ask);
+        let stopped = stop_released(&ask);
         if !theirs.swap(true, Ordering::AcqRel) {
-            let _ = sender.send(outcome);
+            let _ = sender.send((outcome, stopped));
         }
     });
-    if let Ok(outcome) = receiver.recv_timeout(late.delay) {
-        return Answered::Person(outcome);
+    if let Ok((outcome, stopped)) = receiver.recv_timeout(late.delay) {
+        return Answered::Person { outcome, stopped };
     }
     let judged = late.approver.judge(late.call);
     if let crate::classifier::Judgement::Allow(safe) = judged {
@@ -107,7 +117,10 @@ pub(super) fn ask_or_judge(
             return Answered::Classifier(safe);
         }
     }
-    Answered::Person(receiver.recv().unwrap_or(AskOutcome::Reject))
+    let (outcome, stopped) = receiver
+        .recv()
+        .unwrap_or((AskOutcome::Reject, stop_released(ask)));
+    Answered::Person { outcome, stopped }
 }
 
 impl PermissionBroker {
@@ -166,8 +179,7 @@ impl PermissionBroker {
                 self.settle(tool_call_id, ask, true, Answerer::Classifier);
                 (AskOutcome::AllowOnce, Some(safe))
             }
-            Answered::Person(outcome) => {
-                let stopped = ask.stop.is_some_and(|stop| stop());
+            Answered::Person { outcome, stopped } => {
                 let by = if stopped && matches!(outcome, AskOutcome::Reject) {
                     Answerer::Stopped
                 } else if self.asker.is_some() {

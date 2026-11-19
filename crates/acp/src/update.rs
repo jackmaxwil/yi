@@ -504,7 +504,7 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             partial_result,
             ..
         } => vec![tool_progress(tool_call_id, partial_result)],
-        AgentEvent::Wait { .. } => Vec::new(),
+        AgentEvent::Wait { .. } | AgentEvent::Other(_) => Vec::new(),
     }
 }
 

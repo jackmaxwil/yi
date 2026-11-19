@@ -41,10 +41,6 @@ impl PermissionAsk<'_> {
 pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
 
 impl PermissionBroker {
-    pub fn set_stop(&self, stop: yi_tools::CancelFlag) {
-        let _first_wiring_wins = self.stop.set(stop);
-    }
-
     pub fn set_agent(&self, name: String) {
         let _first_wiring_wins = self.agent.set(name);
     }

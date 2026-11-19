@@ -114,7 +114,6 @@ pub use yi_ai::roots;
 pub use yi_ai::search;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
-pub use yi_tools::CancelFlag;
 
 /// Stops shell jobs whose reaper would otherwise end with this process.
 pub fn kill_running_jobs() {

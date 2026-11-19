@@ -393,3 +393,28 @@ fn a_cells_details_carry_the_mime_its_value_arrived_as() -> TestResult {
     assert_eq!(plain.get("resultMime"), None, "a plain value grew a mime");
     Ok(())
 }
+
+/// Incident (#1915): a dropped display left no row in the cell's text. The notices the kernel
+/// wrote sit in the model's view, and the html kept for clients sits in the details, once.
+#[test]
+fn a_cells_display_notices_and_html_reach_its_result() -> TestResult {
+    let result: yi_types::kernel::ExecuteResult = serde_json::from_value(serde_json::json!({
+        "stdout": "", "stderr": "", "status": "ok", "durationMs": 1,
+        "displays": [{"mime_type": "text/html", "data": "<b>é</b>"}],
+        "notices": ["[… display output not shown to the model: text/latex x1; it reads images]"],
+    }))?;
+    let outcome = KernelCellOutcome {
+        result,
+        kernel_restarted: false,
+        notes: Vec::new(),
+    };
+    let output = yi_tools::cell_output("x", outcome, None);
+    let text = output_text(&output);
+    let stored = output.result;
+    assert!(text.contains("text/latex x1"), "{text}");
+    assert_eq!(
+        stored.details["displays"],
+        serde_json::json!([{"mime_type": "text/html", "data": "<b>é</b>"}])
+    );
+    Ok(())
+}
