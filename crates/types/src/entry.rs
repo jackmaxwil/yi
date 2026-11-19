@@ -120,10 +120,7 @@ impl UnknownEntry {
     }
 
     fn seq(&self) -> u64 {
-        self.0
-            .get("seq")
-            .and_then(Value::as_u64)
-            .unwrap_or_default()
+        crate::wire::field_u64(&self.0, "seq").unwrap_or_default()
     }
 
     fn assign(&mut self, parent_id: Option<String>, seq: u64, timestamp: u64) {

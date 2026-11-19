@@ -1,8 +1,9 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::message::{AgentMessage, Content, StopReason};
+use crate::wire::{Unknown, UnknownTag};
 
 /// A delta is a delta (D145): only `Start` carries the message; every other
 /// event carries its own bytes, and [`apply`] folds them into one accumulator.
@@ -372,36 +373,30 @@ pub enum AgentEvent {
 }
 
 /// The event object as read; it re-emits as serde_json writes it, and nothing reads inside it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct UnknownEvent(Map<String, Value>);
+pub type UnknownEvent = Unknown<EventTag>;
 
-/// Invariant: a known `type` reaching here did not decode, so it is an error, not an `Other`.
-impl<'de> Deserialize<'de> for UnknownEvent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        crate::wire::unknown_tag(
-            deserializer,
-            "type",
-            &[
-                "agent_start",
-                "agent_end",
-                "turn_start",
-                "turn_end",
-                "message_start",
-                "message_update",
-                "message_end",
-                "tool_execution_start",
-                "tool_execution_update",
-                "tool_execution_end",
-                "permission_requested",
-                "permission_resolved",
-                "child_update",
-                "landing_state",
-                "wait",
-            ],
-        )
-        .map(Self)
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventTag;
+
+impl UnknownTag for EventTag {
+    const TAG: &'static str = "type";
+    const KNOWN: &'static [&'static str] = &[
+        "agent_start",
+        "agent_end",
+        "turn_start",
+        "turn_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "tool_execution_start",
+        "tool_execution_update",
+        "tool_execution_end",
+        "permission_requested",
+        "permission_resolved",
+        "child_update",
+        "landing_state",
+        "wait",
+    ];
 }
 
 /// A stretch the agent spends on neither the model's reply nor a tool's work.

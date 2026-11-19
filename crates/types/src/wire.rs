@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
@@ -90,6 +92,31 @@ pub(crate) fn unknown_tag<'de, D: Deserializer<'de>>(
             "a known or missing {tag} that does not decode"
         ))),
     }
+}
+
+pub trait UnknownTag {
+    const TAG: &'static str;
+    const KNOWN: &'static [&'static str];
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Unknown<K>(Map<String, Value>, #[serde(skip)] PhantomData<fn() -> K>);
+
+impl<K> Unknown<K> {
+    pub(crate) fn u64_field(&self, key: &str) -> Option<u64> {
+        field_u64(&self.0, key)
+    }
+}
+
+impl<'de, K: UnknownTag> Deserialize<'de> for Unknown<K> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        unknown_tag(deserializer, K::TAG, K::KNOWN).map(|raw| Self(raw, PhantomData))
+    }
+}
+
+pub(crate) fn field_u64(raw: &Map<String, Value>, key: &str) -> Option<u64> {
+    raw.get(key).and_then(Value::as_u64)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

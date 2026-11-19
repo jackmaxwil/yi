@@ -1,8 +1,9 @@
 //! The settings page's rows: every `config.json` leaf, how it is edited, and when a saved
 //! change takes hold. The daemon fills each row's value from the file and refuses an edit here.
 
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Map, Number, Value};
+use crate::wire::{Unknown, UnknownTag};
+use serde::{Deserialize, Serialize};
+use serde_json::{Number, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,22 +37,16 @@ pub enum SettingKind {
 }
 
 /// The setting-kind object as read; it re-emits as serde_json writes it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct UnknownSetting(Map<String, Value>);
+pub type UnknownSetting = Unknown<SettingTag>;
 
-/// Invariant: a known `type` reaching here did not decode, so it is an error, not an `Other`.
-impl<'de> Deserialize<'de> for UnknownSetting {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        crate::wire::unknown_tag(
-            deserializer,
-            "type",
-            &[
-                "toggle", "choice", "number", "text", "model", "list", "json",
-            ],
-        )
-        .map(Self)
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingTag;
+
+impl UnknownTag for SettingTag {
+    const TAG: &'static str = "type";
+    const KNOWN: &'static [&'static str] = &[
+        "toggle", "choice", "number", "text", "model", "list", "json",
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
