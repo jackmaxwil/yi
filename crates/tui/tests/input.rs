@@ -748,3 +748,13 @@ fn escape_after_a_proposal_puts_the_typed_words_back() -> TestResult {
     assert_eq!(sent(&mut rx), vec!["prompt fix the tset".to_owned()]);
     Ok(())
 }
+
+#[test]
+fn enter_on_an_empty_composer_sends_nothing_and_asks_no_rewrite() -> TestResult {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = app();
+    app.apply(Reply::Rewriter(yi_types::config::RewriteLength::Medium));
+    press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(rx.try_recv().is_err(), "empty Enter sent a command");
+    Ok(())
+}

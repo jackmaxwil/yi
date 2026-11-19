@@ -243,12 +243,9 @@ impl crate::session::AgentSession {
         let rewriter = (self.rewriter()).ok_or("no rewriter model is configured")?;
         let store = self.store();
         let recent: Vec<String> = (store.as_ref())
-            .and_then(|store| crate::fetch::user_entries(store).ok())
+            .and_then(|store| crate::fetch::user_entries_recent(store, RECENT).ok())
             .unwrap_or_default()
             .iter()
-            .rev()
-            .take(RECENT)
-            .rev()
             .map(|(_, content)| crate::rewind::user_text_joined(content, "\n"))
             .collect();
         let (reply, usage) = rewriter.rewrite(length, draft, &recent).await;
