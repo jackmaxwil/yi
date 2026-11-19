@@ -69,7 +69,7 @@ pub struct UnknownMutation(Map<String, Value>);
 
 impl UnknownMutation {
     pub fn seq(&self) -> Option<u64> {
-        self.0.get("seq").and_then(Value::as_u64)
+        field_u64(&self.0, "seq")
     }
 }
 

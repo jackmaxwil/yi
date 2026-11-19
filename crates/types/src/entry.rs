@@ -141,7 +141,7 @@ impl<'de> Deserialize<'de> for UnknownEntry {
         use serde::de::Error;
         let raw = crate::wire::unknown_tag(deserializer, "type", &ENTRY_TYPES)?;
         if raw.get("id").and_then(Value::as_str).is_none()
-            || raw.get("seq").and_then(Value::as_u64).is_none()
+            || crate::wire::field_u64(&raw, "seq").is_none()
         {
             return Err(D::Error::custom("an unknown entry needs an id and a seq"));
         }
