@@ -16,7 +16,7 @@ mod answer;
 mod deadline;
 mod hooks;
 mod prompt;
-mod run;
+pub mod run;
 
 pub(crate) use answer::{AnswerHandle, FINISH, StatusLine, headed};
 use deadline::Deadline;

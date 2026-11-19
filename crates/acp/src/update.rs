@@ -138,7 +138,8 @@ pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
 pub struct PendingPrompt {
     pub text: String,
     pub message_id: String,
-    pub request: Value,
+    /// None once answered at queueing; the entry stays so the inserted message keeps its id.
+    pub request: Option<Value>,
 }
 
 pub type PendingPrompts = Arc<Mutex<Vec<PendingPrompt>>>;

@@ -296,14 +296,14 @@ impl Parent {
             self.forward.emit(update);
         }
         for prompt in self.ids.take_inserted() {
+            let Some(request) = prompt.request else {
+                continue;
+            };
             let inserted = yi_types::acp::AcpPromptResult {
                 message_id: prompt.message_id,
+                queue_place: None,
             };
-            crate::respond(
-                &self.forward.sink,
-                prompt.request,
-                Ok(serde_json::json!(inserted)),
-            );
+            crate::respond(&self.forward.sink, request, Ok(serde_json::json!(inserted)));
         }
         if let AgentEvent::MessageEnd { message } = event
             && matches!(

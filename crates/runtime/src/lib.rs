@@ -96,6 +96,7 @@ pub use provider::{
     set_custom_providers,
 };
 pub use rewind::{BranchStub, Rewound, ensure_idle, rewind_to, summarize_branch};
+pub use session::run::Submitted;
 pub use session::{AgentSession, SessionConfig, SessionError, Status, next_event};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{

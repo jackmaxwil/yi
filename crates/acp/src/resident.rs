@@ -82,7 +82,9 @@ pub(crate) fn kernel_pins(kernel: Option<&yi_runtime::KernelService>) -> bool {
 pub(crate) fn refuse(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
     let waiting = std::mem::take(&mut *crate::update::queued(prompts));
     for prompt in waiting {
-        respond(sink, prompt.request, Err((code, why.to_owned())));
+        if let Some(request) = prompt.request {
+            respond(sink, request, Err((code, why.to_owned())));
+        }
     }
 }
 impl AcpState {
