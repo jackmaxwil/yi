@@ -60,9 +60,6 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
                 yi: AcpYiMeta {
                     asker: Some(AcpAsker {
                         child_id: name.to_owned(),
-                        name: name.to_owned(),
-                        role: None,
-                        model: None,
                     }),
                     ..AcpYiMeta::default()
                 },

@@ -67,8 +67,21 @@ impl Supervisor {
     pub(super) fn pending(&self, client: ClientId, id: Option<Value>, frame: &Value) {
         let Some(id) = id else { return };
         let session = frame.pointer("/params/sessionId").and_then(Value::as_str);
-        let mut held: Vec<&Held> = (self.worker_requests.values())
-            .filter(|held| session.is_none() || held.session() == session)
+        let attached: HashSet<&str> = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| entry.attached.contains(&client))
+            .map(|(session, _)| session.as_str())
+            .collect();
+        let mut held: Vec<&Held> = self
+            .worker_requests
+            .values()
+            .filter(|held| {
+                held.session().is_some_and(|held_session| {
+                    attached.contains(held_session)
+                        && session.is_none_or(|session| held_session == session)
+                })
+            })
             .collect();
         held.sort_by_key(|held| held.at_ms);
         let requests = held.into_iter().filter_map(Held::listed).collect();
@@ -76,22 +89,22 @@ impl Supervisor {
         self.send_client(client, super::result_frame(id, result));
     }
 
-    /// Requests that parked with nobody attached are in `worker_requests` too, so they go out
-    /// with the rest here, once, and a client that already has one is not sent it twice.
     pub(super) fn flush_parked(&mut self, session_id: &str, client: ClientId) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             (entry.headless, entry.owed) = (false, Vec::new());
         }
         for frame in self.parked.remove(session_id).unwrap_or_default() {
-            if frame.get("id").is_none() {
-                self.send_client(client, frame.to_string());
-            }
+            self.send_client(client, frame.to_string());
         }
-        let lines: Vec<String> = (self.worker_requests.values_mut())
-            .filter_map(|held| {
-                (held.session() == Some(session_id) && held.sent.insert(client))
-                    .then(|| held.frame.to_string())
-            })
+        let mut held: Vec<&mut Held> = self
+            .worker_requests
+            .values_mut()
+            .filter(|held| held.session() == Some(session_id))
+            .collect();
+        held.sort_by_key(|held| held.at_ms);
+        let lines: Vec<String> = held
+            .into_iter()
+            .filter_map(|held| held.sent.insert(client).then(|| held.frame.to_string()))
             .collect();
         for line in lines {
             self.send_client(client, line);

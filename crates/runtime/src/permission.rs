@@ -29,7 +29,7 @@ mod late;
 use late::{Answered, Late};
 
 mod ask;
-pub use ask::{AskOutcome, Asker, PermissionAsk, Stop};
+pub use ask::{AskOutcome, Asker, PermissionAsk};
 pub type Journal<T = PermissionRecord> = Arc<dyn Fn(T) + Send + Sync>;
 
 /// What the reviewer is told about a call, and whether it may see it at all.
@@ -64,7 +64,7 @@ pub struct PermissionBroker {
     /// Appends each kept rule to the holder's own session JSONL, the one ledger of them.
     rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
-    stop: std::sync::OnceLock<Stop>,
+    stop: std::sync::OnceLock<yi_tools::CancelFlag>,
     agent: std::sync::OnceLock<String>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
     /// A walled holder's retry never leaves the sandbox for a protected dir.

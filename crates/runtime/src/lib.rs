@@ -88,7 +88,7 @@ pub use kernel_doctor::{
     doctor_boot, doctor_toolchain, listeners_detail, reachable_listeners, sandbox_listeners,
 };
 pub use mailbox::ParentLink;
-pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker, Stop};
+pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
 pub use provider::{
     CATALOG_PROVIDERS, DEFAULT_REFRESH_HOURS, MODELS_DEV, ProviderStream, available_models,
     catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, catalog_needs_credential,
@@ -114,6 +114,7 @@ pub use yi_ai::roots;
 pub use yi_ai::search;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
+pub use yi_tools::CancelFlag;
 
 /// Stops shell jobs whose reaper would otherwise end with this process.
 pub fn kill_running_jobs() {

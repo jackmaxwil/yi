@@ -384,11 +384,6 @@ pub struct AcpYiMeta {
 #[serde(rename_all = "camelCase")]
 pub struct AcpAsker {
     pub child_id: String,
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
 }
 
 /// `_yi/pending` result: the permission requests still waiting for an answer, each in the

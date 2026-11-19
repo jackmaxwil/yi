@@ -16,7 +16,7 @@ struct OwnedAsk {
     changes: Vec<PathBuf>,
     grants: Vec<yi_permission::Grant>,
     tool_call_id: Option<String>,
-    stop: Option<super::Stop>,
+    stop: Option<yi_tools::CancelFlag>,
     agent: Option<String>,
 }
 

@@ -650,8 +650,6 @@ impl Supervisor {
             return;
         }
         self.hold_request(&root, &method, &frame);
-        // With no client attached the frame is dropped but the ledger records that something
-        // happened, so a reattaching console still sees the unseen work.
         let session_id = frame
             .pointer("/params/sessionId")
             .and_then(Value::as_str)
@@ -666,10 +664,11 @@ impl Supervisor {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let Some(entry) = self.sessions.get_mut(&session_id) else {
-            // A worker speaks at attach, before its `session/new` response makes this entry.
-            let queue = self.parked.entry(session_id).or_default();
-            if queue.len() < PARKED_MAX {
-                queue.push(frame);
+            if frame.get("id").is_none() {
+                let queue = self.parked.entry(session_id).or_default();
+                if queue.len() < PARKED_MAX {
+                    queue.push(frame);
+                }
             }
             return;
         };
@@ -703,27 +702,6 @@ impl Supervisor {
             return self.refuse_ask(root, &session_id, &frame, &owed);
         }
         if detached {
-            // Requests (frames with an id) park for the next attach; a
-            // capped queue bounds a worker that asks in a loop.
-            if let Some(request_id) = frame.get("id").cloned() {
-                let queue = self.parked.entry(session_id).or_default();
-                if queue.len() < PARKED_MAX {
-                    queue.push(frame);
-                } else {
-                    self.worker_requests
-                        .remove(request_id.as_str().unwrap_or_default());
-                    // Incident: past the cap the ask was dropped, leaving the
-                    // worker's synchronous asker on an answer nobody would send.
-                    let _ = self.input.send(Input::WorkerReply(
-                        root,
-                        json!({
-                            "jsonrpc": "2.0",
-                            "id": request_id,
-                            "error": {"code": -32603, "message": "no client attached; ask queue full"},
-                        }),
-                    ));
-                }
-            }
             return;
         }
         // Fan out to every watcher; for a worker-originated request the first answer wins
@@ -1356,7 +1334,7 @@ mod tests {
                 "description": "tool invocation is not read-only: ipython",
                 "options": [{"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
                     {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}],
-                "_meta": {"yi": {"asker": {"childId": "sub-1", "name": "sub-1"}}}}})
+                "_meta": {"yi": {"asker": {"childId": "sub-1"}}}}})
     }
 
     /// Dies with a delivered ask vanishing from the daemon, leaving a reconnecting client with
@@ -1419,7 +1397,7 @@ mod tests {
             .flatten()
             .filter_map(|r| r["requestId"].as_str())
             .collect();
-        assert_eq!(left, ["perm_b_1"], "a closed ask stays listed: {rest}");
+        assert!(left.is_empty(), "an unattached session leaks: {rest}");
         Ok(())
     }
 }

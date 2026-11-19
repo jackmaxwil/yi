@@ -916,8 +916,14 @@ fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
     let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
     let stopped = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stopped);
-    let stop: yi_runtime::Stop = Arc::new(move || flag.load(Ordering::SeqCst));
-    let sink: yi_acp::LineSink = Arc::new(|_: &Value| {});
+    let stop: yi_runtime::CancelFlag = Arc::new(move || flag.load(Ordering::SeqCst));
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let sink: yi_acp::LineSink = Arc::new(move |frame: &Value| {
+        if let Ok(mut frames) = record.lock() {
+            frames.push(frame.clone());
+        }
+    });
     let asker = yi_acp::bridge_asker("s1".to_owned(), sink, Arc::clone(&pending));
     let raise = stopped.clone();
     let stopper = std::thread::spawn(move || {
@@ -941,6 +947,13 @@ fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
         left.as_ref()
             .is_some_and(std::collections::HashMap::is_empty)
     );
+    let frames = seen.lock().map_err(|e| e.to_string())?;
+    let closed = frames
+        .iter()
+        .find(|frame| frame["method"] == "_yi/permission_closed")
+        .ok_or("stopped ask did not close its ACP request")?;
+    assert_eq!(closed["params"]["sessionId"], "s1");
+    assert_eq!(closed["params"]["requestId"], "perm_s1_1");
     Ok(())
 }
 
@@ -955,7 +968,7 @@ fn a_childs_ask_names_the_child_and_the_roots_does_not() -> TestResult {
             log.push(frame.clone());
         }
     });
-    let release: yi_runtime::Stop = Arc::new(|| true);
+    let release: yi_runtime::CancelFlag = Arc::new(|| true);
     let asker = yi_acp::bridge_asker("s1".to_owned(), sink, pending);
     for agent in [Some("sub-655c3f0b"), None] {
         asker(&yi_runtime::PermissionAsk {
@@ -976,10 +989,6 @@ fn a_childs_ask_names_the_child_and_the_roots_does_not() -> TestResult {
         .collect();
     assert_eq!(
         asks[0]["params"]["_meta"]["yi"]["asker"]["childId"],
-        "sub-655c3f0b"
-    );
-    assert_eq!(
-        asks[0]["params"]["_meta"]["yi"]["asker"]["name"],
         "sub-655c3f0b"
     );
     assert!(asks[1]["params"].get("_meta").is_none(), "{}", asks[1]);
