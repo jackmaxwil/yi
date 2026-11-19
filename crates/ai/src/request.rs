@@ -32,6 +32,12 @@ pub fn empty_assistant(model: &Model) -> AgentMessage {
     }
 }
 
+/// Invariant: a request that ran spent at least one token, so a usage object counting none and
+/// charging nothing is a provider that reported nothing, not a free turn.
+pub(crate) fn nothing_reported(usage: &Usage) -> bool {
+    usage.total_tokens == 0 && usage.cost.total.as_f64().is_none_or(|cost| cost <= 0.0)
+}
+
 pub(crate) fn assistant_content_mut(message: &mut AgentMessage) -> Option<&mut Vec<Content>> {
     match message {
         AgentMessage::Assistant { content, .. } => Some(content),
@@ -409,7 +415,40 @@ const CACHE_FIELDS: [&str; 6] = [
 ];
 
 fn cache_field(text: &str) -> Option<&'static str> {
-    CACHE_FIELDS.into_iter().find(|field| text.contains(field))
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(text) else {
+        return CACHE_FIELDS
+            .into_iter()
+            .find(|field| prose_names(text, field));
+    };
+    let error = body.get("error").unwrap_or(&body);
+    let identifiers = [string_at(error.get("param")), string_at(error.get("code"))];
+    let message = error
+        .as_str()
+        .or_else(|| string_at(error.get("message")))
+        .or_else(|| string_at(body.get("message")));
+    CACHE_FIELDS.into_iter().find(|field| {
+        identifiers.contains(&Some(*field))
+            || message.is_some_and(|message| prose_names(message, field))
+    })
+}
+
+fn prose_names(text: &str, field: &str) -> bool {
+    field != "cache" && names_token(text, field)
+}
+
+fn string_at(value: Option<&serde_json::Value>) -> Option<&str> {
+    value.and_then(serde_json::Value::as_str)
+}
+
+fn names_token(text: &str, token: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(token).any(|(at, _)| {
+        let before = text.get(..at).and_then(|head| head.chars().next_back());
+        let after = text
+            .get(at.saturating_add(token.len())..)
+            .and_then(|tail| tail.chars().next());
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
 }
 
 pub fn send_with_retry(

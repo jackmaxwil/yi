@@ -287,10 +287,10 @@ fn a_hold_banks_no_budget() {
     );
 }
 
-/// Dies on a head drawn before any reasoning shows: a paced thought that has arrived but not
-/// been revealed drew `thinking · 0 chars`, or `thought · 0 chars`, counting nothing yet seen.
+/// Dies on reasoning drawn before pacing reveals it: a paced thought that has arrived but not
+/// been revealed put its whole body on a live row at once.
 #[test]
-fn a_thought_not_yet_revealed_draws_no_head() -> TestResult {
+fn a_thought_not_yet_revealed_draws_no_body() -> TestResult {
     let backend = common::VT100Backend::with_scrollback(80, 24, 200);
     let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut paced = app_with_pace(PACE);
@@ -312,9 +312,9 @@ fn a_thought_not_yet_revealed_draws_no_head() -> TestResult {
         .map(|row| terminal.backend().row_text(row))
         .collect();
     assert!(
-        !rows
-            .iter()
-            .any(|row| row.contains("thinking · ") || row.contains("thought · ")),
+        !rows.iter().any(|row| row.contains("Weighing")
+            || row.contains("thinking · ")
+            || row.contains("thought · ")),
         "{rows:#?}"
     );
     Ok(())

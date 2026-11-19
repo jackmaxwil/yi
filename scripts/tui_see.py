@@ -312,12 +312,12 @@ def ledger_line(terminal: str, seen: dict) -> str:
     return f"{terminal}: {env} · colour tier {tier} · kitty placed {placed} · OSC {osc}"
 
 
-def binary_inputs() -> list[Path]:
+def binary_inputs(root: Path = ROOT) -> list[Path]:
     """What the yi binary is built from: crate sources and anything they embed, the manifests,
     the lockfile and the kernel's Python package; tests and benches never reach it."""
-    crates = ROOT / "crates"
-    return [ROOT / "Cargo.toml", ROOT / "Cargo.lock", *crates.glob("*/Cargo.toml"),
-            *crates.glob("*/build.rs"), *crates.glob("*/src/**/*"), *(ROOT / "python").rglob("*")]
+    crates = root / "crates"
+    return [root / "Cargo.toml", root / "Cargo.lock", *crates.glob("*/Cargo.toml"),
+            *crates.glob("*/build.rs"), *crates.glob("*/src/**/*"), *(root / "python").rglob("*")]
 
 
 def newest_mtime(paths) -> float:

@@ -555,6 +555,12 @@ impl AgentSession {
         })
     }
 
+    pub fn is_retired(&self) -> bool {
+        self.shared
+            .retired
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Incident: the kernel pump's monitor task owns the tokio Child, so a dropped session
     /// leaks its IPython process. Every path that retires a session calls this.
     pub fn retire(&self) {

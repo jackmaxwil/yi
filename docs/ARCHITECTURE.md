@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.1062.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.1075.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -356,6 +356,10 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D606 | A `session/prompt` that arrives mid-turn is queued and answered at once with `{messageId, queuePlace}`, and starts-or-queues is one decision under the session's status lock (amends D351's answer-only-after-insertion for queued prompts) | a client could not tell a queued prompt from a lost one, and the start-then-queue pair of calls let a prompt sent between them start ahead of the queue | answer queued prompts at insertion again and restore the two-call fallback in `crates/acp/src/lib.rs` |
+| D605 | a reported zero is an unknown turn when it counts no tokens and no charge | a relay's zero counts are not a measured free turn, so the session cost header must not read them as complete | revert by clearing usage.unknown in openai.rs and openai_responses.rs |
+| D604 | Yi Desktop's command, approval, restart, project, checkout, shell, language-server, browser, window, plugin and v1-scope defaults are the settled choices in its staging design | the owner delegated behavior absent from the mockup under "I choose, you veto" | change the staging design before import |
+| D603 | Yi Desktop lands as `desktop/`, its own Cargo workspace, after a staged build on the owner's pinned Rune fork, keeps its own gate, v1 uses today's server unchanged, and the app owns its direct local integrations and Luau panes | the owner chose an in-tree native Rust app, a Rune fork that pulls upstream and may take small patches, and a lean UI-first v1, Yi's dependency cap and review rules make a separate staging repository necessary | do not import the staged tree |
 | D602 | Double Ctrl+C in the console detaches and leaves `yi serve` running (amends D356's parenthetical "ctrl+c twice in the console" and the console quit note of #1032/#1350); stopping the daemon stays on the command palette's `stop the daemon and quit` (`_yi/shutdown`) | a double Ctrl+C meant to leave a pane killed the shared daemon and every worker and background session on the machine | restore `self.stop_daemon_and_quit(outbound)` in `crates/console/src/app.rs` on the second Ctrl+C press |
 | D601 | reclaim keeps a read or grep result past the age floor while every `[path#TAG]` it printed matches the file on disk and the last reply used under `reclaim.keep_below_pct` (30) of the window (amends D597) | ten Sonnet 5.5 children reread a path they had already read 518 times and repeated 197 exact calls because results aged out at five requests while under 10% of the window was used; 396 of the 404 rereads past the floor were of a file whose tag had not changed | reversible via `reclaim.keep_below_pct = 0`, which restores the age-floor-only rule |
 | D600 | provider `openai-codex` is compiled: its client id, authorize and token endpoints, loopback redirect `http://localhost:1455/auth/callback`, scopes and extra authorize params live in the binary as a built-in `oauth-code` profile, like `cursor` (revises D191 for `cursor` and `openai-codex`; a profile at `~/.yi/oauth/openai-codex.json` still wins) | the owner asked for `yi login codex`, a ChatGPT Plus/Pro subscription login, and the Codex CLI's public client registers exactly that redirect, so a user cannot supply a working profile without copying the identity by hand | delete `crates/oauth/src/codex.rs` and its registry lookup, which restores D191 for everything but `cursor` |

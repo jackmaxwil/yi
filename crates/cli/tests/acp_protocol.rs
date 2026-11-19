@@ -1346,8 +1346,8 @@ fn a_strict_client_accepts_every_frame_of_a_faux_session() -> TestResult {
     Ok(())
 }
 
-/// A busy session queues the second prompt; each response must name the `user_message` that
-/// its own text was inserted as, and arrive only once that message exists.
+/// A busy session queues the second prompt and answers it at once; each response must name the
+/// `user_message` its text is inserted as, a running one's only once that message exists.
 #[test]
 fn the_prompt_response_names_the_user_message_it_inserted() -> TestResult {
     let dir = temp_dir("strict-ids")?;
@@ -1385,7 +1385,12 @@ fn the_prompt_response_names_the_user_message_it_inserted() -> TestResult {
         let message_id = frames[answer]["result"]["messageId"]
             .as_str()
             .ok_or(format!("{request}: no messageId in {}", frames[answer]))?;
-        let inserted = frames[..answer].iter().find(|frame| {
+        let before = if request == "second" {
+            frames.len()
+        } else {
+            answer
+        };
+        let inserted = frames[..before].iter().find(|frame| {
             frame["params"]["update"]["sessionUpdate"] == "user_message"
                 && frame["params"]["update"]["content"][0]["text"] == text
         });
@@ -1398,10 +1403,10 @@ fn the_prompt_response_names_the_user_message_it_inserted() -> TestResult {
     client.finish()
 }
 
-/// A prompt still queued when its session closes was never inserted, so it must not be
-/// answered with an id that no message will ever carry.
+/// A prompt sent mid-turn is answered at once with its place in the queue, and a close
+/// before it runs still drops it: the transcript never gains it.
 #[test]
-fn a_prompt_dropped_before_insertion_is_answered_cancelled() -> TestResult {
+fn a_prompt_queued_mid_turn_is_answered_at_once_and_dropped_by_a_close() -> TestResult {
     let dir = temp_dir("strict-drop")?;
     let script = faux_script(
         &dir,
@@ -1427,16 +1432,44 @@ fn a_prompt_dropped_before_insertion_is_answered_cancelled() -> TestResult {
         &session_id,
         json!([{"type": "text", "text": "never runs"}]),
     )?;
-    client.send(&json!({"jsonrpc": "2.0", "id": "close", "method": "session/close", "params": {"sessionId": session_id}}))?;
     let frames = read_allowing(&mut client, |frame| {
         frame["id"] == "queued" && frame.get("method").is_none()
     })?;
     let answer = frames.last().ok_or("no answer to the queued prompt")?;
+    let queued_message_id = answer["result"]["messageId"].clone();
     assert_eq!(
-        answer["error"]["code"], -32800,
-        "a dropped prompt is a cancelled request, never a messageId: {answer}"
+        answer["result"]["queuePlace"], 1,
+        "a mid-turn prompt is answered with its place at once: {answer}"
     );
-    // No frame follows a close, so the transcript says whether the cancelled prompt ran: unfixed,
+    prompt(
+        &mut client,
+        "queued2",
+        &session_id,
+        json!([{"type": "text", "text": "never runs either"}]),
+    )?;
+    let frames = read_allowing(&mut client, |frame| {
+        frame["id"] == "queued2" && frame.get("method").is_none()
+    })?;
+    let second = frames
+        .last()
+        .ok_or("no answer to the second queued prompt")?;
+    assert_eq!(
+        second["result"]["queuePlace"], 2,
+        "a second mid-turn prompt is answered with place 2: {second}"
+    );
+    client.send(&json!({"jsonrpc": "2.0", "id": "close", "method": "session/close", "params": {"sessionId": session_id}}))?;
+    let frames = client.read_until(|frame| {
+        frame["method"] == "session/update"
+            && frame["params"]["update"]["sessionUpdate"] == "_yi/prompt_dropped"
+    })?;
+    let dropped = frames
+        .last()
+        .ok_or("no prompt dropped update after close")?;
+    assert_eq!(
+        dropped["params"]["update"]["messageId"], queued_message_id,
+        "the close must name the prompt it dropped: {dropped}"
+    );
+    // The transcript says whether the cancelled prompt ran: unfixed,
     // it lands once `sleep 2` ends; a negative wait has no state to wait on, so it is 4x that.
     let sessions = dir.join("sessions");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -2668,4 +2701,45 @@ fn a_session_with_no_rewriter_model_says_so_and_announces_none() -> TestResult {
             .all(|update| update["params"]["update"]["rewriter"].is_null())
     );
     client.finish()
+}
+fn user_texts(frames: &[Value]) -> Vec<String> {
+    updates_of(frames, "user_message")
+        .iter()
+        .filter_map(|frame| frame["params"]["update"]["content"][0]["text"].as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Incident: a prompt sent in the idle gap between turns started its own turn ahead of the
+/// ones already queued, so the agent answered them out of the order typed.
+#[test]
+fn prompts_sent_across_the_idle_gap_run_in_the_order_sent() -> TestResult {
+    for gap_ms in [0u64, 20, 50] {
+        let dir = temp_dir("order")?;
+        let turns: Vec<Value> = (0..6).map(|n| json!({"text": format!("r{n}")})).collect();
+        let script = faux_script(&dir, &turns)?;
+        let mut client =
+            AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+        let session_id = strict_session(&mut client, &dir)?;
+        for n in 0..6 {
+            prompt(
+                &mut client,
+                &format!("p{n}"),
+                &session_id,
+                json!([{"type": "text", "text": format!("q{n}")}]),
+            )?;
+            std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+        }
+        let mut frames = Vec::new();
+        while user_texts(&frames).len() < 6 {
+            frames.extend(read_allowing(&mut client, |frame| {
+                frame["params"]["update"]["sessionUpdate"] == "user_message"
+            })?);
+        }
+        frames.extend(read_allowing(&mut client, is_idle)?);
+        let sent: Vec<String> = (0..6).map(|n| format!("q{n}")).collect();
+        assert_eq!(user_texts(&frames), sent, "gap {gap_ms} ms");
+        client.finish()?;
+    }
+    Ok(())
 }

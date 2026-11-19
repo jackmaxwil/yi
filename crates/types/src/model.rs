@@ -207,6 +207,10 @@ impl Model {
     pub fn read_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.read_timeout_secs.unwrap_or(DEFAULT_READ_TIMEOUT_SECS))
     }
+
+    pub fn route(&self) -> String {
+        format!("{}/{}", self.provider, self.id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
