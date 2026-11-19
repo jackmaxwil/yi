@@ -164,7 +164,7 @@ impl SubagentHost {
             .transpose()
             .map_err(|error| error.to_string())?;
         let (parent_model, parent_effort) = (self.options.defaults)();
-        let model = match super::optional_string(kwargs, "model")? {
+        let mut model = match super::optional_string(kwargs, "model")? {
             None => parent_model,
             Some(selector) => {
                 let (provider, id) = selector.split_once('/').ok_or_else(|| {
@@ -183,6 +183,9 @@ impl SubagentHost {
         if !self.options.provider.has_credential(&model.provider) {
             return Err(yi_ai::auth::missing_message(&model.provider));
         }
+        model
+            .read_timeout_secs
+            .get_or_insert(yi_types::model::CHILD_READ_TIMEOUT_SECS);
         let mut wall = self.wall_for(kwargs)?;
         wall.isolated |= *isolation != super::Isolation::None;
         let reader = super::reader::parse(kwargs)?;

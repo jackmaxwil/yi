@@ -153,6 +153,7 @@ pub struct CustomModel {
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
     pub cost: Option<CustomCost>,
+    pub read_timeout_secs: Option<u64>,
 }
 
 /// The wire names [`crate::model::Model::api`] carries; config is strict, so any other refuses.
@@ -340,6 +341,7 @@ impl CustomProvider {
                     cost: None,
                     context_window,
                     max_tokens,
+                    read_timeout_secs: None,
                 })
             })
             .collect();
@@ -386,7 +388,7 @@ impl CustomProvider {
                     compat: compat.clone(),
                     thinking_level_map: model.thinking_level_map.clone(),
                     headers: None,
-                    read_timeout_secs: None,
+                    read_timeout_secs: model.read_timeout_secs,
                 }
             })
             .collect()

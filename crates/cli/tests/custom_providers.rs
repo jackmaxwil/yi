@@ -541,6 +541,25 @@ fn a_declared_provider_with_no_key_is_refused_before_any_request() -> TestResult
     Ok(())
 }
 
+/// A declared provider with no key field at all is the minimal config; both surfaces point at
+/// `apiKeyEnv`, never back at a secret written into `config.json`.
+#[test]
+fn a_declared_provider_with_no_key_field_points_at_api_key_env() -> TestResult {
+    let (port, seen) = fake_gateway()?;
+    let home = Home::new("nokeyfield", &localgw(port, json!({})))?;
+    let ask = home.yi(&["ask", "--here", "--model", "localgw/m1", "hi"], &[])?;
+    assert_eq!(ask.status.code(), Some(4), "{}", text(&ask));
+    let refusal =
+        "no credential for provider localgw (set providers.localgw.apiKeyEnv in config.json)";
+    assert!(text(&ask).contains(refusal), "{}", text(&ask));
+    assert!(seen.lock().map_err(|_| "fake lock")?.is_empty());
+    let row = providers_row(&home, &[])?;
+    assert_eq!(row["status"], "fail", "{row}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(detail.ends_with("no key (set apiKeyEnv)"), "{row}");
+    Ok(())
+}
+
 /// A key only the yi-oauth store holds names the store, whose file names sanitize the id.
 #[test]
 fn a_stored_key_names_the_store_it_came_from() -> TestResult {

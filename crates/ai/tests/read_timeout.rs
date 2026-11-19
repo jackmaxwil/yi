@@ -204,3 +204,59 @@ fn every_streaming_adapter_reads_the_deadline_from_the_model() -> TestResult {
     }
     Ok(())
 }
+
+/// Dies with a pooled connection a NAT dropped without a FIN: the next request is written into
+/// it, nothing comes back, and the read timeout used to be final on a request a new socket answers.
+#[test]
+fn a_silently_dropped_pooled_connection_is_retried_on_a_fresh_one() -> TestResult {
+    use std::io::{BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> Option<()> {
+        let mut first = BufReader::new(listener.accept().ok()?.0);
+        crate::loopback::read_request(&mut first);
+        let event = "data: {\"n\":0}\n\n";
+        let ok = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{event}",
+            event.len()
+        );
+        let ok = ok.as_bytes();
+        first.get_mut().write_all(ok).ok()?;
+        crate::loopback::read_request(&mut first);
+        let mut second = BufReader::new(listener.accept().ok()?.0);
+        crate::loopback::read_request(&mut second);
+        second.get_mut().write_all(ok).ok()?;
+        drop(first);
+        Some(())
+    });
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let body = probe();
+    let waits = std::sync::Mutex::new(Vec::new());
+    let note = |wait| {
+        if let Ok(mut held) = waits.lock() {
+            held.push(wait);
+        }
+    };
+    // Unique among this binary's deadlines: the connection pool is keyed by it.
+    let retry = Retry::new(Duration::from_millis(1234), None, &note);
+    let pumped = pump_sse_with_resend(
+        None,
+        &retry,
+        || send_with_retry(&url, &[], &body, None, &retry),
+        |_| Ok(true),
+    );
+    assert!(pumped.is_ok(), "{pumped:?}");
+    let second = send_with_retry(&url, &[], &body, None, &retry)?;
+    assert_eq!(second.status(), 200);
+    assert_eq!(retry.ran(), 3, "two requests and one resend");
+    assert_eq!(
+        waits.lock().map_err(|_| "poisoned")?.len(),
+        1,
+        "the resend was announced"
+    );
+    server
+        .join()
+        .map_err(|_| "server panicked")?
+        .ok_or("server failed")?;
+    Ok(())
+}
