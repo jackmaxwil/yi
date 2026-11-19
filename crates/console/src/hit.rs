@@ -14,6 +14,7 @@ pub enum Hit {
     Title(PaneId),
     New(Option<String>),
     Search,
+    Improve(PaneId, Option<yi_types::config::RewriteLength>),
     FilesRefresh,
     FilesCollapse,
     FilesClose,
@@ -46,17 +47,18 @@ pub(crate) fn offer(app: &mut App, found: Vec<(Rect, Hit)>) {
 
 /// Each run chip and folded thought a chat pane drew this frame is a control the press and the
 /// hover walk.
-pub(crate) fn offer_chat(
-    app: &mut App,
-    pane: PaneId,
-    runs: Vec<(Rect, usize, usize)>,
-    thoughts: Vec<(Rect, usize)>,
-) {
-    let runs = runs
+pub(crate) fn offer_chat(app: &mut App, pane: PaneId, found: yi_tui::hits::ChatHits) {
+    let runs = found
+        .runs
         .into_iter()
         .map(|(rect, cell, ordinal)| (rect, Hit::Run(pane, cell, ordinal)));
-    let thoughts = thoughts
+    let thoughts = found
+        .thoughts
         .into_iter()
         .map(|(rect, cell)| (rect, Hit::Thought(pane, cell)));
-    offer(app, runs.chain(thoughts).collect());
+    let improve = found
+        .improve
+        .into_iter()
+        .map(|(rect, position)| (rect, Hit::Improve(pane, position)));
+    offer(app, runs.chain(thoughts).chain(improve).collect());
 }

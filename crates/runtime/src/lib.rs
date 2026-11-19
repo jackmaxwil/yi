@@ -48,6 +48,7 @@ pub mod provider;
 mod reclaim;
 pub mod retention;
 pub mod rewind;
+pub mod rewrite;
 pub mod rollup;
 pub mod rules;
 pub mod schedule;

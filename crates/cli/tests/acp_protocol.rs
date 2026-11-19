@@ -2622,6 +2622,86 @@ fn a_worker_with_a_live_ask_refuses_replacement_and_keeps_serving() -> TestResul
     Ok(())
 }
 
+fn with_rewriter(dir: &std::path::Path, role: bool) -> TestResult {
+    let path = dir.join("home/.yi/config.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    if role {
+        config["models"] = json!({"rewriter": "faux/faux-1"});
+        config["rewrite"] = json!({"length": "long"});
+    }
+    std::fs::write(&path, config.to_string())?;
+    Ok(())
+}
+
+/// The console reaches the rewriter only through these frames: the session's `_yi/config`
+/// update names the start length, and `_yi/rewrite` answers `text` or says why not.
+#[test]
+fn a_rewrite_request_is_answered_with_text_and_a_malformed_one_is_refused_not_dropped() -> TestResult
+{
+    let dir = temp_dir("rewrite")?;
+    with_rewriter(&dir, true)?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    let asked =
+        |client: &mut AcpClient, id: &str, params: Value| -> Result<Value, Box<dyn Error>> {
+            let frames = client.request(id, "_yi/rewrite", params)?;
+            frames.last().cloned().ok_or_else(|| "no answer".into())
+        };
+
+    let answer = asked(
+        &mut client,
+        "3",
+        json!({"sessionId": session_id, "length": "short", "draft": "fix the tset"}),
+    )?;
+    let text = answer["result"]["text"].as_str().unwrap_or_default();
+    assert!(
+        text.ends_with("My words, verbatim:\n> fix the tset"),
+        "{answer}"
+    );
+    let config = updates_of(&client.log, "_yi/config");
+    let started = config
+        .iter()
+        .any(|update| update["params"]["update"]["rewriter"] == "long");
+    assert!(
+        started,
+        "no `_yi/config` update named the start length: {config:?}"
+    );
+
+    for (id, params) in [
+        (
+            "4",
+            json!({"sessionId": session_id, "length": "huge", "draft": "x"}),
+        ),
+        ("5", json!({"sessionId": session_id, "length": "short"})),
+    ] {
+        let refused = asked(&mut client, id, params)?;
+        assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    }
+    client.finish()
+}
+
+#[test]
+fn a_session_with_no_rewriter_model_says_so_and_announces_none() -> TestResult {
+    let dir = temp_dir("rewrite-off")?;
+    with_rewriter(&dir, false)?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    let frames = client.request(
+        "3",
+        "_yi/rewrite",
+        json!({"sessionId": session_id, "length": "short", "draft": "fix"}),
+    )?;
+    let answer = frames.last().ok_or("no answer")?;
+    let reason = answer["result"]["reason"].as_str();
+    assert_eq!(reason, Some("no rewriter model is configured"), "{answer}");
+    let config = updates_of(&client.log, "_yi/config");
+    assert!(
+        config
+            .iter()
+            .all(|update| update["params"]["update"]["rewriter"].is_null())
+    );
+    client.finish()
+}
 fn user_texts(frames: &[Value]) -> Vec<String> {
     updates_of(frames, "user_message")
         .iter()

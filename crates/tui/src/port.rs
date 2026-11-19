@@ -59,6 +59,11 @@ pub enum Reply {
         entries: Vec<Entry>,
     },
     Notice(String),
+    Rewriter(yi_types::config::RewriteLength),
+    Rewritten {
+        ask: u64,
+        outcome: Result<String, String>,
+    },
 }
 
 pub trait SessionPort {
@@ -589,6 +594,17 @@ impl App {
                 }
             }
             Reply::Notice(text) => self.notice(text),
+            Reply::Rewriter(start) => self.composer.rewrite = crate::rewrite::Rewrite::ready(start),
+            Reply::Rewritten { ask, outcome } => {
+                let held = self.composer.text();
+                match self.composer.rewrite.answer(ask, outcome, &held) {
+                    Some(Ok(rewrite)) => self.composer.set_text(&rewrite),
+                    Some(Err(reason)) => self.notice(format!(
+                        "no rewrite: {reason} · enter sends your draft as typed"
+                    )),
+                    None => {}
+                }
+            }
         }
         self.scheduler.request();
     }

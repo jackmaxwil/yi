@@ -295,6 +295,7 @@ fn build_session(
     let selector = roles::selector_model()
         .map(|model| yi_runtime::select::Selector::new(std::sync::Arc::clone(&provider), model));
     session.set_selector(selector);
+    session.set_rewriter(roles::rewriter(&provider, &work, &home));
     let search = roles::web_search_provider(proxy.clone()).map_err(|reason| Refused {
         code: 2,
         reason,

@@ -28,6 +28,10 @@ pub struct ModelRoles {
     /// Search's separate OpenRouter completion; unset uses Yi's built-in search model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_search: Option<String>,
+    /// Naming a model turns on prompt rewriting: the composer's draft is restated by it and
+    /// shown before it is sent. Unset, nothing is built and no control is drawn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rewriter: Option<String>,
 }
 
 /// `~/.yi/config.json` is the whole user surface. Config is not durable state, so §20's
@@ -74,6 +78,27 @@ pub struct UserConfig {
     pub browser: Option<BrowserConfig>,
     /// `providers`: endpoints the user declares, each speaking one API, addressed `<id>/<model>`.
     pub providers: Option<Providers>,
+    pub rewrite: Option<RewriteConfig>,
+}
+
+/// `rewrite`: the skill whose body guides the rewriter (unset, its own rules alone), the length
+/// a session starts at (`medium`), and the rewriter's thinking level (`low`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RewriteConfig {
+    pub skill: Option<String>,
+    pub length: Option<RewriteLength>,
+    pub thinking: Option<crate::model::Effort>,
+}
+
+/// How much a rewrite may add to the draft and how long it may run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RewriteLength {
+    Short,
+    #[default]
+    Medium,
+    Long,
 }
 
 /// Ids a custom provider may not take beside the catalog's: the classifier's bearer, the script.
