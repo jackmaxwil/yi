@@ -162,7 +162,7 @@ impl ChildRecord {
             id: ChildId(child_id.to_owned()),
             name: self.session_name.clone(),
             status: crate::family::read_exit(self.exit).status,
-            activity: self.activity,
+            activity: self.activity.clone(),
             tool_use_count: self.tool_use_count,
             token_count: self.spent.tokens,
             cost: self.cost(),

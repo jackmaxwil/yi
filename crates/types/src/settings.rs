@@ -1,8 +1,8 @@
 //! The settings page's rows: every `config.json` leaf, how it is edited, and when a saved
 //! change takes hold. The daemon fills each row's value from the file and refuses an edit here.
 
-use serde::{Deserialize, Serialize};
-use serde_json::{Number, Value};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Number, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +30,28 @@ pub enum SettingKind {
     Model,
     List,
     Json,
+    /// A kind this build does not know, written by a newer build; kept as written.
+    #[serde(untagged)]
+    Other(UnknownSetting),
+}
+
+/// The setting-kind object as read; it re-emits as serde_json writes it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UnknownSetting(Map<String, Value>);
+
+/// Invariant: a known `type` reaching here did not decode, so it is an error, not an `Other`.
+impl<'de> Deserialize<'de> for UnknownSetting {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::wire::unknown_tag(
+            deserializer,
+            "type",
+            &[
+                "toggle", "choice", "number", "text", "model", "list", "json",
+            ],
+        )
+        .map(Self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -128,6 +150,7 @@ fn describe(kind: &SettingKind) -> String {
         SettingKind::Model => "provider/model".to_owned(),
         SettingKind::List => "a list of text".to_owned(),
         SettingKind::Json => "any JSON".to_owned(),
+        SettingKind::Other(_) => "a kind this build does not know".to_owned(),
     }
 }
 

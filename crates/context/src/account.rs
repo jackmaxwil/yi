@@ -58,6 +58,7 @@ pub fn estimate_message(message: &AgentMessage) -> Tokens {
         } => command.len() as u64 + output.len() as u64,
         AgentMessage::BranchSummary { summary, .. }
         | AgentMessage::CompactionSummary { summary, .. } => summary.len() as u64,
+        AgentMessage::Other(_) => serde_json::to_vec(message).map_or(0, |bytes| bytes.len() as u64),
     };
     chars_to_tokens(chars)
 }

@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::message::{AgentMessage, Content, StopReason};
 
@@ -366,6 +366,42 @@ pub enum AgentEvent {
     Wait {
         wait: Option<Wait>,
     },
+    /// An event `type` this build does not know, written by a newer build; kept as written.
+    #[serde(untagged)]
+    Other(UnknownEvent),
+}
+
+/// The event object as read; it re-emits as serde_json writes it, and nothing reads inside it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UnknownEvent(Map<String, Value>);
+
+/// Invariant: a known `type` reaching here did not decode, so it is an error, not an `Other`.
+impl<'de> Deserialize<'de> for UnknownEvent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::wire::unknown_tag(
+            deserializer,
+            "type",
+            &[
+                "agent_start",
+                "agent_end",
+                "turn_start",
+                "turn_end",
+                "message_start",
+                "message_update",
+                "message_end",
+                "tool_execution_start",
+                "tool_execution_update",
+                "tool_execution_end",
+                "permission_requested",
+                "permission_resolved",
+                "child_update",
+                "landing_state",
+                "wait",
+            ],
+        )
+        .map(Self)
+    }
 }
 
 /// A stretch the agent spends on neither the model's reply nor a tool's work.

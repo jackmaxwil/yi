@@ -401,6 +401,47 @@ pub enum AgentMessage {
         tokens_before: u64,
         timestamp: u64,
     },
+    /// A `role` this build does not know, written by a newer build; kept as written.
+    #[serde(untagged)]
+    Other(UnknownMessage),
+}
+
+/// What a reader is shown in place of an [`AgentMessage::Other`]; never its `role`, which is
+/// file text a forged session could fill with anything.
+pub const UNREAD_MESSAGE: &str = "[… 1 message left out: its role is newer than this build, which cannot read it; the session file keeps it as written, and no call here returns it]";
+
+/// The message object as read; it re-emits as serde_json writes it, and nothing reads inside it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UnknownMessage(Map<String, Value>);
+
+impl UnknownMessage {
+    pub fn timestamp(&self) -> u64 {
+        self.0
+            .get("timestamp")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+    }
+}
+
+/// Invariant: a known `role` reaching here did not decode, so it is an error, not an `Other`.
+impl<'de> Deserialize<'de> for UnknownMessage {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::wire::unknown_tag(
+            deserializer,
+            "role",
+            &[
+                "user",
+                "assistant",
+                "toolResult",
+                "bashExecution",
+                "custom",
+                "branchSummary",
+                "compactionSummary",
+            ],
+        )
+        .map(Self)
+    }
 }
 
 /// The text blocks of `blocks` joined by `sep`; every other kind of block is skipped.
@@ -527,6 +568,7 @@ impl AgentMessage {
             Self::BranchSummary { summary, .. } | Self::CompactionSummary { summary, .. } => {
                 summary.clone()
             }
+            Self::Other(_) => String::new(),
         }
     }
 
@@ -538,7 +580,8 @@ impl AgentMessage {
             | Self::BashExecution { .. }
             | Self::Custom { .. }
             | Self::BranchSummary { .. }
-            | Self::CompactionSummary { .. } => Attribution::Unproven,
+            | Self::CompactionSummary { .. }
+            | Self::Other(_) => Attribution::Unproven,
         }
     }
 }

@@ -106,6 +106,7 @@ pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
                     parts.push(format!("[User]: {summary}"));
                 }
             }
+            AgentMessage::Other(_) => parts.push(yi_types::message::UNREAD_MESSAGE.to_owned()),
         }
     }
     parts.join("\n\n")

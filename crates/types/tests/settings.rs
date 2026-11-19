@@ -207,6 +207,7 @@ fn sample(row: &SettingRow) -> Value {
             json!([{"call": "just pr", "pin": ["justfile"]}])
         }
         SettingKind::Json => json!({}),
+        SettingKind::Other(_) => Value::Null,
     }
 }
 
