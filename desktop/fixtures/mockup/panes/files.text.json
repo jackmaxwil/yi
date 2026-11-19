@@ -1,0 +1,40 @@
+{
+ "pane": "files",
+ "frame": 20,
+ "strings": [
+  "Files · at rest",
+  "All",
+  "Touched · 5",
+  "Edited · 3",
+  "Find a file, or a name inside one",
+  "esc",
+  "Changed in this thread · 3",
+  "rate_limit.rs",
+  "src/middleware",
+  "writing now",
+  "+48",
+  "upload.rs",
+  "src/routes",
+  "+6 −1",
+  "mod.rs",
+  "+1",
+  "Everything",
+  "touched stays bright",
+  "src",
+  "middleware",
+  "auth.rs",
+  "routes",
+  "sessions.rs",
+  "main.rs",
+  "read",
+  "tests",
+  "cart.rs",
+  "read twice",
+  ".github",
+  "Cargo.toml",
+  "README.md"
+ ],
+ "titles": [
+  "Search"
+ ]
+}

@@ -1,0 +1,93 @@
+[
+ [
+  "#0",
+  "Bucket::take",
+  "rate_limit.rs:18",
+  1,
+  [
+   [
+    "Function",
+    "Bucket::take"
+   ],
+   [
+    "At",
+    "rate_limit.rs:18"
+   ],
+   [
+    "Variables",
+    "4 in view"
+   ],
+   [
+    "Called with",
+    "now = 1731.42s"
+   ]
+  ],
+  [
+   "Open line",
+   "Show its variables"
+  ]
+ ],
+ [
+  "#1",
+  "RateLimit::call",
+  "rate_limit.rs:52",
+  0,
+  [
+   [
+    "Function",
+    "RateLimit::call"
+   ],
+   [
+    "At",
+    "rate_limit.rs:52"
+   ],
+   [
+    "Variables",
+    "3 in view"
+   ]
+  ],
+  [
+   "Open line",
+   "Show its variables"
+  ]
+ ],
+ [
+  "#2",
+  "upload",
+  "upload.rs:31",
+  0,
+  [
+   [
+    "Function",
+    "upload"
+   ],
+   [
+    "At",
+    "upload.rs:31"
+   ],
+   [
+    "Variables",
+    "5 in view"
+   ]
+  ],
+  [
+   "Open line",
+   "Show its variables"
+  ]
+ ],
+ [
+  "#3",
+  "axum::serve",
+  "library",
+  0,
+  [
+   [
+    "From",
+    "a library, no source here"
+   ]
+  ],
+  [
+   "Step out to your code"
+  ]
+ ]
+]

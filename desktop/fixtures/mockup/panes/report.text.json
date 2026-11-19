@@ -1,0 +1,19 @@
+{
+ "pane": "report",
+ "frame": 1,
+ "strings": [
+  "Report",
+  "3.1 KB · turn 2",
+  "upload-limit-simulated.html",
+  "turn 2",
+  "42%",
+  "Upload limit, simulated",
+  "One user sends 30 uploads in the first minute, then 8 more after the bucket refills. Twenty-eight get through. Ten are turned away with a wait time.",
+  "0 s",
+  "60 s, bucket refills",
+  "429 from here",
+  "200 OK, 28 uploads",
+  "429 Too Many Requests, 10 uploads"
+ ],
+ "titles": []
+}

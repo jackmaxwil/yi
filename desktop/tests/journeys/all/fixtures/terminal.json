@@ -1,0 +1,34 @@
+{
+ "about": "Under a home with no ~/.local/bin/yi, the Terminal pane finds yi on PATH as a shell would and its shell starts in the thread's folder: what is typed runs and prints.",
+ "seed": [
+  "hello"
+ ],
+ "runs": [
+  {
+   "steps": [
+    {
+     "t": 4,
+     "type": "key",
+     "name": "4",
+     "cmd": true,
+     "alt": true
+    },
+    {
+     "t": 5,
+     "type": "tap",
+     "key": "terminal-3.pane-tab-new"
+    },
+    {
+     "t": 8,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "absent_texts": [
+     "The shell could not start"
+    ]
+   }
+  }
+ ]
+}

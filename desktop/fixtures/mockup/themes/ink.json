@@ -1,0 +1,27 @@
+{
+ "id": "ink",
+ "name": "Ink",
+ "note": "deep blue with violet",
+ "dark": true,
+ "values": {
+  "accent": "#a79cf0",
+  "needs_you": "#7fb8f0",
+  "ok": "#7fcf9a",
+  "bad": "#f58585",
+  "text.1": "#d9dbef",
+  "text.2": "#aeb2d0",
+  "text.3": "#8387a8",
+  "code.keyword": "#c9a7f2",
+  "code.type": "#8fb8f5",
+  "code.string": "#9fd8c0",
+  "code.number": "#f0a8c8",
+  "code.comment": "#7a8196",
+  "font.text": "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+  "surface.pane": 0.34,
+  "surface.pane_active": 0.46,
+  "surface.window": 0.3,
+  "space.row": 20.0,
+  "space.line": 16.0,
+  "space.gutter": 8.0
+ }
+}

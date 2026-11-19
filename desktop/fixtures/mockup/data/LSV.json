@@ -1,0 +1,24 @@
+[
+ [
+  "run",
+  "rust-analyzer",
+  "Rust",
+  "atlas-api",
+  "612 MB",
+  1
+ ],
+ [
+  "run",
+  "typescript",
+  "TypeScript",
+  "storefront",
+  "280 MB"
+ ],
+ [
+  "stop",
+  "pyright",
+  "Python",
+  "docs",
+  "–"
+ ]
+]

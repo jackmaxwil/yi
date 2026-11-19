@@ -1,0 +1,6 @@
+{
+ "atlas-api": "6 threads · main",
+ "storefront": "5 threads · main",
+ "docs": "2 threads",
+ "infra": "2 threads"
+}

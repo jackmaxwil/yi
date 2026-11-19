@@ -1,0 +1,68 @@
+{
+ "head": [
+  "Notifications",
+  "3 new",
+  "Mark all read"
+ ],
+ "items": [
+  {
+   "dot": "var(--need)",
+   "title": "Rate limit",
+   "age": "now",
+   "text": "Wants to run cargo test -p api upload::",
+   "old": false,
+   "buttons": [
+    {
+     "text": "Allow once",
+     "kind": "primary"
+    },
+    {
+     "text": "Always",
+     "kind": "plain"
+    },
+    {
+     "text": "Deny",
+     "kind": "ghost"
+    }
+   ]
+  },
+  {
+   "dot": "var(--need)",
+   "title": "Cold start",
+   "age": "11m",
+   "text": "Asks: profile the release build?",
+   "old": false,
+   "buttons": [
+    {
+     "text": "Answer",
+     "kind": "plain"
+    },
+    {
+     "text": "Open thread",
+     "kind": "ghost"
+    }
+   ]
+  },
+  {
+   "dot": "rgb(111, 214, 151)",
+   "title": "Checkout",
+   "age": "24m",
+   "text": "Done. Two files changed, +18 −6.",
+   "old": false,
+   "buttons": [
+    {
+     "text": "Review changes",
+     "kind": "plain"
+    }
+   ]
+  },
+  {
+   "dot": "rgb(133, 136, 145)",
+   "title": "Notes 2.4",
+   "age": "2h",
+   "text": "Draft is in notes/2.4.md",
+   "old": true,
+   "buttons": []
+  }
+ ]
+}

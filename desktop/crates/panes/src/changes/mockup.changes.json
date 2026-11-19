@@ -1,0 +1,59 @@
+[
+ {
+  "id": "repo",
+  "cells": {
+   "branch": {
+    "text": "rate-limit-uploads"
+   },
+   "ahead": {
+    "text": "2"
+   },
+   "behind": {
+    "text": "0"
+   },
+   "commit": {
+    "text": "a1b9f3e"
+   }
+  }
+ },
+ {
+  "id": "change:src/middleware/rate_limit.rs",
+  "cells": {
+   "path": {
+    "text": "src/middleware/rate_limit.rs"
+   },
+   "status": {
+    "text": "A"
+   },
+   "added": {
+    "text": "48"
+   },
+   "removed": {
+    "text": "0"
+   },
+   "patch": {
+    "text": "diff --git a/src/middleware/rate_limit.rs b/src/middleware/rate_limit.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/middleware/rate_limit.rs\n@@ -0,0 +1,23 @@\n+use std::time::{Duration, Instant};\n+\n+const LIMIT: u32 = 20;\n+const WINDOW: Duration = Duration::from_secs(60);\n+\n+/// Twenty uploads a minute for each user.\n+pub struct Bucket {\n+    tokens: u32,\n+    refill_at: Instant,\n+}\n+\n+impl Bucket {\n+    pub fn take(&mut self, now: Instant) -> Result<(), Duration> {\n+        if now >= self.refill_at {\n+            self.tokens = LIMIT;\n+            self.refill_at = now + WINDOW;\n+        }\n+        match self.tokens.checked_sub(1) {\n+            Some(left) => { self.tokens = left; Ok(()) }\n+            None => Err(self.refill_at - now),\n+        }\n+    }\n+}\n"
+   }
+  }
+ },
+ {
+  "id": "change:src/routes/upload.rs",
+  "cells": {
+   "path": {
+    "text": "src/routes/upload.rs"
+   },
+   "status": {
+    "text": "M"
+   },
+   "added": {
+    "text": "6"
+   },
+   "removed": {
+    "text": "1"
+   },
+   "patch": {
+    "text": "diff --git a/src/routes/upload.rs b/src/routes/upload.rs\n--- a/src/routes/upload.rs\n+++ b/src/routes/upload.rs\n@@ -21,4 +21,5 @@\n pub fn routes() -> Router {\n   Router::new()\n-    .route(\"/upload\", post(upload))\n+    .route(\"/upload\", post(upload))\n+    .layer(RateLimit::per_user(LIMIT))\n }\n"
+   }
+  }
+ }
+]

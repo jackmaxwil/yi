@@ -1,0 +1,42 @@
+[
+ [
+  "self.refill_at - now",
+  "41.2s",
+  [
+   [
+    "Result",
+    "41.2s"
+   ],
+   [
+    "Type",
+    "Duration"
+   ],
+   [
+    "Was",
+    "42.2s, one stop ago"
+   ]
+  ],
+  [
+   "Edit",
+   "Remove"
+  ]
+ ],
+ [
+  "LIMIT",
+  "20",
+  [
+   [
+    "Type",
+    "u32, a constant"
+   ],
+   [
+    "Set at",
+    "rate_limit.rs:3"
+   ]
+  ],
+  [
+   "Open line",
+   "Remove"
+  ]
+ ]
+]

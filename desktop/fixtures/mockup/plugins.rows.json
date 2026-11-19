@@ -1,0 +1,507 @@
+[
+ {
+  "id": "docker",
+  "cells": {
+   "letter": {
+    "text": "D"
+   },
+   "color": {
+    "text": "#6fd0c4"
+   },
+   "name": {
+    "text": "docker"
+   },
+   "version": {
+    "text": "1.4.0"
+   },
+   "enabled": {
+    "flag": true
+   },
+   "adds": {
+    "tags": [
+     "4 commands",
+     "tool",
+     "feeds Containers"
+    ]
+   },
+   "update": {
+    "flag": true
+   },
+   "needs_attention": {
+    "flag": false
+   },
+   "description": {
+    "text": "Manage containers on any Docker host an agent can reach."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": [
+     "Run docker commands",
+     "Read container logs",
+     "Reach the network, hv-01 only"
+    ]
+   },
+   "denied": {
+    "tags": [
+     "Write to your files"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Update to 1.5.0",
+     "Disable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "vm-host",
+  "cells": {
+   "letter": {
+    "text": "V"
+   },
+   "color": {
+    "text": "#8fb4ff"
+   },
+   "name": {
+    "text": "vm-host"
+   },
+   "version": {
+    "text": "0.9.2"
+   },
+   "enabled": {
+    "flag": true
+   },
+   "adds": {
+    "tags": [
+     "3 commands",
+     "service",
+     "feeds VMs, Assets"
+    ]
+   },
+   "update": {
+    "flag": false
+   },
+   "needs_attention": {
+    "flag": false
+   },
+   "description": {
+    "text": "Start, stop and snapshot virtual machines."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": [
+     "Reach the VM host",
+     "Start and stop machines"
+    ]
+   },
+   "denied": {
+    "tags": [
+     "Delete machines"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Disable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "debugger",
+  "cells": {
+   "letter": {
+    "text": "B"
+   },
+   "color": {
+    "text": "#b79cf2"
+   },
+   "name": {
+    "text": "debugger"
+   },
+   "version": {
+    "text": "0.6.0"
+   },
+   "enabled": {
+    "flag": true
+   },
+   "adds": {
+    "tags": [
+     "LLDB adapter",
+     "GDB adapter",
+     "feeds Debugger"
+    ]
+   },
+   "update": {
+    "flag": false
+   },
+   "needs_attention": {
+    "flag": false
+   },
+   "description": {
+    "text": "Drive LLDB and GDB from the Debugger pane."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": [
+     "Attach to your programs",
+     "Let agents read a paused program"
+    ]
+   },
+   "denied": {
+    "tags": [
+     "Let agents step"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Disable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "rust",
+  "cells": {
+   "letter": {
+    "text": "R"
+   },
+   "color": {
+    "text": "var(--need)"
+   },
+   "name": {
+    "text": "rust"
+   },
+   "version": {
+    "text": "2.1.0"
+   },
+   "enabled": {
+    "flag": true
+   },
+   "adds": {
+    "tags": [
+     "language server",
+     "3 skills"
+    ]
+   },
+   "update": {
+    "flag": true
+   },
+   "needs_attention": {
+    "flag": false
+   },
+   "description": {
+    "text": "The Rust language server, and three skills for agents."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": [
+     "Read the project",
+     "Run cargo check"
+    ]
+   },
+   "denied": {
+    "tags": [
+     "Reach the network"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Update to 2.2.0",
+     "Disable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "typescript",
+  "cells": {
+   "letter": {
+    "text": "T"
+   },
+   "color": {
+    "text": "#7fd6ce"
+   },
+   "name": {
+    "text": "typescript"
+   },
+   "version": {
+    "text": "1.8.3"
+   },
+   "enabled": {
+    "flag": true
+   },
+   "adds": {
+    "tags": [
+     "language server"
+    ]
+   },
+   "update": {
+    "flag": false
+   },
+   "needs_attention": {
+    "flag": false
+   },
+   "description": {
+    "text": "The TypeScript language server."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": [
+     "Read the project"
+    ]
+   },
+   "denied": {
+    "tags": [
+     "Reach the network"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Disable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "github",
+  "cells": {
+   "letter": {
+    "text": "G"
+   },
+   "color": {
+    "text": "#c9cbd2"
+   },
+   "name": {
+    "text": "github"
+   },
+   "version": {
+    "text": "3.0.1"
+   },
+   "enabled": {
+    "flag": true
+   },
+   "adds": {
+    "tags": [
+     "connector",
+     "6 tools",
+     "2 skills"
+    ]
+   },
+   "update": {
+    "flag": false
+   },
+   "needs_attention": {
+    "flag": false
+   },
+   "description": {
+    "text": "Pull requests, issues and checks as tools for agents."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": [
+     "Read your repositories",
+     "Open pull requests"
+    ]
+   },
+   "denied": {
+    "tags": [
+     "Merge"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Disable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "figma",
+  "cells": {
+   "letter": {
+    "text": "F"
+   },
+   "color": {
+    "text": "#f58585"
+   },
+   "name": {
+    "text": "figma"
+   },
+   "version": {
+    "text": "1.2.0"
+   },
+   "enabled": {
+    "flag": true
+   },
+   "adds": {
+    "tags": [
+     "connector",
+     "needs sign-in"
+    ]
+   },
+   "update": {
+    "flag": false
+   },
+   "needs_attention": {
+    "flag": true
+   },
+   "description": {
+    "text": "Read designs and their comments. Signed out 56 minutes ago."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": [
+     "Read files you can open"
+    ]
+   },
+   "denied": {
+    "tags": []
+   },
+   "actions": {
+    "tags": [
+     "Sign in",
+     "Disable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "kubernetes",
+  "cells": {
+   "letter": {
+    "text": "K"
+   },
+   "color": {
+    "text": "#9fd4ff"
+   },
+   "name": {
+    "text": "kubernetes"
+   },
+   "version": {
+    "text": "0.3.1"
+   },
+   "enabled": {
+    "flag": true
+   },
+   "adds": {
+    "tags": [
+     "adds pane · Clusters",
+     "5 commands",
+     "tool"
+    ]
+   },
+   "update": {
+    "flag": false
+   },
+   "needs_attention": {
+    "flag": false
+   },
+   "description": {
+    "text": "A Clusters pane, and commands to look at pods and logs."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": [
+     "Read cluster state"
+    ]
+   },
+   "denied": {
+    "tags": [
+     "Change cluster state"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Disable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "code-search",
+  "dim": true,
+  "cells": {
+   "letter": {
+    "text": "S"
+   },
+   "color": {
+    "text": "#9a9ea8"
+   },
+   "name": {
+    "text": "code-search"
+   },
+   "version": {
+    "text": "0.4.0"
+   },
+   "enabled": {
+    "flag": false
+   },
+   "adds": {
+    "tags": [
+     "tool",
+     "1 skill"
+    ]
+   },
+   "update": {
+    "flag": false
+   },
+   "needs_attention": {
+    "flag": false
+   },
+   "description": {
+    "text": "Search across every project on this Mac. Off."
+   },
+   "source": {
+    "text": "From your team's catalogue · signed."
+   },
+   "allowed": {
+    "tags": []
+   },
+   "denied": {
+    "tags": [
+     "Read all your projects"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Enable",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

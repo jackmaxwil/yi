@@ -1,0 +1,91 @@
+{
+  "t": 0.0,
+  "anim_t": 0.0,
+  "viewport": [
+    1200.0,
+    750.0
+  ],
+  "scale": 2.0,
+  "dark_system": true,
+  "reduced_motion": false,
+  "time_scale": 1.0,
+  "animating": false,
+  "elements": [
+    {
+      "path": "#0",
+      "role": "group",
+      "rect": [
+        0.0,
+        0.0,
+        1200.0,
+        750.0
+      ],
+      "opacity": 1.0,
+      "scale": 1.0,
+      "blur": 0.0,
+      "focusable": false,
+      "focused": false,
+      "focusVisible": false,
+      "inert": false,
+      "loopPhase": null,
+      "fill": "#121314ff"
+    },
+    {
+      "path": "#0/#0",
+      "role": "text",
+      "rect": [
+        562.88,
+        365.63,
+        74.23,
+        18.75
+      ],
+      "opacity": 1.0,
+      "scale": 1.0,
+      "blur": 0.0,
+      "focusable": false,
+      "focused": false,
+      "focusVisible": false,
+      "inert": false,
+      "loopPhase": null,
+      "fill": "#00000000",
+      "text": "Yi Desktop",
+      "color": "#eff0f2ff"
+    }
+  ],
+  "warnings": [],
+  "title": "Yi Desktop",
+  "accessibility": {
+    "role": "window",
+    "name": "Yi Desktop",
+    "bounds": [
+      0.0,
+      0.0,
+      1200.0,
+      750.0
+    ],
+    "children": [
+      {
+        "role": "label",
+        "name": "Yi Desktop",
+        "bounds": [
+          562.9,
+          365.6,
+          74.3,
+          18.8
+        ]
+      },
+      {
+        "role": "status",
+        "states": [
+          "live-polite"
+        ],
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      }
+    ]
+  }
+}

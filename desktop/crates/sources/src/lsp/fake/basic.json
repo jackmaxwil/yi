@@ -1,0 +1,205 @@
+{
+ "initialize": [
+  {
+   "result": {
+    "capabilities": {
+     "textDocumentSync": 1,
+     "hoverProvider": true,
+     "definitionProvider": true,
+     "referencesProvider": true,
+     "renameProvider": true,
+     "inlayHintProvider": {
+      "resolveProvider": false
+     },
+     "codeActionProvider": {
+      "codeActionKinds": [
+       "quickfix"
+      ]
+     },
+     "experimental": {
+      "newThing": 1
+     }
+    },
+    "serverInfo": {
+     "name": "fake",
+     "version": "1"
+    }
+   }
+  }
+ ],
+ "textDocument/didOpen": [
+  {
+   "notify": [
+    {
+     "jsonrpc": "2.0",
+     "id": "ask-1",
+     "method": "workspace/configuration",
+     "params": {
+      "items": [
+       {
+        "section": "rust-analyzer"
+       }
+      ]
+     }
+    },
+    {
+     "jsonrpc": "2.0",
+     "method": "textDocument/publishDiagnostics",
+     "params": {
+      "uri": "$ROOT/src/lib.rs",
+      "version": 1,
+      "diagnostics": [
+       {
+        "range": {
+         "start": {
+          "line": 1,
+          "character": 25
+         },
+         "end": {
+          "line": 1,
+          "character": 26
+         }
+        },
+        "severity": 2,
+        "code": "unused_variables",
+        "source": "rustc",
+        "message": "unused variable: `x`",
+        "futureField": true
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ],
+ "textDocument/hover": [
+  {
+   "echo": true
+  }
+ ],
+ "textDocument/definition": [
+  {
+   "result": [
+    {
+     "targetUri": "$ROOT/src/lib.rs",
+     "targetRange": {
+      "start": {
+       "line": 1,
+       "character": 25
+      },
+      "end": {
+       "line": 1,
+       "character": 26
+      }
+     },
+     "targetSelectionRange": {
+      "start": {
+       "line": 1,
+       "character": 25
+      },
+      "end": {
+       "line": 1,
+       "character": 26
+      }
+     },
+     "originSelectionRange": {
+      "start": {
+       "line": 2,
+       "character": 12
+      },
+      "end": {
+       "line": 2,
+       "character": 13
+      }
+     }
+    }
+   ]
+  }
+ ],
+ "textDocument/references": [
+  {
+   "result": [
+    {
+     "uri": "$ROOT/src/lib.rs",
+     "range": {
+      "start": {
+       "line": 1,
+       "character": 25
+      },
+      "end": {
+       "line": 1,
+       "character": 26
+      }
+     }
+    },
+    {
+     "uri": "$ROOT/src/lib.rs",
+     "range": {
+      "start": {
+       "line": 2,
+       "character": 12
+      },
+      "end": {
+       "line": 2,
+       "character": 13
+      }
+     }
+    }
+   ]
+  }
+ ],
+ "textDocument/inlayHint": [
+  {
+   "result": [
+    {
+     "position": {
+      "line": 1,
+      "character": 26
+     },
+     "label": [
+      {
+       "value": ": "
+      },
+      {
+       "value": "i32"
+      }
+     ],
+     "kind": 1
+    }
+   ]
+  }
+ ],
+ "textDocument/codeAction": [
+  {
+   "result": [
+    {
+     "title": "Rename x to _x",
+     "kind": "quickfix",
+     "edit": {
+      "changes": {
+       "$ROOT/src/lib.rs": [
+        {
+         "range": {
+          "start": {
+           "line": 1,
+           "character": 25
+          },
+          "end": {
+           "line": 1,
+           "character": 26
+          }
+         },
+         "newText": "_x"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "title": "Run a command",
+     "command": "x"
+    }
+   ]
+  }
+ ]
+}

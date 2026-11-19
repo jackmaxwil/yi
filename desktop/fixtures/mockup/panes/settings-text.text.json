@@ -1,0 +1,10 @@
+{
+ "pane": "settings-text",
+ "frame": 11,
+ "strings": [
+  "As text",
+  "# 9 settings differ from the defaults [appearance] theme = \"Yi Dark\" density = \"compact\" text_font = \"system\" code_font = \"Geist Mono\" glass = 0.6 needs_you = \"#78d2c6\" # from the project [layout] chat_side = \"right\" sidebar_folded = \"titles\" [motion] moving_light = false [keys] pick_context = \"cmd+shift+a\"",
+  "Edit here or on the left. Both stay in step."
+ ],
+ "titles": []
+}

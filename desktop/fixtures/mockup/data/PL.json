@@ -1,0 +1,111 @@
+[
+ [
+  "D",
+  "#6fd0c4",
+  "docker",
+  "1.4.0",
+  [
+   "4 commands",
+   "tool",
+   "feeds Containers"
+  ],
+  "y",
+  1,
+  "update"
+ ],
+ [
+  "V",
+  "#8fb4ff",
+  "vm-host",
+  "0.9.2",
+  [
+   "3 commands",
+   "service",
+   "feeds VMs, Assets"
+  ],
+  "y"
+ ],
+ [
+  "B",
+  "#b79cf2",
+  "debugger",
+  "0.6.0",
+  [
+   "LLDB adapter",
+   "GDB adapter",
+   "feeds Debugger"
+  ],
+  "y"
+ ],
+ [
+  "R",
+  "var(--need)",
+  "rust",
+  "2.1.0",
+  [
+   "language server",
+   "3 skills"
+  ],
+  "y",
+  0,
+  "update"
+ ],
+ [
+  "T",
+  "#7fd6ce",
+  "typescript",
+  "1.8.3",
+  [
+   "language server"
+  ],
+  "y"
+ ],
+ [
+  "G",
+  "#c9cbd2",
+  "github",
+  "3.0.1",
+  [
+   "connector",
+   "6 tools",
+   "2 skills"
+  ],
+  "y"
+ ],
+ [
+  "F",
+  "#f58585",
+  "figma",
+  "1.2.0",
+  [
+   "connector",
+   "needs sign-in"
+  ],
+  "y",
+  0,
+  "warn"
+ ],
+ [
+  "K",
+  "#9fd4ff",
+  "kubernetes",
+  "0.3.1",
+  [
+   "adds pane · Clusters",
+   "5 commands",
+   "tool"
+  ],
+  "y"
+ ],
+ [
+  "S",
+  "#9a9ea8",
+  "code-search",
+  "0.4.0",
+  [
+   "tool",
+   "1 skill"
+  ],
+  "n"
+ ]
+]

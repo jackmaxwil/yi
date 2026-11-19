@@ -1,0 +1,4 @@
+{"dir":"send","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2,"clientInfo":{"name":"spike-wire","version":"0"}}}}
+{"dir":"recv","frame":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2,"info":{"name":"yi","version":"0.1041.0"},"capabilities":{"session":{"delete":{}}},"authMethods":[]}}}
+{"dir":"send","frame":{"jsonrpc":"2.0","id":2,"method":"session/list","params":{}}}
+{"dir":"recv","frame":{"jsonrpc":"2.0","id":2,"result":{"sessions":[]}}}

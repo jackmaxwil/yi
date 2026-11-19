@@ -1,0 +1,1 @@
+"The upload route has no limiter today. I added a token bucket keyed by user id in <code>middleware/rate_limit.rs</code> and put it in front of the handler. A blocked request gets <code>429</code> with a <code>Retry-After</code> header counted from the bucket's next refill."

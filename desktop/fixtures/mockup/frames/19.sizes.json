@@ -1,0 +1,22 @@
+{
+ "frame": 19,
+ "sizes": [
+  {
+   "part": "top-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".top",
+   "height": 30,
+   "width": 1192,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  }
+ ]
+}

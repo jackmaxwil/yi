@@ -1,0 +1,532 @@
+[
+ {
+  "pane": "agents",
+  "string": "Tree",
+  "reason": "plan default 20: left out of v1 (the graph view goes, so the Tree/Graph switch goes with it)"
+ },
+ {
+  "pane": "agents",
+  "string": "Graph",
+  "reason": "plan default 20: left out of v1"
+ },
+ {
+  "pane": "plugins",
+  "string": "Browse",
+  "reason": "plan default 20: left out of v1"
+ },
+ {
+  "pane": "plugins",
+  "string": "Updates 2",
+  "reason": "plan default 20: left out of v1"
+ },
+ {
+  "pane": "findings",
+  "string": "Board",
+  "reason": "plan default 20: left out of v1 (the findings Board tab)"
+ },
+ {
+  "pane": "chat",
+  "string": "Edit",
+  "reason": "plan default 10: the Edit button on an approval stays hidden until the server supports it"
+ },
+ {
+  "pane": "chat-doc",
+  "string": "Edit",
+  "reason": "plan default 10: the Edit button on an approval stays hidden until the server supports it"
+ },
+ {
+  "pane": "chat-doc",
+  "string": "3",
+  "reason": "plan default 12 and record 9.1 item 1: just chat is chat only, so the top bar's bell count is not drawn"
+ },
+ {
+  "pane": "new-chat",
+  "string": "3",
+  "reason": "plan default 12 and record 9.1 item 1: just chat is chat only, so the top bar's bell count is not drawn"
+ },
+ {
+  "pane": "new-chat",
+  "size": "chat-column.width",
+  "reason": "record 9.1 item 1: the two chat frames use different column widths (680 here, 770 in chat-doc); one width is built for both"
+ },
+ {
+  "pane": "references",
+  "string": "hold ⌃ or ⌘ and click any underlined name",
+  "reason": "plan default 13 and record 9.1 item 4: find references is Cmd-click and a right-click item; Ctrl-click stays the Mac's right-click"
+ },
+ {
+  "pane": "references",
+  "string": "function · 6 references in 3 files",
+  "reason": "a language server answers find references with places only, never the kind of symbol the name is, so the panel's header reads the count without the kind word"
+ },
+ {
+  "pane": "context-menu",
+  "string": "⌃ click",
+  "reason": "plan default 13 and record 9.1 item 4: find references is Cmd-click and a right-click item; Ctrl-click stays the Mac's right-click (the hint beside Find references reads Cmd-click)"
+ },
+ {
+  "pane": "code",
+  "contains": "48 lines",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (23 lines in the file)"
+ },
+ {
+  "pane": "lsp-code",
+  "contains": "48 lines",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (23 lines in the file)"
+ },
+ {
+  "pane": "references",
+  "contains": "48 lines",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (23 lines in the file)"
+ },
+ {
+  "pane": "assets",
+  "string": "13 assets",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (11 rows)"
+ },
+ {
+  "pane": "assets",
+  "string": "13",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (11 rows)"
+ },
+ {
+  "pane": "assets",
+  "string": "9 fully covered · 6 gaps",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (6 of 11 covered)"
+ },
+ {
+  "pane": "logs",
+  "string": "1 error · 3 warnings",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (2 warnings are listed)"
+ },
+ {
+  "pane": "logs",
+  "string": "5 sources · 1,204 lines this turn",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (the count of lines comes from the feed)"
+ },
+ {
+  "pane": "findings",
+  "string": "9 open",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (the 9 counts two suggestions that are not filed)"
+ },
+ {
+  "pane": "settings",
+  "string": "Project",
+  "reason": "plan default 19: project and thread scopes stay hidden until the server has them"
+ },
+ {
+  "pane": "settings",
+  "string": "This thread",
+  "reason": "plan default 19: project and thread scopes stay hidden until the server has them"
+ },
+ {
+  "pane": "settings",
+  "string": "Project settings win over yours. A thread's win over both.",
+  "reason": "plan default 19: project and thread scopes stay hidden until the server has them"
+ },
+ {
+  "pane": "settings",
+  "string": "project overrides yours",
+  "reason": "plan default 19: project and thread scopes stay hidden until the server has them"
+ },
+ {
+  "pane": "settings",
+  "string": "9",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (the Changed count)"
+ },
+ {
+  "pane": "settings",
+  "string": "214",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (only the shipped keys are listed)"
+ },
+ {
+  "pane": "settings-groups",
+  "contains": "9 changed",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (7 rows are marked changed)"
+ },
+ {
+  "pane": "settings-groups",
+  "contains": "214 settings",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows (only the shipped keys are listed)"
+ },
+ {
+  "pane": "settings-text",
+  "contains": "9 settings differ",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts its rows"
+ },
+ {
+  "pane": "context-menu",
+  "string": "yi://atlas-api/rate-limit-uploads/diff/src/middleware/rate_limit.rs#L18",
+  "reason": "plan default 15: addresses are built from record ids"
+ },
+ {
+  "pane": "context-tray",
+  "string": "yi://atlas-api/rate-limit-uploads/thread/fork-sliding-window",
+  "reason": "plan default 15: addresses are built from record ids"
+ },
+ {
+  "pane": "chat-doc",
+  "contains": "turn 2 · 14m",
+  "reason": "the mockup's own clock contradicts itself (14 seconds of work, 0:42 waited)"
+ },
+ {
+  "pane": "logs",
+  "string": "following",
+  "reason": "plan default 9: a log stops following while a line is open, and the mockup draws a line open; the scene says paused"
+ },
+ {
+  "pane": "theme-tokens",
+  "string": "Edit theme",
+  "reason": "the list and the editor are one pane with one view: the editor has no tab of its own"
+ },
+ {
+  "pane": "theme-tokens",
+  "string": "As text",
+  "reason": "the list and the editor are one pane with one view: the theme as text is not built"
+ },
+ {
+  "pane": "theme-tokens",
+  "string": "31 values · every one can be changed",
+  "reason": "record 9.4: the app counts its own values (every token name), where the mockup's count is of the rows it drew"
+ },
+ {
+  "pane": "theme-tokens",
+  "string": "4 changed from the base",
+  "reason": "record 9.4: the app counts the values that differ from the base, and Yi Dark is the base"
+ },
+ {
+  "pane": "findings",
+  "string": "14",
+  "reason": "the Closed tab's count: the fixtures hold no closed findings, so the scene has none to count"
+ },
+ {
+  "pane": "findings",
+  "string": "Closed today 2 · both proven",
+  "reason": "the fixtures hold no closed findings, so the scene has none to count or name"
+ },
+ {
+  "pane": "findings",
+  "string": "F12 · underflow",
+  "reason": "the fixtures hold no closed findings, so the scene has none to count or name"
+ },
+ {
+  "pane": "findings-table",
+  "string": "7 open",
+  "reason": "brief FH item 5: the mockup's count disagrees with its own rows; the scene counts its rows"
+ },
+ {
+  "pane": "findings-table",
+  "string": "2 fixed today",
+  "reason": "the fixtures hold no closed findings, so the scene has none to count or name"
+ },
+ {
+  "pane": "containers",
+  "string": "hv-01 · 9",
+  "reason": "the mockup's own miscount: its tab says 9 containers and its rows hold 8; the scene counts its rows, and the rows do not name their host"
+ },
+ {
+  "pane": "containers",
+  "string": "8 running",
+  "reason": "the mockup's own miscount: its groups add to 7 running; the scene counts its rows"
+ },
+ {
+  "pane": "containers",
+  "string": "1 exited · 3.5 of 16 GB",
+  "reason": "the fixtures hold no host memory total; the scene draws the exited count it can count and no memory"
+ },
+ {
+  "pane": "vms",
+  "string": "44 of 64 GB · disk 61%",
+  "reason": "the fixtures hold no host memory or disk total, so the header draws neither"
+ },
+ {
+  "pane": "vms",
+  "string": "last snapshot 2h ago",
+  "reason": "the fixtures hold no time of the last snapshot, so the footer does not say one"
+ },
+ {
+  "pane": "report",
+  "string": "42%",
+  "reason": "the zoom is the pane's width over the page's 600 point design width: at the mockup's 286 points that is 48%, and the scene is drawn at the mockup's width"
+ },
+ {
+  "pane": "design",
+  "string": "Layers",
+  "reason": "the Layers tab is not drawn (record 4.9: \"Layers\" is not shown)"
+ },
+ {
+  "pane": "design",
+  "string": "↵",
+  "reason": "no key runs Hand to agent: Return is Allow Once's in the shortcut map, which gives a key one command, so the keycap waits until the map can scope a key to a pane"
+ },
+ {
+  "pane": "chat",
+  "size": "row.height",
+  "reason": "the fixture's row is an answer block, 87 tall by its own wrap; the chat pane's one row key is the approval card, which record 3.5.3 measures at 91 in a pane"
+ },
+ {
+  "pane": "frame 1",
+  "string": "Help",
+  "reason": "the Mac's own menu bar draws the menu titles; no view of the app does"
+ },
+ {
+  "pane": "frame 1",
+  "contains": "turn 2 · 14m",
+  "reason": "the mockup's own clock contradicts itself (14 seconds of work, 0:42 waited)"
+ },
+ {
+  "pane": "frame 1",
+  "string": "214 files · 3 changed",
+  "reason": "record 9.4: the mockup gives its Files pane a sample of its own (three changed files, a turn that reads the tests twice) beside a Changes pane with two files and a chat with one read; a window has one thread and one git feed, so Files shows theirs"
+ },
+ {
+  "pane": "frame 1",
+  "string": "Changed in this thread · 3",
+  "reason": "record 9.4: the mockup gives its Files pane a sample of its own (three changed files, a turn that reads the tests twice) beside a Changes pane with two files and a chat with one read; a window has one thread and one git feed, so Files shows theirs"
+ },
+ {
+  "pane": "frame 1",
+  "string": "writing now",
+  "reason": "record 9.4: the mockup gives its Files pane a sample of its own (three changed files, a turn that reads the tests twice) beside a Changes pane with two files and a chat with one read; a window has one thread and one git feed, so Files shows theirs"
+ },
+ {
+  "pane": "frame 1",
+  "string": "cart.rs",
+  "reason": "record 9.4: the mockup gives its Files pane a sample of its own (three changed files, a turn that reads the tests twice) beside a Changes pane with two files and a chat with one read; a window has one thread and one git feed, so Files shows theirs"
+ },
+ {
+  "pane": "frame 1",
+  "string": "read twice",
+  "reason": "record 9.4: the mockup gives its Files pane a sample of its own (three changed files, a turn that reads the tests twice) beside a Changes pane with two files and a chat with one read; a window has one thread and one git feed, so Files shows theirs"
+ },
+ {
+  "pane": "findings-gate",
+  "string": "Tests pass",
+  "reason": "not built: the gate reads what the findings model holds (High findings, proofs, triage); a test run and the language server's error count are not in it (docs/parity.md, what remains)"
+ },
+ {
+  "pane": "findings-gate",
+  "string": "41 of 41, before this fix",
+  "reason": "not built: the gate reads what the findings model holds (High findings, proofs, triage); a test run and the language server's error count are not in it (docs/parity.md, what remains)"
+ },
+ {
+  "pane": "findings-gate",
+  "string": "No errors in changed files",
+  "reason": "not built: the gate reads what the findings model holds (High findings, proofs, triage); a test run and the language server's error count are not in it (docs/parity.md, what remains)"
+ },
+ {
+  "pane": "findings-gate",
+  "string": "checked 1m ago",
+  "reason": "not built: the gate reads what the findings model holds (High findings, proofs, triage); a test run and the language server's error count are not in it (docs/parity.md, what remains)"
+ },
+ {
+  "pane": "findings-place",
+  "string": "By source",
+  "reason": "not built: the By source tab of the places list (docs/parity.md, what remains)"
+ },
+ {
+  "pane": "findings-place",
+  "string": "8 places",
+  "reason": "record 9.4: the mockup's count disagrees with its own rows; the scene counts the places that hold an open finding (6)"
+ },
+ {
+  "pane": "findings-place",
+  "string": "Click a place to open it with its findings boxed",
+  "reason": "a press filters the list to the place, and the footer says that; opening the place with its findings boxed is not built"
+ },
+ {
+  "pane": "plugins",
+  "string": "2 updates",
+  "reason": "plan section 3 (plugin panes): a plugin is a script in the app's panes folder, so there is no catalogue to update it from"
+ },
+ {
+  "pane": "plugins",
+  "string": "1.4.0 → update",
+  "reason": "plan section 3 (plugin panes): a plugin is a script in the app's panes folder, so there is no catalogue to update it from"
+ },
+ {
+  "pane": "plugins",
+  "string": "2.1.0 → update",
+  "reason": "plan section 3 (plugin panes): a plugin is a script in the app's panes folder, so there is no catalogue to update it from"
+ },
+ {
+  "pane": "plugins",
+  "string": "Update to 1.5.0",
+  "reason": "plan section 3 (plugin panes): a plugin is a script in the app's panes folder, so there is no catalogue to update it from"
+ },
+ {
+  "pane": "plugins",
+  "string": "Disable",
+  "reason": "plan section 3 (plugin panes): a script in the panes folder is on; Remove moves it to the Trash, and there is no switch between"
+ },
+ {
+  "pane": "plugins",
+  "string": "Plugins run outside the app, so a broken one cannot take it down",
+  "reason": "plan section 3 (plugin panes): plugins run inside the app in a sandbox, and the footer says that instead"
+ },
+ {
+  "pane": "plugins",
+  "string": "Find",
+  "reason": "not built: a filter for the plugins list (docs/parity.md, what remains)"
+ },
+ {
+  "pane": "plugins",
+  "string": "K",
+  "reason": "not built: the letter badge before a plugin's name; the other letters only match by chance (docs/parity.md, what remains)"
+ },
+ {
+  "pane": "plugins",
+  "size": "row.height",
+  "reason": "not built: the mockup's two-line plugin row; the list draws the scale's 20 point row with what a plugin adds in its own column (docs/parity.md, what remains)"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Type",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Glass",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Agents",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Models",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Permissions",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Budgets",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Findings",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Context boxes",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Terminal",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Notifications",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Keys",
+  "reason": "the Keys group holds a row for every command, so a scene leaves it out (the native app lists it; its rows are not the mockup's one)"
+ },
+ {
+  "pane": "settings-groups",
+  "string": "Sync",
+  "reason": "plan default 19 and record 9.4: a group is listed once a shipped setting declares it; the mockup lists groups whose settings do not exist yet"
+ },
+ {
+  "pane": "new-chat",
+  "string": "@ file",
+  "reason": "dogfood DF1: the composer's @ file and / command chips did nothing, so they are not drawn until their behaviour is built"
+ },
+ {
+  "pane": "new-chat",
+  "string": "/ command",
+  "reason": "dogfood DF1: the composer's @ file and / command chips did nothing, so they are not drawn until their behaviour is built"
+ },
+ {
+  "pane": "chat-doc",
+  "string": "@ file",
+  "reason": "dogfood DF1: the composer's @ file and / command chips did nothing, so they are not drawn until their behaviour is built"
+ },
+ {
+  "pane": "chat-doc",
+  "string": "/ command",
+  "reason": "dogfood DF1: the composer's @ file and / command chips did nothing, so they are not drawn until their behaviour is built"
+ },
+ {
+  "pane": "new-chat",
+  "string": "Or start from",
+  "reason": "dogfood DF1: the places to start from did nothing when pressed, so they are not drawn until starting from a thing is built"
+ },
+ {
+  "pane": "new-chat",
+  "string": "A finding",
+  "reason": "dogfood DF1: the places to start from did nothing when pressed, so they are not drawn until starting from a thing is built"
+ },
+ {
+  "pane": "new-chat",
+  "string": "A file",
+  "reason": "dogfood DF1: the places to start from did nothing when pressed, so they are not drawn until starting from a thing is built"
+ },
+ {
+  "pane": "new-chat",
+  "string": "The last error in the terminal",
+  "reason": "dogfood DF1: the places to start from did nothing when pressed, so they are not drawn until starting from a thing is built"
+ },
+ {
+  "pane": "new-chat",
+  "string": "A screenshot",
+  "reason": "dogfood DF1: the places to start from did nothing when pressed, so they are not drawn until starting from a thing is built"
+ },
+ {
+  "pane": "new-chat",
+  "string": "A fork of an old thread",
+  "reason": "dogfood DF1: the places to start from did nothing when pressed, so they are not drawn until starting from a thing is built"
+ },
+ {
+  "pane": "frame 1",
+  "string": "  Router::new()",
+  "reason": "dogfood round 2: Changes wraps a long diff line instead of cutting it and each hunk carries Comment, so in the everything frame the hunk's last lines sit below the pane's fold"
+ },
+ {
+  "pane": "frame 1",
+  "string": "    .route(\"/upload\", post(upload))",
+  "reason": "dogfood round 2: Changes wraps a long diff line instead of cutting it and each hunk carries Comment, so in the everything frame the hunk's last lines sit below the pane's fold"
+ },
+ {
+  "pane": "frame 1",
+  "string": "    .layer(RateLimit::per_user(LIMIT))",
+  "reason": "dogfood round 2: Changes wraps a long diff line instead of cutting it and each hunk carries Comment, so in the everything frame the hunk's last lines sit below the pane's fold"
+ },
+ {
+  "pane": "frame 1",
+  "string": "25",
+  "reason": "dogfood round 2: Changes wraps a long diff line instead of cutting it and each hunk carries Comment, so in the everything frame the hunk's last lines sit below the pane's fold"
+ },
+ {
+  "pane": "frame 1",
+  "string": "agent: cargo test · waiting",
+  "reason": "dogfood round 2: the agent's terminal tab is named by its command's whole first line (cut at 60 characters), not its first two words, so a person can tell two runs apart"
+ },
+ {
+  "pane": "frame 1",
+  "string": "pub fn routes() -> Router {",
+  "reason": "dogfood round 2: the Code pane's foot names the copy it shows (the agent's checkout or the project folder), which takes one row, so this line sits below the pane's fold in the everything frame"
+ },
+ {
+  "pane": "frame 1",
+  "string": "Read 1 file, searched once, edited 2 files",
+  "reason": "dogfood round 2: the approval card wraps its widest button and its sandbox line instead of cutting them, so it is taller and the earlier turn's folded summary scrolls above the chat's top in the everything frame"
+ },
+ {
+  "pane": "frame 1",
+  "size": "sidebar-strip",
+  "reason": "the owner's first look (2026-11-16): the sidebar is open or hidden, never folded, so the frame's folded strip is the open tree"
+ }
+]
