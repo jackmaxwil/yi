@@ -4,5 +4,12 @@ decision: a request on a pooled socket that has already carried a finished strea
 ledger~: model read deadline | a timeout is neither retried nor resent, its refusal | a timeout is neither retried nor resent, except a pooled socket that went silent, which is dialed anew once, a child keeps 300 s unless its entry says otherwise, its refusal
 raise: comments +5, crate ai +43, crate runtime +3, crate types +6, tests +108
 cut: none crates/ai/src/request.rs
+shares: #2297 it edits the provider and timeout lines of YI_DESIGN.md; this adds one clause to the read-timeout bullet and one key to the providers line
+shares: #2295 same file; different bullets
+shares: #2293 it edits request.rs; this moves the pool functions to request/pool.rs and edits send_stripping_cache's send call
+shares: #2256 it edits config.rs; this adds one field to CustomModel and its catalog line
+shares: #2239 same file YI_DESIGN.md; different bullets
+shares: #2237 it edits the build and family harness; this adds a read-timeout default in cast and one Built field
+shares: #2205 it edits custom_providers.rs and config.rs; this adds one test and one CustomModel field
 ---
 A request written into a pooled connection that a NAT had silently dropped used to wait on it with no deadline, because the HTTP client clears the read timeout when a socket returns to its pool. Such a request is now timed on the model's `readTimeoutSecs` and, silent past it, sent once more on a new connection, announced as a retry. A model declared under `providers` can now carry `readTimeoutSecs`, which reaches its catalog entry. A child session's model waits 300 s for one read unless its entry sets its own. The remaining review findings of #2178 were already fixed on main (the Kimi refresh keeps the field, the cache-strip retry reads the error's `param`, `code` and message words, the tail suspension keys on the requested route); the missing-credential sentence for a provider with no `apiKeyEnv` now has a test, and a read already lifted the tail suspension under test.
