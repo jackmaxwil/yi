@@ -7,6 +7,11 @@ pub enum Command {
     /// summarizer call it earns is not.
     SummarizeBranch(yi_runtime::BranchStub),
     Slash(String),
+    Rewrite {
+        ask: u64,
+        length: yi_types::config::RewriteLength,
+        draft: String,
+    },
     StopChild(String),
     ChildHistory(String),
     Answer {

@@ -478,6 +478,7 @@ pub fn compact_entry(entry: &Entry) -> (String, bool) {
             AgentMessage::BashExecution { .. } => "bash execution".to_owned(),
             AgentMessage::BranchSummary { .. } => "branch summary".to_owned(),
             AgentMessage::CompactionSummary { .. } => "compaction summary".to_owned(),
+            AgentMessage::Other(_) => "unread message".to_owned(),
         },
         Entry::BranchSummary { .. } => "branch summary".to_owned(),
         Entry::Custom { custom_type, .. } => format!("custom {custom_type}"),

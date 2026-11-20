@@ -22,7 +22,7 @@ use crate::model::{
 use crate::notify::{NoteQueue, OscFlavor, escape};
 use port::EventSeq;
 
-const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
+pub(super) const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 const LIST_POLL: Duration = Duration::from_secs(5);
 const FLASH: Duration = Duration::from_secs(2);
 const SPLIT_ANIM: Duration = Duration::from_millis(140);
@@ -64,6 +64,7 @@ pub enum RequestKind {
     Open(String),
     Steer,
     Shutdown,
+    Rewrite(SessionId, u64),
 }
 
 struct Pending {
@@ -197,11 +198,12 @@ impl App {
         self.next_request = self.next_request.wrapping_add(1);
         let id = self.next_request;
         if outbound.send(&frame(Some(id), method, params)) {
+            let deadline = Instant::now() + rewrite::deadline_of(&kind);
             self.pending.insert(
                 RequestId(id),
                 Pending {
                     kind,
-                    deadline: Instant::now() + REQUEST_DEADLINE,
+                    deadline,
                     sent_us: yi_types::trace::now_us(),
                 },
             );
@@ -259,8 +261,13 @@ impl App {
             .map(|(id, _)| *id)
             .collect();
         for id in expired {
-            if let Some(pending) = self.pending.remove(&id) {
-                self.note(&format!("request timed out: {:?}", pending.kind));
+            match self.pending.remove(&id) {
+                Some(Pending {
+                    kind: RequestKind::Rewrite(session, ask),
+                    ..
+                }) => self.answer_rewrite(&session, ask, Err("the daemon did not answer".into())),
+                Some(pending) => self.note(&format!("request timed out: {:?}", pending.kind)),
+                None => {}
             }
         }
         if self.connected() && now >= self.next_list_poll {
@@ -455,6 +462,9 @@ impl App {
             return;
         };
         trace_answered(&pending);
+        if let RequestKind::Rewrite(session, ask) = &pending.kind {
+            return self.absorb_rewrite(session, *ask, value);
+        }
         let _span = yi_types::trace::span("console.reduce_response");
         if self.pane_reply(outbound, &pending.kind, value) {
             return;
@@ -521,7 +531,8 @@ impl App {
             | RequestKind::Fork(_)
             | RequestKind::Steer
             | RequestKind::Shutdown
-            | RequestKind::Sidebar => {}
+            | RequestKind::Sidebar
+            | RequestKind::Rewrite(..) => {}
             RequestKind::Open(name) => self.note(&format!("launched {name}")),
             RequestKind::Slash(session) => {
                 if let Some(text) = result.get("text").and_then(Value::as_str) {
@@ -976,6 +987,7 @@ mod navigator;
 mod notebook;
 pub mod port;
 mod review;
+mod rewrite;
 mod rows;
 mod settings;
 pub(crate) mod snap;

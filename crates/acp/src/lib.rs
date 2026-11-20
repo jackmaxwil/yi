@@ -9,6 +9,7 @@ mod forward;
 pub mod replay;
 mod resident;
 pub mod review;
+mod rewrite;
 pub(crate) mod swap;
 pub mod update;
 
@@ -325,6 +326,9 @@ impl AcpState {
             .and_then(|store| session_name(&store));
         let mut meta = AcpMeta::default();
         meta.yi.name = name;
+        meta.yi.rewriter = handle
+            .and_then(|handle| handle.session.rewriter())
+            .map(|rewriter| rewriter.start());
         AcpSessionResult {
             session_id: Some(session_id.to_owned()),
             config_options: options,
@@ -355,16 +359,28 @@ impl AcpState {
         };
         (handle.last_active).store(daemon::now_ms(), std::sync::atomic::Ordering::Relaxed);
         let (text, images) = crate::replay::prompt_parts(params);
-        crate::update::queued(&handle.prompts).push(PendingPrompt {
+        let pending = PendingPrompt {
             text: text.clone(),
-            message_id,
-            request,
-        });
+            message_id: message_id.clone(),
+            request: Some(request),
+        };
+        crate::update::queued(&handle.prompts).push(pending);
         let prompt = yi_types::message::AgentMessage::user_input_with_images(&text, images);
-        if handle.session.prompt_message(prompt.clone()).is_err() {
-            handle.session.follow_up_message(prompt);
+        match handle.session.submit_message(prompt) {
+            Ok(Some(place)) => {
+                // The forwarder may have inserted it first and answered with the request.
+                crate::update::queued(&handle.prompts)
+                    .iter_mut()
+                    .find(|held| held.message_id == message_id)
+                    .and_then(|held| held.request.take())?;
+                let answer = yi_types::acp::AcpPromptResult {
+                    message_id,
+                    queue_place: u64::try_from(place).ok(),
+                };
+                Some(Ok(json!(answer)))
+            }
+            _ => None,
         }
-        None
     }
 
     fn emit_config(&self, session_id: &str) {
@@ -378,6 +394,10 @@ impl AcpState {
                 (
                     "contextWindow",
                     Value::from(handle.session.model().context_window),
+                ),
+                (
+                    "rewriter",
+                    json!(handle.session.rewriter().map(|rewriter| rewriter.start())),
                 ),
             ],
         );
@@ -930,6 +950,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
                         "session/prompt" => state.prompt(id.clone(), &params),
                         "_yi/prepare_replace" => Some(Ok(state.prepare_replace().await)),
                         "_yi/restore" => Some(Ok(state.restore(&params))),
+                        "_yi/rewrite" => state.rewrite(id.clone(), &params),
                         _ => Some(state.handle(&incoming.method, &params)),
                     };
                     if let Some(outcome) = outcome {

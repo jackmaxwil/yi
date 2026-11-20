@@ -423,3 +423,68 @@ async fn the_cell_a_reclaimed_image_names_attaches_the_image_again() -> Result<(
     assert_eq!(std::fs::canonicalize(back)?, std::fs::canonicalize(&path)?);
     Ok(())
 }
+
+/// A cell that prints, waits and prints again reaches clients in two pieces before its result,
+/// not as one block when it ends (#2286).
+#[tokio::test]
+async fn a_running_cell_streams_its_output_before_its_result() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None));
+    let mut call_args = serde_json::Map::new();
+    call_args.insert(
+        "code".to_owned(),
+        serde_json::json!(
+            "import sys, time\nprint('first', flush=True)\ntime.sleep(0.5)\nprint('second', flush=True)\nprint('oops', file=sys.stderr, flush=True)"
+        ),
+    );
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "ipython", call_args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut session = session(provider);
+    let service = bare_service(None);
+    service.attach_events(session.events_sender());
+    let mut tools = yi_tools::builtin_tools();
+    tools.push(ipython_tool(Arc::clone(&service), None));
+    session.use_tools(tools, std::env::temp_dir(), None);
+
+    let mut events = session.subscribe();
+    session.prompt("run some python")?;
+    session.wait_idle().await;
+    service.dispose().await;
+
+    let mut order = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        match event {
+            AgentEvent::ToolExecutionUpdate {
+                tool_call_id,
+                partial_result,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "call-1");
+                for content in partial_result.content {
+                    if let yi_types::message::Content::Text { text, .. } = content {
+                        order.push(format!(
+                            "update:{}:{text}",
+                            partial_result.details["stream"]
+                        ));
+                    }
+                }
+            }
+            AgentEvent::ToolExecutionEnd { .. } => order.push("end".to_owned()),
+            _ => {}
+        }
+    }
+    let at = |needle: &str| order.iter().position(|row| row.contains(needle));
+    let end = at("end").ok_or("no tool end")?;
+    let first = at("first").ok_or_else(|| format!("no live 'first': {order:?}"))?;
+    let second = at("second").ok_or_else(|| format!("no live 'second': {order:?}"))?;
+    assert!(first < second && second < end, "{order:?}");
+    assert!(
+        order.iter().any(|row| row == "update:\"stderr\":oops\n"),
+        "{order:?}"
+    );
+    Ok(())
+}

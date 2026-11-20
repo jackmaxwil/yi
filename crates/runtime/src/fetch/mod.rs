@@ -781,31 +781,40 @@ pub fn user_inputs(session: &yi_session::SharedSession) -> Result<Vec<UserConten
 pub(crate) fn user_entries(
     session: &yi_session::SharedSession,
 ) -> Result<Vec<(String, UserContent)>, String> {
+    user_entries_recent(session, usize::MAX)
+}
+
+pub(crate) fn user_entries_recent(
+    session: &yi_session::SharedSession,
+    keep: usize,
+) -> Result<Vec<(String, UserContent)>, String> {
     let entries = yi_session::lock_session(session)
         .find_entries(&EntryQuery {
             order: EntryOrder::OldestFirst,
             ..EntryQuery::default()
         })
         .map_err(|error| error.to_string())?;
-    Ok(entries
-        .into_iter()
-        .filter_map(|entry| {
-            let Entry::Message {
-                id,
-                message:
-                    AgentMessage::User {
-                        content,
-                        attribution: Attribution::User,
-                        ..
-                    },
-                ..
-            } = entry
-            else {
-                return None;
-            };
-            Some((id, content))
-        })
-        .collect())
+    let mut recent = std::collections::VecDeque::new();
+    for entry in entries {
+        let Entry::Message {
+            id,
+            message:
+                AgentMessage::User {
+                    content,
+                    attribution: Attribution::User,
+                    ..
+                },
+            ..
+        } = entry
+        else {
+            continue;
+        };
+        if recent.len() >= keep {
+            recent.pop_front();
+        }
+        recent.push_back((id, content));
+    }
+    Ok(recent.into())
 }
 
 pub fn content_hash(text: &str) -> String {

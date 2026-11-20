@@ -851,6 +851,8 @@ mod tests {
             status: ExecuteStatus::Aborted,
             error: None,
             duration_ms: 0,
+            displays: Vec::new(),
+            notices: Vec::new(),
         };
         assert_eq!(
             cell_detail(aborted.clone()),

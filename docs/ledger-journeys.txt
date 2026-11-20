@@ -782,3 +782,4 @@ channels: buffer, subscriptions, adapters | `channel_e2e::a_message_on_an_open_t
 channels: buffer, subscriptions, adapters | `channel_e2e::a_filter_with_alternatives_admits_each_listed_actor_and_no_other`
 console editor and viewers | `app::menu::tests::a_new_pane_or_tab_opens_chat`
 desktop app | `desktop/tests/journeys/daily/fixtures/prompt.json` (T2: `just journey` inside `desktop/` starts a private `yi serve` on the offline model and drives the real app through a prompt)
+TUI | `rewrite_drive::enter_shows_the_rewrite_over_the_typed_words_and_a_second_enter_sends_both`
