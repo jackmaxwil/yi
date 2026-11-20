@@ -37,6 +37,8 @@ pub enum Doing {
     Waiting,
     Writing,
     Executing,
+    /// An activity a newer server named.
+    Other,
 }
 
 /// Why a child is flagged; `Other` is a state a newer server named.
@@ -53,6 +55,7 @@ impl Agent {
             ChildActivity::Waiting => Doing::Waiting,
             ChildActivity::Writing => Doing::Writing,
             ChildActivity::Executing => Doing::Executing,
+            ChildActivity::Other(_) => Doing::Other,
         }
     }
 

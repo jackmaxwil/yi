@@ -51,6 +51,7 @@ fn control_of(kind: &SettingKind) -> Control {
         SettingKind::Model => Control::Model,
         SettingKind::List => Control::Other("list".into()),
         SettingKind::Json => Control::Other("json value".into()),
+        SettingKind::Other(_) => Control::Other("a kind this build does not know".into()),
     }
 }
 

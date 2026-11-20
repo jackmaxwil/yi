@@ -198,6 +198,7 @@ fn state(agent: &Agent) -> String {
         (Some(Flag::Other) | None, Doing::Waiting) => "waiting".to_owned(),
         (Some(Flag::Other) | None, Doing::Writing) => "writing".to_owned(),
         (Some(Flag::Other) | None, Doing::Executing) => "running a tool".to_owned(),
+        (Some(Flag::Other) | None, Doing::Other) => "working".to_owned(),
     }
 }
 

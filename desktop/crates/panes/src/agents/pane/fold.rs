@@ -115,6 +115,7 @@ fn doing(agent: &Agent, asking: Option<&ToolCall>) -> String {
         Doing::Waiting => "waiting",
         Doing::Writing => "writing",
         Doing::Executing => "running a tool",
+        Doing::Other => "working",
     }
     .to_owned()
 }

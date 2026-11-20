@@ -381,7 +381,8 @@ impl Transcript {
             AgentEvent::TurnStart
             | AgentEvent::TurnEnd { .. }
             | AgentEvent::ChildUpdate { .. }
-            | AgentEvent::LandingState { .. } => {}
+            | AgentEvent::LandingState { .. }
+            | AgentEvent::Other(_) => {}
         }
     }
 
