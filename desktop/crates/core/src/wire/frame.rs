@@ -12,6 +12,8 @@ use yi_types::acp::{AcpConfigOption, AcpPermissionParams, AcpStopReason};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::goal::Goal;
+use yi_types::message::AgentMessage;
+use yi_types::settings::SettingRow;
 use yi_types::subagent::ChildUpdate;
 use yi_types::todo::{Claim, TodoList};
 use yi_types::wire::SessionStats;
@@ -35,14 +37,43 @@ pub enum Kept<T> {
     Raw(Value),
 }
 
-impl<T: DeserializeOwned> Kept<T> {
+impl<T: DeserializeOwned + Newer> Kept<T> {
     pub fn read(value: Value) -> Self {
         match T::deserialize(&value) {
-            Ok(known) => Self::Known(known),
-            Err(_) => Self::Raw(value),
+            Ok(known) if !known.newer() => Self::Known(known),
+            _ => Self::Raw(value),
         }
     }
 }
+
+/// A shape `yi-types` reads even when a newer build wrote a kind it does not know (its `Other`
+/// case); this app keeps such a value as written, the same as one that did not decode.
+pub trait Newer {
+    fn newer(&self) -> bool {
+        false
+    }
+}
+
+impl Newer for AgentEvent {
+    fn newer(&self) -> bool {
+        matches!(self, Self::Other(_))
+    }
+}
+
+impl Newer for Entry {
+    fn newer(&self) -> bool {
+        matches!(
+            self,
+            Self::Message {
+                message: AgentMessage::Other(_),
+                ..
+            }
+        )
+    }
+}
+
+impl Newer for AcpPermissionParams {}
+impl Newer for SettingRow {}
 
 impl<T> Kept<T> {
     pub fn known(&self) -> Option<&T> {
