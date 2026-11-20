@@ -4,6 +4,7 @@ decision: a request on a pooled socket that has already carried a finished strea
 ledger~: model read deadline | a timeout is neither retried nor resent, its refusal | a timeout is neither retried nor resent, a pooled socket silent past it ends the same way and is dropped from the pool, a child keeps 300 s unless its entry says otherwise, its refusal
 raise: comments +7, crate ai +100, crate runtime +3, crate types +6, tests +236
 cut: none crates/ai/src/request.rs
+cut: none crates/cli/tests/custom_providers.rs
 shares: #2297 it edits the provider and timeout lines of YI_DESIGN.md; this adds one clause to the read-timeout bullet and one key to the providers line
 shares: #2295 same file; different bullets
 shares: #2293 it edits request.rs; this moves the pool functions to request/pool.rs and edits send_stripping_cache's send call
