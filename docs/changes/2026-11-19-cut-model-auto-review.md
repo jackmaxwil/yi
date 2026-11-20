@@ -1,6 +1,5 @@
 ---
 issue: Closes #2302
-raise: crate types +10
 shares: #2301 deletes the auto-review code this change deletes in auto_review.rs and permission.rs
 shares: #2299 adds a config key and a design line near the keys this change edits in config.rs and YI_DESIGN.md
 shares: #2297 adds desktop/ to YI_DESIGN.md; this change adds the matching one-out line in section 1.2
@@ -25,5 +24,6 @@ decision: Model auto-review is deleted, and `ask_user` is registered in every se
 ledger-: model auto-review M7/M8
 ledger~: model recommender | summarizer, autoReview, selector | summarizer, selector
 ledger~: runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `auto_review::a_root_nobody_attends_is_handed_the_default_and_goes_on` | `ask_user::a_root_nobody_attends_is_handed_the_default_and_goes_on`
+raise: crate types +10
 ---
 Model auto-review is gone. An auto-mode ask the classifier does not settle now goes straight to the user, as it did whenever `models.autoReview` was unset. `ask_user` is registered in every session as before, but its `request` argument, which put an auto-review denial to the user, is removed. A config that still names `models.autoReview` loads, ignores the key and prints one notice naming it; the settings page, `yi models recommend --role autoReview` and the `review.timeout_s` lever are gone. Sessions that journaled a `reviewer` answer still load and replay. A call the user refused is still remembered, so a later confident classifier answer cannot overrule it.

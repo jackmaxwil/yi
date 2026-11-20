@@ -45,7 +45,7 @@ pub struct PermissionBroker {
     asker: Option<Asker>,
     events: broadcast::Sender<AgentEvent>,
     /// Canonical identities of calls the user refused, so the classifier cannot overrule them.
-    refused: Mutex<std::collections::BTreeSet<String>>,
+    refused: Mutex<std::collections::VecDeque<String>>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
     /// Appends each kept rule to the holder's own session JSONL, the one ledger of them.
@@ -163,7 +163,7 @@ impl PermissionBroker {
             cwd,
             asker,
             events,
-            refused: Mutex::new(std::collections::BTreeSet::new()),
+            refused: Mutex::new(std::collections::VecDeque::new()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
             rule_journal: std::sync::OnceLock::new(),
@@ -717,28 +717,29 @@ impl PermissionBroker {
         }
     }
 
-    /// Past [`REFUSED_CAP`] the oldest answers are forgotten wholesale: a forgotten refusal
-    /// only lets the classifier judge that call again.
+    /// Past [`REFUSED_CAP`] the oldest refusal is forgotten, and only that one: a forgotten
+    /// refusal only lets the classifier judge that call again.
     fn remember_refusal(&self, canonical: &str, refused: bool) {
         let mut set = self
             .refused
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        set.retain(|known| known != canonical);
         if !refused {
-            set.remove(canonical);
             return;
         }
         if set.len() >= REFUSED_CAP {
-            set.clear();
+            set.pop_front();
         }
-        set.insert(canonical.to_owned());
+        set.push_back(canonical.to_owned());
     }
 
     fn answered(&self, canonical: &str) -> bool {
         self.refused
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(canonical)
+            .iter()
+            .any(|known| known == canonical)
     }
 
     fn run_ask(
