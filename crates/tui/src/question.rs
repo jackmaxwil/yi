@@ -44,7 +44,7 @@ impl Question {
     /// With no option it is an open question: the card is the answer field alone, already typing.
     pub(crate) fn from_args(args: &Value) -> Option<Self> {
         let prompt = args.get("question")?.as_str()?.trim().to_owned();
-        let choices = yi_runtime::auto_review::ask_options(args.get("options"))
+        let choices = yi_runtime::ask_user::ask_options(args.get("options"))
             .into_iter()
             .map(|option| Choice {
                 label: option.label.to_owned(),

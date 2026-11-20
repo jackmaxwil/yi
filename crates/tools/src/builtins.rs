@@ -59,7 +59,7 @@ impl Tool for WriteTool {
         let path = input.get("path").and_then(Value::as_str)?;
         let content = input.get("content").and_then(Value::as_str)?;
         let resolved = yi_permission::resolve_target(path, cwd);
-        // The diff reaches the approval and the auto-reviewer's model before any check runs.
+        // The diff reaches the approval and the classifier before any check runs.
         let gate = yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(cwd));
         let opened = gate.open(&resolved, &[]);
         let before = opened.and_then(std::io::read_to_string).unwrap_or_default();

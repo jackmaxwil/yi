@@ -338,8 +338,7 @@ impl Approver {
                 }
                 Err(error) => {
                     if fail(&self.breaker, None) {
-                        let consequence =
-                            "approval asks skip the classifier and go to the reviewer or the user";
+                        let consequence = "approval asks skip the classifier and go to the user";
                         (self.deliver)(breaker_notice(&self.sidecar.url, &error, consequence));
                     }
                     record.error = Some(self.sidecar.named(&error));
@@ -567,7 +566,7 @@ impl Screeners {
         }
     }
 
-    /// The blocking sidecar call handed to a blocking thread: the reviewer reaches the screen
+    /// The blocking sidecar call handed to a blocking thread: a side session reaches the screen
     /// from a tokio task, and a reactor worker waiting out the timeout stalls every other task.
     pub async fn screen_off_reactor(&self, kind: &str, text: &str) -> Screened {
         let Some(screener) = self.attached() else {

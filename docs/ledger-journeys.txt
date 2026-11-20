@@ -65,8 +65,6 @@ permission modes/rules/holds, deterministic auto | `open::a_hard_link_to_a_key_f
 permission modes/rules/holds, deterministic auto | `open::a_store_scan_reads_to_its_cap_and_names_it_past_that`
 permission modes/rules/holds, deterministic auto | `decide::a_key_with_a_name_outside_the_stores_makes_every_command_ask`
 permission modes/rules/holds, deterministic auto | `permission_scope::a_hard_linked_key_keeps_an_allowed_search_contained`
-model auto-review M7/M8 | `auto_review::a_reviewer_denial_carries_its_evidence_and_a_request_number`
-model auto-review M7/M8 | `auto_review::an_approved_request_lets_the_identical_call_through_once`
 bash reduce (launch set) | `tools::bash_output_is_reduced_and_recoverable`
 bash reduce (launch set) | `tools::a_failing_cargo_run_keeps_its_diagnostics`
 bash reduce (launch set) | `tools::a_line_past_the_clip_is_clipped_and_the_row_names_it`
@@ -239,7 +237,7 @@ skill classifier | `classifier_e2e::a_page_at_the_cut_is_flagged_and_a_clean_one
 skill classifier | `classifier_e2e::a_flagged_page_reaches_the_prompt_marked_and_keeps_its_line` (T1)
 skill classifier | `web_search::a_child_spawned_by_a_screened_root_marks_and_journals_its_own_page` (T1)
 runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `tools::a_stopped_chain_says_so_beside_the_exit_code`
-runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `auto_review::a_question_ends_the_turn_and_lists_its_options` (T0)
+runtime facts on the tools: bash contract, chain-stop note, reducer ranges, `ask_user` where someone answers | `ask_user::a_question_ends_the_turn_and_lists_its_options` (T0)
 session mining: deterministic signals + the prompt drift gate | `extract.py --selfcheck` (run by `check_guardrails.sh`)
 session mining: deterministic signals + the prompt drift gate | `prompt_drift::every_flag_the_prompt_names_for_grep_is_in_its_schema`
 fetch: one addressable read path | `url::a_local_address_carries_a_space_as_percent_twenty`

@@ -6,8 +6,7 @@ use crate::claude_hooks::Verdict;
 use serde_json::{Map, Value};
 use tokio::sync::broadcast;
 use yi_permission::{
-    ActionId, ActionLedger, ActionState, CatastrophicContext, ConfigRule, Decision, Hold,
-    PermissionMode, RequestId, ReviewedAsk, SessionRules, ToolCall, UserVerdict,
+    CatastrophicContext, ConfigRule, Decision, Hold, PermissionMode, SessionRules, ToolCall,
     canonical_command_identity, canonical_tool_identity, decide,
 };
 use yi_tools::hashline::types::FileOp;
@@ -19,8 +18,6 @@ use yi_types::permission::{
 
 mod egress;
 mod forge;
-mod inflight;
-use inflight::InFlight;
 mod hooked;
 pub(crate) use hooked::claude_dir;
 mod kept;
@@ -32,14 +29,7 @@ mod ask;
 pub use ask::{AskOutcome, Asker, PermissionAsk};
 pub type Journal<T = PermissionRecord> = Arc<dyn Fn(T) + Send + Sync>;
 
-/// What the reviewer is told about a call, and whether it may see it at all.
-#[derive(Clone, Copy)]
-struct Reviewed<'a> {
-    reviewable: bool,
-    tool_name: &'a str,
-    command: Option<&'a str>,
-    reason: &'a str,
-}
+const REFUSED_CAP: usize = 256;
 
 pub struct PermissionBroker {
     sandbox: Option<yi_tools::Sandbox>,
@@ -54,11 +44,8 @@ pub struct PermissionBroker {
     cwd: PathBuf,
     asker: Option<Asker>,
     events: broadcast::Sender<AgentEvent>,
-    /// Set once at wiring, only when a model role names the reviewer. Unset,
-    /// nothing in this file behaves differently from before it existed.
-    reviewer: std::sync::OnceLock<Arc<crate::auto_review::Reviewer>>,
-    ledger: Mutex<ActionLedger>,
-    asking: Mutex<std::collections::BTreeSet<RequestId>>,
+    /// Canonical identities of calls the user refused, so the classifier cannot overrule them.
+    refused: Mutex<std::collections::BTreeSet<String>>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
     /// Appends each kept rule to the holder's own session JSONL, the one ledger of them.
@@ -176,9 +163,7 @@ impl PermissionBroker {
             cwd,
             asker,
             events,
-            reviewer: std::sync::OnceLock::new(),
-            ledger: Mutex::new(ActionLedger::new()),
-            asking: Mutex::new(std::collections::BTreeSet::new()),
+            refused: Mutex::new(std::collections::BTreeSet::new()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
             rule_journal: std::sync::OnceLock::new(),
@@ -238,16 +223,6 @@ impl PermissionBroker {
             tool_call_id: tool_call_id.to_owned(),
             allowed,
         });
-    }
-
-    /// A child's broker starts with its parent's reviewer (`for_child`), so its own wiring's
-    /// second call keeps it.
-    pub fn set_reviewer(&self, reviewer: Arc<crate::auto_review::Reviewer>) {
-        let _first_wiring_wins = self.reviewer.set(reviewer);
-    }
-
-    pub fn has_reviewer(&self) -> bool {
-        self.reviewer.get().is_some()
     }
 
     /// The sandbox that makes containment real. Without one, a contained
@@ -583,7 +558,7 @@ impl PermissionBroker {
                 };
             }
             // A containment Yi cannot enforce, or one the sandbox already refused, is the same
-            // class of unknown as an unprovable command, so the reviewer may see it too.
+            // class of unknown as an unprovable command, so the classifier may see it too.
             Decision::Contain { reason } => (
                 format!("{tool_name} requires permission"),
                 format!("{reason}: {display}"),
@@ -641,16 +616,9 @@ impl PermissionBroker {
                 tool_call_id: Some(tool_call_id),
                 stop: self.stop.get(),
             },
-            Reviewed {
-                reviewable,
-                tool_name,
-                command,
-                reason: &format!("{reason}{note}"),
-            },
-            tool_call_id,
-            rule_kind,
-            &canonical,
-            &display,
+            reviewable,
+            (tool_call_id, tool_name, command, &format!("{reason}{note}")),
+            (rule_kind, &canonical, &display),
         );
         if !outcome.allowed {
             // Nobody could answer; say what works, never "add an allow rule", which it had.
@@ -699,175 +667,46 @@ impl PermissionBroker {
         })
     }
 
-    /// The §8 auto-review gate. Off (no role named) or out of jurisdiction, this is exactly
-    /// [`PermissionBroker::run_ask`] and nothing else has changed.
+    /// The classifier gets the first word in auto mode; whatever it does not settle goes to
+    /// whoever answers.
     fn gated_ask(
         &self,
         ask: &PermissionAsk<'_>,
-        reviewed: Reviewed<'_>,
-        tool_call_id: &str,
-        rule_kind: RuleKind,
-        canonical: &str,
-        display: &str,
+        reviewable: bool,
+        (tool_call_id, tool_name, command, reason): (&str, &str, Option<&str>, &str),
+        (rule_kind, canonical, display): (RuleKind, &str, &str),
     ) -> CallOutcome {
         let cwd = self.cwd.to_string_lossy();
         let call = crate::classifier::Call {
-            tool: reviewed.tool_name,
+            tool: tool_name,
             display,
-            command: reviewed.command,
-            reason: reviewed.reason,
+            command,
+            reason,
             cwd: &cwd,
         };
         let approver = (self.approver.get()).filter(|_| {
-            reviewed.reviewable
+            reviewable
                 && !self.answered(canonical)
                 && self.mode() == PermissionMode::Auto
                 && self.asker.is_some()
         });
         let late = approver.and_then(|approver| Late::of(approver, &call));
-        let mut prior = None;
-        if let Some(approver) = approver.filter(|_| late.is_none()) {
-            let judgement = approver.judge(&call);
-            prior = Some(judgement);
-            match judgement {
-                crate::classifier::Judgement::Allow(safe) => {
-                    let _ = self.events.send(AgentEvent::PermissionRequested {
-                        tool_call_id: tool_call_id.to_owned(),
-                        title: ask.title.to_owned(),
-                        description: ask.text(),
-                    });
-                    self.settle(tool_call_id, ask, true, Answerer::Classifier);
-                    return CallOutcome {
-                        allowed: true,
-                        reason: format!("allowed by the classifier (P(safe) {safe:.2})"),
-                        containment: Containment::Uncontained,
-                    };
-                }
-                crate::classifier::Judgement::AskUser(_)
-                | crate::classifier::Judgement::Undecided => {}
-            }
-        }
-        let asks_user = matches!(prior, Some(crate::classifier::Judgement::AskUser(_)));
-        let Some(reviewer) = self.reviewer.get().cloned().filter(|_| !asks_user) else {
-            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, late);
-        };
-        if !reviewed.reviewable || self.mode() != PermissionMode::Auto {
-            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, late);
-        }
-        // Invariant: a call the deterministic ladder could not prove is announced and settled
-        // whoever answers. The TUI's waiting cell and ACP's RequiresAction read this pair.
-        let _ = self.events.send(AgentEvent::PermissionRequested {
-            tool_call_id: tool_call_id.to_owned(),
-            title: ask.title.to_owned(),
-            description: ask.text(),
-        });
-        match self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display) {
-            (outcome, Some(by)) => {
-                self.settle(tool_call_id, ask, outcome.allowed, by);
-                outcome
-            }
-            (outcome, None) => {
-                self.resolved(tool_call_id, outcome.allowed);
-                outcome
-            }
-        }
-    }
-
-    fn reviewed_outcome(
-        &self,
-        reviewer: Arc<crate::auto_review::Reviewer>,
-        ask: &PermissionAsk<'_>,
-        reviewed: Reviewed<'_>,
-        rule_kind: RuleKind,
-        canonical: &str,
-        display: &str,
-    ) -> (CallOutcome, Option<Answerer>) {
-        let action = ActionId::of(canonical);
-        match self.recall(action) {
-            Some((request, ActionState::UserApproved)) => {
-                let allowed = CallOutcome {
-                    allowed: true,
-                    reason: format!("allowed by the user answering request {request}"),
-                    containment: Containment::Uncontained,
-                };
-                return (allowed, None);
-            }
-            Some((_, ActionState::UserDenied)) => {
-                let denied = self.denied(
-                    "The user refused this exact call. It stays denied; take another approach rather than re-issuing it.".to_owned(),
-                );
-                return (denied, None);
-            }
-            // Idempotent by action: a retry of an identical denied call gets the same request
-            // back, never a second review or a second question for the user.
-            Some((request, ActionState::DeniedPendingUser)) => {
-                let evidence = self.evidence_of(request);
-                let denied = self.denied(Self::escalation_text(&evidence, request));
-                return (denied, None);
-            }
-            None => {}
-        }
-        let request = crate::auto_review::ReviewRequest {
-            tool: reviewed.tool_name.to_owned(),
-            display: display.to_owned(),
-            command: reviewed.command.map(str::to_owned),
-            cwd: self.cwd.to_string_lossy().into_owned(),
-            targets: ask
-                .changes
-                .iter()
-                .map(|path| path.to_string_lossy().into_owned())
-                .collect(),
-            patch: ask.patch.map(Self::cut_preview),
-            reason: reviewed.reason.to_owned(),
-        };
-        let outcome = match self.consult(reviewer, request) {
-            crate::auto_review::ReviewOutcome::Allow => CallOutcome {
+        if let Some(approver) = approver.filter(|_| late.is_none())
+            && let crate::classifier::Judgement::Allow(safe) = approver.judge(&call)
+        {
+            let _ = self.events.send(AgentEvent::PermissionRequested {
+                tool_call_id: tool_call_id.to_owned(),
+                title: ask.title.to_owned(),
+                description: ask.text(),
+            });
+            self.settle(tool_call_id, ask, true, Answerer::Classifier);
+            return CallOutcome {
                 allowed: true,
-                reason: "allowed by the auto reviewer".to_owned(),
+                reason: format!("allowed by the classifier (P(safe) {safe:.2})"),
                 containment: Containment::Uncontained,
-            },
-            crate::auto_review::ReviewOutcome::Deny { reason } => {
-                let stored = Self::stored(ask, rule_kind, canonical, display, reason.clone());
-                let request = self.open_request(action, stored);
-                self.denied(Self::escalation_text(&reason, request))
-            }
-        };
-        (outcome, Some(Answerer::Reviewer))
-    }
-
-    fn stored(
-        ask: &PermissionAsk<'_>,
-        kind: RuleKind,
-        canonical: &str,
-        display: &str,
-        evidence: String,
-    ) -> ReviewedAsk {
-        ReviewedAsk {
-            title: ask.title.to_owned(),
-            description: ask.description.to_owned(),
-            patch: ask.patch.map(str::to_owned),
-            targets: ask.changes.to_vec(),
-            display: display.to_owned(),
-            canonical: canonical.to_owned(),
-            kind,
-            grants: ask.grants.to_vec(),
-            evidence,
+            };
         }
-    }
-
-    fn escalation_text(evidence: &str, request: RequestId) -> String {
-        format!(
-            "The auto reviewer refused this call: {evidence}. Request {request} is open — call ask_user with request {request} to put it to the user. Re-issuing this call unchanged will not change the answer."
-        )
-    }
-
-    fn evidence_of(&self, request: RequestId) -> String {
-        self.ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ask_of(request)
-            .map(|ask| ask.evidence.clone())
-            .unwrap_or_default()
+        self.run_ask(ask, tool_call_id, rule_kind, canonical, display, late)
     }
 
     fn denied(&self, reason: String) -> CallOutcome {
@@ -878,131 +717,28 @@ impl PermissionBroker {
         }
     }
 
-    fn answered(&self, canonical: &str) -> bool {
-        self.ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .state_of(ActionId::of(canonical))
-            .is_some()
-    }
-
-    fn recall(&self, action: ActionId) -> Option<(RequestId, ActionState)> {
-        let mut ledger = self
-            .ledger
+    /// Past [`REFUSED_CAP`] the oldest answers are forgotten wholesale: a forgotten refusal
+    /// only lets the classifier judge that call again.
+    fn remember_refusal(&self, canonical: &str, refused: bool) {
+        let mut set = self
+            .refused
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let found = ledger.state_of(action)?;
-        if found.1 == ActionState::UserApproved {
-            let _single_use = ledger.take_approval(action);
+        if !refused {
+            set.remove(canonical);
+            return;
         }
-        Some(found)
+        if set.len() >= REFUSED_CAP {
+            set.clear();
+        }
+        set.insert(canonical.to_owned());
     }
 
-    fn open_request(&self, action: ActionId, ask: ReviewedAsk) -> RequestId {
-        self.ledger
+    fn answered(&self, canonical: &str) -> bool {
+        self.refused
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .open(action, ask)
-    }
-
-    /// Invariant: fail safe. A provider error, an absent runtime and the
-    /// timeout all leave through the same denial as a refusal would.
-    fn consult(
-        &self,
-        reviewer: Arc<crate::auto_review::Reviewer>,
-        request: crate::auto_review::ReviewRequest,
-    ) -> crate::auto_review::ReviewOutcome {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return crate::auto_review::ReviewOutcome::Deny {
-                reason: "the reviewer could not be reached from this thread".to_owned(),
-            };
-        };
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let timeout = std::time::Duration::from_secs(crate::levers::get().review_timeout_s);
-        handle.spawn(async move {
-            // Incident: nothing held the join handle, so a stalled provider kept streaming,
-            // and billing, past the denial below. The deadline rides the future itself.
-            let outcome = tokio::time::timeout(timeout, reviewer.review(&request))
-                .await
-                .unwrap_or_else(|_elapsed| crate::auto_review::ReviewOutcome::Deny {
-                    reason: "the reviewer did not answer in time".to_owned(),
-                });
-            let _receiver_may_have_timed_out = sender.send(outcome);
-        });
-        receiver
-            .recv_timeout(timeout)
-            .unwrap_or_else(|_| crate::auto_review::ReviewOutcome::Deny {
-                reason: format!("the reviewer did not answer within {}s", timeout.as_secs()),
-            })
-    }
-
-    /// The `ask_user` seam: a waiting request is asked once; an answered one replies from the ledger.
-    pub fn resolve_request(&self, request: u64, tool_call_id: &str) -> String {
-        let request = RequestId::new(request);
-        let Some(_asking) = InFlight::claim(&self.asking, request) else {
-            return format!(
-                "Request {request} is already being put to the user by another ask_user call; that call's result carries the answer. Do not ask again."
-            );
-        };
-        let Some((stored, state)) = self
-            .ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry_of(request)
-            .map(|(ask, state)| (ask.clone(), state))
-        else {
-            return format!(
-                "There is no open request {request}: it was answered and used, dropped, or never existed."
-            );
-        };
-        match state {
-            ActionState::DeniedPendingUser => {}
-            ActionState::UserApproved => {
-                return crate::auto_review::resolution_text(&stored.display, UserVerdict::Approved);
-            }
-            ActionState::UserDenied => {
-                return crate::auto_review::resolution_text(&stored.display, UserVerdict::Denied);
-            }
-        }
-        // The asker blocks on a human; the ledger lock is released first so a
-        // concurrent decision is not held behind the answer.
-        let Some(asker) = &self.asker else {
-            return crate::gate::unaskable(request, &stored.description);
-        };
-        let ask = PermissionAsk {
-            stop: self.stop.get(),
-            ..crate::auto_review::ask_text(&stored)
-        };
-        let _ = self.events.send(AgentEvent::PermissionRequested {
-            tool_call_id: tool_call_id.to_owned(),
-            title: stored.title.clone(),
-            description: ask.text(),
-        });
-        let outcome = asker(&ask);
-        let verdict = match outcome {
-            AskOutcome::AllowOnce | AskOutcome::AllowAlways(_) => UserVerdict::Approved,
-            AskOutcome::Reject => UserVerdict::Denied,
-        };
-        if let AskOutcome::AllowAlways(index) = outcome {
-            self.keep_grant(
-                stored.grants.get(index),
-                stored.kind,
-                &stored.canonical,
-                &stored.display,
-            );
-        }
-        let _request_was_found_above = self
-            .ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .resolve(request, verdict);
-        self.settle(
-            tool_call_id,
-            &ask,
-            verdict == UserVerdict::Approved,
-            Answerer::User,
-        );
-        crate::auto_review::resolution_text(&stored.display, verdict)
+            .contains(canonical)
     }
 
     fn run_ask(
@@ -1051,19 +787,7 @@ impl PermissionBroker {
             }
         };
         let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
-        let mut ledger = self
-            .ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if allowed {
-            ledger.forget(ActionId::of(canonical));
-        } else {
-            let refusal = "the user refused it when asked".to_owned();
-            let stored = Self::stored(ask, rule_kind, canonical, display, refusal);
-            let request = ledger.open(ActionId::of(canonical), stored);
-            ledger.resolve(request, UserVerdict::Denied);
-        }
-        drop(ledger);
+        self.remember_refusal(canonical, !allowed);
         if let AskOutcome::AllowAlways(index) = outcome {
             self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }

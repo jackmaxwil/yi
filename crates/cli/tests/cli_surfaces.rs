@@ -1119,6 +1119,26 @@ fn a_config_that_still_names_gates_runs_and_says_the_key_is_gone() -> TestResult
     Ok(())
 }
 
+/// The model auto-reviewer is gone; a config that names its role still runs and says so once.
+#[test]
+fn a_config_that_still_names_auto_review_runs_and_says_the_key_is_gone() -> TestResult {
+    let workspace = Workspace::new("config-auto-review")?;
+    write_config(
+        &workspace,
+        r#"{"models":{"primary":"faux/faux-1","autoReview":"faux/faux-1"}}"#,
+    )?;
+    let answered = workspace.yi(&["ask", "review check"])?;
+    let stderr = String::from_utf8_lossy(&answered.stderr);
+    assert_eq!(answered.status.code(), Some(0), "{stderr}");
+    assert_eq!(stderr.matches("`models.autoReview`").count(), 1, "{stderr}");
+    assert!(
+        stdout(&answered).contains("faux: review check"),
+        "{}",
+        stdout(&answered)
+    );
+    Ok(())
+}
+
 #[test]
 fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
     let workspace = Workspace::new("config-broken")?;

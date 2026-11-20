@@ -32,7 +32,7 @@ mod advisor_compaction;
 mod advisor_e2e;
 mod affordance;
 mod answer_turn;
-mod auto_review;
+mod ask_user;
 mod branch_diff;
 mod breakpoints;
 mod cache_miss;

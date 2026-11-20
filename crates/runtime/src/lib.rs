@@ -6,7 +6,7 @@ pub mod affordance;
 mod annotate;
 mod answer;
 mod args;
-pub mod auto_review;
+pub mod ask_user;
 pub mod cache_miss;
 mod cell_live;
 pub mod checkpoint;

@@ -948,7 +948,6 @@ async fn the_wired_resolver_reads_names_until_a_history_wall_turns_them_off() ->
                 family_dir: None,
                 summarizer: None,
                 advisor: None,
-                auto_review: None,
                 plan_stale_turns: None,
                 plans_dir: Some(root.join("plans")),
                 parent_link: None,

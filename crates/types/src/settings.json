@@ -4,7 +4,6 @@
 {"id": "models.primary", "label": "Primary model", "tab": "Models", "help": "the main role; wins over model when both are set", "kind": {"type": "model"}, "applies": "nextSession"},
 {"id": "models.summarizer", "label": "Summarizer model", "tab": "Models", "help": "compaction and session titles; unset, the primary", "kind": {"type": "model"}, "applies": "nextSession"},
 {"id": "models.advisor", "label": "Advisor model", "tab": "Models", "help": "naming one turns the advisor on; unset, it is off", "kind": {"type": "model"}, "applies": "nextSession"},
-{"id": "models.autoReview", "label": "Auto-review model", "tab": "Models", "help": "naming one turns the auto-mode reviewer on", "kind": {"type": "model"}, "applies": "nextSession"},
 {"id": "models.classifier", "label": "Classifier checkpoint", "tab": "Models", "help": "naming one (english) runs the local permission classifier", "kind": {"type": "text"}, "applies": "daemonRestart"},
 {"id": "models.selector", "label": "Selector model", "tab": "Models", "help": "naming one picks the lines that explain a cut bash output", "kind": {"type": "model"}, "applies": "nextSession"},
 {"id": "models.webSearch", "label": "Web search model", "tab": "Models", "help": "OpenRouter model for web search; unset is deepseek/deepseek-v4-flash", "kind": {"type": "model"}, "applies": "nextSession"},

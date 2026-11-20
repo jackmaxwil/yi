@@ -902,7 +902,6 @@ fn wired_child(
             family_dir: Some(family_board(&root.join("home"))),
             summarizer: None,
             advisor: None,
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(root.join("plans")),
             parent_link: None,

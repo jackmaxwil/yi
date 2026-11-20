@@ -12,7 +12,7 @@ const TOOL_GUIDES: [(&str, Guide); 7] = [
     ("get_context", || yi_tools::GET_CONTEXT_GUIDE.to_owned()),
     ("plan", plan_guide),
     ("todo", || crate::todo::tool::GUIDE.to_owned()),
-    ("ask_user", || crate::auto_review::ASK_USER_GUIDE.to_owned()),
+    ("ask_user", || crate::ask_user::ASK_USER_GUIDE.to_owned()),
     ("answer", || crate::answer::GUIDE.to_owned()),
 ];
 

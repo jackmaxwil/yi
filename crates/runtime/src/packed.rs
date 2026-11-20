@@ -31,12 +31,12 @@ pub(crate) use packed;
 #[cfg(test)]
 mod tests {
     use super::INFLATED;
-    use crate::{auto_review, ext::install, goal, subagent::reader};
+    use crate::{ext::install, goal, subagent::reader};
     use std::sync::LazyLock;
     /// Each blob must reach its accessor through [`crate::packed::inflate`]; wrong stems fail too.
     #[test]
     fn every_packed_prompt_reads_as_its_own_file() {
-        let rows: [(&str, &LazyLock<String>, &[u8], &str); 15] = [
+        let rows: [(&str, &LazyLock<String>, &[u8], &str); 14] = [
             (
                 "identity",
                 &crate::IDENTITY,
@@ -60,12 +60,6 @@ mod tests {
                 &crate::UNATTENDED,
                 include_bytes!(concat!(env!("OUT_DIR"), "/unattended.zz")),
                 include_str!("prompts/unattended.md"),
-            ),
-            (
-                "auto_review",
-                &auto_review::AUTO_REVIEW,
-                include_bytes!(concat!(env!("OUT_DIR"), "/auto_review.zz")),
-                include_str!("prompts/auto_review.md"),
             ),
             (
                 "har-core",

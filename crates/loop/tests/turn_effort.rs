@@ -473,7 +473,7 @@ impl yi_loop::run::StreamFn for ReuseRecorder {
 }
 
 /// The request says what its config says about reuse (D295): a session that will never be
-/// continued, the auto-reviewer's, sets `OneShot` and the loop passes it through; the
+/// continued, a title's, sets `OneShot` and the loop passes it through; the
 /// default is `Loop`, the side whose failure is one spare write. Only a loop request asks the
 /// stream for its TTL (D315), and the reply's `cache` record names the one sent.
 #[tokio::test]

@@ -60,6 +60,7 @@ pub const PERMISSION_ENTRY: &str = "permission";
 #[serde(rename_all = "snake_case")]
 pub enum Answerer {
     User,
+    /// Journaled by the removed model auto-reviewer; kept so those sessions still replay.
     Reviewer,
     Classifier,
     Nobody,

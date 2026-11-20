@@ -117,7 +117,6 @@ pub(crate) fn root_at(
             family_dir: None,
             summarizer: None,
             advisor: None,
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(scratch.join("plans")),
             parent_link: None,

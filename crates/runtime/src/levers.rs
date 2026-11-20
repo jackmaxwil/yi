@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use crate::ext::orchestrate as route;
 use crate::plan::loop_coupling::gate as plan_gate;
 use crate::todo::coupling::gate as todo_gate;
-use crate::{auto_review, family, lane, mailbox, plan, subagent};
+use crate::{family, lane, mailbox, plan, subagent};
 
 /// The one env var the levers own: a path to a JSON object of `{"<key>": <integer>}`.
 pub const ENV: &str = "YI_LEVERS";
@@ -105,7 +105,6 @@ levers! {
     loop_repeat_stop_at: u32 = "loop.repeat_stop_at", yi_loop::REPEAT_STOP_AT, 2..=12, false;
     loop_reasoning_cap: usize = "loop.reasoning_cap", yi_loop::REASONING_CHAR_CAP, 8000..=200000, true;
     tools_reduce_floor: usize = "tools.reduce_floor", yi_tools::reduce::REDUCE_FLOOR, 2048..=32768, false;
-    review_timeout_s: u64 = "review.timeout_s", auto_review::REVIEW_TIMEOUT.as_secs(), 10..=120, true;
     graph_next_lines: usize = "graph.next_lines", crate::todo::text::NEXT_LINES, 1..=5, true;
     reclaim_keep_turns: u64 = "reclaim.keep_turns", crate::reclaim::KEEP_TURNS, 1..=1000, true;
     reclaim_keep_below_pct: u64 = "reclaim.keep_below_pct", crate::reclaim::KEEP_BELOW_PCT, 0..=100, true;

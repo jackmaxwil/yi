@@ -83,7 +83,7 @@ pub enum Decision {
     Ask {
         title: String,
         description: String,
-        /// Invariant: jurisdiction of the §8 auto reviewer, set here and never by it — true
+        /// Invariant: jurisdiction of the classifier, set here and never by it — true
         /// only for auto-mode fallback asks, false for holds, rules and catastrophic targets.
         reviewable: bool,
     },

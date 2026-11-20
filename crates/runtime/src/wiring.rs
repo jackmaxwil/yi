@@ -37,9 +37,6 @@ pub struct RuntimeWiring {
     pub summarizer: Option<Model>,
     /// Naming `models.advisor` in config enables the LLM reviewer (D28).
     pub advisor: Option<Model>,
-    /// Model consulted on a Write or Exec permission ask; `None` keeps admission fully
-    /// deterministic, so no permission decision costs a model call (§8, D81).
-    pub auto_review: Option<Model>,
     /// `plan.staleReminderTurns` config; None keeps the default.
     pub plan_stale_turns: Option<u64>,
     /// `plans.dir` config; None reads `.yi/plans` under the cwd. Resolved once
@@ -825,7 +822,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());
     tools.push(Arc::new(annotate));
     tools.push(crate::answer::tool(session.answer_handle(), &tools));
-    crate::auto_review::wire(session, &wiring, &mut tools);
+    crate::ask_user::wire(&wiring, &mut tools);
     if let Some(broker) = &wiring.broker {
         broker.set_journal(journal_into(session.store_handle()));
     }
