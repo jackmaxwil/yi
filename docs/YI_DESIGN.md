@@ -30,8 +30,7 @@ self-modification (a `just refine` variant lands only as a PR the owner merges) 
 semantic search · resident LSP or DAP servers · a JavaScript runtime or Node sidecar · embedding
 `yi-runtime` through N-API or WASM · document converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
-§17.1) · a GUI that is not `desktop/`, the Mac client of `yi serve` (§17.5) · new work on model
-auto-review M7/M8, demoted when `desktop/` entered (the reviewer stays, gated by `models.autoReview`, §8) · a model tool for the console's browser pane, which shows the user a page and gives
+§17.1) · a GUI that is not `desktop/`, the Mac client of `yi serve` (§17.5) · a model tool for the console's browser pane, which shows the user a page and gives
 the model nothing (driving the desktop is the `agent-desktop` plugin's, and a web page the
 `agent-browser` plugin's, §17.1) · email, or any capability that is not a coding agent other
 than those plugins ·
