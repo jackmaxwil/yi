@@ -80,8 +80,26 @@ pub(super) fn pooled_idle_from_now(read_timeout: std::time::Duration) {
     }
 }
 
-/// Incident: ureq clears the read deadline when a socket returns to its pool, so a request
-/// written into one a NAT dropped waited forever; `None` is a socket silent past `wait`.
+/// Helpers one process may have waiting on a pooled socket; past it a warm agent is dropped and
+/// the request dials anew instead of adding a thread.
+const HELPER_CAP: usize = 16;
+
+static HELPERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub(super) fn at_helper_cap() -> bool {
+    HELPERS.load(std::sync::atomic::Ordering::SeqCst) >= HELPER_CAP
+}
+
+struct Helper;
+
+impl Drop for Helper {
+    fn drop(&mut self) {
+        HELPERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Incident: ureq clears a socket's read deadline when it returns to its pool, so a request written
+/// into a dropped one waited forever. `None` is silent past `wait`; the prompt is not sent again.
 pub(super) fn send_on_pooled(
     request: ureq::Request,
     body: &str,
@@ -89,8 +107,53 @@ pub(super) fn send_on_pooled(
 ) -> Option<Result<ureq::Response, ureq::Error>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let body = body.to_owned();
+    HELPERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let helper = Helper;
     std::thread::spawn(move || {
+        let _held = helper;
         let _ = sender.send(request.send_string(&body));
     });
     receiver.recv_timeout(wait).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    /// Dies with a silent socket whose helper is forgotten: the count must reach the cap while the
+    /// sockets are silent and fall back to nothing once the peer lets go.
+    #[test]
+    fn silent_sockets_hold_helpers_until_the_peer_lets_go() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let url = format!("http://{}/", listener.local_addr()?);
+        let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let keep = std::sync::Arc::clone(&held);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                if let Ok(mut kept) = keep.lock() {
+                    kept.push(stream);
+                }
+            }
+        });
+        let agent = ureq::AgentBuilder::new().build();
+        for _ in 0..HELPER_CAP {
+            let silent =
+                send_on_pooled(agent.post(&url), "{}", std::time::Duration::from_millis(50));
+            assert!(silent.is_none(), "a silent socket answered");
+        }
+        assert!(at_helper_cap());
+        for mut stream in held.lock().map_err(|_| "poisoned")?.drain(..) {
+            let mut sink = [0u8; 1];
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+            let _ = stream.read(&mut sink);
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while at_helper_cap() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!at_helper_cap(), "helpers outlived their sockets");
+        Ok(())
+    }
 }

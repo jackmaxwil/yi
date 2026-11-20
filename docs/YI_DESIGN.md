@@ -298,10 +298,10 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   the loop reads as final; `x-should-retry: true` retries any status.
 - A read timeout is the model's `readTimeoutSecs` (default 60 s) and bounds one read, so an idle
   gap between chunks and not the whole body; a timeout is neither retried nor resent, and its
-  refusal names the field, the default and the attempts that ran. One exception: a request on a
-  pooled socket that has already carried a finished stream is bounded by the same wait on a
-  helper thread (ureq clears the deadline on a pooled socket) and, silent past it, is sent once
-  more on a new connection. A child's model keeps `readTimeoutSecs` or 300 s.
+  refusal names the field, the default and the attempts that ran. A request on a pooled
+  socket that has already carried a finished stream is bounded by the same wait on a helper thread
+  (ureq clears the deadline on a pooled socket), ends the same way, drops the pooled agent, and is
+  never sent twice. A child's model keeps `readTimeoutSecs` or 300 s.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
   outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
   into `ToolUse`.

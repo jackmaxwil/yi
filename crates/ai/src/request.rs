@@ -7,7 +7,7 @@ use yi_types::telemetry::{QUOTA_STAMP, REFUSED_STAMP};
 
 use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, server_wait, wait_for};
 use crate::sse::SseEvent;
-use pool::{pooled_idle_from_now, send_on_pooled, stream_agent};
+use pool::{at_helper_cap, pooled_idle_from_now, send_on_pooled, stream_agent};
 mod pool;
 mod reply;
 
@@ -405,7 +405,10 @@ pub fn send_stripping_cache(
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
     let proxy = proxy.and_then(|config| config.proxy_for(host_of(url)));
-    let (mut agent, mut reused) = stream_agent(proxy, retry.deadline, false);
+    let (agent, reused) = match stream_agent(proxy, retry.deadline, false) {
+        (_, true) if at_helper_cap() => (stream_agent(proxy, retry.deadline, true).0, false),
+        held => held,
+    };
     let mut bare: Option<crate::breakpoints::Encoded> = None;
     let mut serialized = {
         let _span = yi_types::trace::span("ai.serialize");
@@ -431,17 +434,8 @@ pub fn send_stripping_cache(
         };
         drop(sending);
         let Some(sent) = sent else {
-            reused = false;
-            agent = stream_agent(proxy, retry.deadline, true).0;
-            let cause = "the pooled connection went silent".to_owned();
-            announce(
-                retry.on_wait,
-                attempt.saturating_add(1),
-                &policy,
-                None,
-                cause,
-            );
-            continue;
+            stream_agent(proxy, retry.deadline, true);
+            return Err(read_timeout_notice(retry.deadline, retry.ran()));
         };
         match sent {
             Ok(response) => return Ok(response),
