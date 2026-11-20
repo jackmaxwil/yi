@@ -1,6 +1,13 @@
 ---
 issue: Closes #2302
 raise: crate types +10
+shares: #2301 deletes the auto-review code this change deletes in auto_review.rs and permission.rs
+shares: #2299 adds a config key and a design line near the keys this change edits in config.rs and YI_DESIGN.md
+shares: #2297 adds desktop/ to YI_DESIGN.md; this change adds the matching one-out line in section 1.2
+shares: #2239 edits other lines of YI_DESIGN.md than the auto-review ones this change removes
+shares: #2237 edits levers.rs, lib.rs and the lever files; this change deletes the review.timeout_s lever and swaps one module line
+shares: #2232 adds a test to cli_surfaces.rs; this change adds one config test beside the gates one
+shares: #2205 edits config.rs; this change moves one key from a field to the REMOVED table
 cut: none crates/permission/src/review.rs
 cut: none crates/permission/tests/review.rs
 cut: none crates/runtime/src/auto_review.rs
