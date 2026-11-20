@@ -1609,3 +1609,73 @@ fn a_browser_is_refused_in_every_mode_and_names_agent_browser() -> TestResult {
     );
     Ok(())
 }
+
+/// A stopped session's wait ends as a rejection the journal calls a stop, not a person's deny.
+#[test]
+fn a_call_asked_while_its_session_is_stopped_is_journaled_as_stopped() -> TestResult {
+    let (broker, _asks) = counted(Vec::new(), |_| AskOutcome::Reject);
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&records);
+    broker.set_journal(Arc::new(move |record| {
+        if let Ok(mut all) = kept.lock() {
+            all.push(record);
+        }
+    }));
+    broker.set_stop(Arc::new(|| true));
+    let decided = broker.decide_call(
+        "bash",
+        ToolKind::Exec,
+        true,
+        "c1",
+        &bash_args("python3 evil.py && cat ~/.netrc"),
+        None,
+    );
+    assert!(!decided.allowed);
+    let all = records.lock().map_err(|_| "poisoned")?;
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].by, yi_types::permission::Answerer::Stopped);
+    Ok(())
+}
+
+/// Incident: a child blocked on an approval kept running after `_yi/child_abort`, because the
+/// ask watched no abort. Aborting the session that owns the broker is what stops the wait.
+#[test]
+fn aborting_the_owning_session_stops_its_brokers_asks() -> TestResult {
+    let (broker, _asks) = counted(Vec::new(), |_| AskOutcome::Reject);
+    let broker = Arc::new(broker);
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&records);
+    broker.set_journal(Arc::new(move |record| {
+        if let Ok(mut all) = kept.lock() {
+            all.push(record);
+        }
+    }));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
+    let mut session = yi_runtime::AgentSession::new(
+        yi_runtime::SessionConfig {
+            system_prompt: String::new(),
+            model: crate::faux_model::faux_model(128_000),
+            thinking_level: None,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.use_tools(
+        Vec::new(),
+        PathBuf::from("/nonexistent/project"),
+        Some(Arc::clone(&broker)),
+    );
+    session.abort();
+    let decided = broker.decide_call(
+        "bash",
+        ToolKind::Exec,
+        true,
+        "c1",
+        &bash_args("python3 evil.py && cat ~/.netrc"),
+        None,
+    );
+    assert!(!decided.allowed);
+    let all = records.lock().map_err(|_| "poisoned")?;
+    assert_eq!(all[0].by, yi_types::permission::Answerer::Stopped);
+    Ok(())
+}

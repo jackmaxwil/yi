@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::WeakUnboundedSender;
 use yi_types::subagent::ChildStatus;
 
 use crate::attach::Incoming;
-use crate::update::PendingPrompts;
+use crate::update::{PendingPrompts, extension, update_notification};
 use crate::{AcpState, LineSink, SessionHandle, respond};
 
 /// Idle sessions a worker keeps loaded, the console's own count of parked chats.
@@ -79,10 +79,38 @@ pub(crate) fn kernel_pins(kernel: Option<&yi_runtime::KernelService>) -> bool {
     kernel.is_some_and(|kernel| kernel.unsaved() || kernel.user_cell_running())
 }
 
-pub(crate) fn refuse(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
+pub(crate) fn refuse_requests(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
+    crate::update::queued(prompts).retain_mut(|prompt| match prompt.request.take() {
+        Some(request) => {
+            respond(sink, request, Err((code, why.to_owned())));
+            false
+        }
+        None => true,
+    });
+}
+
+pub(crate) fn refuse(
+    sink: &LineSink,
+    session_id: &str,
+    prompts: &PendingPrompts,
+    code: i64,
+    why: &str,
+) {
     let waiting = std::mem::take(&mut *crate::update::queued(prompts));
     for prompt in waiting {
-        respond(sink, prompt.request, Err((code, why.to_owned())));
+        match prompt.request {
+            Some(request) => respond(sink, request, Err((code, why.to_owned()))),
+            None => {
+                let dropped = extension(
+                    "_yi/prompt_dropped",
+                    [
+                        ("messageId", json!(prompt.message_id)),
+                        ("reason", json!(why)),
+                    ],
+                );
+                sink(&update_notification(session_id, dropped));
+            }
+        }
     }
 }
 impl AcpState {
@@ -100,6 +128,7 @@ impl AcpState {
             let closed = "the session closed before this prompt was inserted";
             refuse(
                 &self.sink,
+                session_id,
                 &handle.prompts,
                 crate::REQUEST_CANCELLED,
                 closed,
@@ -173,6 +202,32 @@ impl AcpState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lag_refuses_only_unanswered_prompts() -> Result<(), Box<dyn std::error::Error>> {
+        let prompts: PendingPrompts = std::sync::Arc::new(Mutex::new(vec![
+            crate::update::PendingPrompt {
+                text: "pending".to_owned(),
+                message_id: "pending-id".to_owned(),
+                request: Some(json!({"id": "pending"})),
+            },
+            crate::update::PendingPrompt {
+                text: "acknowledged".to_owned(),
+                message_id: "acknowledged-id".to_owned(),
+                request: None,
+            },
+        ]));
+        let sink: LineSink = std::sync::Arc::new(|_| {});
+
+        refuse_requests(&sink, &prompts, -32603, "lagged");
+
+        let waiting = crate::update::queued(&prompts);
+        let prompt = waiting.first().ok_or("acknowledged prompt missing")?;
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(prompt.message_id, "acknowledged-id");
+        assert!(prompt.request.is_none());
+        Ok(())
+    }
 
     #[test]
     fn two_jobs_due_together_for_an_unloaded_session_send_one_wake()

@@ -92,6 +92,14 @@ pub const RESULT_MIMES: [&str; 3] = [MARKDOWN_MIME, JSON_MIME, PYTHON_MIME];
 pub const MARKDOWN_MIME: &str = "text/markdown";
 pub const PYTHON_MIME: &str = "text/x-python";
 
+/// One text display a cell made (`text/html` or `image/svg+xml`), kept whole for a client to draw.
+/// Images ride [`ExecuteResult::attachments`] instead, so no picture is held twice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KernelDisplay {
+    pub mime_type: String,
+    pub data: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResult {
@@ -108,6 +116,11 @@ pub struct ExecuteResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<KernelError>,
     pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub displays: Vec<KernelDisplay>,
+    /// `[…]` rows about display output the model or a client did not get, each naming its cap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
 }
 
 /// One tool a cell called through `tool.call`, listed on that cell's `ipython` result (design

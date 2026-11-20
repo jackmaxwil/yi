@@ -219,6 +219,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
         sections.push("[cell aborted]".to_owned());
     }
     sections.extend(notes);
+    sections.extend(result.notices.iter().cloned());
     let checked: Vec<_> = result
         .attachments
         .iter()
@@ -268,6 +269,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
         } else {
             json!(attachment)
         }).collect::<Vec<_>>(),
+        "displays": result.displays,
         "kernelRestarted": outcome.kernel_restarted,
         "code": detail_text(code),
         "stdout": detail_text(&result.stdout),

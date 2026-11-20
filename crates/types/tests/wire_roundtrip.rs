@@ -578,3 +578,55 @@ fn a_compaction_details_value_keeps_the_window_chain_it_was_written_with()
     assert_eq!(serde_json::to_string(&details)?, stored.trim_end());
     Ok(())
 }
+
+/// A newer build's event kind decodes to `Other` and re-emits byte for byte (#2272).
+#[test]
+fn an_agent_event_kind_this_build_does_not_know_round_trips_verbatim() -> Result<(), Box<dyn Error>>
+{
+    let line = include_str!("fixtures/agent-event-other-v1.json").trim_end();
+    let event: yi_types::event::AgentEvent = serde_json::from_str(line)?;
+    assert!(matches!(event, yi_types::event::AgentEvent::Other(_)));
+    assert_eq!(serde_json::to_string(&event)?, line);
+    Ok(())
+}
+
+/// A message role this build does not know keeps its object as written (#2272).
+#[test]
+fn an_agent_message_role_this_build_does_not_know_round_trips_verbatim()
+-> Result<(), Box<dyn Error>> {
+    let line = include_str!("fixtures/agent-message-other-v1.json").trim_end();
+    let message: yi_types::message::AgentMessage = serde_json::from_str(line)?;
+    assert!(matches!(message, yi_types::message::AgentMessage::Other(_)));
+    assert_eq!(serde_json::to_string(&message)?, line);
+    Ok(())
+}
+
+/// A child activity this build does not know keeps its string as written (#2272).
+#[test]
+fn a_child_activity_this_build_does_not_know_round_trips_verbatim() -> Result<(), Box<dyn Error>> {
+    let line = include_str!("fixtures/child-activity-other-v1.json").trim_end();
+    let activity: yi_types::subagent::ChildActivity = serde_json::from_str(line)?;
+    assert_eq!(
+        activity,
+        yi_types::subagent::ChildActivity::Other("sleeping".to_owned())
+    );
+    assert_eq!(serde_json::to_string(&activity)?, line);
+    Ok(())
+}
+
+/// A setting kind this build does not know keeps its object as written (#2272).
+#[test]
+fn a_setting_kind_this_build_does_not_know_round_trips_verbatim() -> Result<(), Box<dyn Error>> {
+    let line = include_str!("fixtures/setting-kind-other-v1.json").trim_end();
+    let kind: yi_types::settings::SettingKind = serde_json::from_str(line)?;
+    assert!(matches!(kind, yi_types::settings::SettingKind::Other(_)));
+    assert_eq!(serde_json::to_string(&kind)?, line);
+    Ok(())
+}
+
+/// A known tag whose body fails to decode is an error, never a silent `Other` (#2272).
+#[test]
+fn a_known_event_kind_that_does_not_decode_is_an_error_not_other() {
+    let broken = r#"{"type":"agent_end","messages":"not a list"}"#;
+    assert!(serde_json::from_str::<yi_types::event::AgentEvent>(broken).is_err());
+}

@@ -44,6 +44,7 @@ fn parse_usage(raw: &Value, model: &Model) -> yi_types::message::Usage {
         .saturating_add(cache_read)
         .saturating_add(cache_write);
     calculate_cost(model, &mut usage);
+    usage.unknown = crate::request::nothing_reported(&usage);
     usage
 }
 

@@ -375,6 +375,9 @@ pub struct AcpYiMeta {
     /// What the person typed in the entry a `before` fork left out, to ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefill: Option<String>,
+    /// Present when the session has a rewriter model: the length its composer control starts at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewriter: Option<crate::config::RewriteLength>,
 }
 
 /// `_yi/fork` params: a new session branched from `entryId`, leaving it out (`before`) or
@@ -438,11 +441,14 @@ pub struct AcpConfigChoice {
     pub name: String,
 }
 
-/// `session/prompt` response: sent once the prompt is inserted, naming its `user_message`.
+/// `session/prompt` response: sent once the prompt is inserted, or at once with `queue_place` when queued mid-turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPromptResult {
     pub message_id: String,
+    /// Present when the prompt arrived mid-turn and was queued; 1 is next after the running turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_place: Option<u64>,
 }
 
 /// `session/request_permission` request params.

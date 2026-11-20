@@ -121,6 +121,7 @@ impl PermissionBroker {
             changes: &[],
             grants: &[],
             tool_call_id: None,
+            stop: None,
         };
         let (outcome, _classifier) = self.confirm_judged(&ask, None);
         Some(match outcome {

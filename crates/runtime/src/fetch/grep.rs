@@ -23,6 +23,7 @@ fn kind(message: &AgentMessage) -> String {
         AgentMessage::BranchSummary { .. } | AgentMessage::CompactionSummary { .. } => {
             "summary".to_owned()
         }
+        AgentMessage::Other(_) => "unread".to_owned(),
     }
 }
 
