@@ -15,6 +15,7 @@ pub mod debugger;
 pub mod design;
 pub mod files;
 pub mod findings;
+pub mod has;
 pub mod ipython;
 pub mod logs;
 pub mod lsp;

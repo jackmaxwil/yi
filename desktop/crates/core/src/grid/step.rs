@@ -1,7 +1,9 @@
 //! Grid changes that are not commands: a line dragged, a pane dropped, a pane pulled out.
 
-use crate::grid::layout::{Axis, ChatSide, Edge, GridError, Layout, Line, Size};
-use crate::grid::leave::{close, leave, rejoin, split};
+use crate::grid::layout::{Axis, ChatSide, Edge, GridError, Hole, Layout, Line, Size};
+use std::collections::BTreeSet;
+
+use crate::grid::leave::{close, leave, rejoin, rest, split};
 use crate::grid::place::place;
 use crate::grid::resize::{even, position, resize};
 use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
@@ -56,6 +58,12 @@ pub enum GridMsg {
     Open {
         window: WindowId,
         kind: PaneKind,
+    },
+    /// The kinds that have something to show in a window now. A pane a layout seated rests
+    /// while its kind is not among them and takes its slot again once it is.
+    Have {
+        window: WindowId,
+        kinds: Vec<PaneKind>,
     },
     /// The real window moved or changed size. A frame that is no place is not kept.
     Moved {
@@ -113,6 +121,11 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 window.own = None;
             }
         }
+        GridMsg::Have { window, kinds } => {
+            find(grid, window)?;
+            grid.have.insert(window, kinds.into_iter().collect());
+            settle(grid, window)?;
+        }
         GridMsg::Leave(pane) => return pull(grid, pane),
         GridMsg::Rejoin(pane) => return dock(grid, pane),
         GridMsg::Close(pane) => return shut(grid, pane),
@@ -151,7 +164,10 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             pane,
             at,
             size,
-        } => edit(grid, window, |layout| land(layout, side, pane, at, size))?,
+        } => {
+            edit(grid, window, |layout| land(layout, side, pane, at, size))?;
+            handled(grid, pane);
+        }
         GridMsg::Moved { window, frame } => {
             let window = find(grid, window)?;
             window.frame = Some(frame).filter(Frame::fits).or(window.frame);
@@ -188,12 +204,25 @@ fn edit(
     Ok(())
 }
 
-/// Shows a pane of `kind` in `id`: a hidden one, else a new one, in half of the largest pane
-/// as the window draws them, cut across its longer side. A window that draws one keeps it.
+/// Shows a pane of `kind` in `id`, the person's from then on: one resting here in its slot,
+/// else a hidden or a new one in half of the largest pane, cut across its longer side.
 fn open(grid: &mut Windows, id: WindowId, kind: PaneKind) -> Result<Vec<WindowOp>, GridError> {
     let window = grid.window(id).ok_or(GridError::NoSuchWindow(id))?;
     let drawn = |pane: PaneId| grid.kind(pane) == Some(kind);
-    if window.layout.docked().any(|(pane, _)| drawn(pane)) {
+    let shown = window
+        .layout
+        .docked()
+        .map(|(pane, _)| pane)
+        .find(|pane| drawn(*pane));
+    if let Some(pane) = shown {
+        handled(grid, pane);
+        return Ok(Vec::new());
+    }
+    let rests = |hole: &&Hole| hole.resting && drawn(hole.pane);
+    let resting = window.layout.away.iter().find(rests).map(|hole| hole.pane);
+    if let Some(pane) = resting {
+        handled(grid, pane);
+        edit(grid, id, |layout| rejoin(layout, pane))?;
         return Ok(Vec::new());
     }
     let size = grid.room(id);
@@ -213,15 +242,49 @@ fn open(grid: &mut Windows, id: WindowId, kind: PaneKind) -> Result<Vec<WindowOp
     } else {
         Edge::Bottom
     };
+    handled(grid, pane);
     edit(grid, id, |layout| split(layout, beside, edge, pane))?;
     Ok(Vec::new())
+}
+
+/// The person asked for `pane` or moved it: it no longer rests when its kind runs dry.
+fn handled(grid: &mut Windows, pane: PaneId) {
+    if let Some(pane) = grid.panes.iter_mut().find(|other| other.id == pane) {
+        pane.seated = false;
+    }
+}
+
+/// Rests each pane a layout seated in `id` whose kind has nothing to show and gives back the
+/// slot of each whose kind has. Chat and a pulled-out pane never rest; untold, nothing moves.
+fn settle(grid: &mut Windows, id: WindowId) -> Result<(), GridError> {
+    let Some(have) = grid.have.get(&id) else {
+        return Ok(());
+    };
+    let has = |kind: PaneKind| kind == PaneKind::Chat || have.contains(&kind);
+    let home = |pane: &&Pane| pane.seated && grid.origin_of(pane.id).is_none();
+    let seated = grid.panes.iter().filter(home);
+    let seated: Vec<(PaneId, bool)> = seated.map(|pane| (pane.id, has(pane.kind))).collect();
+    let layout = &mut find(grid, id)?.layout;
+    for (pane, has) in seated {
+        if layout.slot(pane).is_none() {
+            continue;
+        }
+        match (has, layout.is_away(pane)) {
+            // A pane the grid cannot close up round stays in.
+            (false, false) => drop(rest(layout, pane).ok()),
+            (true, true) if layout.is_resting(pane) => rejoin(layout, pane)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// A new pane of `kind`, numbered one past the highest there is.
 fn add(grid: &mut Windows, kind: PaneKind) -> Result<PaneId, GridError> {
     let highest = grid.panes.iter().map(|pane| pane.id.0).max().unwrap_or(0);
     let id = highest.checked_add(1).map(PaneId).ok_or(GridError::Full)?;
-    grid.panes.push(Pane { id, kind });
+    let seated = false;
+    grid.panes.push(Pane { id, kind, seated });
     Ok(id)
 }
 
@@ -276,8 +339,8 @@ fn show(grid: &mut Windows, id: WindowId, slug: &str) -> Result<Vec<WindowOp>, G
     wear(grid, id, &saved.shape(), (Some(saved.slug), None))
 }
 
-/// Shows a layout in a window, marked as the one shown. Each slot goes to a pane of its
-/// kind: one drawn here, else one out of here, else a hidden one, else a new one.
+/// Shows a layout in a window, marked as the one shown. Each slot goes to a pane of its kind
+/// (drawn here, else out of here, else hidden, else new), which rests while its kind has nothing.
 fn wear(
     grid: &mut Windows,
     id: WindowId,
@@ -306,6 +369,7 @@ fn wear(
         };
         seated.push(pane);
     }
+    let seats: BTreeSet<PaneId> = seated.iter().copied().collect();
     let mut layout = saved.seat(seated);
     let guest = |pane: &PaneId| grid.origin_of(*pane).is_some() && layout.slot(*pane).is_none();
     if let Some(pane) = old.docked().map(|(pane, _)| pane).find(guest) {
@@ -314,12 +378,20 @@ fn wear(
     let mut ops = Vec::new();
     for hole in old.away {
         // A layout that cannot close up round a pane that is out takes it back in.
+        if hole.resting {
+            // A resting pane the layout has no slot for is hidden; one it has rests on.
+            rest(&mut layout, hole.pane).ok();
+            continue;
+        }
         match (layout.slot(hole.pane), leave(&mut layout, hole.pane)) {
             (None, _) => layout.away.push(hole),
             (Some(_), Ok(())) => {}
             (Some(_), Err(GridError::LastPane(pane))) => ops.extend(lift(grid, pane)?),
             (Some(_), Err(error)) => return Err(error),
         }
+    }
+    for pane in grid.panes.iter_mut() {
+        pane.seated = pane.seated || seats.contains(&pane.id);
     }
     match find(grid, id) {
         Ok(window) => (window.layout, window.saved, window.own) = (layout, slug, own),
@@ -334,6 +406,7 @@ fn wear(
             ops.push(WindowOp::Open(id));
         }
     }
+    settle(grid, id)?;
     Ok(ops)
 }
 
@@ -391,5 +464,7 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
 
 #[cfg(test)]
 mod random;
+#[cfg(test)]
+mod resting;
 #[cfg(test)]
 mod tests;

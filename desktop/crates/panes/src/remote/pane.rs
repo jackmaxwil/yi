@@ -174,6 +174,13 @@ fn header(table: Option<&Table>) -> Option<&Row> {
     table?.find(&RowId::new("screen:0"))
 }
 
+/// Whether a machine's screen is open, or the feed has a failure to say.
+pub(crate) fn has(hub: &Hub) -> bool {
+    let table = table(hub);
+    let failed = matches!(table.map(Table::status), Some(FeedStatus::Error(_)));
+    header(table).is_some() || failed
+}
+
 fn tabs(pane: &PaneCx<'_>) -> Tabs {
     let row = header(table(pane.hub));
     let word = |field: &str| row.and_then(|r| r.words(field)).filter(|w| !w.is_empty());

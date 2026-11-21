@@ -12,10 +12,10 @@ use crate::pane::PaneKind::{self, Changes, Chat, Code, Files, Remote, Report, Te
 
 use super::GridMsg;
 
-const MAIN: WindowId = WindowId(0);
+pub(super) const MAIN: WindowId = WindowId(0);
 
 /// Applies one grid change and gives back what it asked of the real windows.
-fn change(model: &mut Model, change: GridMsg) -> Vec<WindowOp> {
+pub(super) fn change(model: &mut Model, change: GridMsg) -> Vec<WindowOp> {
     let effects = step(model, Msg::Grid(change));
     let op = |effect: Effect| match effect {
         Effect::Window(op) => Some(op),
@@ -25,7 +25,7 @@ fn change(model: &mut Model, change: GridMsg) -> Vec<WindowOp> {
 }
 
 /// A model drawn as the record measures its frames: chat on the right.
-fn record() -> Model {
+pub(super) fn record() -> Model {
     let mut model = Model::default();
     model.grid.side = crate::grid::layout::ChatSide::Right;
     model
@@ -38,7 +38,7 @@ fn showing(saved: &'static str) -> Model {
     model
 }
 
-fn pane(model: &Model, kind: PaneKind) -> Result<PaneId, String> {
+pub(super) fn pane(model: &Model, kind: PaneKind) -> Result<PaneId, String> {
     let found = model.grid.panes.iter().find(|pane| pane.kind == kind);
     found
         .map(|pane| pane.id)
@@ -46,13 +46,13 @@ fn pane(model: &Model, kind: PaneKind) -> Result<PaneId, String> {
 }
 
 /// The main window's panes in the frame 1 grid, after checking they tile it exactly.
-fn drawn(model: &Model) -> Result<Vec<(PaneId, Rect)>, String> {
+pub(super) fn drawn(model: &Model) -> Result<Vec<(PaneId, Rect)>, String> {
     let placed = model.grid.place(MAIN, FRAME_1);
     tiled(&placed, FRAME_1)?;
     Ok(placed)
 }
 
-fn expect(model: &Model, want: &[(PaneKind, Rect)]) -> Check {
+pub(super) fn expect(model: &Model, want: &[(PaneKind, Rect)]) -> Check {
     let placed = drawn(model)?;
     assert_eq!(placed.len(), want.len(), "panes drawn: {placed:?}");
     for (kind, rect) in want {
@@ -62,7 +62,7 @@ fn expect(model: &Model, want: &[(PaneKind, Rect)]) -> Check {
 }
 
 /// Record 2.7.4: Review in the frame 1 grid.
-const REVIEW_PLACED: [(PaneKind, Rect); 4] = [
+pub(super) const REVIEW_PLACED: [(PaneKind, Rect); 4] = [
     (
         Files,
         Rect {
@@ -387,7 +387,7 @@ fn a_dragged_line_goes_to_the_pointer_on_either_chat_side() -> Check {
 
 /// Record 2.8.2 and 2.8.5 as a file: frame 2's grid with web and the remote desktop out as
 /// windows at the places the record gives.
-const FRAME_2: &str = r#"{
+pub(super) const FRAME_2: &str = r#"{
   "chat": "right",
   "panes": [
     {"id": 1, "kind": "files"}, {"id": 2, "kind": "web"}, {"id": 3, "kind": "changes"},

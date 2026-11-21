@@ -1,6 +1,6 @@
 //! The set of windows: which panes exist, which window each is in, and each window's grid.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,10 @@ pub struct Pane {
     pub id: PaneId,
     #[serde(with = "crate::grid::layout::store::kind")]
     pub kind: PaneKind,
+    /// Whether a layout seated it and the person has not asked for it since: it is out
+    /// of the grid while its kind has nothing to show.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub seated: bool,
 }
 
 /// Where a window sits on the desktop, in points; it may be on any screen.
@@ -72,6 +76,10 @@ pub struct Windows {
     /// The layouts the person arranged and named, kept with the grid.
     #[serde(default)]
     pub own: Vec<Own>,
+    /// The kinds with something to show in each window, as last told; none before the first
+    /// telling, when no pane rests or comes back.
+    #[serde(skip)]
+    pub have: BTreeMap<WindowId, BTreeSet<PaneKind>>,
 }
 
 /// A grid as a file gives it, before anything has looked at it.
@@ -96,6 +104,7 @@ impl TryFrom<Unchecked> for Windows {
             panes: file.panes,
             windows: file.windows,
             own: Vec::new(),
+            have: BTreeMap::new(),
         };
         grid.check()?;
         // A kept layout a file spoils reads as gone, as a saved one this build lacks does.
@@ -135,7 +144,10 @@ impl Windows {
     /// The window `pane` was pulled out of, where it docks back.
     #[must_use]
     pub fn origin_of(&self, pane: PaneId) -> Option<WindowId> {
-        let left = |window: &&Window| window.layout.is_away(pane);
+        let left = |window: &&Window| {
+            let layout = &window.layout;
+            layout.is_away(pane) && !layout.is_resting(pane)
+        };
         self.windows.iter().find(left).map(|window| window.id)
     }
 
@@ -175,14 +187,15 @@ impl Windows {
         })
     }
 
-    /// Whether every window is a whole grid and every pane is in one place: drawn in one
-    /// window at most, and out of a window only while another draws it. A file must pass.
+    /// Whether every window is whole and every pane in one place: drawn in one window at most,
+    /// pulled out only while another draws it, resting only while none does. A file must pass.
     pub fn check(&self) -> Result<(), GridError> {
         let mut known = BTreeSet::new();
         if let Some(pane) = self.panes.iter().find(|pane| !known.insert(pane.id)) {
             return Err(GridError::AlreadyIn(pane.id));
         }
         let (mut windows, mut drawn, mut out) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        let mut resting = BTreeSet::new();
         for window in &self.windows {
             if !windows.insert(window.id) {
                 return Err(GridError::SameWindow(window.id));
@@ -198,12 +211,20 @@ impl Windows {
             }
             let docked = window.layout.docked().map(|(pane, _)| pane);
             let left = window.layout.away.iter().map(|hole| hole.pane);
+            let rests = window.layout.away.iter().filter(|hole| hole.resting);
+            resting.extend(rests.map(|hole| hole.pane));
             let twice = docked.into_iter().find(|pane| !drawn.insert(*pane));
             if let Some(pane) = twice.or_else(|| left.into_iter().find(|pane| !out.insert(*pane))) {
                 return Err(GridError::AlreadyIn(pane));
             }
         }
-        match out.difference(&drawn).next() {
+        if let Some(pane) = resting.intersection(&drawn).next() {
+            return Err(GridError::AlreadyIn(*pane));
+        }
+        let mut lost = out
+            .difference(&drawn)
+            .filter(|pane| !resting.contains(pane));
+        match lost.next() {
             Some(pane) => Err(GridError::NoSuchPane(*pane)),
             None => Ok(()),
         }

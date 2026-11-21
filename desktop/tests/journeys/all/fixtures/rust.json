@@ -1,5 +1,5 @@
 {
- "about": "The real rust-analyzer, found past rustup's proxy in the toolchains the Mac has: opening src/lib.rs of a Cargo project in the Code layout starts it, and resting on x shows the server's own hover card. HOME is the journey's folder under target/; only RUSTUP_HOME points at the installed toolchains, read and never written.",
+ "about": "The real rust-analyzer, found past rustup's proxy in the toolchains the Mac has: opening src/lib.rs of a Cargo project in the Code layout (Changes waiting, so the code has its room too) starts it, and resting on x shows the server's own hover card. HOME is the journey's folder under target/; only RUSTUP_HOME points at the installed toolchains, read and never written.",
  "empty": true,
  "project": {
   "Cargo.toml": "[package]\nname = \"journey\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n# Its own workspace: the journey's folder sits under this repository's.\n[workspace]\n",
@@ -9,7 +9,7 @@
   {
    "size": "1800x1100",
    "nudge": [
-    1090,
+    398,
     91
    ],
    "toolchain": true,
@@ -34,31 +34,31 @@
     {
      "t": 20,
      "type": "move",
-     "x": 1070,
+     "x": 378,
      "y": 160
     },
     {
      "t": 20.5,
      "type": "move",
-     "x": 1089,
+     "x": 397,
      "y": 91
     },
     {
      "t": 21.3,
      "type": "move",
-     "x": 1090,
+     "x": 398,
      "y": 91
     },
     {
      "t": 22.1,
      "type": "move",
-     "x": 1089,
+     "x": 397,
      "y": 91
     },
     {
      "t": 23,
      "type": "move",
-     "x": 1090,
+     "x": 398,
      "y": 91
     },
     {

@@ -140,6 +140,8 @@ def check(expect, tree, folder):
     problems += [f"the project has no {f}" for f in expect.get("files", [])
                  if not (folder / f).exists()]
     problems += [f"the project has {f}" for f in expect.get("absent", []) if (folder / f).exists()]
+    keys = {e.get("key") for e in tree.get("elements", [])}
+    problems += [f"{k} is drawn" for k in expect.get("absent_keys", []) if k in keys]
     return problems
 
 

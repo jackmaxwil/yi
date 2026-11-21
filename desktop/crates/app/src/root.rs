@@ -84,6 +84,12 @@ pub fn init() -> Win {
             saved: FIRST_LAYOUT,
         };
         step(&mut hub.model, Msg::Grid(show));
+        // Asked for one by one, as a person would: none rests in a scene with nothing to show.
+        let kinds: Vec<_> = hub.model.grid.panes.iter().map(|pane| pane.kind).collect();
+        for kind in kinds {
+            let window = MAIN;
+            step(&mut hub.model, Msg::Grid(GridMsg::Open { window, kind }));
+        }
     }
     Win::new(hub, MAIN)
 }
@@ -189,6 +195,7 @@ pub fn poll(win: &mut Win, seconds: f64, tx: &mut Tx) -> bool {
     new_chat::forget_gone(win, seconds);
     let drained = drain(win);
     let shown = yd_ui::shown::sync(win);
+    let rested = yd_panes::has::tell(win, tx);
     let told = notify::poll(win);
     let hover = yd_ui::code::state::tick(win, tx);
     let followed = yd_panes::lsp::marks::follow(win, tx);
@@ -204,7 +211,7 @@ pub fn poll(win: &mut Win, seconds: f64, tx: &mut Tx) -> bool {
     let bound = yd_panes::settings::pane::bind::follow(win);
     seen::poll(win);
     start::keep(win);
-    let heard = windows || settled || drained || shown || told || hover || followed;
+    let heard = windows || settled || drained || shown || rested || told || hover || followed;
     heard || themed || scripted || bound || asked
 }
 

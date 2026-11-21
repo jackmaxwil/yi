@@ -341,7 +341,12 @@ fn every_key_hint_the_window_draws_is_the_maps_even_after_the_user_changes_a_key
     own_keys(&settings, &[("pane.show-settings", "cmd+shift+,")])?;
     settings.frame(1.0 / 60.0);
     let search = words(&settings, "settings-0.search");
-    let want = hint("pane.show-settings");
+    // The settings window's own map: the key was changed there, not in the first window.
+    let want = {
+        let hub = settings.state.hub.try_borrow()?;
+        yd_ui::menu::command_box::keymap(&hub).hint(CommandId("pane.show-settings"))
+    };
+    assert_eq!(want.as_deref(), Some("⌘⇧,"), "the map follows the user");
     assert_eq!(
         search.last(),
         want.as_ref(),
