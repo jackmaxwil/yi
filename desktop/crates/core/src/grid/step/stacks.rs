@@ -13,7 +13,7 @@ use super::GridMsg;
 use super::tests::{MAIN, change, drawn, pane, record};
 
 /// The chat alone, in a window showing session `thread`.
-fn window(thread: &str) -> Model {
+pub(super) fn window(thread: &str) -> Model {
     let mut model = record();
     let (window, saved) = (MAIN, "chat");
     change(&mut model, GridMsg::Show { window, saved });
@@ -21,7 +21,7 @@ fn window(thread: &str) -> Model {
     model
 }
 
-fn show(model: &mut Model, thread: &str) {
+pub(super) fn show(model: &mut Model, thread: &str) {
     let thread = (!thread.is_empty()).then(|| ThreadId::new(thread));
     let (window, kinds) = (MAIN, PaneKind::ALL.to_vec());
     let told = GridMsg::Have {
@@ -32,12 +32,12 @@ fn show(model: &mut Model, thread: &str) {
     change(model, told);
 }
 
-fn open(model: &mut Model, kind: PaneKind) {
+pub(super) fn open(model: &mut Model, kind: PaneKind) {
     let window = MAIN;
     change(model, GridMsg::Open { window, kind });
 }
 
-fn kinds(model: &Model) -> Result<Vec<PaneKind>, String> {
+pub(super) fn kinds(model: &Model) -> Result<Vec<PaneKind>, String> {
     let placed = drawn(model)?;
     let kind = |(pane, _): &(_, _)| model.grid.kind(*pane).ok_or("a pane of no kind");
     let mut kinds = placed.iter().map(kind).collect::<Result<Vec<_>, _>>()?;
@@ -45,7 +45,7 @@ fn kinds(model: &Model) -> Result<Vec<PaneKind>, String> {
     Ok(kinds)
 }
 
-fn tabs(model: &Model, of: PaneKind) -> Result<Vec<PaneKind>, String> {
+pub(super) fn tabs(model: &Model, of: PaneKind) -> Result<Vec<PaneKind>, String> {
     let tabs = model.grid.tabs(MAIN, pane(model, of)?);
     let kind = |pane: &_| model.grid.kind(*pane).ok_or("a tab of no kind".to_owned());
     tabs.iter().map(kind).collect()

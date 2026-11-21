@@ -254,13 +254,14 @@ pub fn front(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
     Ok(())
 }
 
-/// The tab that takes over from `pane` in its stack: the one after it, else the one before;
-/// one that is here before one pulled out.
+/// The tab that takes over from `pane` in its stack: the one after it, else the one just
+/// before; one that is here before one pulled out.
 pub(crate) fn next_tab(layout: &Layout, pane: PaneId) -> Option<PaneId> {
     let stack = layout.stack(pane);
-    let after = stack.iter().skip_while(|other| **other != pane).skip(1);
-    let before = stack.iter().take_while(|other| **other != pane);
-    let others: Vec<PaneId> = after.chain(before).copied().collect();
+    let at = stack.iter().position(|other| *other == pane)?;
+    let (before, after) = stack.split_at_checked(at)?;
+    let nearest = after.iter().skip(1).chain(before.iter().rev());
+    let others: Vec<PaneId> = nearest.copied().collect();
     let here = others.iter().find(|other| !layout.is_away(**other));
     here.or(others.first()).copied()
 }
@@ -374,9 +375,8 @@ pub fn split(
     Ok(())
 }
 
-/// Takes `pane`'s slot out for good with whatever is stacked in it; the rest fill the room.
-/// What a carried pane does to the slot it leaves: its stack goes where it lands.
-pub(crate) fn vacate(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
+/// Takes `pane`'s slot out for good; the rest fill the room.
+fn vacate(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
     if layout.slot(pane).is_some() {
         if !layout.docked().any(|(other, _)| other != pane) {
             return Err(GridError::LastPane(pane));

@@ -213,8 +213,16 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             at,
             size,
         } => {
+            if grid.visiting(window, pane, at) {
+                return Err(GridError::NoSuchPane(pane));
+            }
+            // The tab left in the slot may be another session's: the slot settles on its own.
+            let mate = next_tab(&find(grid, window)?.layout, pane);
             edit(grid, window, |layout| land(layout, side, pane, at, size))?;
             handled(grid, window, pane);
+            if mate.is_some() {
+                settle_in(grid, window, mate)?;
+            }
         }
         GridMsg::Moved { window, frame } => {
             let window = find(grid, window)?;
@@ -242,7 +250,8 @@ fn edit(
         let named =
             |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
         let areas: Vec<_> = layout.areas.iter().map(named).collect();
-        (layout.cols.clone(), layout.rows.clone(), areas)
+        let tracks = (layout.cols.clone(), layout.rows.clone());
+        (tracks, areas, layout.stacks.clone())
     };
     let before = shape(&window.layout);
     change(&mut window.layout)?;
@@ -645,6 +654,8 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
     Ok(ops)
 }
 
+#[cfg(test)]
+mod carry;
 #[cfg(test)]
 mod random;
 #[cfg(test)]

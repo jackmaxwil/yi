@@ -367,7 +367,7 @@ fn dropped(before: &Windows, change: &Change, after: &Windows, size: Size) -> Re
     let homes = |grid: &Windows| {
         ids(grid)
             .into_iter()
-            .map(|id| grid.window_of(id))
+            .map(|id| grid.window_of(id).or(grid.home_of(id)))
             .collect::<Vec<_>>()
     };
     if homes(before) != homes(after) || after.window_of(*pane) != Some(*window) {
@@ -376,6 +376,13 @@ fn dropped(before: &Windows, change: &Change, after: &Windows, size: Size) -> Re
             homes(before),
             homes(after)
         ));
+    }
+    let stack = |grid: &Windows| grid.window(*window).map(|w| w.layout.stack(*pane).len());
+    let Change::Said(Msg::Grid(GridMsg::Drop { at, .. })) = change else {
+        return Ok(());
+    };
+    if !matches!(at, Spot::Onto(_)) && stack(after) != Some(0) {
+        return Err(format!("{pane:?} took its tabs along to an edge"));
     }
     let small =
         |(_, rect): &&(PaneId, Rect)| rect.w < MIN_PANE.w - 0.02 || rect.h < MIN_PANE.h - 0.02;
