@@ -10,7 +10,7 @@ use crate::model::Model;
 use crate::pane::PaneKind::{self, Agents, Changes, Chat, Code, Files, Terminal, Trace, Web};
 
 use super::GridMsg;
-use super::tests::{MAIN, change, drawn, pane, record};
+use super::tests::{MAIN, change, drawn, kinds, open, pane, record};
 
 /// The chat alone, in a window showing session `thread`.
 fn window(thread: &str) -> Model {
@@ -30,19 +30,6 @@ fn show(model: &mut Model, thread: &str) {
         thread,
     };
     change(model, told);
-}
-
-fn open(model: &mut Model, kind: PaneKind) {
-    let window = MAIN;
-    change(model, GridMsg::Open { window, kind });
-}
-
-fn kinds(model: &Model) -> Result<Vec<PaneKind>, String> {
-    let placed = drawn(model)?;
-    let kind = |(pane, _): &(_, _)| model.grid.kind(*pane).ok_or("a pane of no kind");
-    let mut kinds = placed.iter().map(kind).collect::<Result<Vec<_>, _>>()?;
-    kinds.sort();
-    Ok(kinds)
 }
 
 fn tabs(model: &Model, of: PaneKind) -> Result<Vec<PaneKind>, String> {

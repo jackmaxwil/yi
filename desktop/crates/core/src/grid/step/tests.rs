@@ -52,6 +52,19 @@ pub(super) fn drawn(model: &Model) -> Result<Vec<(PaneId, Rect)>, String> {
     Ok(placed)
 }
 
+pub(super) fn open(model: &mut Model, kind: PaneKind) {
+    let window = MAIN;
+    change(model, GridMsg::Open { window, kind });
+}
+
+pub(super) fn kinds(model: &Model) -> Result<Vec<PaneKind>, String> {
+    let placed = drawn(model)?;
+    let kind = |(pane, _): &(_, _)| model.grid.kind(*pane).ok_or("a pane of no kind");
+    let mut kinds = placed.iter().map(kind).collect::<Result<Vec<_>, _>>()?;
+    kinds.sort();
+    Ok(kinds)
+}
+
 pub(super) fn expect(model: &Model, want: &[(PaneKind, Rect)]) -> Check {
     let placed = drawn(model)?;
     assert_eq!(placed.len(), want.len(), "panes drawn: {placed:?}");
