@@ -207,6 +207,7 @@ fn make(model: &mut Model, change: &Change) {
                     seated,
                     scope,
                     thing: None,
+                    unseen: false,
                 });
             }
         }
@@ -354,6 +355,20 @@ fn a_pane_that_leaves_and_comes_straight_back_changes_nothing() -> Check {
                 return Err(format!("{pane:?} left and nothing changed"));
             }
             super::step(&mut trial, GridMsg::Rejoin(pane));
+            // A tab drawn while the pane was out has been seen: its dot does not come back.
+            let mut grid = grid.clone();
+            for pane in trial.panes.iter_mut().chain(grid.panes.iter_mut()) {
+                pane.unseen = false;
+            }
+            // A neighbour a pane out remembers is a slot: any tab of it names the same one.
+            for window in trial.windows.iter_mut().chain(grid.windows.iter_mut()) {
+                let layout = window.layout.clone();
+                let holes = window.layout.away.iter_mut();
+                for (other, _) in holes.flat_map(|hole| hole.beside.iter_mut()) {
+                    *other = layout.front(*other).unwrap_or(*other);
+                }
+            }
+            let grid = &grid;
             if trial != *grid {
                 return Err(format!("{pane:?} came back to {trial:?}, not {grid:?}"));
             }

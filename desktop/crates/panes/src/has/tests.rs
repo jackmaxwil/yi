@@ -13,7 +13,7 @@ use crate::registry::{PANES, scenes};
 const MAIN: WindowId = WindowId(0);
 
 /// The kinds that rest, each with the scene whose fixtures give it something to show.
-const BUILT: [(PaneKind, &str); 7] = [
+const BUILT: [(PaneKind, &str); 8] = [
     (PaneKind::Files, "files/mockup"),
     (PaneKind::Changes, "changes/mockup"),
     (PaneKind::Terminal, "terminal/mockup"),
@@ -21,6 +21,7 @@ const BUILT: [(PaneKind, &str); 7] = [
     (PaneKind::Web, "web/mockup"),
     (PaneKind::Remote, "desktop/mockup"),
     (PaneKind::Report, "report/mockup"),
+    (PaneKind::Agents, "agents/mockup"),
 ];
 
 #[test]

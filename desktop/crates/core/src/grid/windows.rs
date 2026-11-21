@@ -82,6 +82,10 @@ pub struct Pane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(with = "crate::grid::layout::store::thing")]
     pub thing: Option<Address>,
+    /// A rule opened it as a tab behind another and it has not been drawn since: its tab
+    /// carries a dot. Not kept in the file.
+    #[serde(skip)]
+    pub unseen: bool,
 }
 
 impl Pane {
@@ -151,6 +155,10 @@ pub struct Windows {
     /// front again when the window turns back. Not kept in the file.
     #[serde(skip)]
     pub fronts: BTreeMap<(WindowId, Option<ThreadId>), Vec<PaneId>>,
+    /// The kinds each session of a window was last told to have: a rule opens a pane for a
+    /// kind the first time it is among them, and not again while it stays. Not kept.
+    #[serde(skip)]
+    pub had: BTreeMap<(WindowId, Option<ThreadId>), BTreeSet<PaneKind>>,
 }
 
 /// A grid as a file gives it, before anything has looked at it.
@@ -178,6 +186,7 @@ impl TryFrom<Unchecked> for Windows {
             have: BTreeMap::new(),
             shows: BTreeMap::new(),
             fronts: BTreeMap::new(),
+            had: BTreeMap::new(),
         };
         grid.check()?;
         // A kept layout a file spoils reads as gone, as a saved one this build lacks does.

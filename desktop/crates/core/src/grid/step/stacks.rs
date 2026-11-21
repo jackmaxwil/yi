@@ -23,7 +23,9 @@ pub(super) fn window(thread: &str) -> Model {
 
 pub(super) fn show(model: &mut Model, thread: &str) {
     let thread = (!thread.is_empty()).then(|| ThreadId::new(thread));
-    let (window, kinds) = (MAIN, PaneKind::ALL.to_vec());
+    // Every kind but those a rule opens by itself: these tests open their own panes.
+    let kinds = PaneKind::ALL.iter().copied();
+    let (window, kinds) = (MAIN, kinds.filter(|kind| !kind.arrives()).collect());
     let told = GridMsg::Have {
         window,
         kinds,
@@ -242,6 +244,7 @@ fn the_grid_file_keeps_its_stacks_and_refuses_a_broken_one() -> Check {
     let mut read: Windows = serde_json::from_str(&text)?;
     (read.have, read.shows) = (model.grid.have.clone(), model.grid.shows.clone());
     read.fronts = model.grid.fronts.clone();
+    read.had = model.grid.had.clone();
     assert_eq!(read, model.grid);
     let (changes, code, chat) = (
         pane(&model, Changes)?,

@@ -23,7 +23,9 @@ fn window(thread: &str) -> Model {
 /// The window turns to session `thread`; an empty name is New chat, no session at all.
 fn show(model: &mut Model, thread: &str) {
     let thread = (!thread.is_empty()).then(|| ThreadId::new(thread));
-    let (window, kinds) = (MAIN, PaneKind::ALL.to_vec());
+    // Every kind but those a rule opens by itself: these tests open their own panes.
+    let kinds = PaneKind::ALL.iter().copied();
+    let (window, kinds) = (MAIN, kinds.filter(|kind| !kind.arrives()).collect());
     let told = GridMsg::Have {
         window,
         kinds,
@@ -159,6 +161,7 @@ fn the_grid_file_keeps_each_panes_sessions() -> Check {
     let mut read: Windows = serde_json::from_str(&text)?;
     (read.have, read.shows) = (model.grid.have.clone(), model.grid.shows.clone());
     read.fronts = model.grid.fronts.clone();
+    read.had = model.grid.had.clone();
     assert_eq!(read, model.grid);
     Ok(())
 }

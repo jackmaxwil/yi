@@ -226,11 +226,13 @@ fn a_pane_switched_on_is_placed_as_show_places_it_and_off_closes_with_no_hole() 
     let before = kinds(&panel)?;
     tap(&mut panel, "grid.panel.pane.files")?;
     let after = kinds(&panel)?;
-    let less: Vec<_> = before
-        .into_iter()
-        .filter(|k| *k != PaneKind::Files)
-        .collect();
-    assert_eq!(after, less, "Files closed");
+    // The session has child agents, so Agents waited behind Files as a tab of the column.
+    let swap = |kind: PaneKind| match kind {
+        PaneKind::Files => PaneKind::Agents,
+        other => other,
+    };
+    let less: Vec<_> = before.into_iter().map(swap).collect();
+    assert_eq!(after, less, "Files closed, and its column's next tab shows");
     let hub = panel.state.hub.try_borrow()?;
     let placed = hub.model.grid.place(
         root::MAIN,
@@ -529,6 +531,53 @@ fn panes_of_one_place_open_as_tabs_and_a_press_on_a_tab_brings_it_in_front() -> 
         tabs(&runtime).len() + counted(&runtime),
         2,
         "the other two are behind it now"
+    );
+    Ok(())
+}
+
+/// The session gets changes while a code pane is in front: Changes joins that slot as a tab
+/// with a dot, nothing drawn moves, and the dot goes once the tab has been in front.
+#[test]
+fn a_kind_with_something_new_opens_as_a_tab_with_a_dot_and_moves_nothing() -> Check {
+    use yd_ui::grid_view::view::{Act, act, show_pane};
+    let mut runtime = settled("shell/mockup")?;
+    runtime.update(|win, tx| {
+        act(win, tx, Act::Show(yd_core::grid::saved::BLANK.slug));
+        show_pane(win, tx, PaneKind::Code);
+    });
+    rest(&mut runtime);
+    let frames = |runtime: &Runtime<Win>| -> Vec<(String, [f32; 4])> {
+        let shown = runtime.elements();
+        let live = shown.into_iter().filter(|e| !e.exiting);
+        let frame = |e: ElementInfo| Some((e.key.filter(|k| k.ends_with(".pane-frame"))?, e.rect));
+        live.filter_map(frame).collect()
+    };
+    let before = frames(&runtime);
+    assert_eq!(kinds(&runtime)?, [PaneKind::Chat, PaneKind::Code]);
+    let changes = yd_panes::registry::scenes().find(|scene| scene.name == "changes/mockup");
+    (changes.ok_or("no changes scene")?.setup)(&mut *runtime.state.hub.try_borrow_mut()?);
+    rest(&mut runtime);
+    assert_eq!(frames(&runtime), before, "nothing drawn moved");
+    let keyed = |runtime: &Runtime<Win>, end: &str| -> Vec<String> {
+        let keys = runtime.elements().into_iter().filter_map(|e| e.key);
+        keys.filter(|key| key.starts_with("code-") && key.ends_with(end))
+            .collect()
+    };
+    let [dot] = &keyed(&runtime, ".pane-tab-dot")[..] else {
+        return Err("the new tab carries no dot".into());
+    };
+    let tab = dot.replace(".pane-tab-dot", ".pane-tab");
+    tap(&mut runtime, &tab)?;
+    assert!(kinds(&runtime)?.contains(&PaneKind::Changes), "pressed");
+    let back = runtime.elements().into_iter().filter_map(|e| e.key);
+    let mut back = back.filter(|key| key.starts_with("changes-") && key.contains(".tab-pane-"));
+    let back = back.find(|key| key.ends_with(".pane-tab"));
+    tap(&mut runtime, &back.ok_or("no way back to the code pane")?)?;
+    assert_eq!(keyed(&runtime, ".pane-tab-dot"), [] as [String; 0], "seen");
+    assert_eq!(
+        keyed(&runtime, ".pane-tab").len(),
+        2,
+        "and it is still a tab"
     );
     Ok(())
 }

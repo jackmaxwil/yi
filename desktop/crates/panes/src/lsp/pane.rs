@@ -87,6 +87,7 @@ fn tabs(pane: &PaneCx<'_>) -> Tabs {
         meta,
         fixed: true,
         preview: false,
+        dot: false,
     };
     Tabs {
         tabs: vec![

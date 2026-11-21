@@ -67,6 +67,12 @@ fn rows<'a>(hub: &'a Hub, thread: Option<&'a yd_core::reduce::threads::Thread>) 
     Cow::Owned(fold::table(folded.unwrap_or_default()))
 }
 
+/// Whether the pane has more to show than the session's own agent: a child, or fed rows.
+pub fn has(hub: &Hub, thread: Option<&yd_core::reduce::threads::Thread>) -> bool {
+    let fed = hub.model.tables.get(FEED);
+    fed.is_some_and(|table| !table.is_empty()) || thread.is_some_and(|t| !t.agents.is_empty())
+}
+
 fn thing_at(hub: &Hub, pane: PaneId, key: &str) -> Option<Thing> {
     let id = row::id_of(key)?;
     let thread = yd_ui::shown::of_pane(hub, pane);

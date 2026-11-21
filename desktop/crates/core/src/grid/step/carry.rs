@@ -118,6 +118,28 @@ fn a_tab_dropped_on_a_middle_joins_those_tabs_and_a_lone_pane_swaps() -> Check {
     Ok(())
 }
 
+/// A pane dropped where it already is has not been moved: nothing of it or the grid changes,
+/// and a pane a layout seated is not made the person's by it.
+#[test]
+fn a_pane_dropped_where_it_was_changes_nothing() -> Check {
+    let mut model = window("a");
+    let (window, saved) = (MAIN, "review");
+    change(&mut model, GridMsg::Show { window, saved });
+    let seated = drawn(&model)?;
+    let (held, _) = seated.first().ok_or("the layout draws no pane")?;
+    let before = model.grid.clone();
+    let (pane, at, size) = (*held, Spot::Onto(*held), FRAME_1);
+    let dropped = GridMsg::Drop {
+        window,
+        pane,
+        at,
+        size,
+    };
+    change(&mut model, dropped);
+    assert_eq!(model.grid, before);
+    Ok(())
+}
+
 /// The tab left with the slot may be open in another session only: the slot then closes up
 /// here, and shows that tab again in its own session.
 #[test]

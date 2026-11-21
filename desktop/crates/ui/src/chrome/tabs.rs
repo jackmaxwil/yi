@@ -155,6 +155,8 @@ pub struct Tab {
     pub fixed: bool,
     /// It is a look, not yet kept: the next look takes its place. Its title is italic.
     pub preview: bool,
+    /// It opened by itself behind another tab and has not been in front since: a small dot.
+    pub dot: bool,
 }
 
 /// Tab ids from here up are not a pane's own: each names a pane stacked behind the one
@@ -191,6 +193,7 @@ impl Tab {
             meta: String::new(),
             fixed: false,
             preview: false,
+            dot: false,
         }
     }
 
@@ -395,6 +398,12 @@ fn tab(tokens: &Tokens, bar: &Bar<'_>, tab: &Tab, active: bool) -> El {
                 .shrink(),
         )
         .children(count)
+        .children(tab.dot.then(|| {
+            el().key(format!("{}.tab-{}.pane-tab-dot", bar.key, part(tab.id)))
+                .size(5.0, 5.0)
+                .radius(2.5)
+                .fill(colour(tokens.accent))
+        }))
         .children(closes.then(|| {
             row()
                 .key(format!("{}.tab-{}.pane-tab-close", bar.key, part(tab.id)))

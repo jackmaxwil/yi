@@ -11,7 +11,7 @@ use yd_core::row::Rows;
 use yd_ui::grid_view::drag::GLIDE;
 use yd_ui::win::{Hub, Win, dispatch};
 
-use crate::{changes, files, remote, report, terminal, web};
+use crate::{agents, changes, files, remote, report, terminal, web};
 
 /// Whether a feed has a failure to say: a pane shows that even with no rows.
 fn failing(table: Option<&Table>) -> bool {
@@ -46,6 +46,7 @@ fn has(hub: &Hub, window: WindowId, kind: PaneKind) -> bool {
         PaneKind::Remote => remote::pane::has(hub),
         PaneKind::Report => thread.and_then(report::pane::newest).is_some(),
         PaneKind::Terminal => terminal::pane::has(hub, window),
+        PaneKind::Agents => agents::pane::has(hub, thread),
         _ => true,
     }
 }
