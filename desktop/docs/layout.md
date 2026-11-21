@@ -81,8 +81,8 @@ Four places, each a stack, each kind with a default:
 |---|---|---|
 | Chat | Chat | The side the owner chose (✓ `ChatSide`) |
 | Work | Code, Changes, Web app, Report, Design, Remote desktop, IPython, a child agent's chat, Debugger, plugin panes | Beside chat |
-| Side | Files, Agents, Findings, Assets, Containers, VMs, Daemons, Language servers, Plugins | A narrow column |
-| Shelf | Terminal, Logs, Trace | A short row along the bottom |
+| Side | Files, Agents, Findings, Assets, Containers, VMs, Daemons, Plugins | A narrow column |
+| Shelf | Terminal, Logs, Trace, Language servers (its problem rows need the width) | A short row along the bottom |
 
 A place is not a new kind of object. It is a slot in the existing grid plus one column in the kind table. A place with no panes takes no room, by the machinery that already closes the grid up round a pane that is out (✓ `leave`, `rejoin`, `crates/core/src/grid/leave.rs:180`, `:199`). The user can still split and dock freely (✓ `Drop`, `Beside`, `Side`); that makes more stacks.
 

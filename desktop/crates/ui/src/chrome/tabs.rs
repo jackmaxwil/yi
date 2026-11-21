@@ -321,6 +321,9 @@ pub struct Bar<'a> {
     pub alone: bool,
     /// The pane hears its own tabs' asks: each tab carries a close cross.
     pub closes: bool,
+    /// How many panes of the stack have no tab for want of room: the bar ends its tabs with
+    /// `+N`, which opens the Panes panel, where each can be brought in front.
+    pub more: usize,
     /// The room the traffic lights take, where the bar is its window's title bar.
     pub lights: Option<f32>,
     pub at: At,
@@ -328,6 +331,16 @@ pub struct Bar<'a> {
 
 /// The most of a title, in points, a tab keeps when its bar is short of room: "zsh" whole.
 const TITLE_KEPT: f32 = 24.0;
+/// The least room a tab with a cross takes, and what a bar's icons and `+N` take beside
+/// its tabs: what [`fits`] counts with.
+const TAB_LEAST: f32 = 2.0 * TAB_PAD + ICON + TAB_GAP + TITLE_KEPT + TAB_GAP + 8.0;
+const BESIDE_TABS: f32 = 88.0;
+
+/// How many tabs a bar `width` points wide has room for at their least, one at the fewest.
+pub fn fits(width: f32) -> usize {
+    let room = ((width - BESIDE_TABS) / TAB_LEAST).floor();
+    if room >= 1.0 { room as usize } else { 1 }
+}
 
 fn tab(tokens: &Tokens, bar: &Bar<'_>, tab: &Tab, active: bool) -> El {
     let (ink, fill) = match (active, bar.focused) {
@@ -447,6 +460,23 @@ pub fn bar(tokens: &Tokens, bar: &Bar<'_>) -> El {
             .child(glyph(&PLUS, ICON, tokens.faint))
             .on_press_tx(move |win: &mut Win, tx: &mut Tx| act(win, tx, Act::NewTab(pane)))
     });
+    let hidden = (bar.more > 0).then(|| {
+        row()
+            .key(format!("{}.pane-tab-more", bar.key))
+            .label(format!("{} more tabs, in Panes", bar.more))
+            .h(TAB)
+            .self_start()
+            .px(4.0)
+            .center_y()
+            .cursor(Cursor::Pointer)
+            .press_scale(PRESS_SCALE)
+            .child(
+                text(format!("+{}", bar.more))
+                    .font(LABEL)
+                    .color(colour(tokens.faint)),
+            )
+            .on_press_tx(move |win: &mut Win, tx: &mut Tx| act(win, tx, Act::Pick))
+    });
     let tool = bar.tabs.tool.map(|tool| {
         let ink = if tool.on { tokens.accent } else { tokens.faint };
         let (pane, command) = (bar.pane, tool.command);
@@ -513,6 +543,7 @@ pub fn bar(tokens: &Tokens, bar: &Bar<'_>) -> El {
                 .focus_group()
                 .children(tabs),
         )
+        .children(hidden)
         .children(more)
         .child(
             row()

@@ -158,24 +158,34 @@ fn tabs_of(context: &PaneCx<'_>, kind: PaneKind) -> Tabs {
     Tabs::shown(own.as_ref().or(kept), kind)
 }
 
-/// What a slot's bar shows: the tabs of the pane drawn, and one tab in its place in the
-/// stack for each other pane that has something to show here.
-fn slot_tabs(context: &PaneCx<'_>, window: WindowId, kind: PaneKind) -> Tabs {
+/// A slot's bar: the drawn pane's tabs and one for each other pane of its stack that shows
+/// here, as `width` has room; the farthest from the drawn pane give way and are counted.
+fn slot_tabs(context: &PaneCx<'_>, window: WindowId, kind: PaneKind, width: f32) -> (Tabs, usize) {
     let mut shown = tabs_of(context, kind);
     let grid = &context.hub.model.grid;
     let stack = grid.tabs(window, context.pane);
     if stack.len() < 2 {
-        return shown;
+        return (shown, 0);
     }
     shown.active = shown.active().map(|tab| tab.id);
+    let at = stack.iter().position(|pane| *pane == context.pane);
+    let far = |other: usize| at.map_or(other, |at| at.abs_diff(other));
+    let room = tabs::fits(width).saturating_sub(shown.tabs.len());
+    let mut others: Vec<usize> = (0..stack.len())
+        .filter(|other| Some(*other) != at)
+        .collect();
+    others.sort_by_key(|other| far(*other));
+    let more = others.len().saturating_sub(room);
+    others.truncate(room);
     let mut own = std::mem::take(&mut shown.tabs);
-    for pane in stack {
-        match grid.kind(pane).filter(|_| pane != context.pane) {
-            Some(kind) => shown.tabs.push(Tab::stacked(pane, kind)),
-            None => shown.tabs.append(&mut own),
+    for (n, pane) in stack.iter().enumerate() {
+        match grid.kind(*pane).filter(|_| others.contains(&n)) {
+            Some(kind) => shown.tabs.push(Tab::stacked(*pane, kind)),
+            None if Some(n) == at => shown.tabs.append(&mut own),
+            None => {}
         }
     }
-    shown
+    (shown, more)
 }
 
 /// A press on a tab that stands for another pane of the stack: it comes in front and takes
@@ -213,7 +223,8 @@ fn turned(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
             focused: false,
             edits: None,
         };
-        let mut tabs = slot_tabs(&context, win.window, kind_of(&hub, pane)?);
+        // Every tab, with or without room on the bar: the keys reach them all.
+        let (mut tabs, _) = slot_tabs(&context, win.window, kind_of(&hub, pane)?, f32::MAX);
         let stacks = tabs.tabs.iter().any(|tab| tabs::pane_of(tab.id).is_some());
         tabs.turn(way);
         tabs.active().map(|tab| tab.id).filter(|_| stacks)
@@ -612,7 +623,7 @@ fn pane(frame: &Frame<'_>, cx: &mut Cx<Win>, id: PaneId, kind: PaneKind, rect: R
         edits: Some(frame.edits),
     };
     let key = context.key(kind);
-    let shown = slot_tabs(&context, frame.window, kind);
+    let (shown, more) = slot_tabs(&context, frame.window, kind, rect.w);
     let bar = (!frame.bare).then(|| {
         let bar = Bar {
             pane: id,
@@ -622,6 +633,7 @@ fn pane(frame: &Frame<'_>, cx: &mut Cx<Win>, id: PaneId, kind: PaneKind, rect: R
             pulled,
             alone: frame.alone,
             closes: hears_tabs(hub, kind),
+            more,
             lights: frame.lights,
             at: frame.at,
         };
@@ -709,6 +721,7 @@ pub fn alone(win: &Win, hub: &Hub, cx: &mut Cx<Win>, kind: PaneKind) -> El {
         pulled: false,
         alone: true,
         closes: hears_tabs(hub, kind),
+        more: 0,
         lights: None,
         at: At {
             origin: [0.0, 0.0],
