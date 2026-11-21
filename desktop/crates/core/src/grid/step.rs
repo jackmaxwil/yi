@@ -351,9 +351,7 @@ fn open(
     if grid.panes.iter().filter(same).any(|pane| out(&pane)) {
         return Ok(Vec::new());
     }
-    let hidden = grid.panes.iter();
-    let hidden = hidden.filter(|pane| pane.kind == kind && pane.thing == thing);
-    let hidden = hidden.map(|pane| pane.id).find(|pane| idle(grid, *pane));
+    let hidden = hidden_idle(grid, kind, thing.as_ref());
     let pane = match hidden {
         Some(pane) => pane,
         None => add(grid, kind)?,
@@ -442,11 +440,7 @@ fn arrive(grid: &mut Windows, window: WindowId, kind: PaneKind) -> Result<(), Gr
         }
         return Ok(());
     }
-    let hidden = grid
-        .panes
-        .iter()
-        .filter(|pane| pane.kind == kind && pane.thing.is_none());
-    let hidden = hidden.map(|pane| pane.id).find(|pane| idle(grid, *pane));
+    let hidden = hidden_idle(grid, kind, None);
     let pane = match hidden {
         Some(pane) => pane,
         None => add(grid, kind)?,
@@ -545,6 +539,11 @@ fn add(grid: &mut Windows, kind: PaneKind) -> Result<PaneId, GridError> {
 /// Whether `pane` is in no window and out of none: hidden, for any window to show again.
 fn idle(grid: &Windows, pane: PaneId) -> bool {
     !grid.windows.iter().any(|window| window.layout.holds(pane))
+}
+
+fn hidden_idle(grid: &Windows, kind: PaneKind, thing: Option<&Address>) -> Option<PaneId> {
+    let of_kind = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == thing;
+    grid.panes.iter().filter(of_kind).map(|pane| pane.id).find(|pane| idle(grid, *pane))
 }
 
 /// Takes `pane` out of the window it is drawn in, for good. A window left with no pane
