@@ -245,7 +245,7 @@ impl Windows {
     /// The window `pane` was pulled out of, where it docks back.
     #[must_use]
     pub fn origin_of(&self, pane: PaneId) -> Option<WindowId> {
-        self.window_where(|layout| layout.is_away(pane) && !layout.is_resting(pane))
+        self.window_where(|layout| layout.pulled(pane))
     }
 
     /// Every pane's rectangle in `window`, for a grid of `size`, chat on the side set.
