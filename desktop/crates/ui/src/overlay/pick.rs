@@ -7,8 +7,8 @@ use yd_core::address::attach::{ATTACH, AttachMsg, PICK};
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
 use yd_core::command::table::Target;
-use yd_core::feed;
-use yd_core::ids::{CommandId, FeedId, PaneId, RowId, TabId, ThreadId};
+use yd_core::feed::{self, page_row_id};
+use yd_core::ids::{CommandId, FeedId, PaneId, TabId, ThreadId};
 use yd_core::kind::Kind;
 use yd_core::list::ListDesc;
 use yd_core::msg::{Msg, step};
@@ -129,7 +129,7 @@ const MAX_ROWS: usize = 40;
 
 /// A page pane's words: it is a picture, so its address and how the agent can read it itself.
 fn page(hub: &Hub, feed: FeedId) -> Option<String> {
-    let id = RowId::new(format!("page:{}", feed.instance));
+    let id = page_row_id(feed);
     let url = hub.model.tables.get(feed)?.find(&id)?.words("url")?;
     let url = Some(url).filter(|url| !url.is_empty())?;
     Some(format!(
