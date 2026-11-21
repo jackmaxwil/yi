@@ -37,7 +37,7 @@ fn have(model: &mut Model, kinds: &[PaneKind]) {
     change(model, told);
 }
 
-fn kinds_drawn(model: &Model) -> Result<Vec<PaneKind>, String> {
+pub(super) fn kinds_drawn(model: &Model) -> Result<Vec<PaneKind>, String> {
     let placed = drawn(model)?;
     let kind = |(pane, _): &(PaneId, _)| model.grid.kind(*pane).ok_or("a pane of no kind");
     let mut kinds = placed.iter().map(kind).collect::<Result<Vec<_>, _>>()?;
