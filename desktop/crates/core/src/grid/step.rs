@@ -167,11 +167,15 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
         }
         GridMsg::Across { pane, on } => {
             let window = grid.window_of(pane).ok_or(GridError::NoSuchPane(pane))?;
-            let thread = grid.shows.get(&window).cloned().filter(|_| !on);
+            let shown = grid.shows.get(&window).cloned();
             let found = grid.panes.iter_mut().find(|other| other.id == pane);
             let found = found.ok_or(GridError::NoSuchPane(pane))?;
             found.seated = false;
-            found.scope = thread.map_or(Scope::Window, |thread| Scope::Sessions(vec![thread]));
+            match (on, shown) {
+                (true, _) => found.scope = Scope::Window,
+                (false, Some(thread)) => found.scope = Scope::Sessions(vec![thread]),
+                (false, None) => {}
+            }
         }
         GridMsg::Leave(pane) => return pull(grid, pane),
         GridMsg::Rejoin(pane) => return dock(grid, pane),
@@ -350,7 +354,7 @@ fn handled(grid: &mut Windows, window: WindowId, pane: PaneId) {
         (true, _) if pane.kind == PaneKind::Chat => pane.scope = Scope::Window,
         (true, thread) => pane.scope = Scope::new(pane.kind, thread),
         (false, Some(thread)) => pane.scope.open(thread),
-        (false, None) => {}
+        (false, None) => pane.scope = Scope::Window,
     }
     pane.seated = false;
 }
