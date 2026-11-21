@@ -3,7 +3,9 @@
 use crate::grid::layout::{Axis, ChatSide, Edge, GridError, Hole, Layout, Line, Size};
 use std::collections::BTreeSet;
 
-use crate::grid::leave::{close, front, leave, next_tab, rejoin, rest, split, stack, unstack};
+use crate::grid::leave::{
+    close, close_tab, front, leave, next_tab, rejoin, rest, split, stack, unstack,
+};
 use crate::grid::place::place;
 use crate::grid::resize::{even, position, resize};
 use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
@@ -634,7 +636,7 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
         return Ok(Vec::new());
     }
     // A tab among others: it goes, and the next one that shows here takes the slot.
-    let mate = |grid: &Windows, window| next_tab(&grid.window(window)?.layout, pane);
+    let mate = |grid: &Windows, window| close_tab(&grid.window(window)?.layout, pane);
     if let Some(window) = grid.home_of(pane)
         && let Some(mate) = mate(grid, window)
         && unstack(&mut find(grid, window)?.layout, pane)
