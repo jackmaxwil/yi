@@ -119,6 +119,7 @@ fn two_panes_leave_and_the_grid_closes_up_as_frame_2() -> Check {
             (pane(Chat), area(2, 3, 4, 4)),
         ],
         away: Vec::new(),
+        stacks: Vec::new(),
     };
     leave(&mut layout, pane(Web))?;
     leave(&mut layout, pane(Remote))?;
@@ -395,6 +396,7 @@ fn a_gap_is_filled_so_that_the_next_one_can_be() -> Check {
             (c, area(3, 2, 4, 4)),
         ],
         away: Vec::new(),
+        stacks: Vec::new(),
     };
     layout.check()?;
     leave(&mut layout, p)?;
@@ -437,6 +439,7 @@ fn a_grid_holds_sixty_four_panes_and_no_more() -> Check {
             .map(|at| (PaneId(u32::from(at)), slot(at)))
             .collect(),
         away: Vec::new(),
+        stacks: Vec::new(),
     };
     assert_eq!(crowded.check(), Err(GridError::NotTiled));
     Ok(())
@@ -454,6 +457,7 @@ fn a_layout_that_does_not_tile_is_refused() -> Check {
         rows: vec![Fr(1.0); 3],
         areas,
         away: Vec::new(),
+        stacks: Vec::new(),
     };
     let [a, b, c, d, e] = [1, 2, 3, 4, 5].map(PaneId);
     let overlap = with(vec![(a, area(1, 1, 4, 3)), (b, area(1, 2, 4, 4))]);

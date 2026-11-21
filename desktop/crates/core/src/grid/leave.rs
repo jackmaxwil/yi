@@ -204,11 +204,97 @@ pub fn rest(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
     Ok(())
 }
 
+/// Gives `old`'s slot, its place out of the grid and its neighbours' memory of it to `new`.
+fn rename(layout: &mut Layout, old: PaneId, new: PaneId) {
+    // Being pulled out is the pane's own: `old` keeps its window, and a slot that rested
+    // under it is `new`'s to rest in, unless `new` is itself pulled out.
+    let pulled = layout.pulled(new);
+    layout
+        .away
+        .retain(|hole| !(pulled && hole.pane == old && hole.resting));
+    let swap = |pane: &mut PaneId| {
+        if *pane == old {
+            *pane = new;
+        }
+    };
+    layout.areas.iter_mut().for_each(|(pane, _)| swap(pane));
+    for hole in &mut layout.away {
+        if hole.resting {
+            swap(&mut hole.pane);
+        }
+        hole.beside.iter_mut().for_each(|(pane, _)| swap(pane));
+    }
+}
+
+/// Puts `pane`, which has no slot here, behind `onto` as the last tab of its stack.
+pub fn stack(layout: &mut Layout, onto: PaneId, pane: PaneId) -> Result<(), GridError> {
+    if layout.holds(pane) {
+        return Err(GridError::AlreadyIn(pane));
+    }
+    if !layout.holds(onto) {
+        return Err(GridError::NoSuchPane(onto));
+    }
+    let count: usize = layout.stacks.iter().map(Vec::len).sum();
+    if count.saturating_add(layout.areas.len()) >= MAX_PANES {
+        return Err(GridError::Full);
+    }
+    match layout.stacks.iter_mut().find(|stack| stack.contains(&onto)) {
+        Some(stack) => stack.push(pane),
+        None => layout.stacks.push(vec![onto, pane]),
+    }
+    Ok(())
+}
+
+/// Brings `pane` in front of the stack it is in: it takes the slot and is the one drawn.
+pub fn front(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
+    let held = layout.front(pane).ok_or(GridError::NoSuchPane(pane))?;
+    if held != pane {
+        rename(layout, held, pane);
+    }
+    Ok(())
+}
+
+/// The tab that takes over from `pane` in its stack: the one after it, else the one before;
+/// one that is here before one pulled out.
+pub(crate) fn next_tab(layout: &Layout, pane: PaneId) -> Option<PaneId> {
+    let stack = layout.stack(pane);
+    let after = stack.iter().skip_while(|other| **other != pane).skip(1);
+    let before = stack.iter().take_while(|other| **other != pane);
+    let others: Vec<PaneId> = after.chain(before).copied().collect();
+    let here = others.iter().find(|other| !layout.is_away(**other));
+    here.or(others.first()).copied()
+}
+
+/// Takes `pane` out of the stack it shares; in front, the next tab takes its slot. False
+/// when it shared its slot with no other pane, and nothing changed.
+pub fn unstack(layout: &mut Layout, pane: PaneId) -> bool {
+    let Some(at) = layout.stacks.iter().position(|stack| stack.contains(&pane)) else {
+        return false;
+    };
+    let next = next_tab(layout, pane);
+    if let Some(next) = next.filter(|_| layout.front(pane) == Some(pane)) {
+        rename(layout, pane, next);
+    }
+    if let Some(stack) = layout.stacks.get_mut(at) {
+        stack.retain(|other| *other != pane);
+    }
+    layout.stacks.retain(|stack| stack.len() > 1);
+    true
+}
+
 /// Puts a pane that is out back: into its slot, or with no slot here, into half the room
 /// of the first neighbour it remembers that is in, else of the first pane.
 pub fn rejoin(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
     let hole = layout.away.iter().find(|hole| hole.pane == pane);
     let hole = hole.cloned().ok_or(GridError::NoSuchPane(pane))?;
+    if layout.slot(pane).is_none() && !layout.stack(pane).is_empty() {
+        // A tab docked back comes in front of the stack it never left; a slot that rested
+        // while it was out shows again with it.
+        layout.away.retain(|hole| hole.pane != pane);
+        front(layout, pane)?;
+        layout.away.retain(|hole| hole.pane != pane);
+        return Ok(());
+    }
     if layout.slot(pane).is_none() {
         let is_in = |other: PaneId| layout.docked().any(|(docked, _)| docked == other);
         let known = hole.beside.iter().copied().find(|(other, _)| is_in(*other));
@@ -288,8 +374,9 @@ pub fn split(
     Ok(())
 }
 
-/// Takes `pane` and its slot out for good; the rest fill the room.
-pub fn close(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
+/// Takes `pane`'s slot out for good with whatever is stacked in it; the rest fill the room.
+/// What a carried pane does to the slot it leaves: its stack goes where it lands.
+pub(crate) fn vacate(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
     if layout.slot(pane).is_some() {
         if !layout.docked().any(|(other, _)| other != pane) {
             return Err(GridError::LastPane(pane));
@@ -299,6 +386,23 @@ pub fn close(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
         return Err(GridError::NoSuchPane(pane));
     }
     layout.away.retain(|hole| hole.pane != pane);
+    Ok(())
+}
+
+/// Takes `pane` out for good. Alone in its slot, the slot goes and the rest fill the room;
+/// one tab among others, the next tab has the slot and only the pane goes.
+pub fn close(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
+    match next_tab(layout, pane).filter(|_| layout.slot(pane).is_some()) {
+        Some(next) => {
+            layout.away.retain(|hole| hole.pane != pane);
+            rename(layout, pane, next);
+        }
+        None => vacate(layout, pane)?,
+    }
+    for stack in &mut layout.stacks {
+        stack.retain(|other| *other != pane);
+    }
+    layout.stacks.retain(|stack| stack.len() > 1);
     Ok(())
 }
 

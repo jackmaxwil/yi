@@ -224,6 +224,10 @@ pub struct Layout {
     /// The panes that are out, in the order they left.
     #[serde(default)]
     pub away: Vec<Hole>,
+    /// The panes that share a slot, each list in tab order: one of them holds the slot and
+    /// is drawn, the rest wait behind it as tabs. A pane alone in its slot is in no list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "store::stacks")]
+    pub stacks: Vec<Vec<PaneId>>,
 }
 
 impl Layout {
@@ -234,7 +238,34 @@ impl Layout {
             rows: vec![Track::Fr(1.0)],
             areas: vec![(pane, area(1, 1, 2, 2))],
             away: Vec::new(),
+            stacks: Vec::new(),
         }
+    }
+
+    /// The panes that share `pane`'s slot, itself among them, in tab order.
+    pub fn stack(&self, pane: PaneId) -> &[PaneId] {
+        let found = self.stacks.iter().find(|stack| stack.contains(&pane));
+        found.map_or(&[], Vec::as_slice)
+    }
+
+    /// The pane that holds the slot `pane` shares: itself, alone or in front.
+    #[must_use]
+    pub fn front(&self, pane: PaneId) -> Option<PaneId> {
+        let slot = |other: &PaneId| self.slot(*other).is_some();
+        match self.stack(pane) {
+            [] => Some(pane).filter(|pane| slot(pane) || self.is_away(*pane)),
+            stack => stack.iter().copied().find(slot),
+        }
+    }
+
+    /// Whether `pane` is pulled out into a window of its own.
+    pub fn pulled(&self, pane: PaneId) -> bool {
+        self.is_away(pane) && !self.is_resting(pane)
+    }
+
+    /// Whether `pane` is this window's: in a slot, out of one, or behind another as a tab.
+    pub fn holds(&self, pane: PaneId) -> bool {
+        self.front(pane).is_some()
     }
 
     /// The slot `pane` has here, whether it is in or out.
@@ -279,8 +310,20 @@ impl Layout {
         }
         let slots = self.areas.iter().map(|(pane, _)| *pane);
         let out = self.away.iter().map(|hole| hole.pane);
-        if let Some(pane) = twice(slots).or_else(|| twice(out)) {
+        let stacked = self.stacks.iter().flatten().copied();
+        if let Some(pane) = twice(slots)
+            .or_else(|| twice(out))
+            .or_else(|| twice(stacked))
+        {
             return Err(GridError::AlreadyIn(pane));
+        }
+        // Invariant: a stack is two panes or more, and exactly one of them holds its slot.
+        for stack in &self.stacks {
+            let held = |pane: &&PaneId| self.slot(**pane).is_some();
+            let lone = stack.first().copied().ok_or(GridError::NotTiled)?;
+            if stack.len() < 2 || stack.iter().filter(held).count() != 1 {
+                return Err(GridError::NoSuchPane(lone));
+            }
         }
         close_up(self).map(drop)
     }

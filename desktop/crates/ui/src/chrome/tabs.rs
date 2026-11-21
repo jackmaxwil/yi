@@ -155,7 +155,30 @@ pub struct Tab {
     pub fixed: bool,
 }
 
+/// Tab ids from here up are not a pane's own: each names a pane stacked behind the one
+/// drawn, by its number above this.
+const STACKED: u32 = 1 << 30;
+
+/// The pane a tab stands for when it is another pane of the slot's stack, not the pane's own.
+pub fn pane_of(tab: TabId) -> Option<PaneId> {
+    tab.0.checked_sub(STACKED).map(PaneId)
+}
+
+/// What names a tab in its key: its number, or `pane-<n>` for another pane of the stack.
+fn part(tab: TabId) -> String {
+    pane_of(tab).map_or_else(|| tab.0.to_string(), |pane| format!("pane-{}", pane.0))
+}
+
 impl Tab {
+    /// The tab that stands for `pane`, of `kind`, stacked behind the pane a bar is drawn for.
+    pub fn stacked(pane: PaneId, kind: PaneKind) -> Tab {
+        let id = TabId(STACKED.saturating_add(pane.0));
+        Tab {
+            id,
+            ..Tab::of(kind)
+        }
+    }
+
     /// The one tab a pane has until its owner gives it others: its kind's name.
     pub fn of(kind: PaneKind) -> Tab {
         Tab {
@@ -313,7 +336,8 @@ fn tab(tokens: &Tokens, bar: &Bar<'_>, tab: &Tab, active: bool) -> El {
         (false, _) => (tokens.faint, NONE),
     };
     let (pane, id, at) = (bar.pane, tab.id, bar.at);
-    let closes = bar.closes && !tab.fixed;
+    // Another pane of the stack closes from its tab, whatever the pane in front does.
+    let closes = (bar.closes || pane_of(tab.id).is_some()) && !tab.fixed;
     let counted = tab.count.map_or(0.0, |count| {
         TAB_GAP + rune::text::advance(&count.to_string(), LABEL)
     });
@@ -326,7 +350,7 @@ fn tab(tokens: &Tokens, bar: &Bar<'_>, tab: &Tab, active: bool) -> El {
             .color(colour(tokens.faint))
     });
     let body = row()
-        .key(format!("{}.tab-{}.pane-tab", bar.key, tab.id.0))
+        .key(format!("{}.tab-{}.pane-tab", bar.key, part(tab.id)))
         .role("tab")
         .focusable(true)
         .focus_selected(active)
@@ -357,7 +381,7 @@ fn tab(tokens: &Tokens, bar: &Bar<'_>, tab: &Tab, active: bool) -> El {
         .children(count)
         .children(closes.then(|| {
             row()
-                .key(format!("{}.tab-{}.pane-tab-close", bar.key, tab.id.0))
+                .key(format!("{}.tab-{}.pane-tab-close", bar.key, part(tab.id)))
                 .label("Close tab")
                 .cursor(Cursor::Pointer)
                 .press_scale(PRESS_SCALE)

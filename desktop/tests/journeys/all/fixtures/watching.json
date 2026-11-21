@@ -1,5 +1,5 @@
 {
- "about": "A turn stops at an approval while Agents, Trace and Logs are shown: Trace holds the waiting step, Logs the agent's line, Agents the thread; a log line made a finding lands in Findings; the approval is answered from Trace and the turn ends.",
+ "about": "A turn stops at an approval while Agents, Trace, Logs and Findings are shown: Agents and Findings share the side column as tabs, Trace and Logs the shelf. Logs holds the agent's line, and a finding made from it lands in Findings; Trace, brought in front by its tab, holds the waiting step, and the approval is answered from it and the turn ends.",
  "worker": true,
  "empty": true,
  "files": {
@@ -107,26 +107,31 @@
      "key": "logs-11.detail.1730000000000-1.logs.make-finding"
     },
     {
-     "t": 16,
+     "t": 15.5,
+     "type": "tap",
+     "key": "logs-11.tab-pane-10.pane-tab"
+    },
+    {
+     "t": 16.5,
      "type": "tap",
      "key": "trace-10.row.wait-c1"
     },
     {
-     "t": 17,
+     "t": 17.5,
      "type": "tap",
      "key": "trace-10.detail.wait-c1.trace.run"
     },
     {
-     "t": 21,
+     "t": 21.5,
      "type": "mark",
      "name": "end"
     }
    ],
    "expect": {
     "keys": [
-     "agents-9.pane-frame",
+     "findings-12.tab-pane-9.pane-tab",
+     "trace-10.tab-pane-11.pane-tab",
      "trace-10.row.tool-c1",
-     "logs-11.row.1730000000000-1",
      "findings-12.row.made/0"
     ],
     "texts": [
@@ -140,9 +145,7 @@
      "one.txt"
     ],
     "bodies": [
-     "agents-9",
      "trace-10",
-     "logs-11",
      "findings-12"
     ]
    }

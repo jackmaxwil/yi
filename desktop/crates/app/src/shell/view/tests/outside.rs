@@ -394,18 +394,42 @@ fn a_pane_coming_and_going_tells_its_source_whether_it_is_seen() -> Check {
         run(&mut runtime, Run::new(show));
     }
     let named = ["com.example.other", "com.example.more"].map(str::to_owned);
+    // Daemons opens as a tab in front of Containers, in the same place: Containers is
+    // behind it then, and its source is told it is not seen.
     let opened = [
         (CONTAINERS, SourceCmd::Seen(true)),
         (DAEMONS, SourceCmd::Labels(named.to_vec())),
+        (CONTAINERS, SourceCmd::Seen(false)),
         (DAEMONS, SourceCmd::Seen(true)),
     ];
     assert_eq!(polled(&asks), opened);
-    let containers = pane_of(&runtime, PaneKind::Containers)?;
+    let containers = {
+        let hub = runtime.state.hub.try_borrow()?;
+        let mut panes = hub.model.grid.panes.iter();
+        let found = panes.find(|pane| pane.kind == PaneKind::Containers);
+        found.map(|pane| pane.id).ok_or("no containers pane")?
+    };
+    runtime.update(move |win, _| dispatch(win, Msg::Grid(GridMsg::Front(containers))));
+    rest(&mut runtime);
+    let mut turned = polled(&asks).split_off(opened.len());
+    turned.sort_by_key(|(feed, _)| feed.source);
+    let front = [
+        (CONTAINERS, SourceCmd::Seen(true)),
+        (DAEMONS, SourceCmd::Seen(false)),
+    ];
+    assert_eq!(turned, front, "its tab in front, each source is told once");
     runtime.update(move |win, _| dispatch(win, Msg::Grid(GridMsg::Close(containers))));
     rest(&mut runtime);
-    let last = polled(&asks).last().cloned();
-    assert_eq!(last, Some((CONTAINERS, SourceCmd::Seen(false))));
-    assert_eq!(polled(&asks).len(), opened.len() + 1, "told once a change");
+    let mut closed = polled(&asks).split_off(opened.len() + front.len());
+    closed.sort_by_key(|(feed, _)| feed.source);
+    let after = [
+        (CONTAINERS, SourceCmd::Seen(false)),
+        (DAEMONS, SourceCmd::Seen(true)),
+    ];
+    assert_eq!(
+        closed, after,
+        "closed, Daemons has the slot and is seen again"
+    );
     Ok(())
 }
 

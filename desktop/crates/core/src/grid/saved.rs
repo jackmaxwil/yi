@@ -59,6 +59,7 @@ impl Shape {
             rows: self.rows.clone(),
             areas: panes.into_iter().zip(slots).collect(),
             away: Vec::new(),
+            stacks: Vec::new(),
         }
     }
 
