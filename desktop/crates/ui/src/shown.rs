@@ -9,8 +9,6 @@ use std::path::PathBuf;
 use yd_core::address::uri::Address;
 use yd_core::command::table::{Route, Run, Target};
 use yd_core::feed::{CHANGES, FILES, FeedEvent, LSP, OPEN_FILES, SourceCmd};
-use yd_core::grid::saved::{BLANK, JUST_CHAT};
-use yd_core::grid::step::GridMsg;
 use yd_core::ids::{PaneId, RowId, ThreadId, WindowId};
 use yd_core::kind::Kind;
 use yd_core::msg::Msg;
@@ -140,7 +138,7 @@ pub fn leave(win: &mut Win) -> bool {
 }
 
 /// The thread New chat's words made, once the server has: it is picked, New chat goes and the
-/// window shows its chat alone. Refused, New chat stays with the words back in its field.
+/// window keeps its layout. Refused, New chat stays with the words back in its field.
 fn made(win: &mut Win) {
     let window = win.window;
     let Ok(mut hub) = win.hub.try_borrow_mut() else {
@@ -157,18 +155,6 @@ fn made(win: &mut Win) {
         shown.picked.insert(window, born.id.clone());
         shown.fresh.remove(&window);
         shown.chosen.remove(&window);
-        let saved = model.grid.window(window).and_then(|window| window.saved);
-        drop(hub);
-        // Just chat is already the chat alone, as a page of its own.
-        if saved != Some(JUST_CHAT.slug) {
-            dispatch(
-                win,
-                Msg::Grid(GridMsg::Show {
-                    window,
-                    saved: BLANK.slug,
-                }),
-            );
-        }
     } else if model.wire.failed(ticket).is_some()
         && let Some(Fresh::Sent { pane, words, .. }) = shown.fresh.insert(window, Fresh::Open)
     {

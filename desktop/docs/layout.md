@@ -1,6 +1,6 @@
 # Yi Desktop layout: panes that belong to a session
 
-**Status.** Design, decided with the owner on 2026-11-21. Stage 1 (section 10) is built: #2304. Stages 2 to 6 are #2305 to #2309 and are not built. ✓ marks what existed when this was written, ✚ what the design adds. Paths are under `desktop/`; the line numbers were read at the import (#2257) and drift.
+**Status.** Design, decided with the owner on 2026-11-21. Stages 1 and 2 (section 10) are built: #2304 and #2305. Stages 3 to 6 are #2306 to #2309 and are not built. Stage 2 keeps one pane a slot, open in a set of sessions; the pane's own thing, and with it the end of the shell parking table and the child-chat table, wait for stage 3, where a slot holds more than one pane. ✓ marks what existed when this was written, ✚ what the design adds. Paths are under `desktop/`; the line numbers were read at the import (#2257) and drift.
 
 **Supersedes.** The first plan's layout menu, tabs and split defaults, the pane switches in the Panes panel, the side table that binds a chat pane to a child agent, and the "half of the largest pane" rule in `architecture.md`, "The grid as built".
 

@@ -136,6 +136,7 @@ fn a_drop_that_would_go_under_the_minimum_is_refused() -> Check {
         id: pane(kind),
         kind,
         seated: false,
+        scope: Default::default(),
     });
     let window = Window {
         id: WindowId(0),
@@ -235,6 +236,7 @@ fn a_docked_grid_is_saved_and_read_back_as_it_is() -> Check {
                 id: pane(kind),
                 kind,
                 seated: false,
+                scope: Default::default(),
             })
             .to_vec(),
         windows: vec![window],

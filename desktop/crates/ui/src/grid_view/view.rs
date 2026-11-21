@@ -125,6 +125,8 @@ pub enum Act {
     /// Pull the pane out as a window, or dock a pulled-out pane back.
     PopOut(PaneId),
     Close(PaneId),
+    /// Show the pane in every session of its window, or only in the one shown.
+    Across(PaneId, bool),
     /// Move the pane onto the edge of the pane drawn next to it on that side.
     Move(PaneId, Edge),
     Show(Slug),
@@ -239,6 +241,7 @@ fn asked(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
         | Act::Split(_)
         | Act::PopOut(_)
         | Act::Close(_)
+        | Act::Across(..)
         | Act::Move(..)
         | Act::Show(_)
         | Act::Wear(_)
@@ -288,6 +291,7 @@ fn asked(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
         | Act::Split(_)
         | Act::PopOut(_)
         | Act::Close(_)
+        | Act::Across(..)
         | Act::Move(..)
         | Act::Show(_)
         | Act::Wear(_)
@@ -359,6 +363,10 @@ pub fn act(win: &mut Win, tx: &mut Tx, act_on: Act) {
             if gone {
                 with_tabs(win, pane, |tabs| *tabs = Tabs::default());
             }
+        }
+        Act::Across(pane, on) => {
+            tx.motion_curve(GLIDE);
+            dispatch(win, Msg::Grid(GridMsg::Across { pane, on }));
         }
         Act::Move(pane, edge) => {
             let window = win.window;
@@ -454,6 +462,8 @@ pub fn run(win: &mut Win, tx: &mut Tx, command: CommandId) -> bool {
         tabs::SPLIT => on_pane(Act::Split),
         tabs::POP_OUT => on_pane(Act::PopOut),
         tabs::CLOSE => on_pane(Act::Close),
+        tabs::ACROSS => pane.map(|pane| Act::Across(pane, true)),
+        tabs::HERE => pane.map(|pane| Act::Across(pane, false)),
         tabs::MOVE_LEFT => pane.map(|pane| Act::Move(pane, Edge::Left)),
         tabs::MOVE_RIGHT => pane.map(|pane| Act::Move(pane, Edge::Right)),
         tabs::MOVE_UP => pane.map(|pane| Act::Move(pane, Edge::Top)),

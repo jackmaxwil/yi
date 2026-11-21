@@ -8,8 +8,8 @@ use crate::grid::place::place;
 use crate::grid::resize::{even, position, resize};
 use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
 use crate::grid::swap::{Spot, land, swap};
-use crate::grid::windows::{Frame, Pane, Window, WindowOp, Windows};
-use crate::ids::{PaneId, WindowId};
+use crate::grid::windows::{Frame, Pane, Scope, Window, WindowOp, Windows};
+use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::msg::Effect;
 use crate::pane::PaneKind;
 
@@ -59,11 +59,17 @@ pub enum GridMsg {
         window: WindowId,
         kind: PaneKind,
     },
-    /// The kinds that have something to show in a window now. A pane a layout seated rests
-    /// while its kind is not among them and takes its slot again once it is.
+    /// The session a window shows and the kinds with something to show in it. A pane a
+    /// layout seated follows its kind; one the person has follows the sessions it is open in.
     Have {
         window: WindowId,
         kinds: Vec<PaneKind>,
+        thread: Option<ThreadId>,
+    },
+    /// Show a pane in every session of its window, or only in the one shown now.
+    Across {
+        pane: PaneId,
+        on: bool,
     },
     /// The real window moved or changed size. A frame that is no place is not kept.
     Moved {
@@ -121,10 +127,26 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 window.own = None;
             }
         }
-        GridMsg::Have { window, kinds } => {
+        GridMsg::Have {
+            window,
+            kinds,
+            thread,
+        } => {
             find(grid, window)?;
             grid.have.insert(window, kinds.into_iter().collect());
+            match thread {
+                Some(thread) => grid.shows.insert(window, thread),
+                None => grid.shows.remove(&window),
+            };
             settle(grid, window)?;
+        }
+        GridMsg::Across { pane, on } => {
+            let window = grid.window_of(pane).ok_or(GridError::NoSuchPane(pane))?;
+            let thread = grid.shows.get(&window).cloned().filter(|_| !on);
+            let found = grid.panes.iter_mut().find(|other| other.id == pane);
+            let found = found.ok_or(GridError::NoSuchPane(pane))?;
+            found.seated = false;
+            found.scope = thread.map_or(Scope::Window, |thread| Scope::Sessions(vec![thread]));
         }
         GridMsg::Leave(pane) => return pull(grid, pane),
         GridMsg::Rejoin(pane) => return dock(grid, pane),
@@ -135,6 +157,7 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 .zip(grid.window_of(pane))
                 .ok_or(GridError::NoSuchPane(pane))?;
             let copy = add(grid, kind)?;
+            fresh(grid, from, copy);
             let edge = match side {
                 ChatSide::Right => Edge::Right,
                 ChatSide::Left => Edge::Left,
@@ -166,7 +189,7 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             size,
         } => {
             edit(grid, window, |layout| land(layout, side, pane, at, size))?;
-            handled(grid, pane);
+            handled(grid, window, pane);
         }
         GridMsg::Moved { window, frame } => {
             let window = find(grid, window)?;
@@ -215,13 +238,13 @@ fn open(grid: &mut Windows, id: WindowId, kind: PaneKind) -> Result<Vec<WindowOp
         .map(|(pane, _)| pane)
         .find(|pane| drawn(*pane));
     if let Some(pane) = shown {
-        handled(grid, pane);
+        handled(grid, id, pane);
         return Ok(Vec::new());
     }
     let rests = |hole: &&Hole| hole.resting && drawn(hole.pane);
     let resting = window.layout.away.iter().find(rests).map(|hole| hole.pane);
     if let Some(pane) = resting {
-        handled(grid, pane);
+        handled(grid, id, pane);
         edit(grid, id, |layout| rejoin(layout, pane))?;
         return Ok(Vec::new());
     }
@@ -242,30 +265,52 @@ fn open(grid: &mut Windows, id: WindowId, kind: PaneKind) -> Result<Vec<WindowOp
     } else {
         Edge::Bottom
     };
-    handled(grid, pane);
+    fresh(grid, id, pane);
     edit(grid, id, |layout| split(layout, beside, edge, pane))?;
     Ok(Vec::new())
 }
 
-/// The person asked for `pane` or moved it: it no longer rests when its kind runs dry.
-fn handled(grid: &mut Windows, pane: PaneId) {
+/// The person asked for `pane` in `window` or moved it there: it is theirs, open in the
+/// session the window shows, and no longer follows what its kind has.
+fn handled(grid: &mut Windows, window: WindowId, pane: PaneId) {
+    let thread = grid.shows.get(&window).cloned();
+    let Some(pane) = grid.panes.iter_mut().find(|other| other.id == pane) else {
+        return;
+    };
+    match (pane.seated, thread) {
+        // The chat a layout seated is the window's own: it shows whatever session is shown.
+        (true, _) if pane.kind == PaneKind::Chat => pane.scope = Scope::Window,
+        (true, thread) => pane.scope = Scope::new(pane.kind, thread),
+        (false, Some(thread)) => pane.scope.open(thread),
+        (false, None) => {}
+    }
+    pane.seated = false;
+}
+
+/// A pane the person just made in `window`: theirs, open in the session it shows.
+fn fresh(grid: &mut Windows, window: WindowId, pane: PaneId) {
+    let thread = grid.shows.get(&window).cloned();
     if let Some(pane) = grid.panes.iter_mut().find(|other| other.id == pane) {
-        pane.seated = false;
+        (pane.seated, pane.scope) = (false, Scope::new(pane.kind, thread));
     }
 }
 
-/// Rests each pane a layout seated in `id` whose kind has nothing to show and gives back the
-/// slot of each whose kind has. Chat and a pulled-out pane never rest; untold, nothing moves.
+/// Rests each pane of `id` with nothing to show here and gives back the slot of each with: a
+/// seated pane by its kind (chat always has), the person's by its sessions. A pulled-out pane stays.
 fn settle(grid: &mut Windows, id: WindowId) -> Result<(), GridError> {
     let Some(have) = grid.have.get(&id) else {
         return Ok(());
     };
-    let has = |kind: PaneKind| kind == PaneKind::Chat || have.contains(&kind);
-    let home = |pane: &&Pane| pane.seated && grid.origin_of(pane.id).is_none();
-    let seated = grid.panes.iter().filter(home);
-    let seated: Vec<(PaneId, bool)> = seated.map(|pane| (pane.id, has(pane.kind))).collect();
+    let thread = grid.shows.get(&id);
+    let shows = |pane: &Pane| match pane.seated {
+        true => pane.kind == PaneKind::Chat || have.contains(&pane.kind),
+        false => pane.scope.holds(thread),
+    };
+    let home = |pane: &&Pane| grid.origin_of(pane.id).is_none();
+    let panes = grid.panes.iter().filter(home);
+    let panes: Vec<(PaneId, bool)> = panes.map(|pane| (pane.id, shows(pane))).collect();
     let layout = &mut find(grid, id)?.layout;
-    for (pane, has) in seated {
+    for (pane, has) in panes {
         if layout.slot(pane).is_none() {
             continue;
         }
@@ -283,8 +328,13 @@ fn settle(grid: &mut Windows, id: WindowId) -> Result<(), GridError> {
 fn add(grid: &mut Windows, kind: PaneKind) -> Result<PaneId, GridError> {
     let highest = grid.panes.iter().map(|pane| pane.id.0).max().unwrap_or(0);
     let id = highest.checked_add(1).map(PaneId).ok_or(GridError::Full)?;
-    let seated = false;
-    grid.panes.push(Pane { id, kind, seated });
+    let (seated, scope) = (false, Scope::Window);
+    grid.panes.push(Pane {
+        id,
+        kind,
+        seated,
+        scope,
+    });
     Ok(id)
 }
 
@@ -451,8 +501,37 @@ fn dock(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
     Ok(ops)
 }
 
-/// Closes `pane` for good: out of its window, out of the window it left, and forgotten.
+/// Closes `pane` in the session its window shows when it is open in others too: it rests
+/// here and keeps its slot for them. True when that was all there was to close.
+fn shut_here(grid: &mut Windows, pane: PaneId) -> Result<bool, GridError> {
+    let Some(window) = grid
+        .window_of(pane)
+        .filter(|_| grid.origin_of(pane).is_none())
+    else {
+        return Ok(false);
+    };
+    let Some(thread) = grid.shows.get(&window).cloned() else {
+        return Ok(false);
+    };
+    let found = grid.panes.iter_mut().find(|other| other.id == pane);
+    let Some(Scope::Sessions(list)) = found.filter(|pane| !pane.seated).map(|p| &mut p.scope)
+    else {
+        return Ok(false);
+    };
+    if !list.iter().any(|other| *other != thread) {
+        return Ok(false);
+    }
+    list.retain(|other| *other != thread);
+    edit(grid, window, |layout| rest(layout, pane))?;
+    Ok(true)
+}
+
+/// Closes `pane` for good: out of its window, out of the window it left, and forgotten. A
+/// pane open in other sessions too only closes in this one.
 fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
+    if shut_here(grid, pane)? {
+        return Ok(Vec::new());
+    }
     let home = grid.origin_of(pane);
     let ops = lift(grid, pane)?;
     if let Some(home) = home {
@@ -466,5 +545,7 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
 mod random;
 #[cfg(test)]
 mod resting;
+#[cfg(test)]
+mod sessions;
 #[cfg(test)]
 mod tests;

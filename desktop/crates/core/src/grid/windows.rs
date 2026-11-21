@@ -8,7 +8,7 @@ use crate::grid::layout::{ChatSide, Edge, GridError, Layout, Line, Point, Rect, 
 use crate::grid::place::{line_at, place};
 use crate::grid::saved::{Own, OwnId, Slug};
 use crate::grid::swap::{Spot, Zone, toward, zone_at};
-use crate::ids::{PaneId, WindowId};
+use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::pane::PaneKind;
 
 const NOMINAL: Size = Size {
@@ -16,7 +16,55 @@ const NOMINAL: Size = Size {
     h: 750.0,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The most sessions a pane remembers the person opened it in; the oldest is forgotten first.
+pub const MAX_SESSIONS: usize = 64;
+
+/// Where a pane the person has shows: in every session of its window, or only in the
+/// sessions they opened it in.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    #[default]
+    Window,
+    Sessions(Vec<ThreadId>),
+}
+
+impl Scope {
+    pub fn is_window(&self) -> bool {
+        *self == Scope::Window
+    }
+
+    /// Whether a window showing `thread` shows the pane.
+    pub fn holds(&self, thread: Option<&ThreadId>) -> bool {
+        match self {
+            Scope::Window => true,
+            Scope::Sessions(list) => thread.is_some_and(|thread| list.contains(thread)),
+        }
+    }
+
+    /// A new pane's scope: the session shown, or the window for a kind that is not a
+    /// session's and where no session is shown.
+    pub(crate) fn new(kind: PaneKind, thread: Option<ThreadId>) -> Scope {
+        match thread {
+            Some(thread) if !kind.wide() => Scope::Sessions(vec![thread]),
+            _ => Scope::Window,
+        }
+    }
+
+    /// Opens the pane in `thread` too, forgetting the oldest session past the most kept.
+    pub(crate) fn open(&mut self, thread: ThreadId) {
+        let Scope::Sessions(list) = self else {
+            return;
+        };
+        if !list.contains(&thread) {
+            list.push(thread);
+        }
+        let over = list.len().saturating_sub(MAX_SESSIONS);
+        list.drain(..over);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pane {
     #[serde(with = "crate::grid::layout::store::pane")]
     pub id: PaneId,
@@ -26,6 +74,9 @@ pub struct Pane {
     /// of the grid while its kind has nothing to show.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seated: bool,
+    /// The sessions it shows in once it is the person's; a seated pane follows its kind.
+    #[serde(default, skip_serializing_if = "Scope::is_window")]
+    pub scope: Scope,
 }
 
 /// Where a window sits on the desktop, in points; it may be on any screen.
@@ -80,6 +131,9 @@ pub struct Windows {
     /// telling, when no pane rests or comes back.
     #[serde(skip)]
     pub have: BTreeMap<WindowId, BTreeSet<PaneKind>>,
+    /// The session each window shows, as last told; none while it shows New chat.
+    #[serde(skip)]
+    pub shows: BTreeMap<WindowId, ThreadId>,
 }
 
 /// A grid as a file gives it, before anything has looked at it.
@@ -105,6 +159,7 @@ impl TryFrom<Unchecked> for Windows {
             windows: file.windows,
             own: Vec::new(),
             have: BTreeMap::new(),
+            shows: BTreeMap::new(),
         };
         grid.check()?;
         // A kept layout a file spoils reads as gone, as a saved one this build lacks does.

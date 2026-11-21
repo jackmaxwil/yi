@@ -13,6 +13,16 @@ macro_rules! panes {
                 match self { $(PaneKind::$name => $slug),+ }
             }
 
+            /// Whether the kind is about this Mac or the app, not a session: a pane of it
+            /// the person opens shows in every session of its window.
+            pub const fn wide(self) -> bool {
+                use PaneKind::{Assets, Containers, Daemons, LanguageServers, Plugins, Settings, Themes, Vms};
+                matches!(
+                    self,
+                    Assets | Containers | Daemons | LanguageServers | Plugins | Settings | Themes | Vms
+                )
+            }
+
             /// The name a tab and the pane's placeholder show.
             pub const fn title(self) -> &'static str {
                 match self { $(PaneKind::$name => $title),+ }

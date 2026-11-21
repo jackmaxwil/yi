@@ -8,7 +8,7 @@ use crate::grid::place::probe::{Along, Check, FRAME_1, across, down, edges, room
 use crate::grid::saved::SAVED;
 use crate::grid::swap::Spot;
 use crate::grid::windows::{Frame, Pane, Window, Windows};
-use crate::ids::{PaneId, WindowId};
+use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::model::Model;
 use crate::msg::{Msg, step};
 use crate::pane::PaneKind;
@@ -91,7 +91,7 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
     let all: Vec<PaneId> = grid.panes.iter().map(|pane| pane.id).collect();
     let holes = grid.windows.iter().flat_map(|window| &window.layout.away);
     let out: Vec<PaneId> = holes.map(|hole| hole.pane).collect();
-    let change = match dice.below(28) {
+    let change = match dice.below(29) {
         0 | 1 => {
             let saved = dice.pick(&SAVED)?.slug;
             let window = if dice.below(4) > 0 { MAIN } else { window };
@@ -153,11 +153,21 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
         24 | 25 => {
             let kinds = PaneKind::ALL.iter().copied();
             let kinds = kinds.filter(|_| dice.below(2) > 0).collect();
-            GridMsg::Have { window, kinds }
+            let thread = dice.pick(&["", "a", "b", "c"])?;
+            let thread = (!thread.is_empty()).then(|| ThreadId::new(thread));
+            GridMsg::Have {
+                window,
+                kinds,
+                thread,
+            }
         }
         26 => {
             let kind = dice.pick(PaneKind::ALL)?;
             GridMsg::Open { window, kind }
+        }
+        27 => {
+            let (pane, on) = (dice.pick(&drawn)?, dice.below(2) > 0);
+            GridMsg::Across { pane, on }
         }
         _ => GridMsg::Leave(dice.pick(&all)?),
     };
@@ -177,8 +187,13 @@ fn make(model: &mut Model, change: &Change) {
             };
             if split(&mut window.layout, *beside, *edge, id).is_ok() {
                 window.saved = None;
-                let seated = false;
-                grid.panes.push(Pane { id, kind, seated });
+                let (seated, scope) = (false, Default::default());
+                grid.panes.push(Pane {
+                    id,
+                    kind,
+                    seated,
+                    scope,
+                });
             }
         }
     }
@@ -235,7 +250,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
     let others = |pane: PaneId| drawn_in(pane).is_some_and(|w| w.layout.docked().nth(1).is_some());
     let refused = match change {
         GridMsg::Leave(pane) => others(*pane) && after.window_of(*pane) == before.window_of(*pane),
-        GridMsg::Close(pane) => others(*pane) && after.kind(*pane).is_some(),
+        GridMsg::Close(pane) => others(*pane) && after.window_of(*pane) == before.window_of(*pane),
         GridMsg::Rejoin(pane) => {
             let home = before.origin_of(*pane).and_then(|id| before.window(id));
             let kept = home.is_some_and(|window| window.layout.slot(*pane).is_some());
@@ -254,6 +269,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::Drop { .. }
         | GridMsg::Open { .. }
         | GridMsg::Have { .. }
+        | GridMsg::Across { .. }
         | GridMsg::Moved { .. }
         | GridMsg::Keep { .. }
         | GridMsg::Wear { .. }

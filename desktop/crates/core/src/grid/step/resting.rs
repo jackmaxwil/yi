@@ -28,8 +28,13 @@ fn told(kinds: &[PaneKind], saved: &'static str) -> Model {
 }
 
 fn have(model: &mut Model, kinds: &[PaneKind]) {
-    let (window, kinds) = (MAIN, kinds.to_vec());
-    change(model, GridMsg::Have { window, kinds });
+    let (window, kinds, thread) = (MAIN, kinds.to_vec(), None);
+    let told = GridMsg::Have {
+        window,
+        kinds,
+        thread,
+    };
+    change(model, told);
 }
 
 fn kinds_drawn(model: &Model) -> Result<Vec<PaneKind>, String> {

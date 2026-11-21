@@ -465,6 +465,23 @@ fn with_no_threads_the_window_is_new_chat() -> Check {
 fn cmd_n_opens_new_chat_and_its_first_words_make_the_thread_it_then_shows() -> Check {
     let mut runtime = runtime("shell/mockup")?;
     let lines = sent(&runtime)?;
+    rest(&mut runtime);
+    // A pane opened in the thread shown first: it is that session's.
+    runtime.update(|win, tx| view::run(win, tx, CommandId("pane.show-trace"), Target::App));
+    rest(&mut runtime);
+    let trace = |runtime: &Runtime<Win>| -> Result<bool, Box<dyn Error>> {
+        let hub = runtime.state.hub.try_borrow()?;
+        let window = hub.model.grid.window(root::MAIN).ok_or("no window")?;
+        let mut docked = window.layout.docked();
+        let trace = Some(yd_core::pane::PaneKind::Trace);
+        Ok(docked.any(|(pane, _)| hub.model.grid.kind(pane) == trace))
+    };
+    assert!(trace(&runtime)?, "Trace is open in the first thread");
+    let first = {
+        let hub = runtime.state.hub.try_borrow()?;
+        let shown = yd_ui::shown::thread(&hub, root::MAIN);
+        shown.map(|thread| thread.id.clone()).ok_or("no thread")?
+    };
     strike(&mut runtime, Key::Text("n".into()), cmd());
     assert!(live(&runtime, "new-chat.chat-column"), "the page shows");
     assert!(live(&runtime, "shell.sidebar"), "beside the sidebar");
@@ -503,22 +520,16 @@ fn cmd_n_opens_new_chat_and_its_first_words_make_the_thread_it_then_shows() -> C
         Some("fresh-thread"),
         "and the window shows the new thread"
     );
-    let window = hub.model.grid.window(root::MAIN).ok_or("no window")?;
-    let kinds: Vec<_> = window
-        .layout
-        .docked()
-        .map(|(pane, _)| hub.model.grid.kind(pane))
-        .collect();
-    assert_eq!(
-        kinds,
-        [Some(yd_core::pane::PaneKind::Chat)],
-        "in a blank window"
-    );
+    drop(hub);
+    assert!(!trace(&runtime)?, "with none of the first thread's panes");
     let prompted = lines
         .borrow()
         .iter()
         .any(|line| line.contains("fix the flake"));
     assert!(prompted, "which got the words as its first prompt");
+    runtime.update(move |win, _| yd_ui::shown::show(win, first));
+    rest(&mut runtime);
+    assert!(trace(&runtime)?, "which the first thread still has");
     Ok(())
 }
 
