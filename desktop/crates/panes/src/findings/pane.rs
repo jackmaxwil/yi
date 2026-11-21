@@ -293,6 +293,7 @@ fn tabs(pane: &PaneCx<'_>) -> Tabs {
             count: (done > 0).then_some(done),
             meta,
             fixed: true,
+            preview: false,
         });
     }
     let closed = view.is_some_and(|view| view.closed);

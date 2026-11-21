@@ -2,6 +2,7 @@
 
 use rune::{Chord, Curve, Cx, Easing, El, Key, KeyEvent, Spring, Tx, col, el};
 use yd_core::address::uri::Address;
+use yd_core::command::run::PREVIEW;
 use yd_core::command::table::{Command, FLIP_CHAT, OPEN_FILE, Route, Run, Target};
 use yd_core::grid::layout::{Edge, Rect, Size};
 use yd_core::grid::saved::{JUST_CHAT, OwnId, Slug};
@@ -258,7 +259,20 @@ fn own_tabs(win: &Win, pane: PaneId) -> Option<(Tabs, Hears)> {
 /// Runs `code.open` on `file` and puts this window's code viewer in focus, opened when the
 /// layout has none, so a file pressed anywhere shows where keys then go.
 pub fn open_file(win: &mut Win, tx: &mut Tx, file: Address) {
-    let run = Run::new(OPEN_FILE).on(Target::Thing(file));
+    open_as(win, tx, file, None);
+}
+
+/// [`open_file`] for a look: a file not open yet takes the one preview tab, which the next
+/// look replaces; opened any other way, or its tab pressed, it is kept.
+pub fn preview_file(win: &mut Win, tx: &mut Tx, file: Address) {
+    open_as(win, tx, file, Some(PREVIEW.to_owned()));
+}
+
+fn open_as(win: &mut Win, tx: &mut Tx, file: Address, text: Option<String>) {
+    let run = Run {
+        text,
+        ..Run::new(OPEN_FILE).on(Target::Thing(file))
+    };
     dispatch(win, Msg::Command(Route::Model, run));
     // Incident: a layout with no Code pane took the press and showed nothing; it opens one.
     show_pane(win, tx, PaneKind::Code);

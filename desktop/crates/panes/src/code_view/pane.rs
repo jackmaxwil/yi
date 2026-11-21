@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rune::{Cx, El, Tx, col, el, row, text};
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
-use yd_core::command::run::opened;
+use yd_core::command::run::{PREVIEW, opened, previewed};
 use yd_core::command::table::{Command, OPEN_FILE, Route, Run, Target};
 use yd_core::command::tools::lsp::REFERENCES;
 use yd_core::feed::{FILES, FeedEvent, FeedStatus, LSP, OPEN_FILES, Table};
@@ -126,6 +126,7 @@ fn file_tabs(pane: &PaneCx<'_>) -> Tabs {
             id: tab_id(file)?,
             title: name.to_owned(),
             meta: meta.map(|shown| shown.meta(pane.hub)).unwrap_or_default(),
+            preview: previewed(file),
             ..Tab::of(PaneKind::Code)
         })
     });
@@ -138,7 +139,7 @@ fn file_tabs(pane: &PaneCx<'_>) -> Tabs {
 }
 
 /// What the bar asks: a file in front, or its tab closed. Its text stays with the files
-/// source until that drops it.
+/// source until that drops it. The tab in front, pressed, is kept: a look no longer.
 fn on_tab(win: &mut Win, _: PaneId, ask: TabAsk) {
     let (tab, close) = match ask {
         TabAsk::Show(tab) => (tab, false),
@@ -146,13 +147,22 @@ fn on_tab(win: &mut Win, _: PaneId, ask: TabAsk) {
         TabAsk::New => return,
     };
     let file = win.hub.try_borrow().ok().and_then(|hub| {
-        let mut files = tabs(hub.model.tables.get(OPEN_FILES)?);
-        let file = files.find(|file| tab_id(file) == Some(tab))?;
-        Some((file.id.clone(), Address::new(Kind::File, path(file)).ok()?))
+        let table = hub.model.tables.get(OPEN_FILES)?;
+        let file = tabs(table).find(|file| tab_id(file) == Some(tab))?;
+        let front = current(table).is_some_and(|front| front.id == file.id);
+        let address = Address::new(Kind::File, path(file)).ok()?;
+        Some((file.id.clone(), address, front))
     });
     match file {
-        Some((id, _)) if close => dispatch(win, Msg::Feed(OPEN_FILES, FeedEvent::Remove(id))),
-        Some((_, file)) => show(win, &file),
+        Some((id, ..)) if close => dispatch(win, Msg::Feed(OPEN_FILES, FeedEvent::Remove(id))),
+        Some((_, file, true)) => show(win, &file),
+        Some((_, file, false)) => {
+            let look = Run {
+                text: Some(PREVIEW.to_owned()),
+                ..Run::new(OPEN_FILE).on(Target::Thing(file))
+            };
+            dispatch(win, Msg::Command(Route::Model, look));
+        }
         None => {}
     }
 }
