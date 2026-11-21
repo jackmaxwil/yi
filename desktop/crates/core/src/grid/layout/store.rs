@@ -34,6 +34,23 @@ pub(crate) mod stacks {
     }
 }
 
+/// What a pane is about, as the text of its address; a pane about its kind alone has none.
+pub(crate) mod thing {
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::address::uri::Address;
+
+    pub fn serialize<S: Serializer>(thing: &Option<Address>, to: S) -> Result<S::Ok, S::Error> {
+        to.collect_str(&thing.as_ref().map(ToString::to_string).unwrap_or_default())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Option<Address>, D::Error> {
+        let text = String::deserialize(from)?;
+        text.parse().map(Some).map_err(D::Error::custom)
+    }
+}
+
 /// A window id as its number.
 pub(crate) mod window {
     use serde::{Deserialize, Deserializer, Serializer};

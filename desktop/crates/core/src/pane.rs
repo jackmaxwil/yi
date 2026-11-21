@@ -23,6 +23,16 @@ macro_rules! panes {
                 )
             }
 
+            /// [`PaneKind::place`] for a pane about one thing or about none: a chat about
+            /// one thing, a child agent's, is work beside the session's own chat.
+            pub const fn place_about(self, thing: bool) -> Place {
+                if thing && matches!(self, PaneKind::Chat) {
+                    Place::Work
+                } else {
+                    self.place()
+                }
+            }
+
             /// Where a pane of the kind goes when it is opened: the stack it joins.
             pub const fn place(self) -> Place {
                 use PaneKind::*;

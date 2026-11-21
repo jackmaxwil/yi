@@ -7,7 +7,7 @@ use yd_core::grid::saved::BLANK;
 use yd_core::ids::ThreadId;
 use yd_core::pane::PaneKind;
 use yd_core::wire::replay::play;
-use yd_panes::chat::pane::child::{Children, OPEN};
+use yd_panes::chat::pane::child::OPEN;
 use yd_ui::grid_view::view::{Act, act, show_pane};
 
 use super::*;
@@ -94,7 +94,13 @@ fn child_pane(runtime: &Runtime<Win>) -> Result<String, Box<dyn Error>> {
 
 fn bound(runtime: &Runtime<Win>) -> Result<usize, Box<dyn Error>> {
     let hub = runtime.state.hub.try_borrow()?;
-    Ok(hub.panes.get::<Children>(None).map_or(0, |c| c.0.len()))
+    let about = hub
+        .model
+        .grid
+        .panes
+        .iter()
+        .filter(|pane| pane.thing.is_some());
+    Ok(about.count())
 }
 
 fn asked_for(lines: &Rc<RefCell<Vec<String>>>, method: &str, child: &str) -> usize {
@@ -140,6 +146,48 @@ fn a_child_row_in_the_agents_pane_opens_its_own_chat_beside_the_parents() -> Che
         bound(&runtime)?,
         1,
         "asked again, the open pane comes forward"
+    );
+    Ok(())
+}
+
+/// With a work pane open, a child's chat is a tab of that slot: no slot is cut for it, it is
+/// drawn where the work pane was, and the work pane's tab is on its bar.
+#[test]
+fn a_childs_chat_opens_as_a_tab_where_work_already_is() -> Check {
+    let mut runtime = window(STOPPED, 129)?;
+    runtime.update(|win, tx| {
+        show_pane(win, tx, PaneKind::Changes);
+    });
+    rest(&mut runtime);
+    let frames = |runtime: &Runtime<Win>| {
+        let keys = keys(runtime);
+        keys.iter().filter(|k| k.ends_with(".pane-frame")).count()
+    };
+    let before = frames(&runtime);
+    let work = pane_of(&runtime, "changes-", ".pane-frame")?;
+    let slot = centre(&runtime, &format!("{work}.pane-frame"))?;
+    let agents = pane_of(&runtime, "agents-", ".pane-header")?;
+    tap(&mut runtime, &format!("{agents}.row.{SLEEPER}"))?;
+    let child = child_pane(&runtime)?;
+    assert_eq!(frames(&runtime), before, "no slot was cut for it");
+    assert_eq!(centre(&runtime, &format!("{child}.pane-frame"))?, slot);
+    assert!(pane_of(&runtime, "changes-", ".pane-frame").is_err());
+    let behind = |key: &String| {
+        key.starts_with(&child) && key.contains(".tab-pane-") && key.ends_with(".pane-tab")
+    };
+    assert_eq!(keys(&runtime).iter().filter(|k| behind(k)).count(), 1);
+    // The way back opens the session's own chat when it is closed: the child's is not it.
+    let parent = pane_of(&runtime, "chat-", ".composer")?;
+    let closed = parent.strip_prefix("chat-").and_then(|n| n.parse().ok());
+    let closed = yd_core::ids::PaneId(closed.ok_or("the parent's key has no number")?);
+    runtime.update(move |win, tx| act(win, tx, Act::Close(closed)));
+    rest(&mut runtime);
+    assert!(pane_of(&runtime, "chat-", ".composer").is_err());
+    tap(&mut runtime, &format!("{child}.parent"))?;
+    pane_of(&runtime, "chat-", ".composer")?;
+    assert!(
+        live(&runtime, &format!("{child}.pane-frame")),
+        "and it stays"
     );
     Ok(())
 }

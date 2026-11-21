@@ -1,6 +1,7 @@
 //! Random runs of grid changes from fixed seeds: whatever the order, the panes tile each
 //! window exactly, keep the minimum, and a pane that leaves and returns changes nothing.
 
+use crate::address::uri::Address;
 use crate::command::table::{FLIP_CHAT, Route, Run};
 use crate::grid::layout::{Axis, Edge, Line, MAX_PANES, MAX_TRACKS, MIN_PANE, Point, Rect, Size};
 use crate::grid::leave::split;
@@ -9,6 +10,7 @@ use crate::grid::saved::SAVED;
 use crate::grid::swap::Spot;
 use crate::grid::windows::{Frame, Pane, Window, Windows};
 use crate::ids::{PaneId, ThreadId, WindowId};
+use crate::kind::Kind;
 use crate::model::Model;
 use crate::msg::{Msg, step};
 use crate::pane::PaneKind;
@@ -91,7 +93,7 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
     let all: Vec<PaneId> = grid.panes.iter().map(|pane| pane.id).collect();
     let holes = grid.windows.iter().flat_map(|window| &window.layout.away);
     let out: Vec<PaneId> = holes.map(|hole| hole.pane).collect();
-    let change = match dice.below(31) {
+    let change = match dice.below(34) {
         0 | 1 => {
             let saved = dice.pick(&SAVED)?.slug;
             let window = if dice.below(4) > 0 { MAIN } else { window };
@@ -170,6 +172,16 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
             GridMsg::Across { pane, on }
         }
         28 | 29 => GridMsg::Front(dice.pick(&all)?),
+        30 | 31 => {
+            let name = dice.pick(&["a/one", "a/two", "b/one"])?;
+            let thing = Address::new(Kind::Agent, name).ok()?;
+            let kind = PaneKind::Chat;
+            GridMsg::About {
+                window,
+                kind,
+                thing,
+            }
+        }
         _ => GridMsg::Leave(dice.pick(&all)?),
     };
     Some(Change::Said(Msg::Grid(change)))
@@ -194,6 +206,7 @@ fn make(model: &mut Model, change: &Change) {
                     kind,
                     seated,
                     scope,
+                    thing: None,
                 });
             }
         }
@@ -269,6 +282,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::Swap { .. }
         | GridMsg::Drop { .. }
         | GridMsg::Open { .. }
+        | GridMsg::About { .. }
         | GridMsg::Have { .. }
         | GridMsg::Across { .. }
         | GridMsg::Front(_)

@@ -12,7 +12,7 @@ use yd_core::command::table::{Route, Run, Target};
 use yd_core::feed::{CHANGES, FILES, LSP, SourceCmd};
 use yd_core::grid::step::GridMsg;
 use yd_core::grid::windows::{Frame, Window, Windows};
-use yd_core::ids::{AgentId, PaneId, ThreadId, WindowId};
+use yd_core::ids::{PaneId, ThreadId, WindowId};
 use yd_core::kind::Kind;
 use yd_core::msg::{Msg, step};
 use yd_core::pane::PaneKind;
@@ -24,9 +24,8 @@ use yd_ui::win::{Hub, Shared, Win, dispatch};
 use crate::notify;
 use crate::root::{self, MAIN};
 use crate::shell::view::{change, shell};
-use crate::windows::places::{self, KeptApart, KeptChildren, MainShown, Places, Screen};
+use crate::windows::places::{self, KeptApart, MainShown, Places, Screen};
 use crate::windows::tear::lifted;
-use yd_panes::chat::pane::child::{Child, Children};
 
 mod apart;
 mod scenes;
@@ -130,8 +129,6 @@ pub struct Registry {
     seen: Option<Windows>,
     /// What the main window showed, and its sidebar's width, as last kept.
     shown: Option<(MainShown, Option<f32>)>,
-    /// The chat panes that show a child agent, as last kept.
-    children: Option<KeptChildren>,
     /// Where Settings and Themes were last, by slug: they are not reopened at a start.
     apart: KeptApart,
 }
@@ -393,13 +390,6 @@ pub fn specs(shared: &Shared, displays: &[Display], launch: Launch) -> Vec<AnyWi
             shown::remember(&mut hub, ThreadId::new(thread), path);
         }
     }
-    let kept = launch.places.read_children().unwrap_or_default();
-    if let Some(children) = hub.panes.get_mut::<Children>(None) {
-        for (pane, thread, agent) in kept {
-            let (thread, agent) = (ThreadId::new(thread), AgentId::new(agent));
-            children.0.insert(PaneId(pane), Child { thread, agent });
-        }
-    }
     let mut registry = Registry {
         apart: launch.places.read_apart(&screens),
         screens,
@@ -532,7 +522,6 @@ fn hold(shared: &Shared, tx: &mut Tx) {
     let Ok(mut hub) = shared.try_borrow_mut() else {
         return;
     };
-    hold_children(&mut hub);
     let Hub { model, panes, .. } = &mut *hub;
     let Some(registry) = panes.get_mut::<Registry>(None) else {
         return;
@@ -578,37 +567,6 @@ fn hold(shared: &Shared, tx: &mut Tx) {
         let _ = writeln!(
             std::io::stderr(),
             "yi-desktop: what the window showed was not kept: {error}"
-        );
-    }
-}
-
-/// A child's chat pane is kept with the grid, and forgotten once the grid no longer holds it.
-fn hold_children(hub: &mut Hub) {
-    let Hub { model, panes, .. } = hub;
-    let Some(children) = panes.get_mut::<Children>(None) else {
-        return;
-    };
-    let grid = &model.grid;
-    children
-        .0
-        .retain(|pane, _| grid.kind(*pane) == Some(PaneKind::Chat));
-    let now: KeptChildren = children
-        .0
-        .iter()
-        .map(|(pane, child)| (pane.0, child.thread.to_string(), child.agent.to_string()))
-        .collect();
-    let Some(registry) = panes.get_mut::<Registry>(None) else {
-        return;
-    };
-    if registry.children.as_ref() == Some(&now) {
-        return;
-    }
-    let kept = registry.places.as_mut().map(|p| p.keep_children(&now));
-    registry.children = Some(now);
-    if let Some(Err(error)) = kept {
-        let _ = writeln!(
-            std::io::stderr(),
-            "yi-desktop: the agents' chat panes were not kept: {error}"
         );
     }
 }

@@ -12,7 +12,6 @@ const APP: &str = "yi-desktop";
 /// The one value kept: the whole grid, each window with the frame it was last seen at.
 const KEY: &str = "windows";
 const SHOWN: &str = "shown";
-const CHILDREN: &str = "children";
 const SIDEBAR: &str = "sidebar";
 const APART: &str = "apart";
 
@@ -21,9 +20,6 @@ pub type MainShown = (bool, Option<String>, Vec<(String, String)>);
 
 /// Where each window of its own a pane kind opens in (Settings, Themes) was last: its slug.
 pub type KeptApart = Vec<(String, Frame)>;
-
-/// Each chat pane that shows a child agent: the pane, the thread and the child.
-pub type KeptChildren = Vec<(u32, String, String)>;
 
 /// One screen of the desktop as it is now: its bounds in points and its pixels a point.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -191,15 +187,6 @@ impl Places {
     pub fn keep_shown(&mut self, shown: &MainShown, width: Option<f32>) -> Result<(), PrefsError> {
         self.0.set(SHOWN, shown)?;
         self.0.set(SIDEBAR, &width)
-    }
-
-    /// The chat panes that showed a child agent when last kept.
-    pub fn read_children(&self) -> Option<KeptChildren> {
-        self.0.get(CHILDREN)
-    }
-
-    pub fn keep_children(&mut self, children: &KeptChildren) -> Result<(), PrefsError> {
-        self.0.set(CHILDREN, children)
     }
 
     /// Where Settings and Themes were last, each settled on a screen there is now.

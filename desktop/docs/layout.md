@@ -16,7 +16,7 @@ The answer is five pieces. Every feature in the request is one of them or a comb
 
 | Piece | What it is | Status |
 |---|---|---|
-| Thing | What a pane shows: this file, this diff, this shell, this child agent, this page. A pane is a kind plus a thing. No thing, no pane. | ✓ `Thing` and `Address` exist; ✚ a pane carries one |
+| Thing | What a pane shows: this file, this diff, this shell, this child agent, this page. A pane is a kind plus a thing. No thing, no pane. | ✓ `Thing` and `Address` exist; ✓ a pane carries one (`Pane.thing`), used so far by a child agent's chat |
 | Session scope | Each session keeps its own panes. A pane may instead be kept by the window. | ✚ |
 | Stack | A slot in the grid holds tabs, of any kind. One is in front. | ✚ (tabs exist only inside a pane today) |
 | Show | The one action that puts a thing in front of the user. It says who asked (user, rule or model) and how strongly. | ✚ replaces 19 separate call sites |

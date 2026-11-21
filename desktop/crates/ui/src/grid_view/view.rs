@@ -494,7 +494,8 @@ pub fn show_pane(win: &mut Win, tx: &mut Tx, kind: PaneKind) -> Option<PaneId> {
         let hub = win.hub.try_borrow().ok()?;
         let grid = &hub.model.grid;
         let mut docked = grid.window(window)?.layout.docked().map(|(pane, _)| pane);
-        docked.find(|pane| grid.kind(*pane) == Some(kind))
+        // A pane about one thing, a child's chat, is not the pane its kind alone means.
+        docked.find(|pane| grid.kind(*pane) == Some(kind) && grid.thing(*pane).is_none())
     };
     let pane = match drawn(win) {
         Some(pane) => pane,

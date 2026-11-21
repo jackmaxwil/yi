@@ -13,7 +13,6 @@ use yd_ui::win::Hub;
 
 use crate::root::MAIN;
 use crate::shell::view::{JUST_CHAT, change};
-use yd_panes::chat::pane::child::Children;
 
 /// The mockup's threads, list, forks, replay and options as a server recording: one line
 /// a frame, its times counted back from [`NOW`].
@@ -208,7 +207,7 @@ fn everything(hub: &mut Hub) {
     git(hub);
 }
 
-/// The parent's chat and its child's, side by side, as Open Agent Chat splits them.
+/// The parent's chat and its child's, side by side, as Open Agent Chat shows them.
 fn child_chat(hub: &mut Hub) {
     if play(&mut hub.model, ASKS).is_err() {
         return;
@@ -227,27 +226,15 @@ fn child_chat(hub: &mut Hub) {
         saved: yd_core::grid::saved::BLANK.slug,
     };
     step(&mut hub.model, Msg::Grid(show));
-    let chat = |hub: &Hub| {
-        let panes = hub
-            .model
-            .grid
-            .panes
-            .iter()
-            .filter(|p| p.kind == PaneKind::Chat);
-        panes.map(|pane| pane.id).collect::<Vec<_>>()
-    };
-    let Some(parent) = chat(hub).first().copied() else {
-        return;
-    };
-    step(&mut hub.model, Msg::Grid(GridMsg::Split(parent)));
-    let made = chat(hub).into_iter().find(|pane| *pane != parent);
     let agent = yd_core::ids::AgentId::new("sub-655c3f0b");
-    let child = yd_panes::chat::pane::child::Child {
-        thread: thread.clone(),
-        agent,
-    };
-    if let (Some(made), Some(children)) = (made, hub.panes.get_mut::<Children>(None)) {
-        children.0.insert(made, child);
+    if let Ok(thing) = yd_core::reduce::step::commands::child_address(&thread, &agent) {
+        let (window, kind) = (MAIN, PaneKind::Chat);
+        let about = GridMsg::About {
+            window,
+            kind,
+            thing,
+        };
+        step(&mut hub.model, Msg::Grid(about));
     }
     yd_ui::shown::pick(hub, MAIN, thread);
 }
