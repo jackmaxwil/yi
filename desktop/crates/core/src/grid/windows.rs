@@ -201,17 +201,19 @@ impl Windows {
         self.windows.iter().find(|window| window.id == id)
     }
 
+    fn pane_of(&self, pane: PaneId) -> Option<&Pane> {
+        self.panes.iter().find(|other| other.id == pane)
+    }
+
     #[must_use]
     pub fn kind(&self, pane: PaneId) -> Option<PaneKind> {
-        let found = self.panes.iter().find(|other| other.id == pane);
-        found.map(|pane| pane.kind)
+        self.pane_of(pane).map(|pane| pane.kind)
     }
 
     /// The thing `pane` is about, when it is about one.
     #[must_use]
     pub fn thing(&self, pane: PaneId) -> Option<&Address> {
-        let found = self.panes.iter().find(|other| other.id == pane);
-        found.and_then(|pane| pane.thing.as_ref())
+        self.pane_of(pane).and_then(|pane| pane.thing.as_ref())
     }
 
     /// The window `pane` is drawn in.

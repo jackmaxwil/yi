@@ -331,8 +331,7 @@ fn open(
     let largest = placed
         .into_iter()
         .max_by(|(_, a), (_, b)| (a.w * a.h).total_cmp(&(b.w * b.h)));
-    let hidden = grid.panes.iter();
-    let hidden = hidden.filter(|pane| pane.kind == kind && pane.thing == thing);
+    let hidden = grid.panes.iter().filter(same);
     let hidden = hidden.map(|pane| pane.id).find(|pane| idle(grid, *pane));
     let pane = match hidden {
         Some(pane) => pane,
