@@ -630,9 +630,15 @@ def cmd_rerun(args):
         return 1
     subprocess.run(("fgj", "pr", "close", *scope(), str(number)), capture_output=True, check=False)
     time.sleep(2)
-    subprocess.run(("fgj", "pr", "reopen", *scope(), str(number)), capture_output=True, check=False)
-    print(f"#{number} closed and reopened; the gate reruns")
-    return 0
+    # Invariant: a rerun never leaves the PR closed. The bots list open PRs only, so a refused reopen hides it.
+    for _ in range(3):
+        subprocess.run(("fgj", "pr", "reopen", *scope(), str(number)), capture_output=True, check=False)
+        if pull(number).get("state") == "open":
+            print(f"#{number} closed and reopened; the gate reruns")
+            return 0
+        time.sleep(2)
+    print(f"#{number} is left CLOSED: the forge refused the reopen three times; fgj pr reopen {number}")
+    return 1
 
 
 def cmd_retry(args):
@@ -1033,7 +1039,8 @@ def selfcheck():
                            {"context": "review / review (pull_request_target)", "status": "pending"}]}
     saved_forge = globals()["fgj_api"], globals()["repo"], globals()["pull"], subprocess.run
     closed = []
-    globals().update(fgj_api=lambda *a, **k: head_status, repo=lambda: "o/r", pull=lambda n: {"number": n, "head": {"sha": "abc1234"}})
+    globals().update(fgj_api=lambda *a, **k: head_status, repo=lambda: "o/r", pull=lambda n: {"number": n, "state": state, "head": {"sha": "abc1234"}})
+    state = "open"
     subprocess.run = lambda cmd, **kw: closed.append(cmd)
     try:
         seen = jobs_of({"head": {"sha": "abc1234"}})
@@ -1047,6 +1054,9 @@ def selfcheck():
             real_sleep, time.sleep = time.sleep, lambda s: None
             try:
                 assert cmd_rerun(argparse.Namespace(number=7)) == 0 and len(closed) == 2, "a pending review holds a rerun back"
+                state = "closed"
+                assert cmd_rerun(argparse.Namespace(number=7)) == 1 and len(closed) == 6, "a refused reopen was reported as a rerun"
+                state = "open"
             finally:
                 time.sleep = real_sleep
     finally:
