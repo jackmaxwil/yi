@@ -6,4 +6,4 @@ set -u
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/yt.XXXXXX") || exit 1
 trap 'rm -rf "$tmp"' EXIT
 trap 'exit 143' TERM INT HUP
-YI_ADMISSION_SUSPENDED=1 TMPDIR=$tmp "$@"
+TMPDIR=$tmp "$@"
