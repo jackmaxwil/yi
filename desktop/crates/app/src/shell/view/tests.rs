@@ -18,6 +18,7 @@ use crate::shell::view;
 use crate::{root, scenes};
 
 mod attached;
+mod bar;
 mod children;
 mod colour;
 mod design;

@@ -21,7 +21,11 @@ const ALWAYS: &str = "window.context-menu.row.pane.always-here";
 const NEVER: &str = "window.context-menu.row.pane.never-alone";
 
 /// A right-click on the first tab whose key starts `start` and holds `part`; the key.
-fn menu(runtime: &mut Runtime<Win>, start: &str, part: &str) -> Result<String, Box<dyn Error>> {
+pub(super) fn menu(
+    runtime: &mut Runtime<Win>,
+    start: &str,
+    part: &str,
+) -> Result<String, Box<dyn Error>> {
     let shown = runtime.elements();
     let tab =
         |key: &&str| key.starts_with(start) && key.contains(part) && key.ends_with(".pane-tab");

@@ -126,7 +126,12 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
         }
         8..=10 => GridMsg::Leave(dice.pick(&drawn)?),
         11..=13 => GridMsg::Rejoin(dice.pick(&out)?),
-        14 | 15 => GridMsg::Split(dice.pick(&drawn)?),
+        14 => GridMsg::Split(dice.pick(&drawn)?),
+        15 => {
+            let edges = [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom];
+            let (pane, edge) = (dice.pick(&all)?, dice.pick(&edges)?);
+            GridMsg::SplitAt { pane, edge }
+        }
         16 => GridMsg::Close(dice.pick(&all)?),
         17 => {
             return Some(Change::Said(Msg::Command(
@@ -293,6 +298,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::Open { .. }
         | GridMsg::About { .. }
         | GridMsg::Have { .. }
+        | GridMsg::SplitAt { .. }
         | GridMsg::Across { .. }
         | GridMsg::Front(_)
         | GridMsg::Fill(_)

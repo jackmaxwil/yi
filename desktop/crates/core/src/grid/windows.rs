@@ -251,6 +251,26 @@ impl Windows {
         (found.kind != PaneKind::Chat && found.thing.is_none()).then_some(found.kind)
     }
 
+    /// Whether the person keeps `pane` in every session of its window (true) or in the ones
+    /// they opened it in. None for one a layout or a rule seated, which goes with its thing.
+    #[must_use]
+    pub fn kept(&self, pane: PaneId) -> Option<bool> {
+        let found = self.panes.iter().find(|other| other.id == pane)?;
+        (!found.seated).then(|| found.scope.is_window())
+    }
+
+    /// The other panes that share `pane`'s slot and show here, which closing the others
+    /// closes: never the window's own chat.
+    #[must_use]
+    pub fn mates(&self, pane: PaneId) -> Vec<PaneId> {
+        let window = self.window_of(pane).or_else(|| self.home_of(pane));
+        let tabs = window.map_or_else(Vec::new, |window| self.tabs(window, pane));
+        let chat = |other: &PaneId| self.kind(*other) == Some(PaneKind::Chat);
+        let own = |other: &PaneId| chat(other) && self.thing(*other).is_none();
+        let others = tabs.into_iter().filter(|other| *other != pane);
+        others.filter(|other| !own(other)).collect()
+    }
+
     /// Whether a pane of `kind` opens by itself: the person's word, else the kind's rule.
     #[must_use]
     pub fn opens_alone(&self, kind: PaneKind) -> bool {

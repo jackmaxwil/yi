@@ -59,7 +59,7 @@ pub fn swap(layout: &mut Layout, a: PaneId, b: PaneId) -> Result<(), GridError> 
 }
 
 /// The edge in the layout's own columns that is drawn as `edge`.
-fn own(edge: Edge, side: ChatSide) -> Edge {
+pub(crate) fn own(edge: Edge, side: ChatSide) -> Edge {
     match (side, edge) {
         (ChatSide::Left, Edge::Left | Edge::Right) => edge.opposite(),
         (ChatSide::Left, Edge::Top | Edge::Bottom) | (ChatSide::Right, _) => edge,

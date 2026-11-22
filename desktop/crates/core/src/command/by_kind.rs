@@ -108,13 +108,44 @@ ids! {
     ELEMENT_SOURCE "element.source", SCREEN_SHOT "screen.screenshot", SCREEN_MARK "screen.mark-up",
     SETTING_COPY "setting.copy-key", SETTING_RESET "setting.reset",
     PANE_ALWAYS "pane.always-here", PANE_NEVER "pane.never-alone",
+    TAB_KEEP "tab.keep", TAB_KEEP_ACROSS "tab.keep-across", TAB_CLOSE_OTHERS "tab.close-others",
 }
 
-/// The person's word on a pane's kind opening by itself, the same on a pane and on its tab.
-const OPENS_ITEMS: [Item; 2] = [
+/// What a right-click on a pane's bar offers, the same on the pane and on its tab: where it
+/// goes, how long it stays, and the person's word on its kind opening by itself.
+const BAR_ITEMS: [Item; 8] = [
+    plain(TAB_SPLIT_RIGHT, "Split right", Icon::Panel),
+    plain(TAB_SPLIT_DOWN, "Split down", Icon::Panel),
+    plain(TAB_PULL_OUT, "Pull out as a window", Icon::Out),
+    item(TAB_KEEP, "Keep", Icon::Shield, Hint::Chosen),
+    item(
+        TAB_KEEP_ACROSS,
+        "Keep across sessions",
+        Icon::Branch,
+        Hint::Chosen,
+    ),
+    plain(TAB_CLOSE_OTHERS, "Close others", Icon::X),
     item(PANE_ALWAYS, "Always open here", Icon::Target, Hint::Chosen),
     item(PANE_NEVER, "Never open by itself", Icon::Stop, Hint::Chosen),
 ];
+
+/// The pane `address` names, a pane's or its tab's (`<pane>/<tab>`).
+pub fn pane_named(address: &Address) -> Option<PaneId> {
+    let named = matches!(address.kind(), Kind::Pane | Kind::Tab);
+    let pane = address.id().split('/').next().filter(|_| named)?;
+    Some(PaneId(pane.parse().ok()?))
+}
+
+/// Whether the tick of a bar row is on for `pane`: it is kept, here or across sessions.
+/// None for a row that is no keeping.
+pub fn keeps(grid: &Windows, command: CommandId, pane: PaneId) -> Option<bool> {
+    let across = match command {
+        TAB_KEEP => false,
+        TAB_KEEP_ACROSS => true,
+        _ => return None,
+    };
+    Some(grid.kept(pane) == Some(across))
+}
 
 /// What `command` says of the pane `address` names, a pane's or its tab's: the pane, its kind
 /// and the word, always in the place the pane is in now. None for a pane no word covers.
@@ -123,9 +154,7 @@ pub fn word(
     command: CommandId,
     address: &Address,
 ) -> Option<(PaneId, PaneKind, Opens)> {
-    let named = matches!(address.kind(), Kind::Pane | Kind::Tab);
-    let pane = address.id().split('/').next().filter(|_| named)?;
-    let pane = PaneId(pane.parse().ok()?);
+    let pane = pane_named(address)?;
     let kind = grid.ruled(pane)?;
     let word = match command {
         PANE_NEVER => Opens::Never,
@@ -318,17 +347,7 @@ pub fn items(kind: Kind) -> &'static [Item] {
                 ]
             }
         }
-        Kind::Tab => {
-            const {
-                &[
-                    plain(TAB_SPLIT_RIGHT, "Split right", Icon::Panel),
-                    plain(TAB_SPLIT_DOWN, "Split down", Icon::Panel),
-                    plain(TAB_PULL_OUT, "Pull out as a window", Icon::Out),
-                    OPENS_ITEMS[0],
-                    OPENS_ITEMS[1],
-                ]
-            }
-        }
+        Kind::Tab | Kind::Pane => &BAR_ITEMS,
         Kind::StackFrame => {
             const {
                 &[
@@ -402,7 +421,6 @@ pub fn items(kind: Kind) -> &'static [Item] {
         | Kind::Place
         | Kind::StandingCheck
         | Kind::Property => &[],
-        Kind::Pane => &OPENS_ITEMS,
     }
 }
 
@@ -530,9 +548,24 @@ pub const COMMANDS: &[Command] = &[
     aimed(MESSAGE_EDIT, "Edit and Send Again", &[Kind::Message]),
     aimed(SETTING_COPY, "Copy Setting Key", &[Kind::Setting]),
     aimed(SETTING_RESET, "Reset Setting", &[Kind::Setting]),
-    aimed(TAB_SPLIT_RIGHT, "Split Right", &[Kind::Tab]),
-    aimed(TAB_SPLIT_DOWN, "Split Down", &[Kind::Tab]),
-    aimed(TAB_PULL_OUT, "Pull Out as a Window", &[Kind::Tab]),
+    aimed(TAB_SPLIT_RIGHT, "Split Right", &[Kind::Pane, Kind::Tab]),
+    aimed(TAB_SPLIT_DOWN, "Split Down", &[Kind::Pane, Kind::Tab]),
+    aimed(
+        TAB_PULL_OUT,
+        "Pull Out as a Window",
+        &[Kind::Pane, Kind::Tab],
+    ),
+    aimed(TAB_KEEP, "Keep Tab", &[Kind::Pane, Kind::Tab]),
+    aimed(
+        TAB_KEEP_ACROSS,
+        "Keep Tab Across Sessions",
+        &[Kind::Pane, Kind::Tab],
+    ),
+    aimed(
+        TAB_CLOSE_OTHERS,
+        "Close Other Tabs",
+        &[Kind::Pane, Kind::Tab],
+    ),
     aimed(
         PANE_ALWAYS,
         "Always Open Pane Here",

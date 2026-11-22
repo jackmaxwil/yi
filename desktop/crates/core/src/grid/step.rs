@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use crate::grid::leave::{close, front, leave, next_tab, rejoin, rest, split, unstack};
 use crate::grid::resize::{even, position, resize};
 use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
-use crate::grid::swap::{Spot, land, swap};
+use crate::grid::swap::{Spot, land, own, swap};
 use crate::grid::windows::{Frame, Pane, Scope, Window, WindowOp, Windows};
 use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::msg::Effect;
@@ -52,6 +52,12 @@ pub enum GridMsg {
     Rejoin(PaneId),
     /// Put a second pane of the same kind to the right of a pane.
     Split(PaneId),
+    /// Put a second pane of the same kind on an edge of a pane's slot, as drawn. Said of a
+    /// tab behind another, the slot is the one it waits in.
+    SplitAt {
+        pane: PaneId,
+        edge: Edge,
+    },
     /// Close a pane for good; its neighbours fill the room.
     Close(PaneId),
     /// Give a pane its window's whole grid, the others out of sight; said again of it or of
@@ -226,17 +232,21 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             }
         }
         GridMsg::Split(pane) => {
+            let edge = Edge::Right;
+            return apply(grid, GridMsg::SplitAt { pane, edge });
+        }
+        GridMsg::SplitAt { pane, edge } => {
+            let from = grid.window_of(pane).or_else(|| grid.home_of(pane));
             let (kind, from) = grid
                 .kind(pane)
-                .zip(grid.window_of(pane))
+                .zip(from)
                 .ok_or(GridError::NoSuchPane(pane))?;
+            let beside = find(grid, from)?.layout.front(pane).unwrap_or(pane);
             let copy = add(grid, kind)?;
             fresh(grid, from, copy);
-            let edge = match side {
-                ChatSide::Right => Edge::Right,
-                ChatSide::Left => Edge::Left,
-            };
-            edit(grid, from, |layout| split(layout, pane, edge, copy))?;
+            edit(grid, from, |layout| {
+                split(layout, beside, own(edge, side), copy)
+            })?;
         }
         GridMsg::Open { window, kind } => return open(grid, window, kind, None),
         GridMsg::About {
@@ -650,6 +660,8 @@ use opening::{arrivals, open};
 
 #[cfg(test)]
 mod about;
+#[cfg(test)]
+mod bar;
 #[cfg(test)]
 mod carry;
 #[cfg(test)]
