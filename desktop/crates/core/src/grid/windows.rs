@@ -82,6 +82,11 @@ pub struct Pane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(with = "crate::grid::layout::store::thing")]
     pub thing: Option<Address>,
+    /// The place the person moved it to, over its kind's own and any word on its kind: the
+    /// slot it leads is of that place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(with = "crate::grid::layout::store::place")]
+    pub at: Option<Place>,
     /// A rule opened it as a tab behind another and it has not been drawn since: its tab
     /// carries a dot. Not kept in the file.
     #[serde(skip)]
@@ -224,12 +229,13 @@ impl Windows {
         found.map(|pane| pane.kind)
     }
 
-    /// Where `pane` goes: the place the person always opens its kind in, else its own.
+    /// Where `pane` goes: the place the person moved it to, else the one they always open
+    /// its kind in, else its own.
     #[must_use]
     pub fn place_of(&self, pane: &Pane) -> Place {
-        match self.rules.get(&pane.kind) {
-            Some(Opens::Always(place)) => *place,
-            _ => pane.place(),
+        match (pane.at, self.rules.get(&pane.kind).copied()) {
+            (Some(place), _) | (None, Some(Opens::Always(place))) => place,
+            (None, Some(Opens::Never) | None) => pane.place(),
         }
     }
 

@@ -13,7 +13,7 @@ use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::kind::Kind;
 use crate::model::Model;
 use crate::msg::{Msg, step};
-use crate::pane::PaneKind;
+use crate::pane::{PaneKind, Place};
 use crate::settings::schema::SettingValue;
 use crate::settings::store::OPENS_ROW;
 
@@ -183,7 +183,11 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
             let (pane, on) = (dice.pick(&drawn)?, dice.below(2) > 0);
             GridMsg::Across { pane, on }
         }
-        28 | 29 => GridMsg::Front(dice.pick(&all)?),
+        28 => GridMsg::Front(dice.pick(&all)?),
+        29 => {
+            let (pane, place) = (dice.pick(&all)?, dice.pick(&Place::ALL)?);
+            GridMsg::Place { pane, place }
+        }
         30 | 31 => {
             let name = dice.pick(&["a/one", "a/two", "b/one"])?;
             let thing = Address::new(Kind::Agent, name).ok()?;
@@ -220,6 +224,7 @@ fn make(model: &mut Model, change: &Change) {
                     seated,
                     scope,
                     thing: None,
+                    at: None,
                     unseen: false,
                 });
             }
@@ -299,6 +304,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::About { .. }
         | GridMsg::Have { .. }
         | GridMsg::SplitAt { .. }
+        | GridMsg::Place { .. }
         | GridMsg::Across { .. }
         | GridMsg::Front(_)
         | GridMsg::Fill(_)

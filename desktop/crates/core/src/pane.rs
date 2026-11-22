@@ -76,6 +76,14 @@ pub enum Place {
 impl Place {
     pub const ALL: [Place; 4] = [Place::Chat, Place::Work, Place::Side, Place::Shelf];
 
+    /// The place a settings line or the grid's file names by `slug`.
+    pub fn named(slug: &str) -> Option<Place> {
+        Place::ALL
+            .iter()
+            .copied()
+            .find(|place| place.slug() == slug)
+    }
+
     /// The word a settings line names the place by.
     pub const fn slug(self) -> &'static str {
         match self {

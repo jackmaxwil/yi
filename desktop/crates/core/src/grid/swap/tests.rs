@@ -138,6 +138,7 @@ fn a_drop_that_would_go_under_the_minimum_is_refused() -> Check {
         seated: false,
         scope: Default::default(),
         thing: None,
+        at: None,
         unseen: false,
     });
     let window = Window {
@@ -240,6 +241,7 @@ fn a_docked_grid_is_saved_and_read_back_as_it_is() -> Check {
                 seated: false,
                 scope: Default::default(),
                 thing: None,
+                at: None,
                 unseen: false,
             })
             .to_vec(),

@@ -51,6 +51,21 @@ pub(crate) mod thing {
     }
 }
 
+/// The place a pane was moved to, as its word; a word that names no place is no move.
+pub(crate) mod place {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::pane::Place;
+
+    pub fn serialize<S: Serializer>(at: &Option<Place>, to: S) -> Result<S::Ok, S::Error> {
+        to.serialize_str(at.map(Place::slug).unwrap_or_default())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Option<Place>, D::Error> {
+        Ok(Place::named(&String::deserialize(from)?))
+    }
+}
+
 /// A window id as its number.
 pub(crate) mod window {
     use serde::{Deserialize, Deserializer, Serializer};

@@ -10,7 +10,7 @@ use crate::feed::LSP;
 use crate::grid::windows::Windows;
 use crate::ids::{CommandId, PaneId};
 use crate::kind::Kind;
-use crate::pane::{Opens, PaneKind};
+use crate::pane::{Opens, PaneKind, Place};
 use crate::reduce::step::commands as wire;
 use crate::reduce::threads::Thread;
 
@@ -109,11 +109,25 @@ ids! {
     SETTING_COPY "setting.copy-key", SETTING_RESET "setting.reset",
     PANE_ALWAYS "pane.always-here", PANE_NEVER "pane.never-alone",
     TAB_KEEP "tab.keep", TAB_KEEP_ACROSS "tab.keep-across", TAB_CLOSE_OTHERS "tab.close-others",
+    PANE_TO_WORK "pane.to-work", PANE_TO_SIDE "pane.to-side", PANE_TO_SHELF "pane.to-shelf",
+}
+
+/// The place a bar's row moves its pane to. The chat's place is the chat's alone.
+pub fn moves(command: CommandId) -> Option<Place> {
+    match command {
+        PANE_TO_WORK => Some(Place::Work),
+        PANE_TO_SIDE => Some(Place::Side),
+        PANE_TO_SHELF => Some(Place::Shelf),
+        _ => None,
+    }
 }
 
 /// What a right-click on a pane's bar offers, the same on the pane and on its tab: where it
 /// goes, how long it stays, and the person's word on its kind opening by itself.
-const BAR_ITEMS: [Item; 8] = [
+const BAR_ITEMS: [Item; 11] = [
+    plain(PANE_TO_WORK, "Move to work", Icon::Panel),
+    plain(PANE_TO_SIDE, "Move to side", Icon::Panel),
+    plain(PANE_TO_SHELF, "Move to shelf", Icon::Panel),
     plain(TAB_SPLIT_RIGHT, "Split right", Icon::Panel),
     plain(TAB_SPLIT_DOWN, "Split down", Icon::Panel),
     plain(TAB_PULL_OUT, "Pull out as a window", Icon::Out),
@@ -553,6 +567,13 @@ pub const COMMANDS: &[Command] = &[
     aimed(
         TAB_PULL_OUT,
         "Pull Out as a Window",
+        &[Kind::Pane, Kind::Tab],
+    ),
+    aimed(PANE_TO_WORK, "Move Pane to Work", &[Kind::Pane, Kind::Tab]),
+    aimed(PANE_TO_SIDE, "Move Pane to Side", &[Kind::Pane, Kind::Tab]),
+    aimed(
+        PANE_TO_SHELF,
+        "Move Pane to Shelf",
         &[Kind::Pane, Kind::Tab],
     ),
     aimed(TAB_KEEP, "Keep Tab", &[Kind::Pane, Kind::Tab]),
