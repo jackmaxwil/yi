@@ -1,7 +1,8 @@
 //! Places every pane of a window's layout and glides it on a layout change.
 
 use rune::{
-    Chord, Curve, Cx, Easing, El, GesturePhase, Key, KeyEvent, MagnifyEvent, Spring, Tx, col, el,
+    Chord, Curve, Cx, Easing, El, GesturePhase, Key, KeyEvent, MagnifyEvent, Spring, Tx,
+    WheelEvent, col, el,
 };
 use yd_core::address::uri::Address;
 use yd_core::command::run::PREVIEW;
@@ -50,6 +51,8 @@ pub struct Grip {
     pub naming: picker::Naming,
     /// How far the pinch under way has gone, as a change in magnification.
     pub pinch: f32,
+    /// How far the swipe along a bar has gone, in points, since the last tab it turned.
+    pub swipe: f32,
 }
 
 /// Every window's grip. It lives in the hub so that a scene can pose one; a window reads
@@ -169,6 +172,36 @@ fn pinch(win: &mut Win, tx: &mut Tx, pane: PaneId, event: MagnifyEvent) -> bool 
     });
     if far {
         act(win, tx, Act::Fill(pane));
+    }
+    true
+}
+
+/// How far two fingers go along a bar, in points, for each tab they turn.
+const SWIPE: f32 = 48.0;
+
+/// A sideways scroll over a pane's bar turns its tabs, one for each [`SWIPE`] points: fingers
+/// going left bring the next. Coasting after they lift turns none; an up or down scroll is not taken.
+pub(crate) fn swipe(win: &mut Win, tx: &mut Tx, pane: PaneId, event: WheelEvent) -> bool {
+    if event.dx.abs() <= event.dy.abs() {
+        return false;
+    }
+    let mut way = None;
+    grip(win, |grip| {
+        if event.phase == GesturePhase::Began {
+            grip.swipe = 0.0;
+        }
+        grip.swipe += if event.momentum { 0.0 } else { event.dx };
+        if grip.swipe.abs() >= SWIPE {
+            way = Some(if grip.swipe < 0.0 {
+                Turn::On
+            } else {
+                Turn::Back
+            });
+            grip.swipe -= SWIPE.copysign(grip.swipe);
+        }
+    });
+    if let Some(way) = way {
+        act(win, tx, Act::Turn(pane, way));
     }
     true
 }
