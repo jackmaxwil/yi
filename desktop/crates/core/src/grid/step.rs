@@ -81,6 +81,15 @@ pub enum GridMsg {
         kind: PaneKind,
         thing: Address,
     },
+    /// [`GridMsg::About`], but a pane newly shown takes a slot of its own: cut from `edge`, as
+    /// drawn, of the slot `pane` is in, or with none named of the slot its place's tabs are in.
+    Beside {
+        window: WindowId,
+        kind: PaneKind,
+        thing: Address,
+        pane: Option<PaneId>,
+        edge: Edge,
+    },
     /// The session a window shows and the kinds with something to show in it. A pane a
     /// layout seated follows its kind; one the person has follows the sessions it is open in.
     Have {
@@ -238,7 +247,9 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
         GridMsg::Close(pane) => return shut(grid, pane),
         GridMsg::Place { pane, place } => {
             let window = grid.home_of(pane).ok_or(GridError::NoSuchPane(pane))?;
-            if grid.slot_place(pane) == Some(place) {
+            // Incident: a pane out in its own window, once that window held other panes,
+            // was moved into their tabs; behind one of them it was in two windows at once.
+            if grid.slot_place(pane) == Some(place) || grid.origin_of(pane).is_some() {
                 return Ok(Vec::new());
             }
             // The tab left in the slot may be another session's: the slot settles on its own.
@@ -281,12 +292,19 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 split(layout, beside, own(edge, side), copy)
             })?;
         }
-        GridMsg::Open { window, kind } => return open(grid, window, kind, None),
+        GridMsg::Open { window, kind } => return open(grid, window, kind, None, None),
         GridMsg::About {
             window,
             kind,
             thing,
-        } => return open(grid, window, kind, Some(thing)),
+        } => return open(grid, window, kind, Some(thing), None),
+        GridMsg::Beside {
+            window,
+            kind,
+            thing,
+            pane,
+            edge,
+        } => return open(grid, window, kind, Some(thing), Some((pane, edge))),
         GridMsg::Resize {
             window,
             line,
@@ -696,6 +714,8 @@ use opening::{arrivals, open, seat};
 mod about;
 #[cfg(test)]
 mod bar;
+#[cfg(test)]
+mod beside;
 #[cfg(test)]
 mod carry;
 #[cfg(test)]

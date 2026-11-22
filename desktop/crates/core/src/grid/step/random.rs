@@ -130,7 +130,20 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
         15 => {
             let edges = [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom];
             let (pane, edge) = (dice.pick(&all)?, dice.pick(&edges)?);
-            GridMsg::SplitAt { pane, edge }
+            if dice.below(2) > 0 {
+                // A file shown beside: of a pane named, or of the slot its place's tabs are in.
+                let thing = Address::new(Kind::File, dice.pick(&["a.rs", "b.rs"])?).ok()?;
+                let (kind, pane) = (PaneKind::Code, (dice.below(2) > 0).then_some(pane));
+                GridMsg::Beside {
+                    window,
+                    kind,
+                    thing,
+                    pane,
+                    edge,
+                }
+            } else {
+                GridMsg::SplitAt { pane, edge }
+            }
         }
         16 => GridMsg::Close(dice.pick(&all)?),
         17 => {
@@ -302,6 +315,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::Drop { .. }
         | GridMsg::Open { .. }
         | GridMsg::About { .. }
+        | GridMsg::Beside { .. }
         | GridMsg::Have { .. }
         | GridMsg::SplitAt { .. }
         | GridMsg::Place { .. }

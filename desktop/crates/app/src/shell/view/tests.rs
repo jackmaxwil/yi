@@ -19,6 +19,7 @@ use crate::{root, scenes};
 
 mod attached;
 mod bar;
+mod beside;
 mod children;
 mod colour;
 mod design;

@@ -6,6 +6,7 @@ use rune::{Picked, Tx};
 use yd_core::address::attach::{ATTACH, AttachMsg, PICK};
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
+use yd_core::command::run::shown_path;
 use yd_core::command::table::Target;
 use yd_core::feed;
 use yd_core::ids::{CommandId, FeedId, PaneId, RowId, TabId, ThreadId};
@@ -157,12 +158,9 @@ fn shown(hub: &Hub, kind: PaneKind, pane: PaneId) -> Option<String> {
     if kind == PaneKind::Code {
         // What it held of a file since closed is not what the pane shows now.
         let seen = hub.panes.get::<InView>(Some(pane))?;
-        let open = hub.model.tables.get(feed::OPEN_FILES)?;
-        let path = |at| open.get(at)?.words("path");
-        let shown = seen.0.as_ref().map(|(file, ..)| file.as_str());
-        return (0..open.len())
-            .any(|at| path(at) == shown)
-            .then(|| seen.words())?;
+        let held = seen.0.as_ref().map(|(file, ..)| file.as_str());
+        let shown = shown_path(&hub.model, pane);
+        return (shown.is_some() && shown == held).then(|| seen.words())?;
     }
     if let Some(shells) = hub.panes.get::<Shells>(Some(pane)) {
         let Tab::Shell(feed) = shells.active else {

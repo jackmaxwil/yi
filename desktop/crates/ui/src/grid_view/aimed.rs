@@ -15,6 +15,7 @@ use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
 
 use crate::chrome::tabs;
+use crate::grid_view::beside;
 use crate::grid_view::drag::GLIDE;
 use crate::grid_view::view::{Act, act, hears_tabs, kind_of, tabs_of};
 use crate::pane::PaneCx;
@@ -93,14 +94,13 @@ pub fn carry(win: &mut Win, tx: &mut Tx, command: CommandId, target: &Target) ->
         return false;
     };
     tx.motion_curve(GLIDE);
-    let split = |win: &mut Win, edge| dispatch(win, Msg::Grid(GridMsg::SplitAt { pane, edge }));
     if let Some(place) = place {
         dispatch(win, Msg::Grid(GridMsg::Place { pane, place }));
         return true;
     }
     match command {
-        TAB_SPLIT_RIGHT => split(win, Edge::Right),
-        TAB_SPLIT_DOWN => split(win, Edge::Bottom),
+        TAB_SPLIT_RIGHT => beside::split(win, tx, pane, Edge::Right),
+        TAB_SPLIT_DOWN => beside::split(win, tx, pane, Edge::Bottom),
         TAB_CLOSE_OTHERS => {
             for other in mates {
                 act(win, tx, Act::Close(other));

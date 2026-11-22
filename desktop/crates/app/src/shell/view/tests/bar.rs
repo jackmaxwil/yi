@@ -28,13 +28,13 @@ const SIDE: &str = "window.context-menu.row.pane.to-side";
 const SHELF: &str = "window.context-menu.row.pane.to-shelf";
 
 /// The panes of `kind` the grid holds, in the order it made them.
-fn of(runtime: &Runtime<Win>, kind: PaneKind) -> Result<Vec<PaneId>, Box<dyn Error>> {
+pub(super) fn of(runtime: &Runtime<Win>, kind: PaneKind) -> Result<Vec<PaneId>, Box<dyn Error>> {
     let hub = runtime.state.hub.try_borrow()?;
     let panes = hub.model.grid.panes.iter();
     Ok(panes.filter(|p| p.kind == kind).map(|p| p.id).collect())
 }
 
-fn one(runtime: &Runtime<Win>, kind: PaneKind) -> Result<PaneId, Box<dyn Error>> {
+pub(super) fn one(runtime: &Runtime<Win>, kind: PaneKind) -> Result<PaneId, Box<dyn Error>> {
     match of(runtime, kind)?[..] {
         [pane] => Ok(pane),
         ref found => Err(format!("{kind:?} panes: {found:?}").into()),

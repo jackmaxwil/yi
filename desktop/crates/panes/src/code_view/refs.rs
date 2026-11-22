@@ -9,8 +9,8 @@ use rune::{
 use yd_core::address::attach::{AttachMsg, MAX_ATTACHED};
 use yd_core::address::{thing::Thing, uri::Address};
 use yd_core::command::table::{Route, Run, Target};
-use yd_core::command::{by_kind, run::opened, tools::lsp};
-use yd_core::feed::{FILES, FeedEvent, FeedStatus, LSP, OPEN_FILES, Table};
+use yd_core::command::{by_kind, run::shown_path, tools::lsp};
+use yd_core::feed::{FILES, FeedEvent, FeedStatus, LSP, Table};
 use yd_core::ids::{CommandId, PaneId, RowId};
 use yd_core::kind::Kind;
 use yd_core::msg::{Msg, step};
@@ -152,10 +152,12 @@ fn answer(hub: &Hub, asked: &Asked) -> Result<Vec<Reference>, String> {
     .to_owned())
 }
 
-fn shown(hub: &Hub) -> Option<(&str, Option<&str>)> {
-    let tab = rows_of(hub.model.tables.get(OPEN_FILES)?).max_by_key(|tab| opened(tab))?;
-    let file = hub.model.tables.get(FILES)?.find(&tab.id);
-    Some((tab.words("path")?, file.and_then(|file| file.words("text"))))
+/// The path of the file `pane` shows, and its text once read.
+fn shown(hub: &Hub, pane: PaneId) -> Option<(&str, Option<&str>)> {
+    let path = shown_path(&hub.model, pane)?;
+    let file = hub.model.tables.get(FILES)?;
+    let file = file.find(&RowId::new(format!("file:{path}")));
+    Some((path, file.and_then(|file| file.words("text"))))
 }
 
 fn asked_of(hub: &Hub, pane: PaneId) -> Option<&Asked> {
@@ -180,7 +182,7 @@ fn code_pane(win: &Win) -> Option<PaneId> {
 /// Puts the panel under `line` and returns the question for the server. The name is the
 /// source bytes `cols` of that line; its column goes out in characters.
 fn begin(hub: &mut Hub, pane: PaneId, line: LineNo, cols: Cols) -> Option<Run> {
-    let (path, text) = shown(hub)?;
+    let (path, text) = shown(hub, pane)?;
     let doc = Doc::new(text?, Lang::for_path(path), 0);
     let source = doc.line(line)?;
     let name = source.get(cols.within(source)?)?.to_owned();
@@ -496,7 +498,7 @@ fn peek(hub: &Hub, pane: PaneId) -> El {
     let Some(asked) = asked_of(hub, pane) else {
         return el();
     };
-    if shown(hub).map(|(path, _)| path) != Some(asked.path.as_str()) {
+    if shown(hub, pane).map(|(path, _)| path) != Some(asked.path.as_str()) {
         return el();
     }
     let tokens = &hub.model.tokens;
