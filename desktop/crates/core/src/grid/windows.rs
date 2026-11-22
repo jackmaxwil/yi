@@ -207,6 +207,7 @@ mod have {
     use serde::de::Error;
     use serde::{Deserialize, Deserializer, Serializer};
 
+    use crate::grid::layout::store::kind::read;
     use crate::ids::{ThreadId, WindowId};
     use crate::pane::PaneKind;
 
@@ -226,14 +227,8 @@ mod have {
         let mut have = BTreeMap::new();
         for (window, thread, names) in entries {
             let kinds = names
-                .into_iter()
-                .map(|name| {
-                    PaneKind::ALL
-                        .iter()
-                        .copied()
-                        .find(|kind| kind.slug() == name)
-                        .ok_or_else(|| D::Error::custom("a kind of pane this build does not have"))
-                })
+                .iter()
+                .map(|name| read::<D::Error>(name))
                 .collect::<Result<BTreeSet<_>, _>>()?;
             let key = (WindowId(window), thread);
             if have.insert(key, kinds).is_some() {
