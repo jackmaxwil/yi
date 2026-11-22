@@ -363,19 +363,16 @@ fn highest(win: &Win) -> Option<PaneId> {
     let hub = win.hub.try_borrow().ok()?;
     hub.model.grid.panes.iter().map(|pane| pane.id).max()
 }
+pub(crate) fn split(win: &mut Win, pane: PaneId, edge: Edge) {
+    dispatch(win, Msg::Grid(GridMsg::SplitAt { pane, edge }));
+}
 
 /// A tab pulled out is a split and a leave: the grid makes a pane of the same kind beside
 /// this one and pulls it out, which asks the window layer for its window.
 fn tear_out(win: &mut Win, tx: &mut Tx, pane: PaneId, tab: TabId) {
     let before = highest(win);
     tx.motion_curve(GLIDE);
-    dispatch(
-        win,
-        Msg::Grid(GridMsg::SplitAt {
-            pane,
-            edge: Edge::Right,
-        }),
-    );
+    split(win, pane, Edge::Right);
     let Some(copy) = highest(win).filter(|id| Some(*id) > before) else {
         return;
     };
@@ -510,13 +507,7 @@ pub fn act(win: &mut Win, tx: &mut Tx, act_on: Act) {
         Act::NewTab(_) => {}
         Act::Split(pane) => {
             tx.motion_curve(GLIDE);
-            dispatch(
-                win,
-                Msg::Grid(GridMsg::SplitAt {
-                    pane,
-                    edge: Edge::Right,
-                }),
-            );
+            split(win, pane, Edge::Right);
         }
         Act::PopOut(pane) => {
             let pulled = win
