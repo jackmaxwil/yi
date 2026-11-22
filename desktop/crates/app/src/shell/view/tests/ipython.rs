@@ -15,6 +15,8 @@ const PLAIN: &str = include_str!("../../../../../../fixtures/wire/turn.jsonl");
 /// The recording's lines up to the third cell's start, and up to its end.
 const THIRD_STARTED: usize = 87;
 const THIRD_ENDED: usize = 93;
+/// Up to the fourth cell's end, its chart.
+const CHART: usize = 160;
 
 fn lines(recording: &str, from: usize, to: usize) -> String {
     let lines = recording.lines().skip(from).take(to.saturating_sub(from));
@@ -246,5 +248,23 @@ fn a_thread_with_no_cells_says_its_kernel_is_not_booted() -> Check {
     let said = words(&runtime, &format!("{key}.state"))?;
     assert!(said.contains("No cells in this thread yet"), "{said:?}");
     assert!(said.contains("kernel is not booted"), "{said:?}");
+    Ok(())
+}
+
+/// The pane opens by itself for a picture and for nothing less: three cells of text leave the
+/// chat alone, and the fourth cell's chart brings the pane beside it.
+#[test]
+fn the_pane_opens_by_itself_when_a_cell_draws_a_picture() -> Check {
+    let mut runtime = window(TURN, THIRD_ENDED)?;
+    assert!(pane(&runtime).is_err(), "text alone opens no pane");
+    runtime.update(|win, _| {
+        if let Ok(mut hub) = win.hub.try_borrow_mut() {
+            let _ = play(&mut hub.model, &lines(TURN, THIRD_ENDED, CHART));
+        }
+    });
+    rest(&mut runtime);
+    let key = pane(&runtime)?;
+    let head = words(&runtime, &format!("{key}.pane-header"))?;
+    assert!(head.ends_with("cells"), "the thread's notebook: {head:?}");
     Ok(())
 }

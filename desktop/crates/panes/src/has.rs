@@ -52,6 +52,8 @@ fn has(hub: &Hub, window: WindowId, kind: PaneKind) -> bool {
         PaneKind::Report => thread.and_then(report::pane::newest).is_some(),
         PaneKind::Terminal => terminal::pane::has(hub, window),
         PaneKind::Agents => agents::pane::has(hub, thread),
+        // A cell's text is in the chat already: only a picture is worth a pane of its own.
+        PaneKind::IPython => thread.is_some_and(|thread| thread.transcript.pictured()),
         _ => true,
     }
 }

@@ -13,7 +13,7 @@ use crate::registry::{PANES, scenes};
 const MAIN: WindowId = WindowId(0);
 
 /// The kinds that rest, each with the scene whose fixtures give it something to show.
-const BUILT: [(PaneKind, &str); 8] = [
+const BUILT: [(PaneKind, &str); 9] = [
     (PaneKind::Files, "files/mockup"),
     (PaneKind::Changes, "changes/mockup"),
     (PaneKind::Terminal, "terminal/mockup"),
@@ -22,6 +22,7 @@ const BUILT: [(PaneKind, &str); 8] = [
     (PaneKind::Remote, "desktop/mockup"),
     (PaneKind::Report, "report/mockup"),
     (PaneKind::Agents, "agents/mockup"),
+    (PaneKind::IPython, "ipython/picture"),
 ];
 
 #[test]
@@ -55,5 +56,19 @@ fn a_kind_always_opened_has_its_pane_to_show_with_nothing_in_it() -> Result<(), 
     let now = kinds(&hub, MAIN);
     assert!(now.contains(&PaneKind::Changes), "always: {now:?}");
     assert!(!now.contains(&PaneKind::Web), "never has nothing: {now:?}");
+    Ok(())
+}
+
+/// Kernel cells that print and return values are in the chat already: the recorded turn
+/// gives IPython nothing to show until its fourth cell draws a chart.
+#[test]
+fn cells_with_no_picture_give_ipython_nothing_to_show() -> Result<(), Box<dyn Error>> {
+    let hub = Hub::new(PANES, scenes().collect());
+    let mut hub = hub.try_borrow_mut()?;
+    let scene = scenes().find(|scene| scene.name == "ipython/running");
+    (scene.ok_or("no running scene")?.setup)(&mut hub);
+    let thread = yd_ui::shown::thread(&hub, MAIN).ok_or("no thread shown")?;
+    assert!(thread.transcript.cells().count() >= 2, "it has cells");
+    assert!(!kinds(&hub, MAIN).contains(&PaneKind::IPython));
     Ok(())
 }
