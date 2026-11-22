@@ -8,7 +8,6 @@ const LOAD_PER_CPU_MILLI: u64 = 4_000;
 const MEM_FLOOR_KIB: u64 = 512 * 1024;
 const MEM_PER_LIVE_KIB: u64 = 64 * 1024;
 const DISK_FLOOR_KIB: u64 = 2 * 1024 * 1024;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostSample {
     pub cpus: NonZeroUsize,
@@ -16,7 +15,6 @@ pub struct HostSample {
     pub mem_free_kib: Option<u64>,
     pub disk_free_kib: Option<u64>,
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resource {
     Cpu,
@@ -111,10 +109,8 @@ pub fn sample(lanes_volume: &Path) -> HostSample {
     }
 }
 
-pub const SUSPEND_ENV: &str = "YI_ADMISSION_SUSPENDED";
-
 pub fn check(lanes_volume: &Path, live: usize) -> Result<(), Refusal> {
-    if std::env::var_os(SUSPEND_ENV).is_some() {
+    if std::env::var_os("YI_ADMISSION_SUSPENDED").is_some() {
         return Ok(());
     }
     match admit(&sample(lanes_volume), live) {
