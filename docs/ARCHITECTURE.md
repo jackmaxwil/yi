@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.1079.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.1080.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -356,6 +356,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D608 | the fixer answers a blocked round on a ready pull request that is not in the queue, and still leaves a queued one alone (revises D320's draft-only fixer) | a ready pull request with a blocked round was nobody's job: the fixer skipped it as ready and the queue refused it as blocked, so #2237 and #2299 sat for a week; a push restarts checks only on a landing, and a landing carries the `queue` label | drop the `queue` and verdict clause in `attempt` of scripts/pr_autofix.py, so every ready title clears `blocked` again |
 | D607 | A model role `models.rewriter` restates the composer's draft before it is sent, behind a control on the composer's bottom border with the positions off, short, medium and long; the rewrite is shown in the box before anything is sent, and the host appends the typed words under it as `My words, verbatim:` | the owner asked for "auto prompt improvement" with "visible chrome and button on/near the TUI composer. when button on, rewriter on" and "a slider or other picker so i can pick more concise or longer", chose "Auto, show me first" and "Quoted at the end, model sees it"; a ten-prompt trial showed a rewriter that reads the agent's answers turns them into the person's orders, so it reads the person's own last three messages only | unset `models.rewriter` |
 | D606 | A `session/prompt` that arrives mid-turn is queued and answered at once with `{messageId, queuePlace}`, and starts-or-queues is one decision under the session's status lock (amends D351's answer-only-after-insertion for queued prompts) | a client could not tell a queued prompt from a lost one, and the start-then-queue pair of calls let a prompt sent between them start ahead of the queue | answer queued prompts at insertion again and restore the two-call fallback in `crates/acp/src/lib.rs` |
 | D605 | a reported zero is an unknown turn when it counts no tokens and no charge | a relay's zero counts are not a measured free turn, so the session cost header must not read them as complete | revert by clearing usage.unknown in openai.rs and openai_responses.rs |

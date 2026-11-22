@@ -1,4 +1,6 @@
 ---
+version: 0.1080.0
+decisions: D608
 issue: Closes #2326
 cut: none scripts/pr_autofix.py
 decision: the fixer answers a blocked round on a ready pull request that is not in the queue, and still leaves a queued one alone (revises D320's draft-only fixer) | a ready pull request with a blocked round was nobody's job: the fixer skipped it as ready and the queue refused it as blocked, so #2237 and #2299 sat for a week; a push restarts checks only on a landing, and a landing carries the `queue` label | drop the `queue` and verdict clause in `attempt` of scripts/pr_autofix.py, so every ready title clears `blocked` again
