@@ -10,7 +10,7 @@ use crate::model::Model;
 use crate::pane::PaneKind::{self, Agents, Changes, Chat, Code, Files, Terminal, Trace, Web};
 
 use super::GridMsg;
-use super::tests::{MAIN, change, drawn, pane, record};
+use super::tests::{MAIN, change, drawn, pane, record, reread};
 
 /// The chat alone, in a window showing session `thread`.
 pub(super) fn window(thread: &str) -> Model {
@@ -240,11 +240,7 @@ fn the_grid_file_keeps_its_stacks_and_refuses_a_broken_one() -> Check {
     let mut model = window("a");
     open(&mut model, Changes);
     open(&mut model, Code);
-    let text = serde_json::to_string(&model.grid)?;
-    let mut read: Windows = serde_json::from_str(&text)?;
-    (read.have, read.shows) = (model.grid.have.clone(), model.grid.shows.clone());
-    read.fronts = model.grid.fronts.clone();
-    read.had = model.grid.had.clone();
+    let (text, read) = reread(&model)?;
     assert_eq!(read, model.grid);
     let (changes, code, chat) = (
         pane(&model, Changes)?,

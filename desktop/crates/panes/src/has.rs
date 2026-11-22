@@ -80,7 +80,7 @@ pub fn tell(win: &mut Win, tx: &mut Tx) -> bool {
         let fresh = yd_ui::shown::fresh(&hub, window);
         let thread = yd_ui::shown::thread(&hub, window).filter(|_| !fresh);
         let thread = thread.map(|thread| thread.id.clone());
-        let told = grid.have.get(&window);
+        let told = grid.have.get(&(window, thread.clone()));
         let same = told.is_some_and(|told| told.iter().eq(now.iter()))
             && grid.shows.get(&window) == thread.as_ref();
         if same || grid.window(window).is_none() {
