@@ -434,10 +434,20 @@ def eject(obs):
     delete_ref()
 
 
+def retarget(branch):
+    """Point the open PRs based on a landed branch at main and rerun their checks, which read the old base.
+    Incident: thirteen PRs stacked on each other's branches were refused as not based on main, for good."""
+    for child in listing(forge_pr.open_pulls(), "the open pull requests") if branch and branch != "main" else []:
+        if child["base"]["ref"] == branch:
+            api("PATCH", f"pulls/{child['number']}", {"base": "main"})
+            forge_pr.cmd_rerun(argparse.Namespace(number=str(child["number"])))
+
+
 def finish(obs, recorded=False):
     """Idempotent, so a tick killed after the push does this through the `landed` rule instead."""
     for number, _ in obs["members"]:
         pr = forge_pr.pull(number)
+        retarget((pr.get("head") or {}).get("ref"))
         # The forge marks the PR but fires no closing keyword on a push (the 2026-11-01 probe).
         for issue in closing(pr.get("body")):
             answer = api("PATCH", f"issues/{issue}", {"state": "closed"})
@@ -684,7 +694,7 @@ def scenario_repo(numbers, shared=False):
                                  comment=lambda number, text: comments.append((number, text)), set_label=label, delete_ref=remove,
                                  statuses_url=lambda sha, lane: ""), \
                 mock.patch.multiple(forge_pr, pull=lambda number: pulls[number], is_behind=lambda pr: False, repo=lambda: "r",
-                                    head_jobs=jobs, unreviewed=lambda number, pr: []):
+                                    head_jobs=jobs, unreviewed=lambda number, pr: [], open_pulls=lambda: []):
             state = {"base": base, "pulls": pulls, "queued": queued, "comments": comments, "autofix": autofix, "pushes": pushes}
             yield state
 
@@ -927,7 +937,7 @@ def landing_cases():
         at_root = lambda *a, **kw: real_git(*a, **{"cwd": root, **kw})
         with mock.patch.object(forge_pr, "pull", lambda number: pr), \
                 mock.patch.multiple(sys.modules[__name__], same_tree=lambda *a: True, git=at_root, ROOT=root,
-                                    record_main=lambda: real_record_main(root), set_label=mock.DEFAULT, delete_ref=mock.DEFAULT):
+                                    record_main=lambda: real_record_main(root), set_label=mock.DEFAULT, delete_ref=mock.DEFAULT, retarget=mock.DEFAULT):
             land(obs, "on")
         landed = git("rev-parse", "main", cwd=origin).stdout.strip()
         count = len(pushes.read_text().splitlines()) if pushes.exists() else 0
@@ -1034,6 +1044,17 @@ def forge_cases():
                     bad.append(f"a refused close at {age} minutes stopped={stopped}, deleted the ref={stubs['delete_ref'].called}")
                 if not keeps and "#5" not in str(stubs["comment"].call_args):
                     bad.append("a close given up on did not say so on the PR")
+        # A landed branch's children move to main and rerun; a PR based elsewhere is not touched.
+        pulls = [{"number": 8, "base": {"ref": "b7"}}, {"number": 9, "base": {"ref": "main"}}, {"number": 10, "base": {"ref": "b9"}}]
+        moved, reran = [], []
+        with mock.patch.object(forge_pr, "fgj_api", lambda method, path, payload=None: moved.append((method, path, payload)) if method == "PATCH" and "/pulls/" in path else {"body": ""}), \
+                mock.patch.object(forge_pr, "pull", lambda n: {"body": "", "head": {"ref": "b7"}}), mock.patch.object(forge_pr, "open_pulls", lambda: pulls), \
+                mock.patch.object(forge_pr, "cmd_rerun", lambda ns: reran.append(ns.number)), \
+                mock.patch.multiple(sys.modules[__name__], delete_ref=mock.DEFAULT, record_main=mock.DEFAULT, set_label=mock.DEFAULT, comment=mock.DEFAULT):
+            with contextlib.redirect_stdout(io.StringIO()):
+                finish({"members": [(7, "a" * 40)], "age_minutes": 1})
+        if [(path.rsplit("/", 1)[1], payload) for _, path, payload in moved] != [("8", {"base": "main"})] or reran != ["8"]:
+            bad.append(f"landing b7 moved {moved} and reran {reran}, not its one child #8")
         # A 404 may be a gone issue or a write the token may not make, so only the closed issue itself is an answer.
         for answer, closed in (({"number": 5, "state": "closed"}, True), (None, False)):
             with mock.patch.object(forge_pr, "fgj_api", lambda *a: answer), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
