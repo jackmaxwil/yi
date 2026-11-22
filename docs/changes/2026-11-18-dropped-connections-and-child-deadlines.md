@@ -1,4 +1,6 @@
 ---
+version: 0.1081.0
+decisions: D609
 issue: Closes #2178, Closes #2215
 decision: a request on a pooled socket that has already carried a finished stream is bounded by the model's read deadline on a helper thread, ends with the usual timeout refusal and drops the agent's pooled sockets, and is never sent a second time; a child's model keeps its `readTimeoutSecs` or 300 s (amends D557) | ureq clears the read deadline when a socket returns to its pool, so a request written into a socket a NAT dropped waited forever; a resend would bill a slow but live socket twice; a Sonnet child writing a design document died at the 60 s default | reversible via deleting `send_on_pooled` and `CHILD_READ_TIMEOUT_SECS`, which restores D557
 ledger~: model read deadline | a timeout is neither retried nor resent, its refusal | a timeout is neither retried nor resent, a pooled socket silent past it ends the same way and is dropped from the pool, a child keeps 300 s unless its entry says otherwise, its refusal
