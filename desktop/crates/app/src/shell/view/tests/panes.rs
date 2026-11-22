@@ -101,6 +101,7 @@ fn the_top_bar_has_one_panes_button_that_names_its_key_and_opens_the_panel() -> 
 #[test]
 fn the_panel_closes_on_escape_a_press_outside_and_a_layout_chosen() -> Check {
     let mut runtime = settled("shell/mockup")?;
+    say(&mut runtime, "agents never");
     open(&mut runtime);
     assert!(live(&runtime, PANEL), "⌥⌘0 opens it");
     strike(&mut runtime, Key::Escape, Mods::default());
@@ -541,6 +542,7 @@ fn panes_of_one_place_open_as_tabs_and_a_press_on_a_tab_brings_it_in_front() -> 
 fn a_kind_with_something_new_opens_as_a_tab_with_a_dot_and_moves_nothing() -> Check {
     use yd_ui::grid_view::view::{Act, act, show_pane};
     let mut runtime = settled("shell/mockup")?;
+    say(&mut runtime, "agents never");
     runtime.update(|win, tx| {
         act(win, tx, Act::Show(yd_core::grid::saved::BLANK.slug));
         show_pane(win, tx, PaneKind::Code);

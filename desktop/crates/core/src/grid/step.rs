@@ -174,14 +174,7 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 Some(thread) => grid.shows.insert(window, thread),
                 None => grid.shows.remove(&window),
             };
-            let alone = |kind: &PaneKind| grid.opens_alone(*kind);
-            for kind in arrived.into_iter().filter(alone).collect::<Vec<_>>() {
-                // A rule with no room opens nothing: the rest of the telling still holds.
-                let mut tried = grid.clone();
-                if arrive(&mut tried, window, kind).is_ok() {
-                    *grid = tried;
-                }
-            }
+            arrivals(grid, window, arrived);
             let back = grid.fronts.get(&(window, thread)).cloned();
             for pane in back.unwrap_or_default().into_iter().filter(|_| turned) {
                 let here = grid.home_of(pane) == Some(window) && grid.showing(window, pane);
@@ -413,6 +406,17 @@ fn seat(grid: &mut Windows, id: WindowId, pane: PaneId) -> Result<bool, GridErro
         })?;
     }
     Ok(false)
+}
+
+/// Opens a pane for each of `kinds` that opens by itself. One with no room opens nothing:
+/// the change it came with still holds.
+fn arrivals(grid: &mut Windows, window: WindowId, kinds: Vec<PaneKind>) {
+    for kind in kinds {
+        let mut tried = grid.clone();
+        if grid.opens_alone(kind) && arrive(&mut tried, window, kind).is_ok() {
+            *grid = tried;
+        }
+    }
 }
 
 /// A rule's pane: `kind` has something to show in this session for the first time, so a pane
@@ -661,6 +665,9 @@ fn wear(
         }
     }
     settle(grid, id)?;
+    // A layout sets places only: what the session has that opens by itself comes again.
+    let has = grid.have.get(&id).cloned().unwrap_or_default();
+    arrivals(grid, id, has.into_iter().collect());
     Ok(ops)
 }
 

@@ -1,0 +1,4 @@
+---
+issue: Refs #2307
+---
+Yi Desktop no longer loses a pane that opened by itself when you pick a layout. Before, Agents, Changes, the Web app or IPython vanished on the pick and stayed gone for the rest of the session; now each comes back as a quiet tab while the session still has something for it. Just chat stays the chat alone.

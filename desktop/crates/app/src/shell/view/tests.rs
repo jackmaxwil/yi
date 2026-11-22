@@ -32,6 +32,7 @@ mod opens;
 mod outside;
 mod panes;
 mod project;
+mod replay;
 mod sidebar;
 mod steps;
 mod tools;
@@ -56,6 +57,18 @@ fn unframed(name: &str) -> Result<Runtime<Win>, Box<dyn Error>> {
     runtime.poll = Some(root::poll);
     runtime.on_key = Some(root::on_key);
     Ok(runtime)
+}
+
+/// The person's words on what opens by itself, as the settings file would hold them. The
+/// scenes' session has child agents, which would bring Agents beside a chat meant to be alone.
+fn say(runtime: &mut Runtime<Win>, words: &'static str) {
+    use yd_core::settings::schema::SettingValue;
+    use yd_core::settings::store::{OPENS, SettingsMsg};
+    runtime.update(move |win, _| {
+        let key = yd_core::ids::SettingKey::fixed(OPENS);
+        let set = SettingsMsg::Set(key, Some(SettingValue::Text(words.into())));
+        yd_ui::win::dispatch(win, yd_core::msg::Msg::Settings(set));
+    });
 }
 
 fn rest(runtime: &mut Runtime<Win>) {

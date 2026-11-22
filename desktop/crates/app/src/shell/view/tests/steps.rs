@@ -19,6 +19,7 @@ fn chat(runtime: &Runtime<Win>) -> Result<String, Box<dyn Error>> {
 
 /// The window as a first launch draws it, the chat alone beside the sidebar.
 fn alone(runtime: &mut Runtime<Win>) {
+    say(runtime, "agents never\nchanges never\nweb never");
     runtime.update(|win, _| {
         if let Ok(mut hub) = win.hub.try_borrow_mut() {
             root::blank(&mut hub, root::MAIN);

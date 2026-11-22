@@ -123,6 +123,7 @@ fn drawn(runtime: &Runtime<Win>) -> Result<Vec<PaneKind>, Box<dyn Error>> {
 #[test]
 fn a_first_launch_shows_the_chat_alone_until_a_pane_is_opened() -> Check {
     let mut runtime = runtime("shell/mockup")?;
+    say(&mut runtime, "agents never");
     runtime.update(|win, _| {
         if let Ok(mut hub) = win.hub.try_borrow_mut() {
             root::blank(&mut hub, root::MAIN);
