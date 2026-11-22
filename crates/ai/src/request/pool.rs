@@ -1,3 +1,5 @@
+use crate::slot::Slot;
+
 /// Past this a pooled connection is not trusted: a NAT may have dropped it without a FIN.
 const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -90,14 +92,6 @@ pub(super) fn at_helper_cap() -> bool {
     HELPERS.load(std::sync::atomic::Ordering::SeqCst) >= HELPER_CAP
 }
 
-struct Helper;
-
-impl Drop for Helper {
-    fn drop(&mut self) {
-        HELPERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
 /// Incident: ureq clears a socket's read deadline when it returns to its pool, so a request written
 /// into a dropped one waited forever. `None` is silent past `wait`; the prompt is not sent again.
 pub(super) fn send_on_pooled(
@@ -107,8 +101,7 @@ pub(super) fn send_on_pooled(
 ) -> Option<Result<ureq::Response, ureq::Error>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let body = body.to_owned();
-    HELPERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let helper = Helper;
+    let helper = Slot::take(&HELPERS);
     std::thread::spawn(move || {
         let _held = helper;
         let _ = sender.send(request.send_string(&body));
