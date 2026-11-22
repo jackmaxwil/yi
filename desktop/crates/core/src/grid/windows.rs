@@ -238,10 +238,7 @@ impl Windows {
     /// chat always), the person's by the session shown. True before the window is told.
     #[must_use]
     pub fn showing(&self, window: WindowId, pane: PaneId) -> bool {
-        let (Some(have), Some(pane)) = (
-            self.have.get(&window),
-            self.panes.iter().find(|other| other.id == pane),
-        ) else {
+        let (Some(have), Some(pane)) = (self.have.get(&window), self.pane_of(pane)) else {
             return true;
         };
         match pane.seated {
