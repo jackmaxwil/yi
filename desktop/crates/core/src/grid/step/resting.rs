@@ -9,7 +9,7 @@ use crate::model::Model;
 use crate::pane::PaneKind::{self, Changes, Chat, Files, Terminal};
 
 use super::GridMsg;
-use super::tests::{FRAME_2, MAIN, REVIEW_PLACED, change, drawn, expect, pane, record};
+use super::tests::{FRAME_2, MAIN, REVIEW_PLACED, change, drawn, expect, pane, record, reread};
 
 /// A window that was told its kinds before a layout was picked, as the running app's is.
 fn told(kinds: &[PaneKind], saved: &'static str) -> Model {
@@ -142,9 +142,7 @@ fn a_kept_layout_and_the_grid_file_keep_resting_panes() -> Check {
     let mut kinds: Vec<PaneKind> = kept.shape.areas.iter().map(|(kind, _)| *kind).collect();
     kinds.sort();
     assert_eq!(kinds, [Chat, Files, Changes, Terminal]);
-    let text = serde_json::to_string(&model.grid)?;
-    let mut read: Windows = serde_json::from_str(&text)?;
-    read.fronts = model.grid.fronts.clone();
+    let (_, read) = reread(&model)?;
     assert_eq!(read.place(MAIN, FRAME_1), model.grid.place(MAIN, FRAME_1));
     assert_eq!(read, model.grid);
     Ok(())

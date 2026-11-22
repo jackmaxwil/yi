@@ -9,7 +9,7 @@ use crate::model::Model;
 use crate::pane::PaneKind::{self, Chat, Containers, Trace, Web};
 
 use super::GridMsg;
-use super::tests::{FRAME_2, MAIN, change, drawn, pane, record};
+use super::tests::{FRAME_2, MAIN, change, drawn, pane, record, reread};
 
 /// The chat alone, in a window showing session `thread`.
 fn window(thread: &str) -> Model {
@@ -157,10 +157,7 @@ fn the_grid_file_keeps_each_panes_sessions() -> Check {
         !list.contains(&ThreadId::new("a")),
         "the oldest was forgotten"
     );
-    let text = serde_json::to_string(&model.grid)?;
-    let mut read: Windows = serde_json::from_str(&text)?;
-    read.shows = model.grid.shows.clone();
-    read.fronts = model.grid.fronts.clone();
+    let (_, read) = reread(&model)?;
     assert_eq!(read, model.grid);
     Ok(())
 }
