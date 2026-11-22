@@ -128,6 +128,19 @@ fn a_closed_tab_stays_closed_and_a_pane_already_here_is_enough() -> Check {
     Ok(())
 }
 
+/// A tab closed while its kind has something stays closed after the grid reads from disk.
+#[test]
+fn a_closed_tab_stays_closed_after_the_grid_restarts() -> Check {
+    let mut model = window("chat", &[Chat, Changes]);
+    let changes = pane(&model, Changes)?;
+    change(&mut model, GridMsg::Close(changes));
+    let text = serde_json::to_string(&model.grid)?;
+    model.grid = serde_json::from_str(&text)?;
+    tell(&mut model, "a", &[Chat, Changes]);
+    assert_eq!(of(&model, Changes).len(), 0, "closed, after restart");
+    Ok(())
+}
+
 /// A pane that is out docks back beside the neighbour it remembers, and that neighbour may
 /// have come back as a quiet tab behind another: the pane docks beside the slot it is in.
 #[test]

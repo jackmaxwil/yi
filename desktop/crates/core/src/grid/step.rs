@@ -166,10 +166,9 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 grid.fronts.insert((window, was), fronts);
             }
             let now: BTreeSet<PaneKind> = kinds.into_iter().collect();
-            let before = grid.had.insert((window, thread.clone()), now.clone());
+            let before = grid.have.insert((window, thread.clone()), now.clone());
             let first = |kind: &PaneKind| before.as_ref().is_none_or(|had| !had.contains(kind));
             let arrived: Vec<PaneKind> = now.iter().copied().filter(first).collect();
-            grid.have.insert(window, now);
             match thread.clone() {
                 Some(thread) => grid.shows.insert(window, thread),
                 None => grid.shows.remove(&window),
@@ -324,6 +323,10 @@ fn host(grid: &Windows, layout: &Layout, place: Place) -> Option<PaneId> {
     layout.areas.iter().map(|(pane, _)| *pane).find(placed)
 }
 
+fn same_pane(pane: &Pane, kind: PaneKind, thing: Option<&Address>) -> bool {
+    pane.kind == kind && pane.thing.as_ref() == thing
+}
+
 /// Shows a pane of `kind` in `id`, the person's from then on. One the window has comes in
 /// front; else a hidden or a new one joins the stack of its place, or opens that place.
 fn open(
@@ -347,7 +350,7 @@ fn open(
     }
     // A thing is shown once: its pane out in a window of its own is where it shows.
     let out = |pane: &&Pane| thing.is_some() && grid.origin_of(pane.id).is_some();
-    let same = |pane: &&Pane| pane.kind == kind && pane.thing == thing;
+    let same = |pane: &&Pane| same_pane(pane, kind, thing.as_ref());
     if grid.panes.iter().filter(same).any(|pane| out(&pane)) {
         return Ok(Vec::new());
     }
@@ -485,7 +488,8 @@ fn settle(grid: &mut Windows, id: WindowId) -> Result<(), GridError> {
 
 /// [`settle`] for the one slot `only` is in, or for every slot of the window.
 fn settle_in(grid: &mut Windows, id: WindowId, only: Option<PaneId>) -> Result<(), GridError> {
-    if !grid.have.contains_key(&id) {
+    let thread = grid.shows.get(&id).cloned();
+    if !grid.have.contains_key(&(id, thread)) {
         return Ok(());
     }
     let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
@@ -542,8 +546,11 @@ fn idle(grid: &Windows, pane: PaneId) -> bool {
 }
 
 fn hidden_idle(grid: &Windows, kind: PaneKind, thing: Option<&Address>) -> Option<PaneId> {
-    let of_kind = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == thing;
-    grid.panes.iter().filter(of_kind).map(|pane| pane.id).find(|pane| idle(grid, *pane))
+    grid.panes
+        .iter()
+        .filter(|pane| same_pane(pane, kind, thing))
+        .map(|pane| pane.id)
+        .find(|pane| idle(grid, *pane))
 }
 
 /// Takes `pane` out of the window it is drawn in, for good. A window left with no pane

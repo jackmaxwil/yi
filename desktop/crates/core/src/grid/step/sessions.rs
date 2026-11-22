@@ -159,9 +159,8 @@ fn the_grid_file_keeps_each_panes_sessions() -> Check {
     );
     let text = serde_json::to_string(&model.grid)?;
     let mut read: Windows = serde_json::from_str(&text)?;
-    (read.have, read.shows) = (model.grid.have.clone(), model.grid.shows.clone());
+    read.shows = model.grid.shows.clone();
     read.fronts = model.grid.fronts.clone();
-    read.had = model.grid.had.clone();
     assert_eq!(read, model.grid);
     Ok(())
 }

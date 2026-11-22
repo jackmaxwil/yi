@@ -242,9 +242,8 @@ fn the_grid_file_keeps_its_stacks_and_refuses_a_broken_one() -> Check {
     open(&mut model, Code);
     let text = serde_json::to_string(&model.grid)?;
     let mut read: Windows = serde_json::from_str(&text)?;
-    (read.have, read.shows) = (model.grid.have.clone(), model.grid.shows.clone());
+    read.shows = model.grid.shows.clone();
     read.fronts = model.grid.fronts.clone();
-    read.had = model.grid.had.clone();
     assert_eq!(read, model.grid);
     let (changes, code, chat) = (
         pane(&model, Changes)?,

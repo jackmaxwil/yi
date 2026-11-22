@@ -144,10 +144,10 @@ pub struct Windows {
     /// The layouts the person arranged and named, kept with the grid.
     #[serde(default)]
     pub own: Vec<Own>,
-    /// The kinds with something to show in each window, as last told; none before the first
-    /// telling, when no pane rests or comes back.
-    #[serde(skip)]
-    pub have: BTreeMap<WindowId, BTreeSet<PaneKind>>,
+    /// The kinds with something to show in each session of a window, as last told; none
+    /// before its first telling, when no pane rests or comes back.
+    #[serde(default, with = "have")]
+    pub have: BTreeMap<(WindowId, Option<ThreadId>), BTreeSet<PaneKind>>,
     /// The session each window shows, as last told; none while it shows New chat.
     #[serde(skip)]
     pub shows: BTreeMap<WindowId, ThreadId>,
@@ -155,10 +155,6 @@ pub struct Windows {
     /// front again when the window turns back. Not kept in the file.
     #[serde(skip)]
     pub fronts: BTreeMap<(WindowId, Option<ThreadId>), Vec<PaneId>>,
-    /// The kinds each session of a window was last told to have: a rule opens a pane for a
-    /// kind the first time it is among them, and not again while it stays. Not kept.
-    #[serde(skip)]
-    pub had: BTreeMap<(WindowId, Option<ThreadId>), BTreeSet<PaneKind>>,
 }
 
 /// A grid as a file gives it, before anything has looked at it.
@@ -172,6 +168,8 @@ struct Unchecked {
     windows: Vec<Window>,
     #[serde(default)]
     own: Vec<Own>,
+    #[serde(default, with = "have")]
+    have: BTreeMap<(WindowId, Option<ThreadId>), BTreeSet<PaneKind>>,
 }
 
 impl TryFrom<Unchecked> for Windows {
@@ -183,10 +181,9 @@ impl TryFrom<Unchecked> for Windows {
             panes: file.panes,
             windows: file.windows,
             own: Vec::new(),
-            have: BTreeMap::new(),
+            have: file.have,
             shows: BTreeMap::new(),
             fronts: BTreeMap::new(),
-            had: BTreeMap::new(),
         };
         grid.check()?;
         // A kept layout a file spoils reads as gone, as a saved one this build lacks does.
@@ -201,6 +198,49 @@ impl TryFrom<Unchecked> for Windows {
             window.own = window.own.filter(|id| kept.contains(id));
         }
         Ok(grid)
+    }
+}
+
+mod have {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::ids::{ThreadId, WindowId};
+    use crate::pane::PaneKind;
+
+    type Told = BTreeMap<(WindowId, Option<ThreadId>), BTreeSet<PaneKind>>;
+
+    pub fn serialize<S: Serializer>(have: &Told, to: S) -> Result<S::Ok, S::Error> {
+        let names =
+            |kinds: &BTreeSet<PaneKind>| kinds.iter().map(|kind| kind.slug()).collect::<Vec<_>>();
+        to.collect_seq(
+            have.iter()
+                .map(|((window, thread), kinds)| (window.0, thread, names(kinds))),
+        )
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Told, D::Error> {
+        let entries = Vec::<(u32, Option<ThreadId>, Vec<String>)>::deserialize(from)?;
+        let mut have = BTreeMap::new();
+        for (window, thread, names) in entries {
+            let kinds = names
+                .into_iter()
+                .map(|name| {
+                    PaneKind::ALL
+                        .iter()
+                        .copied()
+                        .find(|kind| kind.slug() == name)
+                        .ok_or_else(|| D::Error::custom("a kind of pane this build does not have"))
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            let key = (WindowId(window), thread);
+            if have.insert(key, kinds).is_some() {
+                return Err(D::Error::custom("a window session told twice"));
+            }
+        }
+        Ok(have)
     }
 }
 
@@ -245,15 +285,16 @@ impl Windows {
     /// chat always), the person's by the session shown. True before the window is told.
     #[must_use]
     pub fn showing(&self, window: WindowId, pane: PaneId) -> bool {
+        let thread = self.shows.get(&window).cloned();
         let (Some(have), Some(pane)) = (
-            self.have.get(&window),
+            self.have.get(&(window, thread.clone())),
             self.panes.iter().find(|other| other.id == pane),
         ) else {
             return true;
         };
         match pane.seated {
             true => pane.kind == PaneKind::Chat || have.contains(&pane.kind),
-            false => pane.scope.holds(self.shows.get(&window)),
+            false => pane.scope.holds(thread.as_ref()),
         }
     }
 
