@@ -86,8 +86,8 @@ pub fn context(hub: &Hub) -> Option<&Context> {
 /// The pane a key belongs to: its first part is `<slug>-<pane id>`.
 pub fn pane_of(key: &str) -> Option<(PaneKind, PaneId)> {
     let (slug, id) = key.split('.').next()?.rsplit_once('-')?;
-    let kind = PaneKind::ALL.iter().find(|kind| kind.slug() == slug)?;
-    Some((*kind, PaneId(id.parse().ok()?)))
+    let kind = PaneKind::from_slug(slug)?;
+    Some((kind, PaneId(id.parse().ok()?)))
 }
 
 /// A thread's row in the sidebar or the folded strip: `shell.<form>.<thread id>.sidebar-row`.

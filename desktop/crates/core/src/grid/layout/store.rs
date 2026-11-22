@@ -107,9 +107,7 @@ pub(crate) mod kind {
 
     /// The kind `slug` names, or the error that refuses the file.
     pub fn read<E: Error>(slug: &str) -> Result<PaneKind, E> {
-        let found = PaneKind::ALL.iter().find(|kind| kind.slug() == slug);
-        found
-            .copied()
+        PaneKind::from_slug(slug)
             .ok_or_else(|| E::custom("a kind of pane this build does not have"))
     }
 }

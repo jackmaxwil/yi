@@ -15,6 +15,10 @@ macro_rules! panes {
                 match self { $(PaneKind::$name => $slug),+ }
             }
 
+            pub fn from_slug(slug: &str) -> Option<PaneKind> {
+                match slug { $($slug => Some(PaneKind::$name),)+ _ => None }
+            }
+
             /// Whether the kind is about this Mac or the app, not a session: a pane of it
             /// the person opens shows in every session of its window.
             pub const fn wide(self) -> bool {
@@ -103,7 +107,7 @@ impl Opens {
     pub fn read(text: &str) -> BTreeMap<PaneKind, Opens> {
         let word = |line: &str| {
             let (pane, word) = line.trim().split_once(' ')?;
-            let kind = PaneKind::ALL.iter().find(|kind| kind.slug() == pane)?;
+            let kind = PaneKind::from_slug(pane)?;
             let place = Place::ALL
                 .into_iter()
                 .find(|place| place.slug() == word.trim());
@@ -112,7 +116,7 @@ impl Opens {
                 None if word.trim() == Self::NEVER => Opens::Never,
                 None => return None,
             };
-            (*kind != PaneKind::Chat).then_some((*kind, word))
+            (kind != PaneKind::Chat).then_some((kind, word))
         };
         text.lines().filter_map(word).collect()
     }
