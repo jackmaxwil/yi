@@ -85,7 +85,7 @@ pub struct Pane {
     /// The place the person moved it to, over its kind's own and any word on its kind: the
     /// slot it leads is of that place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(with = "crate::grid::layout::store::place")]
+    #[serde(deserialize_with = "crate::grid::layout::store::place::deserialize")]
     pub at: Option<Place>,
     /// A rule opened it as a tab behind another and it has not been drawn since: its tab
     /// carries a dot. Not kept in the file.
