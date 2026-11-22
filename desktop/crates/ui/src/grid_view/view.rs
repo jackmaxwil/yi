@@ -1,6 +1,8 @@
 //! Places every pane of a window's layout and glides it on a layout change.
 
-use rune::{Chord, Curve, Cx, Easing, El, Key, KeyEvent, Spring, Tx, col, el};
+use rune::{
+    Chord, Curve, Cx, Easing, El, GesturePhase, Key, KeyEvent, MagnifyEvent, Spring, Tx, col, el,
+};
 use yd_core::address::uri::Address;
 use yd_core::command::run::PREVIEW;
 use yd_core::command::table::{Command, FLIP_CHAT, OPEN_FILE, Route, Run, Target};
@@ -46,6 +48,8 @@ pub struct Grip {
     /// Whether the Panes panel is open, and what it is asking a name for.
     pub picking: bool,
     pub naming: picker::Naming,
+    /// How far the pinch under way has gone, as a change in magnification.
+    pub pinch: f32,
 }
 
 /// Every window's grip. It lives in the hub so that a scene can pose one; a window reads
@@ -128,6 +132,8 @@ pub enum Act {
     Close(PaneId),
     /// Show the pane in every session of its window, or only in the one shown.
     Across(PaneId, bool),
+    /// Give the pane the window's whole grid, or give the grid back.
+    Fill(PaneId),
     /// Move the pane onto the edge of the pane drawn next to it on that side.
     Move(PaneId, Edge),
     Show(Slug),
@@ -136,6 +142,35 @@ pub enum Act {
     FlipChat,
     /// Open or close the Panes panel.
     Pick,
+}
+
+/// How far a pinch goes, as a change in magnification, before it fills or gives back.
+const PINCH: f32 = 0.2;
+
+/// A pinch over a pane: out past [`PINCH`] fills the window with it, in past it gives the
+/// grid back. Each pinch is measured from where its fingers touched down.
+fn pinch(win: &mut Win, tx: &mut Tx, pane: PaneId, event: MagnifyEvent) -> bool {
+    let window = win.window;
+    let filled = win
+        .hub
+        .try_borrow()
+        .is_ok_and(|hub| hub.model.grid.fills(window) == Some(pane));
+    let mut far = false;
+    grip(win, |grip| {
+        if event.phase == GesturePhase::Began {
+            grip.pinch = 0.0;
+        }
+        grip.pinch += event.delta;
+        far = if filled {
+            grip.pinch < -PINCH
+        } else {
+            grip.pinch > PINCH
+        };
+    });
+    if far {
+        act(win, tx, Act::Fill(pane));
+    }
+    true
 }
 
 /// The kind of `pane`: the grid's word, or the stage's for the pane a scene draws alone.
@@ -339,6 +374,7 @@ fn asked(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
         | Act::PopOut(_)
         | Act::Close(_)
         | Act::Across(..)
+        | Act::Fill(_)
         | Act::Move(..)
         | Act::Show(_)
         | Act::Wear(_)
@@ -389,6 +425,7 @@ fn asked(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
         | Act::PopOut(_)
         | Act::Close(_)
         | Act::Across(..)
+        | Act::Fill(_)
         | Act::Move(..)
         | Act::Show(_)
         | Act::Wear(_)
@@ -464,6 +501,10 @@ pub fn act(win: &mut Win, tx: &mut Tx, act_on: Act) {
         Act::Across(pane, on) => {
             tx.motion_curve(GLIDE);
             dispatch(win, Msg::Grid(GridMsg::Across { pane, on }));
+        }
+        Act::Fill(pane) => {
+            tx.motion_curve(GLIDE);
+            dispatch(win, Msg::Grid(GridMsg::Fill(pane)));
         }
         Act::Move(pane, edge) => {
             let window = win.window;
@@ -562,6 +603,7 @@ pub fn run(win: &mut Win, tx: &mut Tx, command: CommandId) -> bool {
         tabs::CLOSE => on_pane(Act::Close),
         tabs::ACROSS => pane.map(|pane| Act::Across(pane, true)),
         tabs::HERE => pane.map(|pane| Act::Across(pane, false)),
+        tabs::FILL => on_pane(Act::Fill),
         tabs::MOVE_LEFT => pane.map(|pane| Act::Move(pane, Edge::Left)),
         tabs::MOVE_RIGHT => pane.map(|pane| Act::Move(pane, Edge::Right)),
         tabs::MOVE_UP => pane.map(|pane| Act::Move(pane, Edge::Top)),
@@ -675,6 +717,11 @@ fn pane(frame: &Frame<'_>, cx: &mut Cx<Win>, id: PaneId, kind: PaneKind, rect: R
     .size(rect.w, rect.h)
     .opacity_motion(FADE)
     .on_background_press_tx(move |win: &mut Win, tx: &mut Tx| act(win, tx, Act::Focus(id)))
+    .on_magnify(move |win: &mut Win, event: MagnifyEvent, tx: &mut Tx| pinch(win, tx, id, event))
+    .on_smart_magnify(move |win: &mut Win, _, _, tx: &mut Tx| {
+        act(win, tx, Act::Fill(id));
+        true
+    })
     .children(bar)
     .child(body(&context, cx, kind, frame.bare));
     match frame.grip.gesture {
@@ -798,7 +845,8 @@ pub fn grid(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
         zone,
         focus: focused(hub, win.window),
         bare: saved == Some(JUST_CHAT.slug),
-        alone: placed.len() == 1,
+        // A filled pane is drawn by itself and is not alone: its bar still gives the grid back.
+        alone: placed.len() == 1 && hub.model.grid.fills(win.window).is_none(),
         calm: cx.is_reduced_motion(),
     };
     let mut panes = Vec::with_capacity(placed.len());

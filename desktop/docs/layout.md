@@ -157,16 +157,16 @@ Every row is a `Show` or an existing grid message. Nothing here needs a new idea
 | Drag a tab to another stack | Moves it: a pane bar dropped on another pane's middle joins its tabs | ✓ `Drop`, `Spot::Onto` |
 | Drag a tab out of the window | Makes a window | ✓ tear-out |
 | Drag a pane bar | Moves the tab in front alone; the tabs behind it keep the slot. An edge of its own slot cuts it from them | ✓ `swap::land` |
-| Pinch out on a pane | Fills the window with it | ✓ `on_magnify` (`rune/crates/rune/src/input/canvas_input.rs:172`) |
-| Pinch in on a filled pane | Back to the grid | ✓ |
-| Two-finger double-tap | Toggles fill | ✓ `on_smart_magnify` (`:185`) |
-| Double-click a pane bar | Toggles fill | ✚ |
+| Pinch out on a pane | Fills the window with it | ✓ `GridMsg::Fill`, `grid_view::view::pinch` on `on_magnify` |
+| Pinch in on a filled pane | Back to the grid | ✓ the same |
+| Two-finger double-tap | Toggles fill | ✓ `on_smart_magnify` |
+| Double-click a pane bar | Toggles fill | ✓ the bare part of the bar; a tab is pressed twice to keep a preview |
 | Two-finger swipe sideways on a tab bar | Next or previous tab | ✓ `on_wheel` |
 | Middle-click a tab | Closes it | ✓ `PointerButton::Middle` |
 | Right-click a pane bar | Move to (place), Split, Pop out, Keep, Keep across sessions, Close others, Always open here, Never open by itself | ✓ right-click menu |
 | ⌥⌘0 | The Panes panel, now a list of the session's things by place, with the layouts | ✓ DF18, ✚ contents |
 | ⌥⌘1 to ⌥⌘9 | Layouts, as places | ✓ |
-| ⌘⇧↩ | Toggles fill for the focused pane | ✚ |
+| ⌘⇧↩ | Toggles fill for the focused pane | ✓ `pane.fill` |
 | ⌘⇧[ and ⌘⇧] | Previous and next tab | ✓ |
 | ⌃⇧⌘ arrows | Move the focused pane | ✓ |
 | ⌘W | Closes the front tab | ✓ |

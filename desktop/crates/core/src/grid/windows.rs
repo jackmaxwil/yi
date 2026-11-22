@@ -162,6 +162,9 @@ pub struct Windows {
     /// The person's word on kinds opening by themselves, as the settings say it. Not kept.
     #[serde(skip)]
     pub rules: BTreeMap<PaneKind, Opens>,
+    /// The pane that has each window's whole grid for now, the others out of sight. Not kept.
+    #[serde(skip)]
+    pub filled: BTreeMap<WindowId, PaneId>,
 }
 
 /// A grid as a file gives it, before anything has looked at it.
@@ -191,6 +194,7 @@ impl TryFrom<Unchecked> for Windows {
             fronts: BTreeMap::new(),
             had: BTreeMap::new(),
             rules: BTreeMap::new(),
+            filled: BTreeMap::new(),
         };
         grid.check()?;
         // A kept layout a file spoils reads as gone, as a saved one this build lacks does.
@@ -323,20 +327,40 @@ impl Windows {
     /// Every pane's rectangle in `window`, for a grid of `size`, chat on the side set.
     pub fn place(&self, window: WindowId, size: Size) -> Vec<(PaneId, Rect)> {
         let found = self.window(window);
-        found.map_or_else(Vec::new, |window| place(&window.layout, size, self.side))
+        let placed = found.map_or_else(Vec::new, |window| place(&window.layout, size, self.side));
+        let drawn = |pane: &PaneId| placed.iter().any(|(other, _)| other == pane);
+        match self.fills(window).filter(drawn) {
+            Some(pane) => {
+                let (x, y, Size { w, h }) = (0.0, 0.0, size);
+                vec![(pane, Rect { x, y, w, h })]
+            }
+            None => placed,
+        }
+    }
+
+    /// The pane that has `window`'s whole grid: the one filled, or the tab of its stack in
+    /// front. None while that pane does not show, as in a session it is not open in.
+    #[must_use]
+    pub fn fills(&self, window: WindowId) -> Option<PaneId> {
+        let filled = *self.filled.get(&window)?;
+        let front = self.window(window)?.layout.front(filled)?;
+        Some(front).filter(|pane| self.window_of(*pane) == Some(window))
     }
 
     /// The line a pointer at `at` in `window` would drag.
     #[must_use]
     pub fn line_at(&self, window: WindowId, size: Size, at: Point) -> Option<Line> {
-        line_at(&self.window(window)?.layout, size, self.side, at)
+        let lines = self.fills(window).is_none();
+        line_at(&self.window(window)?.layout, size, self.side, at).filter(|_| lines)
     }
 
     /// The drop zone under `at` while `pane` is carried in `window`.
     #[must_use]
     pub fn zone_at(&self, window: WindowId, size: Size, pane: PaneId, at: Point) -> Option<Zone> {
+        // A filled window draws one pane: there is nowhere to drop another.
+        let open = self.fills(window).is_none();
         let zone = zone_at(&self.window(window)?.layout, self.side, size, pane, at)?;
-        Some(zone).filter(|zone| !self.visiting(window, pane, zone.spot))
+        Some(zone).filter(|zone| open && !self.visiting(window, pane, zone.spot))
     }
 
     /// Whether dropping `pane` at `spot` would make it a tab of a pane that is out of
