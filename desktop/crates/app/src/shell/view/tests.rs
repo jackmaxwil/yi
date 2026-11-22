@@ -28,6 +28,7 @@ mod ipython;
 mod joined;
 mod kept;
 mod narrow;
+mod opens;
 mod outside;
 mod panes;
 mod project;

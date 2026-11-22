@@ -13,7 +13,7 @@ use yd_core::address::attach::AttachMsg;
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
 use yd_core::command::by_kind::{
-    ASK, ASKS, ATTACH, ENDS, FOOTER, Hint, Icon as Named, Item, TOP, items, turn_of,
+    self, ASK, ASKS, ATTACH, ENDS, FOOTER, Hint, Icon as Named, Item, TOP, items, turn_of,
 };
 use yd_core::command::table::keycap;
 use yd_core::command::table::{Run, Target};
@@ -183,6 +183,11 @@ fn hint(win: &Win, hub: &Hub, item: &Item, thing: &Thing) -> Option<String> {
         Hint::None => None,
         Hint::Said(words) => Some(words.to_owned()),
         Hint::Key => table(hub).find(item.command)?.key.map(keycap),
+        Hint::Chosen => {
+            let (_, kind, word) = by_kind::word(&hub.model.grid, item.command, &thing.address)?;
+            let chosen = hub.model.settings.opens().get(&kind) == Some(&word);
+            chosen.then(|| "✓".to_owned())
+        }
         Hint::Turn => {
             let thread = shown::thread(hub, win.window)?;
             let turn = turn_of(thread, thing.address.id())?;
@@ -371,7 +376,15 @@ impl Drawn<'_> {
 
     fn card(&self, at: [f32; 2]) -> El {
         let tokens = &self.hub.model.tokens;
-        let middle = items(self.open.thing.kind());
+        // A word on opening by itself is offered only on a pane one covers.
+        let address = &self.open.thing.address;
+        let offered = |item: &&Item| {
+            let grid = &self.hub.model.grid;
+            ![by_kind::PANE_ALWAYS, by_kind::PANE_NEVER].contains(&item.command)
+                || by_kind::word(grid, item.command, address).is_some()
+        };
+        let middle = items(self.open.thing.kind()).iter().filter(offered);
+        let middle: Vec<&Item> = middle.collect();
         let mut card = col()
             .key(KEY)
             .absolute(at[0], at[1])
@@ -398,7 +411,7 @@ impl Drawn<'_> {
             .children(TOP.iter().map(|item| self.item(item)));
         if !middle.is_empty() {
             card = card.child(self.rule());
-            card = card.children(middle.iter().map(|item| self.item(item)));
+            card = card.children(middle.into_iter().map(|item| self.item(item)));
         }
         for group in ENDS {
             card = card.child(self.rule());

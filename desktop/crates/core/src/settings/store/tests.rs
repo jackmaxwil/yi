@@ -151,3 +151,28 @@ fn recent_projects_are_stored_and_shown_as_a_list_and_old_text_still_reads() -> 
 fn to_json_of(value: &SettingValue) -> Value {
     value::to_json(value)
 }
+
+/// The words on what opens by itself read back as written; the chat, an unknown pane and an
+/// unknown word are passed over, and taking a word back leaves the others.
+#[test]
+fn the_words_on_what_opens_by_itself_round_trip_and_skip_what_they_cannot_mean() {
+    use crate::pane::{Opens, PaneKind, Place};
+    let text = "changes never\nchat work\nbogus never\nfiles nowhere\n  agents side  \nlogs";
+    let words = Opens::read(text);
+    let want = [
+        (PaneKind::Changes, Opens::Never),
+        (PaneKind::Agents, Opens::Always(Place::Side)),
+    ];
+    assert_eq!(words, want.into_iter().collect());
+    assert_eq!(Opens::write(&words), "changes never\nagents side");
+    let mut settings = Settings::default();
+    settings.rows.push(OPENS_ROW);
+    assert!(settings.opens().is_empty(), "nothing said by default");
+    let said = settings.with_opens(PaneKind::Web, Some(Opens::Always(Place::Shelf)));
+    assert_eq!(said, SettingValue::Text("web shelf".into()));
+    for row in &mut settings.rows {
+        row.value = Some(SettingValue::Text(text.into()));
+    }
+    let gone = settings.with_opens(PaneKind::Changes, None);
+    assert_eq!(gone, SettingValue::Text("agents side".into()));
+}

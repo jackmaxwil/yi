@@ -3,11 +3,14 @@
 
 use serde_json::Value;
 
+use crate::address::uri::Address;
 use crate::command::table::{Command, Route};
 use crate::command::tools::{container, lsp, plugin};
 use crate::feed::LSP;
-use crate::ids::CommandId;
+use crate::grid::windows::Windows;
+use crate::ids::{CommandId, PaneId};
 use crate::kind::Kind;
+use crate::pane::{Opens, PaneKind};
 use crate::reduce::step::commands as wire;
 use crate::reduce::threads::Thread;
 
@@ -46,6 +49,8 @@ pub enum Hint {
     Said(&'static str),
     /// The turn of the shown thread that wrote the thing.
     Turn,
+    /// A tick while the item's word on its pane opening by itself is the one in force.
+    Chosen,
 }
 
 /// One row of the right-click menu.
@@ -102,6 +107,32 @@ ids! {
     VARIABLE_SET "variable.where-set", ELEMENT_DESIGN "element.design",
     ELEMENT_SOURCE "element.source", SCREEN_SHOT "screen.screenshot", SCREEN_MARK "screen.mark-up",
     SETTING_COPY "setting.copy-key", SETTING_RESET "setting.reset",
+    PANE_ALWAYS "pane.always-here", PANE_NEVER "pane.never-alone",
+}
+
+/// The person's word on a pane's kind opening by itself, the same on a pane and on its tab.
+const OPENS_ITEMS: [Item; 2] = [
+    item(PANE_ALWAYS, "Always open here", Icon::Target, Hint::Chosen),
+    item(PANE_NEVER, "Never open by itself", Icon::Stop, Hint::Chosen),
+];
+
+/// What `command` says of the pane `address` names, a pane's or its tab's: the pane, its kind
+/// and the word, always in the place the pane is in now. None for a pane no word covers.
+pub fn word(
+    grid: &Windows,
+    command: CommandId,
+    address: &Address,
+) -> Option<(PaneId, PaneKind, Opens)> {
+    let named = matches!(address.kind(), Kind::Pane | Kind::Tab);
+    let pane = address.id().split('/').next().filter(|_| named)?;
+    let pane = PaneId(pane.parse().ok()?);
+    let kind = grid.ruled(pane)?;
+    let word = match command {
+        PANE_NEVER => Opens::Never,
+        PANE_ALWAYS => Opens::Always(grid.slot_place(pane)?),
+        _ => return None,
+    };
+    Some((pane, kind, word))
 }
 
 /// The quick questions under the header, each asked of the thing with [`ASK`].
@@ -293,6 +324,8 @@ pub fn items(kind: Kind) -> &'static [Item] {
                     plain(TAB_SPLIT_RIGHT, "Split right", Icon::Panel),
                     plain(TAB_SPLIT_DOWN, "Split down", Icon::Panel),
                     plain(TAB_PULL_OUT, "Pull out as a window", Icon::Out),
+                    OPENS_ITEMS[0],
+                    OPENS_ITEMS[1],
                 ]
             }
         }
@@ -368,8 +401,8 @@ pub fn items(kind: Kind) -> &'static [Item] {
         | Kind::Check
         | Kind::Place
         | Kind::StandingCheck
-        | Kind::Property
-        | Kind::Pane => &[],
+        | Kind::Property => &[],
+        Kind::Pane => &OPENS_ITEMS,
     }
 }
 
@@ -500,6 +533,16 @@ pub const COMMANDS: &[Command] = &[
     aimed(TAB_SPLIT_RIGHT, "Split Right", &[Kind::Tab]),
     aimed(TAB_SPLIT_DOWN, "Split Down", &[Kind::Tab]),
     aimed(TAB_PULL_OUT, "Pull Out as a Window", &[Kind::Tab]),
+    aimed(
+        PANE_ALWAYS,
+        "Always Open Pane Here",
+        &[Kind::Pane, Kind::Tab],
+    ),
+    aimed(
+        PANE_NEVER,
+        "Never Open Pane by Itself",
+        &[Kind::Pane, Kind::Tab],
+    ),
     aimed(FRAME_OPEN, "Open This Line", &[Kind::StackFrame]),
     aimed(
         FRAME_EXPLAIN,

@@ -121,6 +121,8 @@ Four rows to start. An untouched tab a rule opened closes when its thing ends. A
 
 A right-click on any pane bar offers "Always open here" and "Never open by itself". Each writes a row to the settings file (✓ settings store). That is the whole of the user's control over the automatic part.
 
+As built: both write one settings row, `panes.opens`, a line a kind. "Always open here" names the place of the slot the pane is in, opens the kind there in every session whether or not it has something to show, and covers kinds no rule names. Picking the ticked row takes the word back. The chat is offered neither.
+
 ## 5. The composition table
 
 | Capability asked for | Composed from | Status |

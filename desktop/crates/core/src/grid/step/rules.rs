@@ -1,11 +1,18 @@
 //! What a window opens by itself: a kind a rule names gets a quiet tab the first time its
 //! session has something of it to show, and the tab goes when that ends.
 
+use crate::address::uri::Address;
+use crate::command::by_kind::{PANE_ALWAYS, PANE_NEVER, word};
 use crate::grid::place::probe::Check;
 use crate::grid::windows::Pane;
-use crate::ids::{PaneId, ThreadId};
+use crate::ids::{PaneId, SettingKey, ThreadId};
+use crate::kind::Kind;
 use crate::model::Model;
-use crate::pane::PaneKind::{self, Agents, Changes, Chat, Code, Files, Web};
+use crate::msg::{Msg, step};
+use crate::pane::PaneKind::{self, Agents, Changes, Chat, Code, Files, Logs, Web};
+use crate::pane::{Opens, Place};
+use crate::settings::schema::SettingValue;
+use crate::settings::store::{OPENS, OPENS_ROW, SettingsMsg};
 
 use super::GridMsg;
 use super::tests::{MAIN, change, drawn, pane, record};
@@ -203,5 +210,89 @@ fn just_chat_opens_nothing_and_sessions_share_the_windows_pane() -> Check {
     tell(&mut model, "b", &[Chat, Agents]);
     assert_eq!(of(&model, Agents).len(), 1, "one pane for both sessions");
     assert_eq!(drawn(&model)?.len(), 2);
+    Ok(())
+}
+
+/// Writes the person's words on what opens by itself, as the settings file would hold them.
+fn say(model: &mut Model, words: &'static str) {
+    step(model, Msg::Settings(SettingsMsg::Declare(vec![OPENS_ROW])));
+    let value = Some(SettingValue::Text(words.into()));
+    let set = SettingsMsg::Set(SettingKey::fixed(OPENS), value);
+    step(model, Msg::Settings(set));
+}
+
+/// "Never open by itself": the kind's rule opens nothing, and the person still can.
+#[test]
+fn a_kind_the_person_said_never_of_does_not_open_by_itself() -> Check {
+    let mut model = window("chat", &[Chat]);
+    say(&mut model, "changes never");
+    tell(&mut model, "a", &[Chat, Changes, Agents]);
+    assert_eq!(of(&model, Changes).len(), 0, "never is never");
+    assert_eq!(of(&model, Agents).len(), 1, "the word is one kind's");
+    open(&mut model, Changes);
+    assert_eq!(of(&model, Changes).len(), 1, "asked for, it opens");
+    Ok(())
+}
+
+/// "Always open here": a kind no rule names opens in the place said, not its own, in each
+/// session with one pane for them all, and goes back to its own rule once the word is gone.
+#[test]
+fn a_kind_the_person_said_always_of_opens_in_the_place_said() -> Check {
+    let mut model = window("chat", &[Chat, Code]);
+    open(&mut model, Code);
+    let code = pane(&model, Code)?;
+    say(&mut model, "logs work");
+    tell(&mut model, "a", &[Chat, Code, Logs]);
+    assert_eq!(tabs(&model, code)?, [Code, Logs], "a tab of the work place");
+    tell(&mut model, "b", &[Chat, Code, Logs]);
+    assert_eq!(of(&model, Logs).len(), 1, "one pane for both sessions");
+    say(&mut model, "");
+    tell(&mut model, "c", &[Chat, Code, Logs]);
+    let logs = pane(&model, Logs)?;
+    assert_eq!(
+        model.grid.slot_place(logs),
+        Some(Place::Work),
+        "it stays put"
+    );
+    let mut plain = window("chat", &[Chat, Code]);
+    tell(&mut plain, "a", &[Chat, Code, Logs]);
+    assert_eq!(of(&plain, Logs).len(), 0, "with no word, Logs is no rule's");
+    Ok(())
+}
+
+/// What a menu row says of the pane under it: its kind, and for always the place of the slot
+/// it is in now. A tab's address names its pane; the chat and a pane about a thing have no word.
+#[test]
+fn a_menu_row_reads_its_word_from_the_pane_and_the_slot_it_is_in() -> Check {
+    let mut model = window("chat", &[Chat, Code]);
+    open(&mut model, Code);
+    tell(&mut model, "a", &[Chat, Code, Changes]);
+    let (chat, changes) = (pane(&model, Chat)?, pane(&model, Changes)?);
+    let at = |kind: Kind, id: String| Address::new(kind, id);
+    let grid = &model.grid;
+    let tab = at(Kind::Tab, format!("{}/0", changes.0))?;
+    let never = word(grid, PANE_NEVER, &tab);
+    assert_eq!(never, Some((changes, Changes, Opens::Never)));
+    let whole = at(Kind::Pane, changes.0.to_string())?;
+    let always = word(grid, PANE_ALWAYS, &whole);
+    assert_eq!(always, Some((changes, Changes, Opens::Always(Place::Work))));
+    let chat = at(Kind::Pane, chat.0.to_string())?;
+    assert_eq!(word(grid, PANE_ALWAYS, &chat), None, "the chat has no word");
+    let line = at(Kind::Lines, "src/a.rs#L1".to_owned())?;
+    assert_eq!(word(grid, PANE_NEVER, &line), None, "a line is no pane");
+    Ok(())
+}
+
+/// A slot is of the place its first pane goes: a kind always opened in the work place makes
+/// one there, and the next work pane joins it.
+#[test]
+fn a_pane_always_opened_in_a_place_holds_that_place_for_the_next() -> Check {
+    let mut model = window("chat", &[Chat]);
+    say(&mut model, "logs work");
+    tell(&mut model, "a", &[Chat, Logs]);
+    let logs = pane(&model, Logs)?;
+    assert_eq!(drawn(&model)?.len(), 2, "its place opened beside the chat");
+    tell(&mut model, "a", &[Chat, Logs, Changes]);
+    assert_eq!(tabs(&model, logs)?, [Logs, Changes]);
     Ok(())
 }

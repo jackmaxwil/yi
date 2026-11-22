@@ -14,12 +14,19 @@ use crate::kind::Kind;
 use crate::model::Model;
 use crate::msg::{Msg, step};
 use crate::pane::PaneKind;
+use crate::settings::schema::SettingValue;
+use crate::settings::store::OPENS_ROW;
 
 use super::GridMsg;
 
 const MAIN: WindowId = WindowId(0);
 const RUNS: u64 = 300;
 const CHANGES: usize = 80;
+const WORDS: [&str; 3] = [
+    "changes never\nagents never",
+    "logs work\nchanges shelf\nweb side",
+    "agents chat\nfiles work\nterminal side",
+];
 
 /// Grid sizes a window meets: the record's two frames, the smallest window's grid, a large
 /// display, and one too small for the minimums.
@@ -310,6 +317,14 @@ fn runs(
         let mut model = Model::default();
         let (window, saved) = (MAIN, "everything");
         step(&mut model, Msg::Grid(GridMsg::Show { window, saved }));
+        // A third of the runs carry the person's words on what opens by itself, and where.
+        if let Some(words) = WORDS.get(dice.below(3 * WORDS.len())) {
+            let mut row = OPENS_ROW;
+            row.value = Some(SettingValue::Text((*words).into()));
+            model.settings.rows.push(row);
+            // Read now, as the first grid change would: a refused change then changes nothing.
+            model.grid.rules = model.settings.opens();
+        }
         for turn in 0..CHANGES {
             let size = dice.pick(&SIZES).unwrap_or(FRAME_1);
             let Some(change) = any_change(&mut dice, &model.grid, size) else {
