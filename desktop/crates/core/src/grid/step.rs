@@ -50,8 +50,6 @@ pub enum GridMsg {
     Leave(PaneId),
     /// Dock a pulled-out pane back into the window it left.
     Rejoin(PaneId),
-    /// Put a second pane of the same kind to the right of a pane.
-    Split(PaneId),
     /// Put a second pane of the same kind on an edge of a pane's slot, as drawn. Said of a
     /// tab behind another, the slot is the one it waits in.
     SplitAt {
@@ -263,10 +261,6 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             if old != new {
                 grid.filled.insert(window, pane);
             }
-        }
-        GridMsg::Split(pane) => {
-            let edge = Edge::Right;
-            return apply(grid, GridMsg::SplitAt { pane, edge });
         }
         GridMsg::SplitAt { pane, edge } => {
             let from = grid.window_of(pane).or_else(|| grid.home_of(pane));

@@ -1,7 +1,7 @@
 //! Panes belong to a session: one the person opens shows in the sessions they opened it in,
 //! the window keeps its lines, and a kind about this Mac shows in every session.
 
-use crate::grid::layout::Track;
+use crate::grid::layout::{Edge, Track};
 use crate::grid::place::probe::{Check, find};
 use crate::grid::windows::{MAX_SESSIONS, Scope, Windows};
 use crate::ids::ThreadId;
@@ -173,7 +173,13 @@ fn the_windows_chat_stays_and_a_split_chat_is_its_sessions() -> Check {
     let mut model = window("a");
     open(&mut model, Chat);
     let first = pane(&model, Chat)?;
-    change(&mut model, GridMsg::Split(first));
+    change(
+        &mut model,
+        GridMsg::SplitAt {
+            pane: first,
+            edge: Edge::Right,
+        },
+    );
     assert_eq!(kinds(&model)?, [Chat, Chat]);
     show(&mut model, "b");
     let placed = drawn(&model)?;
