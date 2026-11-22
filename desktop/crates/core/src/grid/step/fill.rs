@@ -1,7 +1,7 @@
 //! A pane given its window's whole grid: it is drawn alone, the grid under it is kept, and
 //! the fill ends with any change that arranges the window.
 
-use crate::grid::layout::{Point, Rect, Size};
+use crate::grid::layout::{Edge, Point, Rect, Size};
 use crate::grid::place::probe::{Check, FRAME_1};
 use crate::ids::ThreadId;
 use crate::pane::PaneKind::{Changes, Chat, Code, Debugger, Files, Terminal};
@@ -98,7 +98,12 @@ fn a_change_that_arranges_the_window_ends_the_fill() -> Check {
                 kind: Debugger,
             })
         },
-        |model| Ok(GridMsg::Split(pane(model, Terminal)?)),
+        |model| {
+            Ok(GridMsg::SplitAt {
+                pane: pane(model, Terminal)?,
+                edge: Edge::Right,
+            })
+        },
         |model| Ok(GridMsg::Close(pane(model, Terminal)?)),
         |model| Ok(GridMsg::Front(pane(model, Files)?)),
     ];

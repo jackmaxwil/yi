@@ -369,7 +369,13 @@ fn highest(win: &Win) -> Option<PaneId> {
 fn tear_out(win: &mut Win, tx: &mut Tx, pane: PaneId, tab: TabId) {
     let before = highest(win);
     tx.motion_curve(GLIDE);
-    dispatch(win, Msg::Grid(GridMsg::Split(pane)));
+    dispatch(
+        win,
+        Msg::Grid(GridMsg::SplitAt {
+            pane,
+            edge: Edge::Right,
+        }),
+    );
     let Some(copy) = highest(win).filter(|id| Some(*id) > before) else {
         return;
     };
@@ -504,7 +510,13 @@ pub fn act(win: &mut Win, tx: &mut Tx, act_on: Act) {
         Act::NewTab(_) => {}
         Act::Split(pane) => {
             tx.motion_curve(GLIDE);
-            dispatch(win, Msg::Grid(GridMsg::Split(pane)));
+            dispatch(
+                win,
+                Msg::Grid(GridMsg::SplitAt {
+                    pane,
+                    edge: Edge::Right,
+                }),
+            );
         }
         Act::PopOut(pane) => {
             let pulled = win
