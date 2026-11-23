@@ -102,7 +102,10 @@ fn refuse(resource: Resource, have: u64, need: u64, live: usize) -> Admission {
 
 pub fn sample(lanes_volume: &Path) -> HostSample {
     HostSample {
-        cpus: std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+        cpus: load_cpus(
+            std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+            std::fs::read_to_string("/proc/cpuinfo").ok().as_deref(),
+        ),
         load1_milli: load1_milli(),
         mem_free_kib: mem_free_kib(),
         disk_free_kib: disk_free_kib(lanes_volume),
@@ -114,6 +117,17 @@ pub fn check(lanes_volume: &Path, live: usize) -> Result<(), Refusal> {
         Admission::Admit => Ok(()),
         Admission::Refuse(refusal) => Err(refusal),
     }
+}
+
+/// Incident: a CI job held to 3 of its machine's 12 processors weighed the whole machine's load of 18
+/// against its own share, and refused every second child. The load average counts every processor.
+pub(crate) fn load_cpus(share: NonZeroUsize, cpuinfo: Option<&str>) -> NonZeroUsize {
+    let listed = |text: &str| {
+        text.lines()
+            .filter(|line| line.starts_with("processor"))
+            .count()
+    };
+    NonZeroUsize::new(cpuinfo.map_or(0, listed)).map_or(share, |machine| machine.max(share))
 }
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -213,6 +227,26 @@ mod tests {
         let text = refusal.to_string();
         assert!(text.contains("40000") && text.contains("32000") && text.contains("3 live"));
         Ok(())
+    }
+
+    #[test]
+    fn adaptive_load_is_weighed_against_the_whole_machine_not_a_capped_share() {
+        let cpus = |n: usize| NonZeroUsize::new(n).unwrap_or(NonZeroUsize::MIN);
+        let stanza = |n: usize| {
+            format!(
+                "processor\t: {n}\nvendor_id\t: GenuineIntel\nmodel name\t: 13th Gen Intel(R) Core(TM) i9-13900HK\n\n"
+            )
+        };
+        let machine: String = (0..12).map(stanza).collect();
+        let job = HostSample {
+            cpus: load_cpus(cpus(3), Some(&machine)),
+            load1_milli: Some(18_460),
+            ..roomy()
+        };
+        assert_eq!(admit(&job, 1), Admission::Admit);
+        assert_eq!(load_cpus(cpus(8), Some(&stanza(0))), cpus(8));
+        assert_eq!(load_cpus(cpus(3), Some("hw.ncpu: 16\n")), cpus(3));
+        assert_eq!(load_cpus(cpus(3), None), cpus(3));
     }
 
     #[test]
