@@ -132,6 +132,7 @@ impl PermissionBroker {
             grants: &grants,
             tool_call_id: None,
             stop: None,
+            agent: None,
         };
         let (outcome, _classifier) = self.confirm_judged(&ask, None);
         let allowed = !matches!(outcome, AskOutcome::Reject);
@@ -160,6 +161,7 @@ impl PermissionBroker {
             grants: &[],
             tool_call_id: None,
             stop: None,
+            agent: None,
         };
         self.settle(&format!("egress-{domain}"), &ask, allowed, by);
     }
