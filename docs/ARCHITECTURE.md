@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.1091.0         # the recorder bumps it once per change file in docs/changes/
+version: 0.1092.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -357,6 +357,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D613 | the autofixer calls a base red only when the forge's own test lane on it ran to its end and failed, and closes its red-base issue when that lane is green again (revises D519's red base, which the fixer's clone alone decided) | the clone measures its runner as well as the code: #2237 failed on its CI runner's load, two other tests failed only in the fixer's clone, at main too, and the fixer reran the gate, opened #2330 against a main the forge had green all night, and parked #2237 on an issue only that clone could close | remove `base_lane` and its three uses in `attempt` and `settle_base_red` of scripts/pr_autofix.py, so a `BaseRed` from the clone is a red base again |
 | D612 | Admit children and lanes by host headroom, never by a fixed count | a count of 8 refused work a roomy host could run and let a loaded one thrash | reversible via family.max_children, family.cap and plan.width_max levers set above 0 |
 | D611 | in Yi Desktop a pane shows a thing of its session and exists only while there is one, a layout sets places and not panes, and what opens by itself arrives as a quiet tab that never takes focus, under one show action shared by the person, a rule table and one model tool that says what to show and not where | the owner found that "too many blank panels are being opened with low user value" and asked that "panels should be session linked", then chose each of these in two question rounds on 2026-11-21 | remove `Pane.seated`, `Hole.resting`, `GridMsg::Have` and `yd_panes::has`, and a layout seats every pane it names again |
 | D610 | `desktop/` takes Rune as one full git revision of the owner's fork and `yi-types` and `yi-browser` by path, and is gated on a Mac by its own `desktop/justfile`; Yi's cargo, CI and Rust guardrails read none of it, and the repository-wide gates it trips take four named exemptions: two address substitutions in `scripts/mirror/replace.txt`, two journey fixture paths in `.gitguardian.yaml`, two blobs in the blob allowlist and two spelling skips in `.codespellrc` (the app's build output and its recorded wire frames) | the app's lock holds 461 packages, most of them Rune's, against Yi's budget of 23 direct and 174 transitive, so it cannot join Yi's workspace, and no forge runner is a Mac; the mockup's sample network is private-range, Rune's script format names a tapped element `key`, which the secret scan reads as a key, the app icon and a recorded kernel transcript are past 512 KB, and recorded frames are cut mid-word | delete `desktop/`, `.ruler/098-desktop.md` and its AGENTS.md block, §17.5 and the §1.2 words this change adds, the two `replace.txt` lines, the two `.gitguardian.yaml` paths, the two allowlist lines and the two `.codespellrc` skips |
