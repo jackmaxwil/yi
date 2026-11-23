@@ -52,6 +52,19 @@ pub(super) fn drawn(model: &Model) -> Result<Vec<(PaneId, Rect)>, String> {
     Ok(placed)
 }
 
+pub(super) fn open(model: &mut Model, kind: PaneKind) {
+    let window = MAIN;
+    change(model, GridMsg::Open { window, kind });
+}
+
+pub(super) fn kinds(model: &Model) -> Result<Vec<PaneKind>, String> {
+    let placed = drawn(model)?;
+    let kind = |(pane, _): &(_, _)| model.grid.kind(*pane).ok_or("a pane of no kind");
+    let mut kinds = placed.iter().map(kind).collect::<Result<Vec<_>, _>>()?;
+    kinds.sort();
+    Ok(kinds)
+}
+
 pub(super) fn expect(model: &Model, want: &[(PaneKind, Rect)]) -> Check {
     let placed = drawn(model)?;
     assert_eq!(placed.len(), want.len(), "panes drawn: {placed:?}");
@@ -515,33 +528,33 @@ fn the_grid_reads_back_from_its_file_as_it_was() -> Check {
     Ok(())
 }
 
-/// A pane kind no saved layout holds is shown by taking half of the largest pane; asked
-/// again it is already there, and closed it comes back as the same pane.
+/// A pane kind no saved layout holds joins the stack of its place as a tab in front, with
+/// no new slot; asked again it is already there, and closed it comes back as the same pane.
 #[test]
-fn a_pane_of_a_kind_the_window_lacks_opens_in_half_of_the_largest_pane() -> Check {
+fn a_pane_of_a_kind_the_window_lacks_opens_as_a_tab_in_its_place() -> Check {
     let mut model = showing("everything");
     let before = drawn(&model)?;
-    let changes = find(&before, pane(&model, Changes)?)?;
+    let terminal = pane(&model, Terminal)?;
+    let shelf = find(&before, terminal)?;
     let (window, kind) = (MAIN, PaneKind::Trace);
     change(&mut model, GridMsg::Open { window, kind });
     let trace = pane(&model, PaneKind::Trace)?;
     let after = drawn(&model)?;
-    assert_eq!(after.len(), before.len().saturating_add(1));
-    let (left, right) = (find(&after, pane(&model, Changes)?)?, find(&after, trace)?);
+    assert_eq!(after.len(), before.len(), "no slot was cut for it");
     assert_eq!(
-        (left.y, left.h),
-        (changes.y, changes.h),
-        "it keeps its rows"
+        find(&after, trace)?,
+        shelf,
+        "it is drawn where the terminal was"
     );
-    assert_eq!(
-        (right.y, right.w, right.h),
-        (left.y, left.w, left.h),
-        "and gives up half its width"
-    );
-    assert!(right.x > left.x, "to the pane on its right");
+    assert_eq!(model.grid.tabs(MAIN, trace), [terminal, trace]);
     change(&mut model, GridMsg::Open { window, kind });
-    assert_eq!(drawn(&model)?.len(), after.len(), "a second ask adds none");
+    assert_eq!(drawn(&model)?, after, "a second ask adds none");
     change(&mut model, GridMsg::Close(trace));
+    assert_eq!(
+        drawn(&model)?,
+        before,
+        "closed, the terminal has its slot again"
+    );
     change(&mut model, GridMsg::Open { window, kind });
     assert_eq!(model.grid.window_of(trace), Some(MAIN), "the same pane");
     Ok(())

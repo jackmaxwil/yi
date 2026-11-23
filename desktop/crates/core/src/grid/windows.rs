@@ -134,6 +134,10 @@ pub struct Windows {
     /// The session each window shows, as last told; none while it shows New chat.
     #[serde(skip)]
     pub shows: BTreeMap<WindowId, ThreadId>,
+    /// The tab in front of each stack when a window last showed a session, so it is in
+    /// front again when the window turns back. Not kept in the file.
+    #[serde(skip)]
+    pub fronts: BTreeMap<(WindowId, Option<ThreadId>), Vec<PaneId>>,
 }
 
 /// A grid as a file gives it, before anything has looked at it.
@@ -160,6 +164,7 @@ impl TryFrom<Unchecked> for Windows {
             own: Vec::new(),
             have: BTreeMap::new(),
             shows: BTreeMap::new(),
+            fronts: BTreeMap::new(),
         };
         grid.check()?;
         // A kept layout a file spoils reads as gone, as a saved one this build lacks does.
@@ -183,6 +188,13 @@ impl Windows {
         self.windows.iter().find(|window| window.id == id)
     }
 
+    fn window_where(&self, holds: impl Fn(&Layout) -> bool) -> Option<WindowId> {
+        self.windows
+            .iter()
+            .find(|window| holds(&window.layout))
+            .map(|window| window.id)
+    }
+
     #[must_use]
     pub fn kind(&self, pane: PaneId) -> Option<PaneKind> {
         let found = self.panes.iter().find(|other| other.id == pane);
@@ -192,18 +204,48 @@ impl Windows {
     /// The window `pane` is drawn in.
     #[must_use]
     pub fn window_of(&self, pane: PaneId) -> Option<WindowId> {
-        let holds = |window: &&Window| window.layout.docked().any(|(other, _)| other == pane);
-        self.windows.iter().find(holds).map(|window| window.id)
+        self.window_where(|layout| layout.docked().any(|(other, _)| other == pane))
+    }
+
+    /// The window `pane` belongs to and is not pulled out of: where it is drawn, rests, or
+    /// waits behind another pane as a tab.
+    #[must_use]
+    pub fn home_of(&self, pane: PaneId) -> Option<WindowId> {
+        self.window_where(|layout| layout.holds(pane) && !layout.pulled(pane))
+    }
+
+    /// Whether `pane` has something to show in `window` now: a seated pane by its kind (the
+    /// chat always), the person's by the session shown. True before the window is told.
+    #[must_use]
+    pub fn showing(&self, window: WindowId, pane: PaneId) -> bool {
+        let (Some(have), Some(pane)) = (
+            self.have.get(&window),
+            self.panes.iter().find(|other| other.id == pane),
+        ) else {
+            return true;
+        };
+        match pane.seated {
+            true => pane.kind == PaneKind::Chat || have.contains(&pane.kind),
+            false => pane.scope.holds(self.shows.get(&window)),
+        }
+    }
+
+    /// The tabs of the slot `pane` holds in `window`: the panes of its stack with something
+    /// to show, in tab order; the pane alone when it shares its slot with none.
+    #[must_use]
+    pub fn tabs(&self, window: WindowId, pane: PaneId) -> Vec<PaneId> {
+        let layout = self.window(window).map(|window| &window.layout);
+        let stack = layout.map(|layout| layout.stack(pane)).unwrap_or_default();
+        let here = |other: &PaneId| layout.is_some_and(|layout| !layout.pulled(*other));
+        let shown = stack.iter().copied().filter(here);
+        let shown: Vec<PaneId> = shown.filter(|other| self.showing(window, *other)).collect();
+        if shown.is_empty() { vec![pane] } else { shown }
     }
 
     /// The window `pane` was pulled out of, where it docks back.
     #[must_use]
     pub fn origin_of(&self, pane: PaneId) -> Option<WindowId> {
-        let left = |window: &&Window| {
-            let layout = &window.layout;
-            layout.is_away(pane) && !layout.is_resting(pane)
-        };
-        self.windows.iter().find(left).map(|window| window.id)
+        self.window_where(|layout| layout.pulled(pane))
     }
 
     /// Every pane's rectangle in `window`, for a grid of `size`, chat on the side set.
@@ -263,6 +305,26 @@ impl Windows {
                 .find(|(pane, _)| !known.contains(pane))
             {
                 return Err(GridError::NoSuchPane(*pane));
+            }
+            let behind = window.layout.stacks.iter().flatten();
+            let behind = behind.filter(|pane| {
+                window.layout.front(**pane) != Some(**pane) && !window.layout.is_away(**pane)
+            });
+            if let Some(pane) = window
+                .layout
+                .stacks
+                .iter()
+                .flatten()
+                .find(|p| !known.contains(p))
+            {
+                return Err(GridError::NoSuchPane(*pane));
+            }
+            // A pane behind another is drawn nowhere, as a resting one, and is in one window.
+            for pane in behind {
+                if !out.insert(*pane) {
+                    return Err(GridError::AlreadyIn(*pane));
+                }
+                resting.insert(*pane);
             }
             let docked = window.layout.docked().map(|(pane, _)| pane);
             let left = window.layout.away.iter().map(|hole| hole.pane);

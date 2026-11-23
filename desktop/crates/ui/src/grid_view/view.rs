@@ -12,7 +12,7 @@ use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
 
 use crate::chrome::frame::{Look, Surface, surface};
-use crate::chrome::tabs::{self, Bar, Tabs, Turn};
+use crate::chrome::tabs::{self, Bar, Tab, Tabs, Turn};
 use crate::grid_view::drag::{At, GLIDE, Gesture, HELD, LIFT, LOOSE, preview};
 use crate::grid_view::{picker, resize};
 use crate::menu::command_box;
@@ -156,6 +156,70 @@ fn tabs_of(context: &PaneCx<'_>, kind: PaneKind) -> Tabs {
         .map(|own| own(context));
     let kept = hub.panes.get::<Tabs>(Some(context.pane));
     Tabs::shown(own.as_ref().or(kept), kind)
+}
+
+/// What a slot's bar shows: the tabs of the pane drawn, and one tab in its place in the
+/// stack for each other pane that has something to show here.
+fn slot_tabs(context: &PaneCx<'_>, window: WindowId, kind: PaneKind) -> Tabs {
+    let mut shown = tabs_of(context, kind);
+    let grid = &context.hub.model.grid;
+    let stack = grid.tabs(window, context.pane);
+    if stack.len() < 2 {
+        return shown;
+    }
+    shown.active = shown.active().map(|tab| tab.id);
+    let mut own = std::mem::take(&mut shown.tabs);
+    for pane in stack {
+        match grid.kind(pane).filter(|_| pane != context.pane) {
+            Some(kind) => shown.tabs.push(Tab::stacked(pane, kind)),
+            None => shown.tabs.append(&mut own),
+        }
+    }
+    shown
+}
+
+/// A press on a tab that stands for another pane of the stack: it comes in front and takes
+/// the keyboard, closes, or is pulled out. False for a pane's own tab.
+fn stacked(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
+    let (Act::Tab(_, tab) | Act::CloseOne(_, tab) | Act::TearOut(_, tab)) = act_on else {
+        return false;
+    };
+    let Some(pane) = tabs::pane_of(tab) else {
+        return false;
+    };
+    tx.motion_curve(GLIDE);
+    if matches!(act_on, Act::CloseOne(..)) {
+        dispatch(win, Msg::Grid(GridMsg::Close(pane)));
+        return true;
+    }
+    dispatch(win, Msg::Grid(GridMsg::Front(pane)));
+    grip(win, |grip| grip.focus = Some(pane));
+    if matches!(act_on, Act::TearOut(..)) {
+        dispatch(win, Msg::Grid(GridMsg::Leave(pane)));
+    }
+    true
+}
+
+/// The tab keys in a slot that stacks panes: they go through every tab of the bar, the
+/// drawn pane's own and the other panes'. False where the slot holds one pane.
+fn turned(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
+    let Act::Turn(pane, way) = act_on else {
+        return false;
+    };
+    let next = win.hub.try_borrow().ok().and_then(|hub| {
+        let context = PaneCx {
+            hub: &hub,
+            pane,
+            focused: false,
+            edits: None,
+        };
+        let mut tabs = slot_tabs(&context, win.window, kind_of(&hub, pane)?);
+        let stacks = tabs.tabs.iter().any(|tab| tabs::pane_of(tab.id).is_some());
+        tabs.turn(way);
+        tabs.active().map(|tab| tab.id).filter(|_| stacks)
+    });
+    next.map(|next| act(win, tx, Act::Tab(pane, next)))
+        .is_some()
 }
 
 /// Whether panes of `kind` keep their own tabs and hear what is asked of them.
@@ -303,7 +367,7 @@ fn asked(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
 
 /// The one place the grid's own state changes outside a drag.
 pub fn act(win: &mut Win, tx: &mut Tx, act_on: Act) {
-    if asked(win, tx, act_on) {
+    if stacked(win, tx, act_on) || turned(win, tx, act_on) || asked(win, tx, act_on) {
         return;
     }
     match act_on {
@@ -509,6 +573,7 @@ pub fn keys(win: &mut Win, event: &KeyEvent, tx: &mut Tx) -> bool {
 /// What every pane of one frame shares.
 struct Frame<'a> {
     hub: &'a Hub,
+    window: WindowId,
     edits: &'a Edits,
     /// The room the traffic lights take, in a window whose one pane's bar is its title bar.
     lights: Option<f32>,
@@ -547,7 +612,7 @@ fn pane(frame: &Frame<'_>, cx: &mut Cx<Win>, id: PaneId, kind: PaneKind, rect: R
         edits: Some(frame.edits),
     };
     let key = context.key(kind);
-    let shown = tabs_of(&context, kind);
+    let shown = slot_tabs(&context, frame.window, kind);
     let bar = (!frame.bare).then(|| {
         let bar = Bar {
             pane: id,
@@ -689,6 +754,7 @@ pub fn grid(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
     };
     let frame = Frame {
         hub,
+        window: win.window,
         edits: &win.edits,
         lights: titled.then(|| cx.chrome_insets().leading),
         at,

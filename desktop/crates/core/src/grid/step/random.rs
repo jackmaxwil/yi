@@ -91,7 +91,7 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
     let all: Vec<PaneId> = grid.panes.iter().map(|pane| pane.id).collect();
     let holes = grid.windows.iter().flat_map(|window| &window.layout.away);
     let out: Vec<PaneId> = holes.map(|hole| hole.pane).collect();
-    let change = match dice.below(29) {
+    let change = match dice.below(31) {
         0 | 1 => {
             let saved = dice.pick(&SAVED)?.slug;
             let window = if dice.below(4) > 0 { MAIN } else { window };
@@ -169,6 +169,7 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
             let (pane, on) = (dice.pick(&drawn)?, dice.below(2) > 0);
             GridMsg::Across { pane, on }
         }
+        28 | 29 => GridMsg::Front(dice.pick(&all)?),
         _ => GridMsg::Leave(dice.pick(&all)?),
     };
     Some(Change::Said(Msg::Grid(change)))
@@ -270,6 +271,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::Open { .. }
         | GridMsg::Have { .. }
         | GridMsg::Across { .. }
+        | GridMsg::Front(_)
         | GridMsg::Moved { .. }
         | GridMsg::Keep { .. }
         | GridMsg::Wear { .. }

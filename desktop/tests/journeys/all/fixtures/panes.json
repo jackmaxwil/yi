@@ -1,9 +1,8 @@
 {
- "about": "Every pane kind the default layout does not hold is shown by its Show command; each draws its live or its honest empty state, never a blank body. Containers, Daemons and Settings are in the in-process journeys, since the real binary would read this Mac's docker and launchd.",
+ "about": "Every pane kind the default layout does not hold is shown by its Show command, one of each place a run since panes of one place share a slot as tabs; each draws its live or its honest empty state, never a blank body. Containers, Daemons and Settings are in the in-process journeys, since the real binary would read this Mac's docker and launchd.",
  "empty": true,
  "runs": [
   {
-   "size": "1800x1100",
    "steps": [
     {
      "t": 3.0,
@@ -26,7 +25,7 @@
      "key": "shell.command-box"
     },
     {
-     "t": 4.8999999999999995,
+     "t": 4.9,
      "type": "type",
      "text": "Show Trace"
     },
@@ -36,14 +35,14 @@
      "name": "Enter"
     },
     {
-     "t": 6.199999999999999,
+     "t": 6.2,
      "type": "tap",
      "key": "shell.command-box"
     },
     {
-     "t": 6.499999999999999,
+     "t": 6.5,
      "type": "type",
-     "text": "Show Logs"
+     "text": "Show Debugger"
     },
     {
      "t": 7.1,
@@ -51,22 +50,7 @@
      "name": "Enter"
     },
     {
-     "t": 7.799999999999999,
-     "type": "tap",
-     "key": "shell.command-box"
-    },
-    {
-     "t": 8.1,
-     "type": "type",
-     "text": "Show Findings"
-    },
-    {
-     "t": 8.7,
-     "type": "key",
-     "name": "Enter"
-    },
-    {
-     "t": 10.399999999999999,
+     "t": 8.8,
      "type": "mark",
      "name": "end"
     }
@@ -75,19 +59,82 @@
     "keys": [
      "agents-9.pane-frame",
      "trace-10.pane-frame",
-     "logs-11.pane-frame",
-     "findings-12.pane-frame"
+     "debugger-11.pane-frame"
     ],
     "bodies": [
      "agents-9",
      "trace-10",
-     "logs-11",
-     "findings-12"
+     "debugger-11"
     ]
    }
   },
   {
-   "size": "1800x1100",
+   "steps": [
+    {
+     "t": 3.0,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 3.3,
+     "type": "type",
+     "text": "Show Findings"
+    },
+    {
+     "t": 3.9,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 4.6,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 4.9,
+     "type": "type",
+     "text": "Show Logs"
+    },
+    {
+     "t": 5.5,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 6.2,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 6.5,
+     "type": "type",
+     "text": "Show Plugin kit"
+    },
+    {
+     "t": 7.1,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 8.8,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "keys": [
+     "findings-9.pane-frame",
+     "logs-10.pane-frame",
+     "plugin-kit-11.pane-frame"
+    ],
+    "bodies": [
+     "findings-9",
+     "logs-10",
+     "plugin-kit-11"
+    ]
+   }
+  },
+  {
    "steps": [
     {
      "t": 3.0,
@@ -110,9 +157,9 @@
      "key": "shell.command-box"
     },
     {
-     "t": 4.8999999999999995,
+     "t": 4.9,
      "type": "type",
-     "text": "Show VMs"
+     "text": "Show Language servers"
     },
     {
      "t": 5.5,
@@ -120,14 +167,14 @@
      "name": "Enter"
     },
     {
-     "t": 6.199999999999999,
+     "t": 6.2,
      "type": "tap",
      "key": "shell.command-box"
     },
     {
-     "t": 6.499999999999999,
+     "t": 6.5,
      "type": "type",
-     "text": "Show Debugger"
+     "text": "Show Design"
     },
     {
      "t": 7.1,
@@ -135,22 +182,7 @@
      "name": "Enter"
     },
     {
-     "t": 7.799999999999999,
-     "type": "tap",
-     "key": "shell.command-box"
-    },
-    {
-     "t": 8.1,
-     "type": "type",
-     "text": "Show Language servers"
-    },
-    {
-     "t": 8.7,
-     "type": "key",
-     "name": "Enter"
-    },
-    {
-     "t": 10.399999999999999,
+     "t": 8.8,
      "type": "mark",
      "name": "end"
     }
@@ -158,20 +190,66 @@
    "expect": {
     "keys": [
      "assets-9.pane-frame",
-     "vms-10.pane-frame",
-     "debugger-11.pane-frame",
-     "lsp-12.pane-frame"
+     "lsp-10.pane-frame",
+     "design-11.pane-frame"
     ],
     "bodies": [
      "assets-9",
-     "vms-10",
-     "debugger-11",
-     "lsp-12"
+     "lsp-10",
+     "design-11"
     ]
    }
   },
   {
-   "size": "1800x1100",
+   "steps": [
+    {
+     "t": 3.0,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 3.3,
+     "type": "type",
+     "text": "Show VMs"
+    },
+    {
+     "t": 3.9,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 4.6,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 4.9,
+     "type": "type",
+     "text": "Show Script"
+    },
+    {
+     "t": 5.5,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 7.2,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "keys": [
+     "vms-9.pane-frame",
+     "script-10.pane-frame"
+    ],
+    "bodies": [
+     "vms-9",
+     "script-10"
+    ]
+   }
+  },
+  {
    "steps": [
     {
      "t": 3.0,
@@ -189,68 +267,17 @@
      "name": "Enter"
     },
     {
-     "t": 4.6,
-     "type": "tap",
-     "key": "shell.command-box"
-    },
-    {
-     "t": 4.8999999999999995,
-     "type": "type",
-     "text": "Show Plugin kit"
-    },
-    {
-     "t": 5.5,
-     "type": "key",
-     "name": "Enter"
-    },
-    {
-     "t": 6.199999999999999,
-     "type": "tap",
-     "key": "shell.command-box"
-    },
-    {
-     "t": 6.499999999999999,
-     "type": "type",
-     "text": "Show Design"
-    },
-    {
-     "t": 7.1,
-     "type": "key",
-     "name": "Enter"
-    },
-    {
-     "t": 7.799999999999999,
-     "type": "tap",
-     "key": "shell.command-box"
-    },
-    {
-     "t": 8.1,
-     "type": "type",
-     "text": "Show Script"
-    },
-    {
-     "t": 8.7,
-     "type": "key",
-     "name": "Enter"
-    },
-    {
-     "t": 10.399999999999999,
+     "t": 5.6,
      "type": "mark",
      "name": "end"
     }
    ],
    "expect": {
     "keys": [
-     "plugins-9.pane-frame",
-     "plugin-kit-10.pane-frame",
-     "design-11.pane-frame",
-     "script-12.pane-frame"
+     "plugins-9.pane-frame"
     ],
     "bodies": [
-     "plugins-9",
-     "plugin-kit-10",
-     "design-11",
-     "script-12"
+     "plugins-9"
     ]
    }
   }

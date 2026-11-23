@@ -3,7 +3,7 @@
 use crate::grid::layout::{Axis, ChatSide, Edge, GridError, Hole, Layout, Line, Size};
 use std::collections::BTreeSet;
 
-use crate::grid::leave::{close, leave, rejoin, rest, split};
+use crate::grid::leave::{close, front, leave, next_tab, rejoin, rest, split, stack, unstack};
 use crate::grid::place::place;
 use crate::grid::resize::{even, position, resize};
 use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
@@ -11,7 +11,7 @@ use crate::grid::swap::{Spot, land, swap};
 use crate::grid::windows::{Frame, Pane, Scope, Window, WindowOp, Windows};
 use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::msg::Effect;
-use crate::pane::PaneKind;
+use crate::pane::{PaneKind, Place};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridMsg {
@@ -66,6 +66,8 @@ pub enum GridMsg {
         kinds: Vec<PaneKind>,
         thread: Option<ThreadId>,
     },
+    /// Bring a pane that waits behind another as a tab in front of its stack.
+    Front(PaneId),
     /// Show a pane in every session of its window, or only in the one shown now.
     Across {
         pane: PaneId,
@@ -132,13 +134,36 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             kinds,
             thread,
         } => {
-            find(grid, window)?;
+            let layout = &find(grid, window)?.layout;
+            // The tabs in front as the window turns away: back in front when it turns back.
+            let fronts = layout
+                .stacks
+                .iter()
+                .filter_map(|stack| layout.front(*stack.first()?));
+            let fronts: Vec<PaneId> = fronts.filter(|pane| !layout.is_away(*pane)).collect();
+            let was = grid.shows.get(&window).cloned();
+            let turned = was != thread;
+            if turned {
+                grid.fronts.insert((window, was), fronts);
+            }
             grid.have.insert(window, kinds.into_iter().collect());
-            match thread {
+            match thread.clone() {
                 Some(thread) => grid.shows.insert(window, thread),
                 None => grid.shows.remove(&window),
             };
+            let back = grid.fronts.get(&(window, thread)).cloned();
+            for pane in back.unwrap_or_default().into_iter().filter(|_| turned) {
+                let here = grid.home_of(pane) == Some(window) && grid.showing(window, pane);
+                if here {
+                    front(&mut find(grid, window)?.layout, pane)?;
+                }
+            }
             settle(grid, window)?;
+        }
+        GridMsg::Front(pane) => {
+            let window = grid.home_of(pane).ok_or(GridError::NoSuchPane(pane))?;
+            handled(grid, window, pane);
+            raise(grid, window, pane)?;
         }
         GridMsg::Across { pane, on } => {
             let window = grid.window_of(pane).ok_or(GridError::NoSuchPane(pane))?;
@@ -216,12 +241,12 @@ fn edit(
     change: impl FnOnce(&mut Layout) -> Result<(), GridError>,
 ) -> Result<(), GridError> {
     let window = find(grid, id)?;
+    // A slot is named by its stack's first tab: which tab is in front is no change of layout.
     let shape = |layout: &Layout| {
-        (
-            layout.cols.clone(),
-            layout.rows.clone(),
-            layout.areas.clone(),
-        )
+        let named =
+            |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
+        let areas: Vec<_> = layout.areas.iter().map(named).collect();
+        (layout.cols.clone(), layout.rows.clone(), areas)
     };
     let before = shape(&window.layout);
     change(&mut window.layout)?;
@@ -231,46 +256,89 @@ fn edit(
     Ok(())
 }
 
-/// Shows a pane of `kind` in `id`, the person's from then on: one resting here in its slot,
-/// else a hidden or a new one in half of the largest pane, cut across its longer side.
+/// Brings `pane` of `window` in front of its stack and back into the grid if its slot rests.
+/// A tab changed is no change of layout: the window still shows the layout it showed.
+fn raise(grid: &mut Windows, window: WindowId, pane: PaneId) -> Result<(), GridError> {
+    let layout = &mut find(grid, window)?.layout;
+    front(layout, pane)?;
+    if layout.is_resting(pane) {
+        rejoin(layout, pane)?;
+    }
+    Ok(())
+}
+
+/// The pane holding the first slot of `layout` whose place is `place`: its stack's first
+/// pane, or the pane alone, is of a kind that goes there. A pulled-out pane's slot is none.
+fn host(grid: &Windows, layout: &Layout, place: Place) -> Option<PaneId> {
+    let first = |held: PaneId| layout.stack(held).first().copied().unwrap_or(held);
+    let placed = |held: &PaneId| {
+        let here = !layout.pulled(*held) && grid.origin_of(*held).is_none();
+        here && grid.kind(first(*held)).map(PaneKind::place) == Some(place)
+    };
+    layout.areas.iter().map(|(pane, _)| *pane).find(placed)
+}
+
+/// Shows a pane of `kind` in `id`, the person's from then on. One the window has comes in
+/// front; else a hidden or a new one joins the stack of its place, or opens that place.
 fn open(grid: &mut Windows, id: WindowId, kind: PaneKind) -> Result<Vec<WindowOp>, GridError> {
-    let window = grid.window(id).ok_or(GridError::NoSuchWindow(id))?;
-    let drawn = |pane: PaneId| grid.kind(pane) == Some(kind);
-    let shown = window
-        .layout
-        .docked()
-        .map(|(pane, _)| pane)
-        .find(|pane| drawn(*pane));
-    if let Some(pane) = shown {
+    let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
+    let of_kind = |pane: &PaneId| grid.kind(*pane) == Some(kind);
+    let docked = layout.docked().map(|(pane, _)| pane).find(of_kind);
+    let behind = layout.stacks.iter().flatten().copied();
+    let behind = behind.filter(|pane| !layout.pulled(*pane)).find(of_kind);
+    let resting = layout.away.iter().filter(|hole| hole.resting);
+    let resting = resting.map(|hole| hole.pane).find(of_kind);
+    if let Some(pane) = docked.or(behind).or(resting) {
         handled(grid, id, pane);
+        raise(grid, id, pane)?;
         return Ok(Vec::new());
     }
-    let rests = |hole: &&Hole| hole.resting && drawn(hole.pane);
-    let resting = window.layout.away.iter().find(rests).map(|hole| hole.pane);
-    if let Some(pane) = resting {
-        handled(grid, id, pane);
-        edit(grid, id, |layout| rejoin(layout, pane))?;
-        return Ok(Vec::new());
-    }
+    let onto = host(grid, layout, kind.place());
     let size = grid.room(id);
-    let placed = place(&window.layout, size, grid.side);
+    let placed = place(layout, size, grid.side);
     let largest = placed
         .into_iter()
         .max_by(|(_, a), (_, b)| (a.w * a.h).total_cmp(&(b.w * b.h)));
-    let (beside, room) = largest.ok_or(GridError::NoSuchWindow(id))?;
     let hidden = grid.panes.iter().find(|pane| pane.kind == kind);
     let hidden = hidden.map(|pane| pane.id).filter(|pane| idle(grid, *pane));
     let pane = match hidden {
         Some(pane) => pane,
         None => add(grid, kind)?,
     };
+    fresh(grid, id, pane);
+    if let Some(onto) = onto {
+        stack(&mut find(grid, id)?.layout, onto, pane)?;
+        raise(grid, id, pane)?;
+        return Ok(Vec::new());
+    }
+    let (beside, room) = largest.ok_or(GridError::NoSuchWindow(id))?;
     let edge = if room.w >= room.h {
         Edge::Right
     } else {
         Edge::Bottom
     };
-    fresh(grid, id, pane);
     edit(grid, id, |layout| split(layout, beside, edge, pane))?;
+    // The list column goes to the far side from the chat and the shelf along the bottom,
+    // where there is room; else the half it was cut stays.
+    let far = match grid.side {
+        ChatSide::Left => Edge::Right,
+        ChatSide::Right => Edge::Left,
+    };
+    let at = match kind.place() {
+        Place::Side => Some(Spot::Side(far)),
+        Place::Shelf => Some(Spot::Side(Edge::Bottom)),
+        Place::Chat | Place::Work => None,
+    };
+    let side = grid.side;
+    if let Some(at) = at {
+        edit(grid, id, |layout| {
+            let mut tried = layout.clone();
+            if land(&mut tried, side, pane, at, size).is_ok() {
+                *layout = tried;
+            }
+            Ok(())
+        })?;
+    }
     Ok(Vec::new())
 }
 
@@ -299,30 +367,44 @@ fn fresh(grid: &mut Windows, window: WindowId, pane: PaneId) {
     }
 }
 
-/// Rests each pane of `id` with nothing to show here and gives back the slot of each with: a
-/// seated pane by its kind (chat always has), the person's by its sessions. A pulled-out pane stays.
+/// Settles each slot of `id` on what shows here: its front pane if it shows, else the first
+/// tab that does, else the slot rests. A pulled-out pane's slot stays; untold, nothing moves.
 fn settle(grid: &mut Windows, id: WindowId) -> Result<(), GridError> {
-    let Some(have) = grid.have.get(&id) else {
+    settle_in(grid, id, None)
+}
+
+/// [`settle`] for the one slot `only` is in, or for every slot of the window.
+fn settle_in(grid: &mut Windows, id: WindowId, only: Option<PaneId>) -> Result<(), GridError> {
+    if !grid.have.contains_key(&id) {
         return Ok(());
+    }
+    let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
+    let here = |held: &PaneId| !layout.pulled(*held);
+    let guest = |pane: PaneId| grid.origin_of(pane).is_some();
+    let slots = layout.areas.iter().map(|(pane, _)| *pane).filter(here);
+    let slots = slots.filter(|held| !guest(*held));
+    let slots = slots.filter(|held| only.is_none_or(|only| layout.front(only) == Some(*held)));
+    let next = |held: PaneId| {
+        let shows = |pane: &PaneId| !layout.pulled(*pane) && grid.showing(id, *pane);
+        let front = Some(held).filter(shows);
+        (
+            held,
+            front.or_else(|| layout.stack(held).iter().copied().find(shows)),
+        )
     };
-    let thread = grid.shows.get(&id);
-    let shows = |pane: &Pane| match pane.seated {
-        true => pane.kind == PaneKind::Chat || have.contains(&pane.kind),
-        false => pane.scope.holds(thread),
-    };
-    let home = |pane: &&Pane| grid.origin_of(pane.id).is_none();
-    let panes = grid.panes.iter().filter(home);
-    let panes: Vec<(PaneId, bool)> = panes.map(|pane| (pane.id, shows(pane))).collect();
+    let slots: Vec<(PaneId, Option<PaneId>)> = slots.map(next).collect();
     let layout = &mut find(grid, id)?.layout;
-    for (pane, has) in panes {
-        if layout.slot(pane).is_none() {
-            continue;
-        }
-        match (has, layout.is_away(pane)) {
+    for (held, next) in slots {
+        match next {
             // A pane the grid cannot close up round stays in.
-            (false, false) => drop(rest(layout, pane).ok()),
-            (true, true) if layout.is_resting(pane) => rejoin(layout, pane)?,
-            _ => {}
+            None if !layout.is_away(held) => drop(rest(layout, held).ok()),
+            None => {}
+            Some(next) => {
+                front(layout, next)?;
+                if layout.is_resting(next) {
+                    rejoin(layout, next)?;
+                }
+            }
         }
     }
     Ok(())
@@ -344,10 +426,7 @@ fn add(grid: &mut Windows, kind: PaneKind) -> Result<PaneId, GridError> {
 
 /// Whether `pane` is in no window and out of none: hidden, for any window to show again.
 fn idle(grid: &Windows, pane: PaneId) -> bool {
-    !grid
-        .windows
-        .iter()
-        .any(|window| window.layout.slot(pane).is_some() || window.layout.is_away(pane))
+    !grid.windows.iter().any(|window| window.layout.holds(pane))
 }
 
 /// Takes `pane` out of the window it is drawn in, for good. A window left with no pane
@@ -406,7 +485,7 @@ fn wear(
         .map(|window| window.layout.clone())
         .unwrap_or_default();
     let drawn = |pane: PaneId| old.docked().any(|(other, _)| other == pane);
-    let here = |pane: PaneId| old.slot(pane).is_some() || old.is_away(pane);
+    let here = |pane: PaneId| old.holds(pane);
     let mut seated: Vec<PaneId> = Vec::new();
     for (kind, _) in &saved.areas {
         let free = |pane: &&Pane| pane.kind == *kind && !seated.contains(&pane.id);
@@ -479,14 +558,27 @@ fn pull(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
         .map(WindowId)
         .ok_or(GridError::Full)?;
     let guest = grid.origin_of(pane).is_some();
-    let out = |layout: &mut Layout| {
-        if guest {
-            close(layout, pane)
-        } else {
-            leave(layout, pane)
-        }
-    };
-    edit(grid, from, out)?;
+    let layout = &mut find(grid, from)?.layout;
+    if let Some(next) = next_tab(layout, pane).filter(|next| !layout.is_away(*next)) {
+        // A tab pulled out leaves its slot to the next and keeps its place in the stack.
+        front(layout, next)?;
+        let (beside, resting) = (Vec::new(), false);
+        layout.away.push(Hole {
+            pane,
+            beside,
+            resting,
+        });
+        settle_in(grid, from, Some(next))?;
+    } else {
+        let out = |layout: &mut Layout| {
+            if guest {
+                close(layout, pane)
+            } else {
+                leave(layout, pane)
+            }
+        };
+        edit(grid, from, out)?;
+    }
     grid.windows.push(Window {
         id,
         layout: Layout::single(pane),
@@ -526,7 +618,7 @@ fn shut_here(grid: &mut Windows, pane: PaneId) -> Result<bool, GridError> {
         return Ok(false);
     }
     list.retain(|other| *other != thread);
-    edit(grid, window, |layout| rest(layout, pane))?;
+    settle_in(grid, window, Some(pane))?;
     Ok(true)
 }
 
@@ -534,6 +626,18 @@ fn shut_here(grid: &mut Windows, pane: PaneId) -> Result<bool, GridError> {
 /// pane open in other sessions too only closes in this one.
 fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
     if shut_here(grid, pane)? {
+        return Ok(Vec::new());
+    }
+    // A tab among others: it goes, and the next one that shows here takes the slot.
+    let mate = |grid: &Windows, window| next_tab(&grid.window(window)?.layout, pane);
+    if let Some(window) = grid.home_of(pane)
+        && let Some(mate) = mate(grid, window)
+        && unstack(&mut find(grid, window)?.layout, pane)
+    {
+        grid.panes.retain(|other| other.id != pane);
+        settle_in(grid, window, Some(mate))?;
+        // The window keeps a pane in: its last tab here does not close while others are out.
+        find(grid, window)?.layout.check()?;
         return Ok(Vec::new());
     }
     let home = grid.origin_of(pane);
@@ -551,5 +655,7 @@ mod random;
 mod resting;
 #[cfg(test)]
 mod sessions;
+#[cfg(test)]
+mod stacks;
 #[cfg(test)]
 mod tests;

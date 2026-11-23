@@ -5,7 +5,7 @@ use crate::grid::layout::{
     Axis, ChatSide, Edge, GridError, Layout, MAX_PANES, MAX_TRACKS, MIN_PANE, Point, Rect, Size,
     Track, area,
 };
-use crate::grid::leave::{close, split};
+use crate::grid::leave::{split, vacate};
 use crate::grid::place::place;
 use crate::ids::PaneId;
 
@@ -84,11 +84,11 @@ pub fn land(
             return Err(GridError::NoSuchPane(other));
         }
         Spot::Beside(other, edge) => {
-            close(layout, pane)?;
+            vacate(layout, pane)?;
             split(layout, other, own(edge, side), pane)?;
         }
         Spot::Side(edge) => {
-            close(layout, pane)?;
+            vacate(layout, pane)?;
             along(layout, own(edge, side), pane)?;
         }
     }

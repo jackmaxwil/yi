@@ -468,3 +468,54 @@ fn escape_cancels_the_name_even_when_the_field_lost_the_keyboard() -> Check {
     assert!(live(&runtime, PANEL), "and leaves the panel open");
     Ok(())
 }
+
+/// Two panes of one place open as tabs of the slot that place already has, with no slot
+/// cut for either, and a press on another pane's tab brings it in front.
+#[test]
+fn panes_of_one_place_open_as_tabs_and_a_press_on_a_tab_brings_it_in_front() -> Check {
+    let mut runtime = settled("shell/mockup")?;
+    let before = kinds(&runtime)?;
+    for command in ["pane.show-trace", "pane.show-logs"] {
+        runtime.update(|win, tx| view::run(win, tx, CommandId(command), Target::App));
+        rest(&mut runtime);
+    }
+    let shown = kinds(&runtime)?;
+    assert_eq!(shown.len(), before.len(), "no slot was cut: {shown:?}");
+    assert!(
+        shown.contains(&PaneKind::Logs),
+        "the last asked for is in front"
+    );
+    assert!(
+        !shown.contains(&PaneKind::Terminal),
+        "the terminal is behind it"
+    );
+    let tabs = |runtime: &Runtime<Win>| -> Vec<String> {
+        let all = runtime.elements();
+        let keys = all.iter().filter_map(|e| e.key.clone());
+        let stacked = keys.filter(|key| key.contains(".tab-pane-") && key.ends_with(".pane-tab"));
+        stacked.collect()
+    };
+    let (terminal, trace) = {
+        let hub = runtime.state.hub.try_borrow()?;
+        let of = |kind| hub.model.grid.panes.iter().find(|pane| pane.kind == kind);
+        let id = |kind| of(kind).map(|pane| pane.id.0).ok_or("a pane is missing");
+        (id(PaneKind::Terminal)?, id(PaneKind::Trace)?)
+    };
+    let behind = tabs(&runtime);
+    assert_eq!(behind.len(), 2, "a tab for each pane behind: {behind:?}");
+    let ends = |with: String| behind.iter().find(|key| key.ends_with(&with)).cloned();
+    let on_terminal = ends(format!(".tab-pane-{terminal}.pane-tab")).ok_or("no terminal tab")?;
+    assert!(
+        ends(format!(".tab-pane-{trace}.pane-tab")).is_some(),
+        "{behind:?}"
+    );
+    tap(&mut runtime, &on_terminal)?;
+    let shown = kinds(&runtime)?;
+    assert!(
+        shown.contains(&PaneKind::Terminal),
+        "its tab pressed: {shown:?}"
+    );
+    assert!(!shown.contains(&PaneKind::Logs));
+    assert_eq!(tabs(&runtime).len(), 2, "the other two are its tabs now");
+    Ok(())
+}

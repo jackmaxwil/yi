@@ -19,12 +19,35 @@ macro_rules! panes {
                 match self { $(PaneKind::$name => $wide),+ }
             }
 
+            /// Where a pane of the kind goes when it is opened: the stack it joins.
+            pub const fn place(self) -> Place {
+                use PaneKind::*;
+                match self {
+                    Chat => Place::Chat,
+                    Terminal | Logs | Trace => Place::Shelf,
+                    Files | Agents | Findings | Assets | Containers | Vms | Daemons
+                    | Plugins | LanguageServers => Place::Side,
+                    Changes | Code | Web | Remote | Report | Design | Debugger | Settings
+                    | Themes | PluginKit | Script | IPython => Place::Work,
+                }
+            }
+
             /// The name a tab and the pane's placeholder show.
             pub const fn title(self) -> &'static str {
                 match self { $(PaneKind::$name => $title),+ }
             }
         }
     };
+}
+
+/// The four places a window's panes stack in: the chat, the work beside it, a narrow list
+/// column, and a short shelf along the bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Chat,
+    Work,
+    Side,
+    Shelf,
 }
 
 panes! {

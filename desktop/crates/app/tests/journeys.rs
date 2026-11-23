@@ -135,14 +135,20 @@ fn containers_and_daemons_fill_from_recorded_output_and_only_read() -> Check {
     runtime.update(|win, _| {
         drain(win);
     });
-    shown(&mut runtime, PaneKind::Containers);
-    shown(&mut runtime, PaneKind::Daemons);
-    for want in ["atlas-api", "registry", "com.yi.daemon", "com.yi.figma-mcp"] {
-        assert!(
-            has(&runtime, want),
-            "{want} is not drawn: {:?}",
-            words(&runtime)
-        );
+    // The two share the side column as tabs: each is read while its tab is in front.
+    let drawn = [
+        (PaneKind::Containers, ["atlas-api", "registry"]),
+        (PaneKind::Daemons, ["com.yi.daemon", "com.yi.figma-mcp"]),
+    ];
+    for (kind, wanted) in drawn {
+        shown(&mut runtime, kind);
+        for want in wanted {
+            assert!(
+                has(&runtime, want),
+                "{want} is not drawn: {:?}",
+                words(&runtime)
+            );
+        }
     }
     let moved = [
         "start",

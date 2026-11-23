@@ -146,6 +146,7 @@ fn a_kept_layout_and_the_grid_file_keep_resting_panes() -> Check {
     let mut read: Windows = serde_json::from_str(&text)?;
     assert_eq!(read.place(MAIN, FRAME_1), model.grid.place(MAIN, FRAME_1));
     read.have = model.grid.have.clone();
+    read.fronts = model.grid.fronts.clone();
     assert_eq!(read, model.grid);
     Ok(())
 }

@@ -225,6 +225,7 @@ fn shares_too_small_to_add_up_still_tile_the_grid() -> Check {
             (right, area(1, 3, 2, 4)),
         ],
         away: Vec::new(),
+        stacks: Vec::new(),
     };
     leave(&mut layout, right)?;
     let placed = drawn(&layout, size)?;
@@ -257,6 +258,7 @@ fn tracks_too_large_to_add_up_still_tile_the_grid() -> Check {
         rows: vec![Track::Fr(1.0)],
         areas: vec![(wide, area(1, 1, 2, 3)), (narrow, area(1, 3, 2, 4))],
         away: Vec::new(),
+        stacks: Vec::new(),
     };
     layout.check()?;
     let placed = drawn(&layout, size)?;
@@ -327,6 +329,7 @@ fn the_flexible_column_can_be_dragged_wider_in_a_narrow_grid() -> Check {
             (out, area(1, 3, 2, 4)),
         ],
         away: Vec::new(),
+        stacks: Vec::new(),
     };
     leave(&mut layout, out)?;
     let placed = drawn(&layout, narrow)?;
@@ -365,6 +368,7 @@ fn a_share_that_is_out_never_outgrows_what_a_file_holds() -> Check {
             (out, area(1, 3, 2, 4)),
         ],
         away: Vec::new(),
+        stacks: Vec::new(),
     };
     leave(&mut layout, out)?;
     resize(&mut layout, after(Axis::Cols, 0), -100.0, narrow)?;

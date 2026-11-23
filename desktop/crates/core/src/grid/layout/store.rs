@@ -16,6 +16,24 @@ pub(crate) mod pane {
     }
 }
 
+/// Lists of pane ids, as lists of their numbers.
+pub(crate) mod stacks {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::ids::PaneId;
+
+    pub fn serialize<S: Serializer>(stacks: &[Vec<PaneId>], to: S) -> Result<S::Ok, S::Error> {
+        let numbers = |stack: &Vec<PaneId>| stack.iter().map(|pane| pane.0).collect::<Vec<_>>();
+        to.collect_seq(stacks.iter().map(numbers))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Vec<Vec<PaneId>>, D::Error> {
+        let lists = Vec::<Vec<u32>>::deserialize(from)?;
+        let ids = |list: Vec<u32>| list.into_iter().map(PaneId).collect();
+        Ok(lists.into_iter().map(ids).collect())
+    }
+}
+
 /// A window id as its number.
 pub(crate) mod window {
     use serde::{Deserialize, Deserializer, Serializer};
