@@ -205,6 +205,13 @@ impl Windows {
         self.panes.iter().find(|other| other.id == pane)
     }
 
+    fn window_where(&self, holds: impl Fn(&Layout) -> bool) -> Option<WindowId> {
+        self.windows
+            .iter()
+            .find(|window| holds(&window.layout))
+            .map(|window| window.id)
+    }
+
     #[must_use]
     pub fn kind(&self, pane: PaneId) -> Option<PaneKind> {
         self.pane_of(pane).map(|pane| pane.kind)
@@ -219,19 +226,14 @@ impl Windows {
     /// The window `pane` is drawn in.
     #[must_use]
     pub fn window_of(&self, pane: PaneId) -> Option<WindowId> {
-        let holds = |window: &&Window| window.layout.docked().any(|(other, _)| other == pane);
-        self.windows.iter().find(holds).map(|window| window.id)
+        self.window_where(|layout| layout.docked().any(|(other, _)| other == pane))
     }
 
     /// The window `pane` belongs to and is not pulled out of: where it is drawn, rests, or
     /// waits behind another pane as a tab.
     #[must_use]
     pub fn home_of(&self, pane: PaneId) -> Option<WindowId> {
-        let home = |window: &&Window| {
-            let layout = &window.layout;
-            layout.holds(pane) && !layout.pulled(pane)
-        };
-        self.windows.iter().find(home).map(|window| window.id)
+        self.window_where(|layout| layout.holds(pane) && !layout.pulled(pane))
     }
 
     /// Whether `pane` has something to show in `window` now: a seated pane by its kind (the
@@ -262,11 +264,7 @@ impl Windows {
     /// The window `pane` was pulled out of, where it docks back.
     #[must_use]
     pub fn origin_of(&self, pane: PaneId) -> Option<WindowId> {
-        let left = |window: &&Window| {
-            let layout = &window.layout;
-            layout.is_away(pane) && !layout.is_resting(pane)
-        };
-        self.windows.iter().find(left).map(|window| window.id)
+        self.window_where(|layout| layout.pulled(pane))
     }
 
     /// Every pane's rectangle in `window`, for a grid of `size`, chat on the side set.
