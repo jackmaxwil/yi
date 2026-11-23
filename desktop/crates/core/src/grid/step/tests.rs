@@ -52,14 +52,20 @@ pub(super) fn drawn(model: &Model) -> Result<Vec<(PaneId, Rect)>, String> {
     Ok(placed)
 }
 
-pub(super) fn have(model: &mut Model, window: WindowId, thread: &str) {
-    let kinds = vec![Chat, Code, Changes, Files, Terminal, Web];
-    let thread = Some(ThreadId::new(thread));
+pub(super) const HAVE_KINDS: [PaneKind; 6] = [Chat, Code, Changes, Files, Terminal, Web];
+
+pub(super) fn have(
+    model: &mut Model,
+    window: WindowId,
+    kinds: &[PaneKind],
+    thread: Option<&str>,
+) {
+    let thread = thread.map(ThreadId::new);
     change(
         model,
         GridMsg::Have {
             window,
-            kinds,
+            kinds: kinds.to_vec(),
             thread,
         },
     );

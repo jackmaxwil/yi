@@ -9,12 +9,12 @@ use crate::pane::PaneKind::{Changes, Chat, Code, Debugger, Files, IPython, Termi
 use crate::pane::Place;
 
 use super::GridMsg;
-use super::tests::{self, MAIN, change, drawn, have, pane};
+use super::tests::{self, HAVE_KINDS, MAIN, change, drawn, have, pane};
 
 fn showing(saved: &'static str) -> Model {
     let mut model = tests::showing(saved);
     // Every kind the tests move has something to show, so none rests out of the grid.
-    have(&mut model, MAIN, "a");
+    have(&mut model, MAIN, &HAVE_KINDS, Some("a"));
     model
 }
 
@@ -131,7 +131,7 @@ fn the_slot_a_moved_tab_left_shows_a_tab_of_the_session_shown() -> Check {
     let window = MAIN;
     let open = |model: &mut Model, kind| change(model, GridMsg::Open { window, kind });
     open(&mut model, Debugger);
-    have(&mut model, window, "b");
+    have(&mut model, window, &HAVE_KINDS, Some("b"));
     open(&mut model, IPython);
     let (changes, debugger) = (pane(&model, Changes)?, pane(&model, Debugger)?);
     let ipython = pane(&model, IPython)?;
