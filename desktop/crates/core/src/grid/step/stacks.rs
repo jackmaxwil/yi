@@ -13,7 +13,7 @@ use super::GridMsg;
 use super::tests::{MAIN, change, drawn, kinds, open, pane, record};
 
 /// The chat alone, in a window showing session `thread`.
-fn window(thread: &str) -> Model {
+pub(super) fn window(thread: &str) -> Model {
     let mut model = record();
     let (window, saved) = (MAIN, "chat");
     change(&mut model, GridMsg::Show { window, saved });
@@ -21,7 +21,7 @@ fn window(thread: &str) -> Model {
     model
 }
 
-fn show(model: &mut Model, thread: &str) {
+pub(super) fn show(model: &mut Model, thread: &str) {
     let thread = (!thread.is_empty()).then(|| ThreadId::new(thread));
     let (window, kinds) = (MAIN, PaneKind::ALL.to_vec());
     let told = GridMsg::Have {
@@ -32,7 +32,7 @@ fn show(model: &mut Model, thread: &str) {
     change(model, told);
 }
 
-fn tabs(model: &Model, of: PaneKind) -> Result<Vec<PaneKind>, String> {
+pub(super) fn tabs(model: &Model, of: PaneKind) -> Result<Vec<PaneKind>, String> {
     let tabs = model.grid.tabs(MAIN, pane(model, of)?);
     let kind = |pane: &_| model.grid.kind(*pane).ok_or("a tab of no kind".to_owned());
     tabs.iter().map(kind).collect()

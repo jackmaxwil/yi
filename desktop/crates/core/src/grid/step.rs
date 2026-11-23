@@ -3,7 +3,9 @@
 use crate::grid::layout::{Axis, ChatSide, Edge, GridError, Hole, Layout, Line, Size};
 use std::collections::BTreeSet;
 
-use crate::grid::leave::{close, front, leave, next_tab, rejoin, rest, split, stack, unstack};
+use crate::grid::leave::{
+    close, close_tab, front, leave, next_tab, rejoin, rest, split, stack, unstack,
+};
 use crate::grid::place::place;
 use crate::grid::resize::{even, position, resize};
 use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
@@ -217,8 +219,16 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             at,
             size,
         } => {
+            if grid.visiting(window, pane, at) {
+                return Err(GridError::NoSuchPane(pane));
+            }
+            // The tab left in the slot may be another session's: the slot settles on its own.
+            let mate = next_tab(&find(grid, window)?.layout, pane);
             edit(grid, window, |layout| land(layout, side, pane, at, size))?;
             handled(grid, window, pane);
+            if mate.is_some() {
+                settle_in(grid, window, mate)?;
+            }
         }
         GridMsg::Moved { window, frame } => {
             let window = find(grid, window)?;
@@ -246,7 +256,8 @@ fn edit(
         let named =
             |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
         let areas: Vec<_> = layout.areas.iter().map(named).collect();
-        (layout.cols.clone(), layout.rows.clone(), areas)
+        let tracks = (layout.cols.clone(), layout.rows.clone());
+        (tracks, areas, layout.stacks.clone())
     };
     let before = shape(&window.layout);
     change(&mut window.layout)?;
@@ -629,7 +640,7 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
         return Ok(Vec::new());
     }
     // A tab among others: it goes, and the next one that shows here takes the slot.
-    let mate = |grid: &Windows, window| next_tab(&grid.window(window)?.layout, pane);
+    let mate = |grid: &Windows, window| close_tab(&grid.window(window)?.layout, pane);
     if let Some(window) = grid.home_of(pane)
         && let Some(mate) = mate(grid, window)
         && unstack(&mut find(grid, window)?.layout, pane)
@@ -649,6 +660,8 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
     Ok(ops)
 }
 
+#[cfg(test)]
+mod carry;
 #[cfg(test)]
 mod random;
 #[cfg(test)]

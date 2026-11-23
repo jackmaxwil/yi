@@ -263,7 +263,17 @@ impl Windows {
     /// The drop zone under `at` while `pane` is carried in `window`.
     #[must_use]
     pub fn zone_at(&self, window: WindowId, size: Size, pane: PaneId, at: Point) -> Option<Zone> {
-        zone_at(&self.window(window)?.layout, self.side, size, pane, at)
+        let zone = zone_at(&self.window(window)?.layout, self.side, size, pane, at)?;
+        Some(zone).filter(|zone| !self.visiting(window, pane, zone.spot))
+    }
+
+    /// Whether dropping `pane` at `spot` would make it a tab of a pane that is out of
+    /// another window. That pane's tabs are kept where it came from, so it takes none here.
+    #[must_use]
+    pub fn visiting(&self, window: WindowId, pane: PaneId, spot: Spot) -> bool {
+        let tabbed = |window: &Window| !window.layout.stack(pane).is_empty();
+        let guest = matches!(spot, Spot::Onto(other) if self.origin_of(other).is_some());
+        guest && self.window(window).is_some_and(tabbed)
     }
 
     /// Where a key moves `pane` toward `edge` of `window`, as the window was last seen.

@@ -27,6 +27,7 @@ The owner asked: "Panels should be session linked. Layout should be more dynamic
 | When should a tab the app opened by itself go away? | "When its thing ends, if untouched" |
 | What may the model's "front" do? | "Front only if you are idle there" |
 | Where should panes about this Mac live? | "Stay with the window" |
+| Should dragging a pane by its bar move the whole stack of tabs, or only the tab in front? | "Only the front tab" |
 
 ## What the app asks of Yi's server
 

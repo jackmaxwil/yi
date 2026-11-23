@@ -2,7 +2,10 @@
 //! an edge of the window, through the root's own view, poll and keys.
 
 use super::{Check, by_key, rest, settled};
+use crate::shell::view;
 use rune::{ElementInfo, Runtime};
+use yd_core::command::table::Target;
+use yd_core::ids::CommandId;
 use yd_ui::win::Win;
 
 fn part(shown: &[ElementInfo], slug: &str, part: &str) -> Result<[f32; 4], String> {
@@ -93,6 +96,36 @@ fn a_pane_carried_to_the_windows_edge_becomes_a_column_there() -> Check {
         (files[1] - y).abs() < 0.6 && (files[3] - h).abs() < 0.6,
         "full height"
     );
+    tiles(&after)
+}
+
+/// Three shelf panes share a slot as tabs. The one in front, carried by its bar to the top
+/// of chat, goes there alone: the tab opened just before it has the shelf, where it was.
+#[test]
+fn a_pane_carried_by_its_bar_leaves_its_other_tabs_in_the_slot() -> Check {
+    let mut runtime = settled("shell/mockup")?;
+    for command in ["pane.show-trace", "pane.show-logs"] {
+        runtime.update(|win, tx| view::run(win, tx, CommandId(command), Target::App));
+        rest(&mut runtime);
+    }
+    let shown = runtime.elements();
+    let shelf = part(&shown, "logs", ".pane-frame")?;
+    let chat = part(&shown, "chat", ".pane-frame")?;
+    let to = (chat[0] + chat[2] / 2.0, chat[1] + 20.0);
+    carry(&mut runtime, bar(&shown, "logs")?, to);
+    runtime.pointer_up(to.0, to.1);
+    rest(&mut runtime);
+    let after = runtime.elements();
+    let logs = part(&after, "logs", ".pane-frame")?;
+    assert!((logs[1] - chat[1]).abs() < 0.6, "logs is at {logs:?}");
+    let trace = part(&after, "trace", ".pane-frame")?;
+    assert!(near(trace, shelf), "trace has the shelf: {trace:?}");
+    let behind = |e: &&ElementInfo| {
+        let key = e.key.as_deref().unwrap_or_default();
+        key.starts_with("trace-") && key.contains(".tab-pane-") && key.ends_with(".pane-tab")
+    };
+    assert_eq!(after.iter().filter(behind).count(), 1, "the terminal's tab");
+    assert!(part(&after, "terminal", ".pane-frame").is_err());
     tiles(&after)
 }
 

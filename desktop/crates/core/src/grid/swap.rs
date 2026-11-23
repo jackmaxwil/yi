@@ -1,11 +1,11 @@
-//! Dropping a carried pane: on another's middle the two swap slots, on an edge of one it takes
-//! half that pane's slot, on an edge of the window a new column or row across the grid.
+//! Dropping a carried pane: a middle swaps the two or takes a tab, an edge of a pane gives it
+//! half that slot, an edge of the window a column or row. The tabs behind it keep its slot.
 
 use crate::grid::layout::{
     Axis, ChatSide, Edge, GridError, Layout, MAX_PANES, MAX_TRACKS, MIN_PANE, Point, Rect, Size,
     Track, area,
 };
-use crate::grid::leave::{split, vacate};
+use crate::grid::leave::{front, next_tab, part, split, stack};
 use crate::grid::place::place;
 use crate::ids::PaneId;
 
@@ -20,9 +20,10 @@ pub const DOCKED: Size = Size { w: 300.0, h: 150.0 };
 /// Where a carried pane lands, its edges as drawn: chat on the left mirrors them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spot {
-    /// The middle of another pane: the two exchange slots.
+    /// The middle of another pane: the two exchange slots, or a tab joins that pane's tabs.
     Onto(PaneId),
-    /// An edge of another pane: the carried one takes the half of its slot on that edge.
+    /// An edge of another pane: the carried one takes the half of its slot on that edge. A
+    /// tab's own slot is cut the same way, between it and the tab that takes over.
     Beside(PaneId, Edge),
     /// An edge of the window: a full-height column or full-width row there.
     Side(Edge),
@@ -65,8 +66,8 @@ fn own(edge: Edge, side: ChatSide) -> Edge {
     }
 }
 
-/// Drops `pane` at `spot` in a grid drawn at `size`. A drop to an edge leaves no hole where
-/// the pane was, and is refused when a pane would be drawn under the minimum.
+/// Drops `pane` at `spot` in a grid drawn at `size`, alone: the tabs behind it keep its slot,
+/// else no hole is left. Refused when a pane would be drawn under the minimum.
 pub fn land(
     layout: &mut Layout,
     side: ChatSide,
@@ -78,17 +79,26 @@ pub fn land(
     if !docked(layout, pane) {
         return Err(GridError::NoSuchPane(pane));
     }
+    let mate = next_tab(layout, pane);
     match spot {
-        Spot::Onto(other) => swap(layout, pane, other)?,
-        Spot::Beside(other, _) if other == pane || !docked(layout, other) => {
-            return Err(GridError::NoSuchPane(other));
+        Spot::Onto(other) if other == pane => {}
+        Spot::Onto(other) if mate.is_none() => swap(layout, pane, other)?,
+        Spot::Onto(other) => {
+            part(layout, pane)?;
+            stack(layout, other, pane)?;
+            front(layout, pane)?;
         }
         Spot::Beside(other, edge) => {
-            vacate(layout, pane)?;
+            let other = if other == pane { mate } else { Some(other) };
+            let other = other.ok_or(GridError::NoSuchPane(pane))?;
+            part(layout, pane)?;
+            if !docked(layout, other) {
+                return Err(GridError::NoSuchPane(other));
+            }
             split(layout, other, own(edge, side), pane)?;
         }
         Spot::Side(edge) => {
-            vacate(layout, pane)?;
+            part(layout, pane)?;
             along(layout, own(edge, side), pane)?;
         }
     }
@@ -136,8 +146,8 @@ fn inside(rect: &Rect, at: Point) -> bool {
     at.x >= rect.x && at.x < rect.x + rect.w && at.y >= rect.y && at.y < rect.y + rect.h
 }
 
-/// The zone under `at` while `pane` is carried in a grid of `size`; none over the pane's own
-/// slot, outside the grid, or where the drop would change nothing.
+/// The zone under `at` while `pane` is carried in a grid of `size`; none outside the grid or
+/// where the drop would change nothing: over its own slot, but for an edge a tab can take.
 #[must_use]
 pub fn zone_at(
     layout: &Layout,
@@ -183,7 +193,7 @@ pub fn zone_at(
         Some((edge, _, band)) => (Spot::Side(edge), band),
         None => {
             let (other, rect) = placed.iter().find(|(_, rect)| inside(rect, at))?;
-            if *other == pane {
+            if *other == pane && next_tab(layout, pane).is_none() {
                 return None;
             }
             over(*other, *rect, at)

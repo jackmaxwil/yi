@@ -152,9 +152,9 @@ Every row is a `Show` or an existing grid message. Nothing here needs a new idea
 | ⌥⌘-click | Opens in its own window | ✓ `Leave` |
 | Space on a selected thing | Peek: a pop-over, no pane | ✚ Show(Peek) on ✓ `Popover` |
 | Drag a thing onto a pane's edge or middle | Places it there | ✓ `zone_at`, `Drop` |
-| Drag a tab to another stack | Moves it | ✚ |
+| Drag a tab to another stack | Moves it: a pane bar dropped on another pane's middle joins its tabs | ✓ `Drop`, `Spot::Onto` |
 | Drag a tab out of the window | Makes a window | ✓ tear-out |
-| Drag a pane bar | Moves the stack | ✓ |
+| Drag a pane bar | Moves the tab in front alone; the tabs behind it keep the slot. An edge of its own slot cuts it from them | ✓ `swap::land` |
 | Pinch out on a pane | Fills the window with it | ✓ `on_magnify` (`rune/crates/rune/src/input/canvas_input.rs:172`) |
 | Pinch in on a filled pane | Back to the grid | ✓ |
 | Two-finger double-tap | Toggles fill | ✓ `on_smart_magnify` (`:185`) |
