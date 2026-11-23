@@ -15,7 +15,8 @@ use std::rc::Rc;
 use std::borrow::Cow;
 
 use rune::{
-    Curve, Cx, Easing, El, GrowthSpec, Icon, Key, KeyEvent, ScrollSpec, Tx, col, row, spacer, text,
+    Curve, Cx, Drag, Easing, El, GrowthSpec, Icon, Key, KeyEvent, ScrollSpec, Tx, col, row, spacer,
+    text,
 };
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
@@ -25,6 +26,8 @@ use yd_core::pane::PaneKind;
 use yd_core::tokens::Tokens;
 use yd_ui::a11y;
 use yd_ui::chrome::tabs::{Tab, Tabs};
+use yd_ui::grid_view::carried;
+use yd_ui::grid_view::drag::At;
 use yd_ui::grid_view::view::{open_file, preview_file};
 use yd_ui::kit::chip::{Chip, chip};
 use yd_ui::kit::icons::{SEARCH, glyph};
@@ -130,7 +133,7 @@ fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
     copy::under(pane, &pane.key(PaneKind::Files), listed(pane, cx))
 }
 
-fn listed(pane: &PaneCx<'_>, _cx: &mut Cx<Win>) -> El {
+fn listed(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
     let key = pane.key(PaneKind::Files);
     let (tokens, model) = (pane.tokens(), pane.model());
     let fresh = State::default();
@@ -199,7 +202,7 @@ fn listed(pane: &PaneCx<'_>, _cx: &mut Cx<Win>) -> El {
         .fill(colour(tokens.pane_tint.alpha(tokens.glass_pane)))
         .child(filter_row)
         .child(search_box(tokens, &key, pane.pane, state))
-        .child(list(tokens, &key, pane.pane, data, state))
+        .child(list(tokens, &key, pane.pane, data, state, At::of(cx)))
         .children(cut)
         .children(
             state
@@ -329,7 +332,7 @@ fn hints(tokens: &Tokens, key: &str) -> El {
 }
 
 /// Everything below the box on virtual rows: sections, changed files, the tree.
-fn list(tokens: &Tokens, key: &str, pane: PaneId, data: Rc<Data>, state: &State) -> El {
+fn list(tokens: &Tokens, key: &str, pane: PaneId, data: Rc<Data>, state: &State, at: At) -> El {
     let (selected, filter) = (state.selected.clone(), state.filter);
     let mut version = DefaultHasher::new();
     (&data.items, &selected, filter).hash(&mut version);
@@ -340,6 +343,7 @@ fn list(tokens: &Tokens, key: &str, pane: PaneId, data: Rc<Data>, state: &State)
         data,
         selected,
         filter,
+        at,
     });
     let (keyed, built) = (rows.clone(), rows.clone());
     let stack = col()
@@ -372,6 +376,8 @@ struct Rows {
     data: Rc<Data>,
     selected: Option<String>,
     filter: Filter,
+    /// Where the grid is drawn: a file row dragged out is dropped on it.
+    at: At,
 }
 
 impl Rows {
@@ -466,6 +472,8 @@ impl Rows {
         let ink = if on { tokens.fg } else { tokens.dim };
         let (pane, path, dir) = (self.pane, path.to_owned(), matches!(fold, Some(Some(_))));
         let kept = path.clone();
+        let (at, carried) = (self.at, Address::new(Kind::File, path.as_str()).ok());
+        let carried = carried.filter(|_| !dir);
         a11y::item(row(), tokens, on)
             .key(key)
             .h(tokens.row)
@@ -495,6 +503,11 @@ impl Rows {
             .on_double_press_tx(move |win: &mut Win, tx: &mut Tx| {
                 if let (false, Ok(file)) = (dir, Address::new(Kind::File, kept.as_str())) {
                     open_file(win, tx, file);
+                }
+            })
+            .on_drag(move |win: &mut Win, drag: &mut Drag, tx: &mut Tx| {
+                if let Some(file) = &carried {
+                    carried::hand(win, file, pane, at, drag, tx);
                 }
             })
     }

@@ -8,7 +8,7 @@ use yd_core::command::table::Target;
 use yd_core::ids::CommandId;
 use yd_ui::win::Win;
 
-fn part(shown: &[ElementInfo], slug: &str, part: &str) -> Result<[f32; 4], String> {
+pub(super) fn part(shown: &[ElementInfo], slug: &str, part: &str) -> Result<[f32; 4], String> {
     let found = shown.iter().find(|e| {
         let key = e.key.as_deref().unwrap_or_default();
         !e.exiting && key.starts_with(&format!("{slug}-")) && key.ends_with(part)
@@ -17,7 +17,7 @@ fn part(shown: &[ElementInfo], slug: &str, part: &str) -> Result<[f32; 4], Strin
 }
 
 /// Presses at `from`, moves to `to` in eight steps, and lets the preview settle.
-fn carry(runtime: &mut Runtime<Win>, from: (f32, f32), to: (f32, f32)) {
+pub(super) fn carry(runtime: &mut Runtime<Win>, from: (f32, f32), to: (f32, f32)) {
     runtime.pointer_move(from.0, from.1);
     runtime.pointer_down(from.0, from.1);
     runtime.frame(1.0 / 60.0);
@@ -35,7 +35,7 @@ fn bar(shown: &[ElementInfo], slug: &str) -> Result<(f32, f32), String> {
     Ok((x + w - 60.0, y + 10.0))
 }
 
-fn near(a: [f32; 4], b: [f32; 4]) -> bool {
+pub(super) fn near(a: [f32; 4], b: [f32; 4]) -> bool {
     a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.6)
 }
 
@@ -129,7 +129,7 @@ fn a_pane_carried_by_its_bar_leaves_its_other_tabs_in_the_slot() -> Check {
     tiles(&after)
 }
 
-fn tiles(shown: &[ElementInfo]) -> Check {
+pub(super) fn tiles(shown: &[ElementInfo]) -> Check {
     let [x, y, w, h] = by_key(shown, "shell.grid").ok_or("no grid")?.rect;
     let frames = shown
         .iter()

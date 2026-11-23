@@ -1,7 +1,7 @@
 //! Dragging a pane by its bar: onto another to swap, onto an edge of one or of the window to
 //! dock it there, with weight and a preview of where it lands.
 
-use rune::{Curve, Drag, Easing, El, Phase, Spring, Tx, col, el, text};
+use rune::{Curve, Cx, Drag, Easing, El, Phase, Spring, Tx, col, el, text};
 use yd_core::grid::layout::{Axis, Line, Point, Rect, Size};
 use yd_core::grid::step::GridMsg;
 use yd_core::grid::swap::Zone;
@@ -30,7 +30,7 @@ const TILT_MOST: f32 = 3.2;
 const TEAR: f32 = 24.0;
 /// Incident: a click on a tab lifted its pane and sprang it home. A pane is carried only
 /// once the pointer has gone this far with the button held.
-const THRESHOLD: f32 = 4.0;
+pub(super) const THRESHOLD: f32 = 4.0;
 /// How strongly the theme's accent fills where a dropped pane will go.
 const PREVIEW: f32 = 0.16;
 /// Drawn over every pane, the held one included, so the place shows through it.
@@ -44,7 +44,18 @@ pub struct At {
 }
 
 impl At {
-    fn point(&self, drag: &Drag) -> Point {
+    /// Where the grid is drawn in the window being built.
+    pub fn of(cx: &Cx<Win>) -> At {
+        let [x, y, w, h] = cx
+            .window_layout(crate::grid_view::view::KEY)
+            .unwrap_or_default();
+        At {
+            origin: [x, y],
+            size: Size { w, h },
+        }
+    }
+
+    pub(super) fn point(&self, drag: &Drag) -> Point {
         let [x, y] = drag.window_point();
         let [left, top] = self.origin;
         Point {

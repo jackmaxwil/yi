@@ -153,7 +153,7 @@ Every row is a `Show` or an existing grid message. Nothing here needs a new idea
 | ⌘-click | Opens beside, as a split | ✓ a file, wherever one is pressed: a code pane about it right of the viewer (`GridMsg::Beside`); ✚ other things |
 | ⌥⌘-click | Opens in its own window | ✓ a file: the same pane, shown as a tab and then `Leave`; ✚ other things |
 | Space on the thing under the pointer | Peek: a card over the window, no pane; in a list, with the pointer on none, the row the arrow keys stand on | ✓ `overlay::peek`, the command `thing.peek` |
-| Drag a thing onto a pane's edge or middle | Places it there | ✓ `zone_at`, `Drop` |
+| Drag a thing onto a pane's edge or middle | Places it there. As built: a file dragged out of the Files pane; its name goes with the pointer and the place it would land is marked, as for a carried pane | ✓ `grid_view::carried`, `GridMsg::Put`, `Windows::zone_for` |
 | Drag a tab to another stack | Moves it: a pane bar dropped on another pane's middle joins its tabs | ✓ `Drop`, `Spot::Onto` |
 | Drag a tab out of the window | Makes a window | ✓ tear-out |
 | Drag a pane bar | Moves the tab in front alone; the tabs behind it keep the slot. An edge of its own slot cuts it from them | ✓ `swap::land` |

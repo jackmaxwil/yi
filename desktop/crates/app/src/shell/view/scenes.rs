@@ -1,12 +1,16 @@
 //! The shell's scenes, built by playing the mockup's threads through the wire reducer.
 
+use yd_core::address::uri::Address;
 use yd_core::feed::{FeedEvent, FeedStatus};
+use yd_core::grid::layout::Point;
 use yd_core::grid::step::GridMsg;
 use yd_core::ids::Millis;
+use yd_core::kind::Kind;
 use yd_core::msg::{Msg, step};
 use yd_core::pane::PaneKind;
 use yd_core::row::Row;
 use yd_core::wire::replay::play;
+use yd_ui::grid_view::carried::{Carried, Hands};
 use yd_ui::grid_view::view::{Grip, Grips};
 use yd_ui::pane::{SCENE_PANE, Scene, Stage};
 use yd_ui::win::Hub;
@@ -85,6 +89,11 @@ pub const SCENES: &[Scene] = &[
         name: "shell/panes",
         stage: Stage::App,
         setup: panes,
+    },
+    Scene {
+        name: "shell/carrying",
+        stage: Stage::App,
+        setup: carrying,
     },
 ];
 
@@ -275,6 +284,22 @@ fn panes(hub: &mut Hub) {
             ..grips.of(MAIN)
         };
         grips.set(MAIN, open);
+    }
+}
+
+/// A file dragged out of the Files pane, held over the middle of the terminal: the point is
+/// in the grid's own points, as a window of the scenes' size draws Everything.
+fn carrying(hub: &mut Hub) {
+    everything(hub);
+    let grid = &hub.model.grid;
+    let files = grid.panes.iter().find(|pane| pane.kind == PaneKind::Files);
+    let thing = Address::new(Kind::File, "src/main.rs");
+    let (Some(from), Ok(thing)) = (files.map(|pane| pane.id), thing) else {
+        return;
+    };
+    let at = Point { x: 676.0, y: 560.0 };
+    if let Some(hands) = hub.panes.get_mut::<Hands>(None) {
+        hands.0.insert(MAIN, Carried { thing, from, at });
     }
 }
 

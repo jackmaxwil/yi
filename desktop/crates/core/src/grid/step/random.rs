@@ -101,7 +101,7 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
     let all: Vec<PaneId> = grid.panes.iter().map(|pane| pane.id).collect();
     let holes = grid.windows.iter().flat_map(|window| &window.layout.away);
     let out: Vec<PaneId> = holes.map(|hole| hole.pane).collect();
-    let change = match dice.below(34) {
+    let change = match dice.below(36) {
         0 | 1 => {
             let saved = dice.pick(&SAVED)?.slug;
             let window = if dice.below(4) > 0 { MAIN } else { window };
@@ -213,6 +213,25 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
             }
         }
         32 => GridMsg::Fill(dice.pick(&all)?),
+        33 | 34 => {
+            // A file dragged from where it is listed and let go somewhere on the grid.
+            let edges = [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom];
+            let (other, edge) = (dice.pick(&all)?, dice.pick(&edges)?);
+            let at = match dice.below(3) {
+                0 => Spot::Onto(other),
+                1 => Spot::Beside(other, edge),
+                _ => Spot::Side(edge),
+            };
+            let thing = Address::new(Kind::File, dice.pick(&["src/a.rs", "src/b.rs"])?).ok()?;
+            let kind = PaneKind::Code;
+            GridMsg::Put {
+                window,
+                kind,
+                thing,
+                at,
+                size,
+            }
+        }
         _ => GridMsg::Leave(dice.pick(&all)?),
     };
     Some(Change::Said(Msg::Grid(change)))
@@ -350,6 +369,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::Open { .. }
         | GridMsg::About { .. }
         | GridMsg::Beside { .. }
+        | GridMsg::Put { .. }
         | GridMsg::Have { .. }
         | GridMsg::SplitAt { .. }
         | GridMsg::Place { .. }

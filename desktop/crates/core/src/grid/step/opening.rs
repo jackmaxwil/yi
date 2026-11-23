@@ -2,11 +2,11 @@
 
 use super::{add, edit, find, fresh, handled, idle, raise};
 use crate::address::uri::Address;
-use crate::grid::layout::{ChatSide, Edge, GridError, Layout};
+use crate::grid::layout::{ChatSide, Edge, GridError, Layout, Point, Size};
 use crate::grid::leave::{split, stack};
 use crate::grid::place::place;
 use crate::grid::saved::JUST_CHAT;
-use crate::grid::swap::{Spot, land, own};
+use crate::grid::swap::{Spot, Zone, join, land, own, spot_at};
 use crate::grid::windows::{Pane, Scope, WindowOp, Windows};
 use crate::ids::{PaneId, WindowId};
 use crate::pane::{PaneKind, Place};
@@ -75,6 +75,72 @@ pub(super) fn open(
         None => {}
     }
     Ok(Vec::new())
+}
+
+/// Shows the pane about `thing` at `spot` in `id`: the one the window has, else a new one,
+/// dropped as a pane carried there is. On a pane's middle it joins that pane's tabs.
+pub(in crate::grid) fn put(
+    grid: &mut Windows,
+    id: WindowId,
+    kind: PaneKind,
+    thing: &Address,
+    spot: Spot,
+    size: Size,
+) -> Result<Vec<WindowOp>, GridError> {
+    // A pane out of another window keeps its tabs where it came from: it takes none here.
+    if matches!(spot, Spot::Onto(other) if grid.origin_of(other).is_some()) {
+        return Err(GridError::NoSuchWindow(id));
+    }
+    let ops = open(grid, id, kind, Some(thing.clone()), None)?;
+    let pane = about(grid, id, kind, thing).ok_or(GridError::NoSuchWindow(id))?;
+    let side = grid.side;
+    // On a middle it joins those tabs even when it has none of its own: unlike a carried
+    // pane, it has no slot to give in exchange.
+    edit(grid, id, |layout| match spot {
+        Spot::Onto(other) => join(layout, pane, other),
+        Spot::Beside(..) | Spot::Side(_) => land(layout, side, pane, spot, size),
+    })?;
+    Ok(ops)
+}
+
+/// The pane of `kind` about `thing` that `id` draws.
+fn about(grid: &Windows, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
+    let is = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
+    let mut found = grid.panes.iter().filter(is).map(|pane| pane.id);
+    found.find(|pane| grid.window_of(*pane) == Some(id))
+}
+
+impl Windows {
+    /// The drop zone under `at` while `thing` is carried from pane `from` over `window`: where
+    /// its pane of `kind` would land. None off the grid and over the pane it came from.
+    #[must_use]
+    pub fn zone_for(
+        &self,
+        window: WindowId,
+        size: Size,
+        (kind, thing): (PaneKind, &Address),
+        from: PaneId,
+        at: Point,
+    ) -> Option<Zone> {
+        let layout = &self.window(window)?.layout;
+        let (spot, band) = spot_at(layout, self.side, size, at)?;
+        let own = matches!(spot, Spot::Onto(other) | Spot::Beside(other, _) if other == from);
+        // A filled window draws one pane: there is nowhere to drop another.
+        if own || self.fills(window).is_some() {
+            return None;
+        }
+        let mut next = self.clone();
+        let put = put(&mut next, window, kind, thing, spot, size);
+        let lands = put.ok().and_then(|_| {
+            let pane = about(&next, window, kind, thing)?;
+            let drawn = next.place(window, size);
+            drawn
+                .into_iter()
+                .find(|(id, _)| *id == pane)
+                .map(|(_, rect)| rect)
+        });
+        Some(Zone { spot, band, lands })
+    }
 }
 
 /// Puts `pane`, which `id` does not hold, where panes of its place go: a tab of that place's

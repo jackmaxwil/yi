@@ -83,11 +83,7 @@ pub fn land(
     match spot {
         Spot::Onto(other) if other == pane => {}
         Spot::Onto(other) if mate.is_none() => swap(layout, pane, other)?,
-        Spot::Onto(other) => {
-            close(layout, pane)?;
-            stack(layout, other, pane)?;
-            front(layout, pane)?;
-        }
+        Spot::Onto(other) => join(layout, pane, other)?,
         Spot::Beside(other, edge) => {
             let other = if other == pane { mate } else { Some(other) };
             let other = other.ok_or(GridError::NoSuchPane(pane))?;
@@ -111,6 +107,14 @@ pub fn land(
         Some((cramped, _)) => Err(GridError::Cramped(*cramped)),
         None => Ok(()),
     }
+}
+
+/// Makes `pane` the tab in front of `other`'s slot. The slot it had goes to the tab behind
+/// it, else closes up.
+pub fn join(layout: &mut Layout, pane: PaneId, other: PaneId) -> Result<(), GridError> {
+    close(layout, pane)?;
+    stack(layout, other, pane)?;
+    front(layout, pane)
 }
 
 /// Puts `pane` in a new track on `edge` of the grid, across every track of the other axis.
@@ -146,17 +150,10 @@ fn inside(rect: &Rect, at: Point) -> bool {
     at.x >= rect.x && at.x < rect.x + rect.w && at.y >= rect.y && at.y < rect.y + rect.h
 }
 
-/// The zone under `at` while `pane` is carried in a grid of `size`; none outside the grid or
-/// where the drop would change nothing: over its own slot, but for an edge a tab can take.
+/// The spot under `at` in a grid of `size`, with its zone: the window's edge within [`SIDE`]
+/// of it, else the band or the middle of the pane drawn there. None outside the grid.
 #[must_use]
-pub fn zone_at(
-    layout: &Layout,
-    side: ChatSide,
-    size: Size,
-    pane: PaneId,
-    at: Point,
-) -> Option<Zone> {
-    let placed = place(layout, size, side);
+pub fn spot_at(layout: &Layout, side: ChatSide, size: Size, at: Point) -> Option<(Spot, Rect)> {
     let grid = Rect {
         x: 0.0,
         y: 0.0,
@@ -189,16 +186,29 @@ pub fn zone_at(
         ),
     ];
     let nearest = sides.into_iter().min_by(|a, b| a.1.total_cmp(&b.1));
-    let (spot, band) = match nearest.filter(|(_, depth, _)| *depth < SIDE) {
-        Some((edge, _, band)) => (Spot::Side(edge), band),
-        None => {
-            let (other, rect) = placed.iter().find(|(_, rect)| inside(rect, at))?;
-            if *other == pane && next_tab(layout, pane).is_none() {
-                return None;
-            }
-            over(*other, *rect, at)
-        }
-    };
+    if let Some((edge, _, band)) = nearest.filter(|(_, depth, _)| *depth < SIDE) {
+        return Some((Spot::Side(edge), band));
+    }
+    let placed = place(layout, size, side);
+    let (other, rect) = placed.iter().find(|(_, rect)| inside(rect, at))?;
+    Some(over(*other, *rect, at))
+}
+
+/// The zone under `at` while `pane` is carried in a grid of `size`; none outside the grid or
+/// where the drop would change nothing: over its own slot, but for an edge a tab can take.
+#[must_use]
+pub fn zone_at(
+    layout: &Layout,
+    side: ChatSide,
+    size: Size,
+    pane: PaneId,
+    at: Point,
+) -> Option<Zone> {
+    let (spot, band) = spot_at(layout, side, size, at)?;
+    let own = matches!(spot, Spot::Onto(other) | Spot::Beside(other, _) if other == pane);
+    if own && next_tab(layout, pane).is_none() {
+        return None;
+    }
     let mut next = layout.clone();
     let lands = land(&mut next, side, pane, spot, size).ok().and_then(|()| {
         let drawn = place(&next, size, side);
