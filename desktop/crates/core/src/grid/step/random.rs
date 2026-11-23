@@ -5,6 +5,7 @@ use crate::address::uri::Address;
 use crate::command::table::{FLIP_CHAT, Route, Run};
 use crate::grid::layout::{Axis, Edge, Line, MAX_PANES, MAX_TRACKS, MIN_PANE, Point, Rect, Size};
 use crate::grid::leave::split;
+use crate::grid::listed::Standing;
 use crate::grid::place::probe::{Along, Check, FRAME_1, across, down, edges, roomy, tiled};
 use crate::grid::saved::SAVED;
 use crate::grid::swap::Spot;
@@ -258,6 +259,39 @@ fn whole(grid: &Windows, size: Size) -> Result<(), String> {
         }
         tiled(&placed, size)?;
         roomy(&placed, size)?;
+        listed(grid, window, &docked)?;
+    }
+    Ok(())
+}
+
+/// What the Panes panel lists: no pane twice, each pane drawn as the one in front, no pane
+/// that rests, and every pane pulled out of the window as out.
+fn listed(grid: &Windows, window: &Window, docked: &[PaneId]) -> Result<(), String> {
+    let list = grid.listed(window.id);
+    let standing = |pane: PaneId| {
+        let mut found = list.iter().filter(|entry| entry.pane == pane);
+        match (found.next(), found.next()) {
+            (found, None) => Ok(found.map(|entry| entry.standing)),
+            (_, Some(_)) => Err(format!("{pane:?} is listed twice in {:?}", window.id)),
+        }
+    };
+    for pane in grid.panes.iter().map(|pane| pane.id) {
+        let layout = &window.layout;
+        let want = if docked.contains(&pane) {
+            Some(Standing::Front)
+        } else if layout.pulled(pane) {
+            Some(Standing::Out)
+        } else if layout.is_resting(pane) || !layout.holds(pane) {
+            None
+        } else {
+            continue;
+        };
+        if standing(pane)? != want {
+            return Err(format!(
+                "{pane:?} in {:?} is not listed {want:?}",
+                window.id
+            ));
+        }
     }
     Ok(())
 }

@@ -180,3 +180,29 @@ fn a_pane_closes_while_others_rest() -> Check {
     assert_eq!(kinds_drawn(&model)?, [Chat, Changes]);
     Ok(())
 }
+
+/// What the Panes panel offers to open: a kind with something to show and no pane here.
+/// Never one that would open blank, never the chat, and nothing before the window is told.
+#[test]
+fn a_kind_is_offered_while_it_has_something_to_show_and_no_pane() -> Check {
+    let offered = |model: &Model| {
+        let mut kinds = model.grid.unopened(MAIN);
+        kinds.sort();
+        kinds
+    };
+    let mut model = record();
+    let (window, saved) = (MAIN, "just-chat");
+    change(&mut model, GridMsg::Show { window, saved });
+    assert_eq!(offered(&model), [], "not told yet");
+    have(&mut model, &[Chat, Files, Terminal]);
+    assert_eq!(offered(&model), [Files, Terminal], "Changes would be blank");
+    let kind = Files;
+    change(&mut model, GridMsg::Open { window, kind });
+    assert_eq!(offered(&model), [Terminal], "Files has its pane now");
+    have(&mut model, &[Chat, Files]);
+    assert_eq!(offered(&model), [], "the last shell is gone");
+    let files = pane(&model, Files)?;
+    change(&mut model, GridMsg::Close(files));
+    assert_eq!(offered(&model), [Files], "closed, it is offered again");
+    Ok(())
+}

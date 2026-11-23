@@ -10,6 +10,7 @@ use yd_core::pane::PaneKind;
 use yd_core::settings::schema::{Choice, Control, Setting, SettingValue, Store};
 
 mod panel;
+mod places;
 
 pub use panel::{Naming, close, layer};
 
