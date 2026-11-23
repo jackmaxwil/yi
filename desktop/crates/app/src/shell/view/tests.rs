@@ -34,6 +34,7 @@ mod narrow;
 mod opens;
 mod outside;
 mod panes;
+mod peek;
 mod project;
 mod replay;
 mod sidebar;

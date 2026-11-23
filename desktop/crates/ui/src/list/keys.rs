@@ -6,6 +6,7 @@ use yd_core::ids::RowId;
 use super::row;
 use super::state::{ListState, Lists};
 use super::view::Frame;
+use crate::overlay::peek;
 use crate::win::Win;
 
 /// After a row opened or the cursor moved: at once, and scrolled to if it is out of view.
@@ -56,7 +57,23 @@ pub(super) fn key(frame: &Frame, win: &mut Win, event: &KeyEvent, tx: &mut Tx) -
     if event.mods.cmd || event.mods.ctrl || event.mods.alt {
         return false;
     }
-    match event.key {
+    if event.key == Key::Escape && peek::close(win) {
+        return true;
+    }
+    match &event.key {
+        Key::Text(typed) if typed == " " => {
+            let hub = win.hub.try_borrow().ok();
+            let lists = hub
+                .as_ref()
+                .and_then(|hub| hub.panes.get::<Lists>(Some(frame.pane)));
+            let state = lists.and_then(|lists| lists.list(frame.part));
+            let cursor = state
+                .and_then(ListState::cursor)
+                .map(|at| row::key(&frame.key, at));
+            drop(hub);
+            peek::toggle(win, tx, cursor);
+            true
+        }
         Key::Up | Key::Down | Key::Home | Key::End => {
             let Some((row, slot)) = target(frame, win, &event.key) else {
                 return false;

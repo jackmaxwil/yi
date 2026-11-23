@@ -15,5 +15,6 @@ pub const TABLES: &[&[Scene]] = &[
     menu::command_box::SCENES,
     menu::context::SCENES,
     overlay::boxes::SCENES,
+    overlay::peek::SCENES,
     states::status::SCENES,
 ];

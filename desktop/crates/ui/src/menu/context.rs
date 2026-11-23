@@ -499,7 +499,7 @@ fn mockup(hub: &mut Hub) {
 }
 
 /// The Changes pane as its own mockup scene draws it, with the window's menus over it.
-fn scene(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
+pub(crate) fn scene(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
     let changes = hub
         .scenes
         .iter()

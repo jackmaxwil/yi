@@ -82,6 +82,8 @@ pub const ZOOM_OUT: CommandId = CommandId("view.zoom-out");
 pub const ACTUAL_SIZE: CommandId = CommandId("view.actual-size");
 /// Brings the app's next window forward, as ⌘` does in every Mac app.
 pub const CYCLE_WINDOWS: CommandId = CommandId("window.cycle");
+/// Shows the thing under the pointer in a card over the window, or closes that card.
+pub const PEEK: CommandId = CommandId("thing.peek");
 
 const fn app(
     id: CommandId,
@@ -121,6 +123,15 @@ pub const COMMANDS: &[Command] = &[
         "Window",
     ),
     app(SHOW_KEYS, "Keyboard Shortcuts", Some("cmd+/"), "Help"),
+    // Invariant: no Mac menu lists it, so bare Space is never a menu's key and still types.
+    Command {
+        id: PEEK,
+        title: "Peek",
+        key: Some("space"),
+        menu: None,
+        kinds: &[],
+        route: Route::Model,
+    },
 ];
 
 /// Every command `yd-core` declares: the app's own, the right-click items' and the wire's.

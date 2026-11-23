@@ -12,7 +12,9 @@ use rune_kit::{Placement, PopupItem, PopupList, popover};
 use yd_core::address::uri::Address;
 use yd_core::command::by_kind::COPY_ADDRESS;
 use yd_core::command::keys::Map;
-use yd_core::command::table::{Command, Commands, Menu, OPEN_COMMANDS, Run, SHOW_KEYS, Target};
+use yd_core::command::table::{
+    Command, Commands, Menu, OPEN_COMMANDS, PEEK, Run, SHOW_KEYS, Target,
+};
 use yd_core::command::table::{declared, keycap};
 use yd_core::feed::FILES;
 use yd_core::ids::{CommandId, ThreadId, WindowId};
@@ -25,6 +27,7 @@ use crate::grid_view;
 use crate::kit::icons::{SEARCH, glyph};
 use crate::kit::key_hint::key_hint;
 use crate::menu::context;
+use crate::overlay::peek;
 use crate::pane::{Scene, Stage};
 use crate::shown;
 use crate::theme::look::{BODY, META, colour, kit};
@@ -99,7 +102,7 @@ pub fn install(hub: &mut Hub, ids: &'static [CommandId], carry: Carry) {
 fn windowed(hub: &Hub, id: CommandId) -> bool {
     let installed = hub.panes.get::<WindowCommands>(None);
     let grid = grid_view::view::commands().any(|command| command.id == id);
-    [OPEN_COMMANDS, SHOW_KEYS, COPY_ADDRESS].contains(&id)
+    [OPEN_COMMANDS, SHOW_KEYS, COPY_ADDRESS, PEEK].contains(&id)
         || grid
         || installed.is_some_and(|kept| kept.ids.contains(&id))
 }
@@ -144,6 +147,10 @@ pub fn run(win: &mut Win, tx: &mut Tx, run: Run) -> Ran {
         tx.focus_when_shown(FIELD, false);
         return Ran::Done;
     }
+    if id == PEEK {
+        peek::toggle(win, tx, None);
+        return Ran::Done;
+    }
     if let (COPY_ADDRESS, Target::Thing(address)) = (id, &run.target) {
         tx.copy(address.to_string());
         return Ran::Done;
@@ -180,7 +187,7 @@ pub fn run(win: &mut Win, tx: &mut Tx, run: Run) -> Ran {
 /// The window root's keys: Esc closes an open menu, then the shortcut map runs its command.
 /// A focused list or text box hears its keys first, so it keeps arrows, Return and Esc.
 pub fn keys(win: &mut Win, event: &KeyEvent, tx: &mut Tx) -> bool {
-    if event.key == Key::Escape && (close(win) || context::close(win)) {
+    if event.key == Key::Escape && (close(win) || context::close(win) || peek::close(win)) {
         return true;
     }
     let map = match win.hub.try_borrow() {
@@ -212,6 +219,7 @@ pub fn layer(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> Vec<El> {
     let mut layer = context::view(win, hub, cx);
     grid_view::picker::layer(win, hub, cx, &mut layer);
     view(win, hub, &mut layer);
+    peek::layer(win, hub, cx, &mut layer);
     layer
 }
 
