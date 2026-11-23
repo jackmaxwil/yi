@@ -118,7 +118,7 @@ fn tab(pane: &PaneCx<'_>) -> Tabs {
     };
     if let Some(bound) = child::bound(pane.hub, pane.pane) {
         let thread = pane.model().wire.threads.get(&bound.thread);
-        (tab.title, tab.meta) = thread.map(|t| child::tab(t, bound)).unwrap_or_default();
+        (tab.title, tab.meta) = thread.map(|t| child::tab(t, &bound)).unwrap_or_default();
     }
     Tabs {
         tabs: vec![tab],
@@ -171,6 +171,7 @@ fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
     let model = pane.model();
     let id = pane.pane;
     let bound = child::bound(pane.hub, id);
+    let bound = bound.as_ref();
     let thread = match bound {
         Some(bound) => model.wire.threads.get(&bound.thread),
         None => shown(pane.hub, id),

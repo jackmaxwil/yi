@@ -4,12 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::address::uri::Address;
 use crate::grid::layout::{ChatSide, Edge, GridError, Layout, Line, Point, Rect, Size};
 use crate::grid::place::{line_at, place};
 use crate::grid::saved::{Own, OwnId, Slug};
 use crate::grid::swap::{Spot, Zone, toward, zone_at};
 use crate::ids::{PaneId, ThreadId, WindowId};
-use crate::pane::PaneKind;
+use crate::pane::{PaneKind, Place};
 
 const NOMINAL: Size = Size {
     w: 1200.0,
@@ -77,6 +78,18 @@ pub struct Pane {
     /// The sessions it shows in once it is the person's; a seated pane follows its kind.
     #[serde(default, skip_serializing_if = "Scope::is_window")]
     pub scope: Scope,
+    /// The one thing it is about, where its kind may show many: a child agent for a chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(with = "crate::grid::layout::store::thing")]
+    pub thing: Option<Address>,
+}
+
+impl Pane {
+    /// Where it opens: its kind's place, but a chat about one child agent is work.
+    #[must_use]
+    pub fn place(&self) -> Place {
+        self.kind.place_about(self.thing.is_some())
+    }
 }
 
 /// Where a window sits on the desktop, in points; it may be on any screen.
@@ -188,6 +201,10 @@ impl Windows {
         self.windows.iter().find(|window| window.id == id)
     }
 
+    fn pane_of(&self, pane: PaneId) -> Option<&Pane> {
+        self.panes.iter().find(|other| other.id == pane)
+    }
+
     fn window_where(&self, holds: impl Fn(&Layout) -> bool) -> Option<WindowId> {
         self.windows
             .iter()
@@ -197,8 +214,13 @@ impl Windows {
 
     #[must_use]
     pub fn kind(&self, pane: PaneId) -> Option<PaneKind> {
-        let found = self.panes.iter().find(|other| other.id == pane);
-        found.map(|pane| pane.kind)
+        self.pane_of(pane).map(|pane| pane.kind)
+    }
+
+    /// The thing `pane` is about, when it is about one.
+    #[must_use]
+    pub fn thing(&self, pane: PaneId) -> Option<&Address> {
+        self.pane_of(pane).and_then(|pane| pane.thing.as_ref())
     }
 
     /// The window `pane` is drawn in.
@@ -218,10 +240,7 @@ impl Windows {
     /// chat always), the person's by the session shown. True before the window is told.
     #[must_use]
     pub fn showing(&self, window: WindowId, pane: PaneId) -> bool {
-        let (Some(have), Some(pane)) = (
-            self.have.get(&window),
-            self.panes.iter().find(|other| other.id == pane),
-        ) else {
+        let (Some(have), Some(pane)) = (self.have.get(&window), self.pane_of(pane)) else {
             return true;
         };
         match pane.seated {

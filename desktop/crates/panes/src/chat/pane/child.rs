@@ -1,9 +1,8 @@
 //! A chat pane bound to one child agent: its turns, its question, its stop and the way back.
 
-use std::collections::BTreeMap;
-
 use rune::{Cursor, El, Tx, col, el, row, spacer, text};
 use yd_core::command::table::{Command, Route, Run, Target};
+use yd_core::grid::step::GridMsg;
 use yd_core::ids::{AgentId, CommandId, PaneId, ThreadId, WindowId};
 use yd_core::kind::Kind;
 use yd_core::msg::Msg;
@@ -14,6 +13,7 @@ use yd_core::reduce::step::commands::{CHILD_REPLAY, CHILD_STOP, child_address, c
 use yd_core::reduce::threads::Thread;
 use yd_core::reduce::turns::CallId;
 use yd_core::tokens::Tokens;
+use yd_ui::grid_view::drag::GLIDE;
 use yd_ui::grid_view::view::{Act, act, show_pane};
 use yd_ui::kit::button::{Button, button};
 use yd_ui::menu::command_box;
@@ -43,13 +43,11 @@ pub struct Child {
     pub agent: AgentId,
 }
 
-/// Which chat panes show a child, by pane. The window layer keeps it with the grid and drops
-/// a pane the grid no longer holds, so a pane id used again starts unbound.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct Children(pub BTreeMap<PaneId, Child>);
-
-pub fn bound(hub: &Hub, pane: PaneId) -> Option<&Child> {
-    hub.panes.get::<Children>(None)?.0.get(&pane)
+/// The child a chat pane is about: the one its thing in the grid names, kept with the grid.
+pub fn bound(hub: &Hub, pane: PaneId) -> Option<Child> {
+    let thing = hub.model.grid.thing(pane)?.clone();
+    let (thread, agent) = child_of(&Target::Thing(thing))?;
+    Some(Child { thread, agent })
 }
 
 pub fn agent<'a>(thread: &'a Thread, child: &Child) -> Option<&'a Agent> {
@@ -101,51 +99,39 @@ pub fn carry(win: &mut Win, tx: &mut Tx, command: CommandId, target: &Target) ->
     true
 }
 
-/// The window's chat panes as drawn: each with the child it shows, if any.
-fn chats(win: &Win) -> Vec<(PaneId, Option<Child>)> {
-    let Ok(hub) = win.hub.try_borrow() else {
-        return Vec::new();
-    };
-    let grid = &hub.model.grid;
-    let Some(window) = grid.window(win.window) else {
-        return Vec::new();
-    };
-    let docked = window.layout.docked().map(|(pane, _)| pane);
-    let chat = docked.filter(|pane| grid.kind(*pane) == Some(PaneKind::Chat));
-    chat.map(|pane| (pane, bound(&hub, pane).cloned()))
-        .collect()
-}
-
-/// Focuses the pane that shows `child`, else splits the parent's chat pane for it.
+/// Shows the chat about `child` in front: the pane the window has, else a new tab beside
+/// the session's own chat, in the place work goes.
 fn open(win: &mut Win, tx: &mut Tx, child: Child) {
-    let before = chats(win);
-    if let Some((pane, _)) = before.iter().find(|(_, c)| c.as_ref() == Some(&child)) {
-        return act(win, tx, Act::Focus(*pane));
-    }
-    let parent = before
-        .iter()
-        .find(|(_, c)| c.is_none())
-        .map(|(pane, _)| *pane);
-    let Some(parent) = parent.or_else(|| show_pane(win, tx, PaneKind::Chat)) else {
+    let Ok(thing) = child_address(&child.thread, &child.agent) else {
         return;
     };
-    act(win, tx, Act::Split(parent));
-    let made = chats(win).into_iter().map(|(pane, _)| pane);
-    let Some(made) = made
-        .into_iter()
-        .find(|pane| *pane != parent && !before.iter().any(|(p, _)| p == pane))
-    else {
-        return;
+    tx.motion_curve(GLIDE);
+    let (window, kind) = (win.window, PaneKind::Chat);
+    let about = GridMsg::About {
+        window,
+        kind,
+        thing: thing.clone(),
     };
-    if let Ok(mut hub) = win.hub.try_borrow_mut() {
-        if let Some(children) = hub.panes.get_mut::<Children>(None) {
-            children.0.insert(made, child);
-        }
-        if let Some(chat) = hub.panes.get_mut::<super::Chat>(Some(made)) {
+    let known: Vec<PaneId> = win
+        .hub
+        .try_borrow()
+        .map(|hub| hub.model.grid.panes.iter().map(|pane| pane.id).collect())
+        .unwrap_or_default();
+    dispatch(win, Msg::Grid(about));
+    let made = win.hub.try_borrow().ok().and_then(|hub| {
+        let mut panes = hub.model.grid.panes.iter();
+        let found = panes.find(|pane| pane.thing.as_ref() == Some(&thing));
+        found.map(|pane| pane.id)
+    });
+    if let Some(made) = made {
+        if !known.contains(&made)
+            && let Ok(mut hub) = win.hub.try_borrow_mut()
+            && let Some(chat) = hub.panes.get_mut::<super::Chat>(Some(made))
+        {
             *chat = super::Chat::default();
         }
+        act(win, tx, Act::Focus(made));
     }
-    act(win, tx, Act::Focus(made));
 }
 
 /// Opens the chat of the child that `call` started, from a handler that knows the thread.
@@ -225,7 +211,6 @@ pub fn header(pane: &PaneCx<'_>, key: &str, thread: &Thread, agent: Option<&Agen
     let tokens = pane.tokens();
     let parent = thread.title.as_deref().unwrap_or(thread.id.as_str());
     let back = format!("← {}", line(parent, 60));
-    let at = pane.pane;
     let back = text(back)
         .key(format!("{key}.parent"))
         .font(META)
@@ -233,13 +218,8 @@ pub fn header(pane: &PaneCx<'_>, key: &str, thread: &Thread, agent: Option<&Agen
         .cursor(Cursor::Pointer)
         .label(format!("Back to the parent thread, {}", line(parent, 60)))
         .truncate()
-        .on_press_tx(move |win: &mut Win, tx: &mut Tx| {
-            let parent = chats(win)
-                .into_iter()
-                .find(|(pane, c)| *pane != at && c.is_none());
-            if let Some((pane, _)) = parent {
-                act(win, tx, Act::Focus(pane));
-            }
+        .on_press_tx(|win: &mut Win, tx: &mut Tx| {
+            show_pane(win, tx, PaneKind::Chat);
         });
     let named = agent.map(|agent| {
         let said = &agent.update;
