@@ -55,24 +55,35 @@ pub fn kinds(hub: &Hub, window: WindowId) -> Vec<PaneKind> {
     all.filter(|kind| has(hub, window, *kind)).collect()
 }
 
-/// Tells the grid this window's kinds when they changed, so its panes rest and come back;
-/// true when it was told. The window's poll calls it.
+/// Tells the grid the session this window shows and its kinds when either changed, so its
+/// panes rest and come back; true when it was told. The window's poll calls it.
 pub fn tell(win: &mut Win, tx: &mut Tx) -> bool {
     let window = win.window;
-    let kinds = {
+    let (kinds, thread) = {
         let Ok(hub) = win.hub.try_borrow() else {
             return false;
         };
+        let grid = &hub.model.grid;
         let now = kinds(&hub, window);
-        let told = hub.model.grid.have.get(&window);
-        let same = told.is_some_and(|told| told.iter().eq(now.iter()));
-        if same || hub.model.grid.window(window).is_none() {
+        // New chat shows no session: only the panes kept across sessions stay with it.
+        let fresh = yd_ui::shown::fresh(&hub, window);
+        let thread = yd_ui::shown::thread(&hub, window).filter(|_| !fresh);
+        let thread = thread.map(|thread| thread.id.clone());
+        let told = grid.have.get(&window);
+        let same = told.is_some_and(|told| told.iter().eq(now.iter()))
+            && grid.shows.get(&window) == thread.as_ref();
+        if same || grid.window(window).is_none() {
             return false;
         }
-        now
+        (now, thread)
     };
     tx.motion_curve(GLIDE);
-    dispatch(win, Msg::Grid(GridMsg::Have { window, kinds }));
+    let told = GridMsg::Have {
+        window,
+        kinds,
+        thread,
+    };
+    dispatch(win, Msg::Grid(told));
     true
 }
 

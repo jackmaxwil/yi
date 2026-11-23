@@ -36,6 +36,8 @@ pub const NEXT_TAB: CommandId = CommandId("tab.next");
 pub const SPLIT: CommandId = CommandId("pane.split");
 pub const POP_OUT: CommandId = CommandId("pane.pop-out");
 pub const CLOSE: CommandId = CommandId("pane.close");
+pub const ACROSS: CommandId = CommandId("pane.keep-across");
+pub const HERE: CommandId = CommandId("pane.keep-here");
 pub const MOVE_LEFT: CommandId = CommandId("pane.move-left");
 pub const MOVE_RIGHT: CommandId = CommandId("pane.move-right");
 pub const MOVE_UP: CommandId = CommandId("pane.move-up");
@@ -60,6 +62,8 @@ pub const COMMANDS: &[Command] = &[
     command(SPLIT, "Split Pane", None),
     command(POP_OUT, "Move Pane to Its Own Window", None),
     command(CLOSE, "Close Pane", None),
+    command(ACROSS, "Keep Pane Across Sessions", None),
+    command(HERE, "Keep Pane in This Session Only", None),
     command(MOVE_LEFT, "Move Pane Left", Some("ctrl+shift+cmd+left")),
     command(MOVE_RIGHT, "Move Pane Right", Some("ctrl+shift+cmd+right")),
     command(MOVE_UP, "Move Pane Up", Some("ctrl+shift+cmd+up")),

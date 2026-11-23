@@ -28,11 +28,16 @@ fn told(kinds: &[PaneKind], saved: &'static str) -> Model {
 }
 
 fn have(model: &mut Model, kinds: &[PaneKind]) {
-    let (window, kinds) = (MAIN, kinds.to_vec());
-    change(model, GridMsg::Have { window, kinds });
+    let (window, kinds, thread) = (MAIN, kinds.to_vec(), None);
+    let told = GridMsg::Have {
+        window,
+        kinds,
+        thread,
+    };
+    change(model, told);
 }
 
-fn kinds_drawn(model: &Model) -> Result<Vec<PaneKind>, String> {
+pub(super) fn kinds_drawn(model: &Model) -> Result<Vec<PaneKind>, String> {
     let placed = drawn(model)?;
     let kind = |(pane, _): &(PaneId, _)| model.grid.kind(*pane).ok_or("a pane of no kind");
     let mut kinds = placed.iter().map(kind).collect::<Result<Vec<_>, _>>()?;
