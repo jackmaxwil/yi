@@ -1,5 +1,5 @@
 {
- "about": "A turn stops at an approval while Agents, Trace, Logs and Findings are shown: Agents and Findings share the side column as tabs, Trace and Logs the shelf. Logs holds the agent's line, and a finding made from it lands in Findings; Trace, brought in front by its tab, holds the waiting step, and the approval is answered from it and the turn ends.",
+ "about": "A turn stops at an approval while Agents, Trace, Logs and Findings are shown: Agents and Findings share the side column, which is too narrow for their tabs and counts them in +N, Trace and Logs the shelf. Logs holds the agent's line, and a finding made from it lands in Findings; Trace, brought in front by its tab, holds the waiting step, and the approval is answered from it and the turn ends.",
  "worker": true,
  "empty": true,
  "files": {
@@ -129,7 +129,7 @@
    ],
    "expect": {
     "keys": [
-     "findings-12.tab-pane-9.pane-tab",
+     "findings-12.pane-tab-more",
      "trace-10.tab-pane-11.pane-tab",
      "trace-10.row.tool-c1",
      "findings-12.row.made/0"

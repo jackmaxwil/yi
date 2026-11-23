@@ -495,27 +495,89 @@ fn panes_of_one_place_open_as_tabs_and_a_press_on_a_tab_brings_it_in_front() -> 
         let stacked = keys.filter(|key| key.contains(".tab-pane-") && key.ends_with(".pane-tab"));
         stacked.collect()
     };
-    let (terminal, trace) = {
+    let trace = {
         let hub = runtime.state.hub.try_borrow()?;
-        let of = |kind| hub.model.grid.panes.iter().find(|pane| pane.kind == kind);
-        let id = |kind| of(kind).map(|pane| pane.id.0).ok_or("a pane is missing");
-        (id(PaneKind::Terminal)?, id(PaneKind::Trace)?)
+        let mut panes = hub.model.grid.panes.iter();
+        let found = panes.find(|pane| pane.kind == PaneKind::Trace);
+        found.map(|pane| pane.id.0).ok_or("no trace pane")?
     };
     let behind = tabs(&runtime);
-    assert_eq!(behind.len(), 2, "a tab for each pane behind: {behind:?}");
-    let ends = |with: String| behind.iter().find(|key| key.ends_with(&with)).cloned();
-    let on_terminal = ends(format!(".tab-pane-{terminal}.pane-tab")).ok_or("no terminal tab")?;
-    assert!(
-        ends(format!(".tab-pane-{trace}.pane-tab")).is_some(),
-        "{behind:?}"
+    let counted = |runtime: &Runtime<Win>| {
+        let all = runtime.elements();
+        let chip = all.iter().find(|e| {
+            let key = e.key.as_deref().unwrap_or_default();
+            key.ends_with(".pane-tab-more")
+        });
+        let label = chip.and_then(|e| e.label.clone()).unwrap_or_default();
+        let count = label
+            .split(' ')
+            .next()
+            .and_then(|n| n.parse::<usize>().ok());
+        count.unwrap_or(0)
+    };
+    let hidden = counted(&runtime);
+    assert_eq!(
+        behind.len() + hidden,
+        2,
+        "a tab or a count for each: {behind:?}"
     );
-    tap(&mut runtime, &on_terminal)?;
+    // The tab nearest the pane in front always has room: Trace, opened just before Logs.
+    let ends = |with: String| behind.iter().find(|key| key.ends_with(&with)).cloned();
+    let on_trace = ends(format!(".tab-pane-{trace}.pane-tab")).ok_or("no trace tab")?;
+    assert!(
+        on_trace.starts_with("logs-"),
+        "on the bar of the pane in front"
+    );
+    tap(&mut runtime, &on_trace)?;
     let shown = kinds(&runtime)?;
     assert!(
-        shown.contains(&PaneKind::Terminal),
+        shown.contains(&PaneKind::Trace),
         "its tab pressed: {shown:?}"
     );
     assert!(!shown.contains(&PaneKind::Logs));
-    assert_eq!(tabs(&runtime).len(), 2, "the other two are its tabs now");
+    assert_eq!(
+        tabs(&runtime).len() + counted(&runtime),
+        2,
+        "the other two are behind it now"
+    );
+    Ok(())
+}
+
+/// A column too narrow for every tab of its stack keeps the tabs nearest the pane drawn and
+/// counts the rest in `+N`, which opens the Panes panel where each can be brought in front.
+#[test]
+fn a_bar_short_of_room_counts_the_tabs_it_has_no_room_for() -> Check {
+    let mut runtime = settled("shell/mockup")?;
+    for command in [
+        "pane.show-agents",
+        "pane.show-findings",
+        "pane.show-plugins",
+    ] {
+        runtime.update(|win, tx| view::run(win, tx, CommandId(command), Target::App));
+        rest(&mut runtime);
+    }
+    let shown = runtime.elements();
+    let keys: Vec<&str> = shown.iter().filter_map(|e| e.key.as_deref()).collect();
+    let more = keys.iter().find(|key| key.ends_with(".pane-tab-more"));
+    let more = (*more.ok_or("no +N on the bar")?).to_owned();
+    assert!(
+        more.starts_with("plugins-"),
+        "on the bar of the pane in front: {more}"
+    );
+    let chip = by_key(&shown, &more).ok_or("no chip")?;
+    let tabs = keys.iter().filter(|key| key.ends_with(".pane-tab"));
+    let stacked = tabs.filter(|key| key.starts_with("plugins-") && key.contains(".tab-pane-"));
+    let drawn = stacked.count();
+    assert!(
+        drawn < 3,
+        "three panes are behind it, and not all have a tab"
+    );
+    let hidden = 3 - drawn;
+    assert_eq!(
+        chip.label.as_deref(),
+        Some(format!("{hidden} more tabs, in Panes").as_str())
+    );
+    tap(&mut runtime, &more)?;
+    assert!(live(&runtime, PANEL), "the Panes panel lists every pane");
     Ok(())
 }

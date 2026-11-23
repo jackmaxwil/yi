@@ -261,6 +261,7 @@ fn code(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
         pulled: false,
         alone: true,
         closes: false,
+        more: 0,
         lights: None,
         at: At {
             origin: [0.0, 0.0],
