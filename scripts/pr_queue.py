@@ -454,7 +454,9 @@ def retarget(pr):
         try:
             # Incident: a rerun of #2237's old head stayed red on an advisory main had patched; only main merged in clears it.
             # Invariant: the forge answers an update of a current branch with success and no new head, so nothing reran.
-            stale = forge_pr.cmd_update(asked) or forge_pr.pull(number)["head"]["sha"] == child["head"]["sha"]
+            # Invariant: the bot's token never writes to a fork's branch, so a fork's child is re-pointed and rerun only.
+            ours = (child["head"].get("repo") or {}).get("full_name") == forge_pr.repo()
+            stale = not ours or forge_pr.cmd_update(asked) or forge_pr.pull(number)["head"]["sha"] == child["head"]["sha"]
             failed = stale and forge_pr.cmd_rerun(asked)
         except SystemExit as err:
             failed = err
@@ -1064,13 +1066,15 @@ def forge_cases():
                 if not keeps and "#5" not in str(stubs["comment"].call_args):
                     bad.append("a close given up on did not say so on the PR")
         # A landed branch's children move to main and take main in; a PR based elsewhere is not touched.
-        pulls = [{"number": n, "base": {"ref": ref}, "head": {"sha": "old"}} for n, ref in ((8, "b7"), (9, "main"), (10, "b9"))]
+        bases = ((8, "b7"), (9, "main"), (10, "b9"))
         # A refused move is said on the child; an update refused (1) or with nothing to merge (2) falls back to a rerun.
         on_main = {"base": {"ref": "main"}}
-        for owner, answer, update, rerun, want in (("o/r", on_main, 0, 0, (["8"], ["8"], [], 0)), ("o/r", {"message": "409"}, 0, 0, (["8"], [], [], 1)),
-                                                   ("o/r", on_main, 1, 0, (["8"], ["8"], ["8"], 0)), ("o/r", on_main, 1, 1, (["8"], ["8"], ["8"], 1)), ("o/r", on_main, 2, 0, (["8"], ["8"], ["8"], 0)),
-                                                   ("fork/r", on_main, 0, 0, ([], [], [], 0))):
+        for owner, answer, update, rerun, want, kid in (("o/r", on_main, 0, 0, (["8"], ["8"], [], 0), "o/r"), ("o/r", {"message": "409"}, 0, 0, (["8"], [], [], 1), "o/r"),
+                                                   ("o/r", on_main, 1, 0, (["8"], ["8"], ["8"], 0), "o/r"), ("o/r", on_main, 1, 1, (["8"], ["8"], ["8"], 1), "o/r"), ("o/r", on_main, 2, 0, (["8"], ["8"], ["8"], 0), "o/r"),
+                                                   ("o/r", on_main, 0, 0, (["8"], [], ["8"], 0), "fork/r"),
+                                                   ("fork/r", on_main, 0, 0, ([], [], [], 0), "o/r")):
             moved, updated, reran = [], [], []
+            pulls = [{"number": n, "base": {"ref": ref}, "head": {"sha": "old", "repo": {"full_name": kid}}} for n, ref in bases]
             with mock.patch.object(forge_pr, "fgj_api", lambda method, path, payload=None: (moved.append((path.rsplit("/", 1)[1], payload)), answer)[1] if method == "PATCH" and "/pulls/" in path else {"body": ""}), \
                     mock.patch.object(forge_pr, "pull", lambda n: {"body": "", "head": {"ref": "b7", "sha": "old" if update else "new", "repo": {"full_name": owner}}}), mock.patch.object(forge_pr, "open_pulls", lambda: pulls), \
                     mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(forge_pr, "cmd_rerun", lambda ns: reran.append(ns.number) or rerun), \
@@ -1080,7 +1084,10 @@ def forge_cases():
                     finish({"members": [(7, "a" * 40)], "age_minutes": 1})
             got = ([n for n, payload in moved if payload == {"base": "main"}], updated, reran, stubs["comment"].call_count)
             if got != want or len(moved) != len(want[0]):
-                bad.append(f"landing b7 of {owner}, the move answered {answer}, the update {update} and the rerun {rerun}: moved {moved}, updated {updated}, reran {reran}, {got[3]} comment(s), not {want}")
+                bad.append(f"landing b7 of {owner} with a child of {kid}, the move answered {answer}, the update {update} and the rerun {rerun}: moved {moved}, updated {updated}, reran {reran}, {got[3]} comment(s), not {want}")
+            said = str(stubs["comment"].call_args)
+            if update and rerun and ("just pr update 8" not in said or "just pr rerun" in said):
+                bad.append(f"a child neither updated nor rerun was not told to run `just pr update`: {said}")
         # A 404 may be a gone issue or a write the token may not make, so only the closed issue itself is an answer.
         for answer, closed in (({"number": 5, "state": "closed"}, True), (None, False)):
             with mock.patch.object(forge_pr, "fgj_api", lambda *a: answer), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
