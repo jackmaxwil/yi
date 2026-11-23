@@ -22,7 +22,7 @@ fn told(kinds: &[PaneKind], saved: &'static str) -> Model {
             saved: "chat",
         },
     );
-    have(&mut model, MAIN, kinds, None);
+    have(&mut model, kinds, None);
     change(&mut model, GridMsg::Show { window, saved });
     model
 }
@@ -67,7 +67,7 @@ fn a_layout_seats_only_the_kinds_with_something_to_show() -> Check {
 #[test]
 fn a_resting_pane_takes_its_own_slot_when_its_kind_has_something() -> Check {
     let mut model = told(&[Chat], "review");
-    have(&mut model, MAIN, &[Chat, Changes], None);
+    have(&mut model, &[Chat, Changes], None);
     assert_eq!(kinds_drawn(&model)?, [Chat, Changes]);
     let mut closed = record();
     let (window, saved) = (MAIN, "review");
@@ -81,13 +81,9 @@ fn a_resting_pane_takes_its_own_slot_when_its_kind_has_something() -> Check {
         let (ours, theirs) = (pane(&model, kind)?, pane(&closed, kind)?);
         assert_eq!(find(&resting, ours)?, find(&without, theirs)?, "{kind:?}");
     }
-    have(
-        &mut model,
-        MAIN,
-        &[Chat, Changes, Files, Terminal],
-        None,
-    );
-    have(&mut model, MAIN, &[Chat], None);
+    have(&mut model, &[Chat, Changes, Files, Terminal], None);
+    expect(&model, &REVIEW_PLACED)?;
+    have(&mut model, &[Chat], None);
     assert_eq!(
         kinds_drawn(&model)?,
         [Chat],
@@ -116,7 +112,7 @@ fn asking_for_a_resting_pane_shows_it_and_keeps_it() -> Check {
         seat.map(|(_, at)| *at),
         "its Review slot, not half a pane"
     );
-    have(&mut model, MAIN, &[Chat], None);
+    have(&mut model, &[Chat], None);
     assert_eq!(kinds_drawn(&model)?, [Chat, Terminal]);
     assert_eq!(
         model.grid.panes.len(),
@@ -170,7 +166,7 @@ fn a_pane_closes_while_others_rest() -> Check {
     let files = pane(&model, Files)?;
     change(&mut model, GridMsg::Close(files));
     assert_eq!(kinds_drawn(&model)?, [Chat]);
-    have(&mut model, MAIN, &[Chat, Changes], None);
+    have(&mut model, &[Chat, Changes], None);
     assert_eq!(kinds_drawn(&model)?, [Chat, Changes]);
     Ok(())
 }
