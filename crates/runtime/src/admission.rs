@@ -14,6 +14,7 @@ pub struct HostSample {
     pub load1_milli: Option<u64>,
     pub mem_free_kib: Option<u64>,
     pub disk_free_kib: Option<u64>,
+    pub disk_size_kib: Option<u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resource {
@@ -83,10 +84,12 @@ pub fn admit(sample: &HostSample, live: usize) -> Admission {
     {
         return refuse(Resource::Memory, free, mem_need, live);
     }
+    // Incident: a CI job's 2 GiB scratch volume never has 2 GiB free, so every lane and second child on it was refused.
+    let disk_floor = DISK_FLOOR_KIB.min(sample.disk_size_kib.map_or(u64::MAX, |size| size / 10));
     if let Some(free) = sample.disk_free_kib
-        && free < DISK_FLOOR_KIB
+        && free < disk_floor
     {
-        return refuse(Resource::Disk, free, DISK_FLOOR_KIB, live);
+        return refuse(Resource::Disk, free, disk_floor, live);
     }
     Admission::Admit
 }
@@ -101,6 +104,10 @@ fn refuse(resource: Resource, have: u64, need: u64, live: usize) -> Admission {
 }
 
 pub fn sample(lanes_volume: &Path) -> HostSample {
+    let df = lanes_volume
+        .to_str()
+        .and_then(|path| run("df", &["-Pk", path]));
+    let disk = |column| df.as_deref().and_then(|text| parse_df_kib(text, column));
     HostSample {
         cpus: load_cpus(
             std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
@@ -108,7 +115,8 @@ pub fn sample(lanes_volume: &Path) -> HostSample {
         ),
         load1_milli: load1_milli(),
         mem_free_kib: mem_free_kib(),
-        disk_free_kib: disk_free_kib(lanes_volume),
+        disk_free_kib: disk(3),
+        disk_size_kib: disk(1),
     }
 }
 
@@ -186,13 +194,9 @@ pub(crate) fn parse_vm_stat_free_kib(text: &str) -> Option<u64> {
     Some(total.saturating_mul(page_bytes) / 1024)
 }
 
-fn disk_free_kib(path: &Path) -> Option<u64> {
-    let path = path.to_str()?;
-    parse_df_available_kib(&run("df", &["-Pk", path])?)
-}
-
-pub(crate) fn parse_df_available_kib(text: &str) -> Option<u64> {
-    text.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()
+pub(crate) fn parse_df_kib(text: &str, column: usize) -> Option<u64> {
+    let row = text.lines().nth(1)?;
+    row.split_whitespace().nth(column)?.parse().ok()
 }
 
 #[cfg(test)]
@@ -205,6 +209,7 @@ mod tests {
             load1_milli: Some(1_000),
             mem_free_kib: Some(16 * 1024 * 1024),
             disk_free_kib: Some(100 * 1024 * 1024),
+            disk_size_kib: Some(500 * 1024 * 1024),
         }
     }
 
@@ -288,6 +293,26 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_disk_floor_is_a_tenth_of_a_volume_smaller_than_twenty_gib()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = |free: u64| HostSample {
+            disk_free_kib: Some(free),
+            disk_size_kib: Some(DISK_FLOOR_KIB),
+            ..roomy()
+        };
+        assert_eq!(admit(&scratch(2_096_564), 0), Admission::Admit);
+        assert_eq!(admit(&scratch(DISK_FLOOR_KIB / 10), 1), Admission::Admit);
+        let Admission::Refuse(refusal) = admit(&scratch(DISK_FLOOR_KIB / 10 - 1), 1) else {
+            return Err("expected a refusal".into());
+        };
+        assert_eq!(
+            (refusal.resource, refusal.need),
+            (Resource::Disk, DISK_FLOOR_KIB / 10)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn adaptive_unreadable_resources_do_not_block_admission() {
         let sample = HostSample {
             load1_milli: None,
@@ -310,7 +335,8 @@ mod tests {
         let vm_stat = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               100.\nPages active:                             999.\nPages inactive:                            50.\nPages speculative:                         10.\n";
         assert_eq!(parse_vm_stat_free_kib(vm_stat), Some(160 * 16));
         let df = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s5 971350180 500 123456 50% /\n";
-        assert_eq!(parse_df_available_kib(df), Some(123_456));
+        assert_eq!(parse_df_kib(df, 3), Some(123_456));
+        assert_eq!(parse_df_kib(df, 1), Some(971_350_180));
     }
 
     #[test]
