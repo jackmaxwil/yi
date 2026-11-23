@@ -9,7 +9,7 @@ cut: crates/runtime/src/plan/ops.rs | pub const WIDTH_MAX: usize = 8; | a fixed 
 cut: crates/runtime/tests/plan_ops.rs | fn width_is_the_family_cap_not_the_host() -> TestResult { | pinned a default width that no longer exists; width_is_unbounded_until_a_ceiling_is_set replaces it
 shares: #2234 adds one `pub mod admission;` line to crates/runtime/src/lib.rs, away from its lines
 shares: #2205 adds one `pub mod admission;` line to crates/runtime/src/lib.rs, away from its lines
-raise: crate cli +1, crate runtime +444, tests +295, comments +5
+raise: crate cli +1, crate runtime +456, tests +298, comments +5
 ---
 A parent no longer stops at eight children, and a family no longer stops at sixteen live sessions. A new child or lane is admitted while the host has room: the one-minute load average per core of the whole machine (a container held to a share of the cores still reads the machine's load), free memory (growing with each live child) and free disk on the lanes volume (2 GiB, or a tenth of a volume smaller than 20 GiB). The first child is always admitted on load, so work can start on a busy host. A refusal names the resource, what the host has and what it needs, and says to wait or reap a child with `rlm.delete_subagent`.
 

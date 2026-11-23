@@ -107,12 +107,21 @@ pub fn sample(lanes_volume: &Path) -> HostSample {
     let df = lanes_volume
         .to_str()
         .and_then(|path| run("df", &["-Pk", path]));
-    let disk = |column| df.as_deref().and_then(|text| parse_df_kib(text, column));
+    sample_from(
+        std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+        std::fs::read_to_string("/proc/cpuinfo").ok().as_deref(),
+        df.as_deref(),
+    )
+}
+
+pub(crate) fn sample_from(
+    share: NonZeroUsize,
+    cpuinfo: Option<&str>,
+    df: Option<&str>,
+) -> HostSample {
+    let disk = |column| df.and_then(|text| parse_df_kib(text, column));
     HostSample {
-        cpus: load_cpus(
-            std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
-            std::fs::read_to_string("/proc/cpuinfo").ok().as_deref(),
-        ),
+        cpus: load_cpus(share, cpuinfo),
         load1_milli: load1_milli(),
         mem_free_kib: mem_free_kib(),
         disk_free_kib: disk(3),
@@ -335,13 +344,16 @@ mod tests {
         let vm_stat = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               100.\nPages active:                             999.\nPages inactive:                            50.\nPages speculative:                         10.\n";
         assert_eq!(parse_vm_stat_free_kib(vm_stat), Some(160 * 16));
         let df = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s5 971350180 500 123456 50% /\n";
-        assert_eq!(parse_df_kib(df, 3), Some(123_456));
-        assert_eq!(parse_df_kib(df, 1), Some(971_350_180));
+        let cpus = |n: usize| NonZeroUsize::new(n).unwrap_or(NonZeroUsize::MIN);
+        let built = sample_from(cpus(1), Some("processor\t: 0\nprocessor\t: 1\n"), Some(df));
+        assert_eq!(built.cpus, cpus(2));
+        assert_eq!(built.disk_free_kib, Some(123_456));
+        assert_eq!(built.disk_size_kib, Some(971_350_180));
     }
 
     #[test]
     fn adaptive_sampling_this_host_reads_at_least_disk() {
         let sample = sample(&std::env::temp_dir());
-        assert!(sample.disk_free_kib.is_some());
+        assert!(sample.disk_free_kib.is_some() && sample.disk_size_kib >= sample.disk_free_kib);
     }
 }
