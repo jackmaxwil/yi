@@ -435,7 +435,7 @@ def eject(obs):
 
 
 def retarget(pr):
-    """Point the open PRs based on a landed PR's branch at main and rerun their checks, which read the old base.
+    """Point the open PRs based on a landed PR's branch at main and merge main into them, which reruns their checks.
     Incident: thirteen PRs stacked on each other's branches were refused as not based on main, for good."""
     head = pr.get("head") or {}
     branch = head.get("ref")
@@ -450,12 +450,16 @@ def retarget(pr):
         if (moved.get("base") or {}).get("ref") != "main":
             comment(number, f"The queue landed `{branch}` but the forge refused to move this pull request's base to main ({moved.get('message')}). Change the base by hand.")
             continue
+        asked = argparse.Namespace(number=str(number))
         try:
-            failed = forge_pr.cmd_rerun(argparse.Namespace(number=str(number)))
+            # Incident: a rerun of #2237's old head stayed red on an advisory main had patched; only main merged in clears it.
+            # Invariant: the forge answers an update of a current branch with success and no new head, so nothing reran.
+            stale = forge_pr.cmd_update(asked) or forge_pr.pull(number)["head"]["sha"] == child["head"]["sha"]
+            failed = stale and forge_pr.cmd_rerun(asked)
         except SystemExit as err:
             failed = err
         if failed:
-            comment(number, f"The queue landed `{branch}` and moved this pull request's base to main, but its checks did not rerun. Run `just pr rerun {number}`.")
+            comment(number, f"The queue landed `{branch}` and moved this pull request's base to main, but main was not merged in and its checks did not rerun. Run `just pr update {number}`.")
 
 
 def finish(obs, recorded=False):
@@ -1059,21 +1063,24 @@ def forge_cases():
                     bad.append(f"a refused close at {age} minutes stopped={stopped}, deleted the ref={stubs['delete_ref'].called}")
                 if not keeps and "#5" not in str(stubs["comment"].call_args):
                     bad.append("a close given up on did not say so on the PR")
-        # A landed branch's children move to main and rerun; a PR based elsewhere is not touched.
-        pulls = [{"number": 8, "base": {"ref": "b7"}}, {"number": 9, "base": {"ref": "main"}}, {"number": 10, "base": {"ref": "b9"}}]
-        # A refused move or a failed rerun is said on the child; a fork's same-named head moves nothing.
-        for owner, answer, rerun, want in (("o/r", {"base": {"ref": "main"}}, 0, (["8"], ["8"], 0)), ("o/r", {"message": "409"}, 0, (["8"], [], 1)),
-                                           ("o/r", {"base": {"ref": "main"}}, 1, (["8"], ["8"], 1)), ("fork/r", {"base": {"ref": "main"}}, 0, ([], [], 0))):
-            moved, reran = [], []
+        # A landed branch's children move to main and take main in; a PR based elsewhere is not touched.
+        pulls = [{"number": n, "base": {"ref": ref}, "head": {"sha": "old"}} for n, ref in ((8, "b7"), (9, "main"), (10, "b9"))]
+        # A refused move is said on the child; an update refused (1) or with nothing to merge (2) falls back to a rerun.
+        on_main = {"base": {"ref": "main"}}
+        for owner, answer, update, rerun, want in (("o/r", on_main, 0, 0, (["8"], ["8"], [], 0)), ("o/r", {"message": "409"}, 0, 0, (["8"], [], [], 1)),
+                                                   ("o/r", on_main, 1, 0, (["8"], ["8"], ["8"], 0)), ("o/r", on_main, 1, 1, (["8"], ["8"], ["8"], 1)), ("o/r", on_main, 2, 0, (["8"], ["8"], ["8"], 0)),
+                                                   ("fork/r", on_main, 0, 0, ([], [], [], 0))):
+            moved, updated, reran = [], [], []
             with mock.patch.object(forge_pr, "fgj_api", lambda method, path, payload=None: (moved.append((path.rsplit("/", 1)[1], payload)), answer)[1] if method == "PATCH" and "/pulls/" in path else {"body": ""}), \
-                    mock.patch.object(forge_pr, "pull", lambda n: {"body": "", "head": {"ref": "b7", "repo": {"full_name": owner}}}), mock.patch.object(forge_pr, "open_pulls", lambda: pulls), \
+                    mock.patch.object(forge_pr, "pull", lambda n: {"body": "", "head": {"ref": "b7", "sha": "old" if update else "new", "repo": {"full_name": owner}}}), mock.patch.object(forge_pr, "open_pulls", lambda: pulls), \
                     mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(forge_pr, "cmd_rerun", lambda ns: reran.append(ns.number) or rerun), \
+                    mock.patch.object(forge_pr, "cmd_update", lambda ns: updated.append(ns.number) or update == 1), \
                     mock.patch.multiple(sys.modules[__name__], delete_ref=mock.DEFAULT, record_main=mock.DEFAULT, set_label=mock.DEFAULT, comment=mock.DEFAULT) as stubs:
                 with contextlib.redirect_stdout(io.StringIO()):
                     finish({"members": [(7, "a" * 40)], "age_minutes": 1})
-            got = ([n for n, payload in moved if payload == {"base": "main"}], reran, stubs["comment"].call_count)
+            got = ([n for n, payload in moved if payload == {"base": "main"}], updated, reran, stubs["comment"].call_count)
             if got != want or len(moved) != len(want[0]):
-                bad.append(f"landing b7 of {owner}, the move answered {answer} and the rerun {rerun}: moved {moved}, reran {reran}, {got[2]} comment(s), not {want}")
+                bad.append(f"landing b7 of {owner}, the move answered {answer}, the update {update} and the rerun {rerun}: moved {moved}, updated {updated}, reran {reran}, {got[3]} comment(s), not {want}")
         # A 404 may be a gone issue or a write the token may not make, so only the closed issue itself is an answer.
         for answer, closed in (({"number": 5, "state": "closed"}, True), (None, False)):
             with mock.patch.object(forge_pr, "fgj_api", lambda *a: answer), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
