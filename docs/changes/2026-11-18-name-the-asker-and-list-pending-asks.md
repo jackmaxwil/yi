@@ -1,4 +1,5 @@
 ---
+version: 0.1082.0
 issue: Closes #2261, Closes #2263
 cut: crates/acp/src/daemon.rs | flush_parked | moved to daemon/pending.rs, which also sends the held requests a client lacks; the worker_requests comment went with the insert into hold_request
 shares: #2300 both edit acp_unit.rs and runtime/src/lib.rs: this branch adds one test and no change to lib.rs beyond the stacked #2298 re-export
