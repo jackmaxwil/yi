@@ -210,14 +210,18 @@ pub fn zone_at(
         return None;
     }
     let mut next = layout.clone();
-    let lands = land(&mut next, side, pane, spot, size).ok().and_then(|()| {
-        let drawn = place(&next, size, side);
-        drawn
-            .into_iter()
-            .find(|(id, _)| *id == pane)
-            .map(|(_, rect)| rect)
-    });
+    let lands = land(&mut next, side, pane, spot, size)
+        .ok()
+        .and_then(|()| rect_in(&next, side, size, pane));
     (next != *layout || lands.is_none()).then_some(Zone { spot, band, lands })
+}
+
+/// Where `pane` is drawn in a grid of `size` with `layout`, if it is drawn.
+pub fn rect_in(layout: &Layout, side: ChatSide, size: Size, pane: PaneId) -> Option<Rect> {
+    place(layout, size, side)
+        .into_iter()
+        .find(|(id, _)| *id == pane)
+        .map(|(_, rect)| rect)
 }
 
 /// The zone of `other`, drawn at `rect`, that `at` is in: the edge band it is deepest in,

@@ -6,20 +6,13 @@ use yd_core::pane::PaneKind;
 use yd_ui::grid_view::view::Grips;
 
 use super::docking::{carry, near, part, tiles};
+use super::beside::about;
 use super::*;
 
 const MAIN_RS: &str = "files-1.row.src/main.rs";
 const SESSIONS: &str = "files-1.row.src/routes/sessions.rs";
 const CHIP: &str = "grid.carried";
 const ZONE: &str = "grid.drop-zone";
-
-/// The code pane about `path`, when the grid holds one.
-fn about(runtime: &Runtime<Win>, path: &str) -> Result<Option<PaneId>, Box<dyn Error>> {
-    let file = Address::new(Kind::File, path)?;
-    let hub = runtime.state.hub.try_borrow()?;
-    let is = |pane: &&yd_core::grid::windows::Pane| pane.thing.as_ref() == Some(&file);
-    Ok(hub.model.grid.panes.iter().find(is).map(|pane| pane.id))
-}
 
 /// The kinds of the tabs in the slot `pane` is in, in tab order.
 fn tabs(runtime: &Runtime<Win>, pane: PaneId) -> Result<Vec<PaneKind>, Box<dyn Error>> {

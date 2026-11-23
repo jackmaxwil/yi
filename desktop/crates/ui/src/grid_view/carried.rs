@@ -118,10 +118,7 @@ pub fn hand(win: &mut Win, thing: &Address, from: PaneId, at: At, drag: &Drag, t
             };
             dispatch(win, Msg::Grid(put));
             let made = win.hub.try_borrow().ok().and_then(|hub| {
-                let is = |pane: &&yd_core::grid::windows::Pane| {
-                    pane.kind == kind && pane.thing.as_ref() == Some(thing)
-                };
-                hub.model.grid.panes.iter().find(is).map(|pane| pane.id)
+                hub.model.grid.drawn_about(window, kind, thing)
             });
             if let Some(made) = made {
                 act(win, tx, Act::Focus(made));

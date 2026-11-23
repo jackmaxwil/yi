@@ -1,16 +1,15 @@
 //! A thing dropped on the grid: the pane about it lands where a carried pane would, a tab on
 //! a pane's middle, a half on its edge, a column or a row on the window's.
 
-use crate::address::uri::Address;
 use crate::grid::layout::{Edge, Point, Rect, Size};
 use crate::grid::place::probe::{Check, FRAME_1, find};
 use crate::grid::swap::{DOCKED, Spot};
 use crate::ids::PaneId;
-use crate::kind::Kind;
 use crate::model::Model;
 use crate::pane::PaneKind::{self, Changes, Code, Files, Terminal};
 
 use super::GridMsg;
+use super::beside::file;
 use super::stacks::{open, window};
 use super::tests::{MAIN, change, drawn, pane};
 
@@ -21,10 +20,6 @@ fn four() -> Model {
         open(&mut model, kind);
     }
     model
-}
-
-fn file(path: &str) -> Result<Address, String> {
-    Address::new(Kind::File, path).map_err(|error| error.to_string())
 }
 
 /// Drops the file at `path` on `at`, and gives back the panes about it.

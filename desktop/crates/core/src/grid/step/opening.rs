@@ -6,7 +6,7 @@ use crate::grid::layout::{ChatSide, Edge, GridError, Layout, Point, Size};
 use crate::grid::leave::{split, stack};
 use crate::grid::place::place;
 use crate::grid::saved::JUST_CHAT;
-use crate::grid::swap::{Spot, Zone, join, land, own, spot_at};
+use crate::grid::swap::{Spot, Zone, join, land, own, rect_in, spot_at};
 use crate::grid::windows::{Pane, Scope, WindowOp, Windows};
 use crate::ids::{PaneId, WindowId};
 use crate::pane::{PaneKind, Place};
@@ -92,7 +92,7 @@ pub(in crate::grid) fn put(
         return Err(GridError::NoSuchWindow(id));
     }
     let ops = open(grid, id, kind, Some(thing.clone()), None)?;
-    let pane = about(grid, id, kind, thing).ok_or(GridError::NoSuchWindow(id))?;
+    let pane = grid.drawn_about(id, kind, thing).ok_or(GridError::NoSuchWindow(id))?;
     let side = grid.side;
     // On a middle it joins those tabs even when it has none of its own: unlike a carried
     // pane, it has no slot to give in exchange.
@@ -103,14 +103,14 @@ pub(in crate::grid) fn put(
     Ok(ops)
 }
 
-/// The pane of `kind` about `thing` that `id` draws.
-fn about(grid: &Windows, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
-    let is = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
-    let mut found = grid.panes.iter().filter(is).map(|pane| pane.id);
-    found.find(|pane| grid.window_of(*pane) == Some(id))
-}
-
 impl Windows {
+    /// The pane of `kind` about `thing` that `id` draws.
+    pub fn drawn_about(&self, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
+        let is = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
+        let mut found = self.panes.iter().filter(is).map(|pane| pane.id);
+        found.find(|pane| self.window_of(*pane) == Some(id))
+    }
+
     /// The drop zone under `at` while `thing` is carried from pane `from` over `window`: where
     /// its pane of `kind` would land. None off the grid and over the pane it came from.
     #[must_use]
@@ -132,12 +132,8 @@ impl Windows {
         let mut next = self.clone();
         let put = put(&mut next, window, kind, thing, spot, size);
         let lands = put.ok().and_then(|_| {
-            let pane = about(&next, window, kind, thing)?;
-            let drawn = next.place(window, size);
-            drawn
-                .into_iter()
-                .find(|(id, _)| *id == pane)
-                .map(|(_, rect)| rect)
+            let pane = next.drawn_about(window, kind, thing)?;
+            rect_in(&next.window(window)?.layout, self.side, size, pane)
         });
         Some(Zone { spot, band, lands })
     }

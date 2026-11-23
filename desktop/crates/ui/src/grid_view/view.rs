@@ -870,11 +870,7 @@ pub fn alone(win: &Win, hub: &Hub, cx: &mut Cx<Win>, kind: PaneKind) -> El {
 /// fills whatever room its parent gives it.
 pub fn grid(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
     let known = cx.window_layout(KEY);
-    let [x, y, w, h] = known.unwrap_or_default();
-    let at = At {
-        origin: [x, y],
-        size: Size { w, h },
-    };
+    let at = At::of(cx);
     let model = &hub.model;
     // Incident: panes laid out before the grid knew its size were 0 by 0 for one layout, and
     // every scroll area in them was reported as collapsed. None is drawn until it is known.
