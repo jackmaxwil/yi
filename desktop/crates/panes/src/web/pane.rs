@@ -8,8 +8,8 @@ mod tests;
 use rune::{Cx, El, col, el};
 use yd_core::command::table::{Command, Route};
 use yd_core::command::tools::web;
-use yd_core::feed::{FeedStatus, SourceCmd};
-use yd_core::ids::{FeedId, PaneId, RowId};
+use yd_core::feed::{FeedStatus, SourceCmd, Table, page_row_id};
+use yd_core::ids::{FeedId, PaneId};
 use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
 use yd_core::row::Row;
@@ -82,10 +82,14 @@ pub fn change(win: &mut Win, pane: PaneId, edit: impl FnOnce(&mut State)) {
     }
 }
 
-/// The page row of `feed`: `page:<instance>`.
+/// The page row of `feed`.
+pub fn page_row(table: Option<&Table>, feed: FeedId) -> Option<&Row> {
+    table?.find(&page_row_id(feed))
+}
+
+/// The page of `feed`, read from the pane's model.
 pub fn page<'a>(pane: &PaneCx<'a>, feed: FeedId) -> Option<&'a Row> {
-    let table = pane.model().tables.get(feed)?;
-    table.find(&RowId::new(format!("page:{}", feed.instance)))
+    page_row(pane.model().tables.get(feed), feed)
 }
 
 /// "200 · 38 ms": the page's last status and how long it took, either left out when unknown.

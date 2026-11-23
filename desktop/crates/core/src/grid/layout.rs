@@ -208,6 +208,9 @@ pub struct Hole {
     /// Each neighbour it had, with the edge of that neighbour it sat on.
     #[serde(default, with = "store::keyed")]
     pub beside: Vec<(PaneId, Edge)>,
+    /// Whether it is out for want of anything to show, drawn in no window, not pulled out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resting: bool,
 }
 
 /// One window's grid: tracks, and a slot for every pane that is in it or out of it.
@@ -244,6 +247,12 @@ impl Layout {
     /// Whether `pane` is out of this grid.
     pub fn is_away(&self, pane: PaneId) -> bool {
         self.away.iter().any(|hole| hole.pane == pane)
+    }
+
+    /// Whether `pane` is out of this grid because its kind has nothing to show.
+    pub fn is_resting(&self, pane: PaneId) -> bool {
+        let rests = |hole: &Hole| hole.pane == pane && hole.resting;
+        self.away.iter().any(rests)
     }
 
     /// The panes that are in, with their slots, in layout order.

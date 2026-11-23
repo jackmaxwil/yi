@@ -189,6 +189,7 @@ pub fn poll(win: &mut Win, seconds: f64, tx: &mut Tx) -> bool {
     new_chat::forget_gone(win, seconds);
     let drained = drain(win);
     let shown = yd_ui::shown::sync(win);
+    let rested = yd_panes::has::tell(win, tx);
     let told = notify::poll(win);
     let hover = yd_ui::code::state::tick(win, tx);
     let followed = yd_panes::lsp::marks::follow(win, tx);
@@ -204,7 +205,7 @@ pub fn poll(win: &mut Win, seconds: f64, tx: &mut Tx) -> bool {
     let bound = yd_panes::settings::pane::bind::follow(win);
     seen::poll(win);
     start::keep(win);
-    let heard = windows || settled || drained || shown || told || hover || followed;
+    let heard = windows || settled || drained || shown || rested || told || hover || followed;
     heard || themed || scripted || bound || asked
 }
 

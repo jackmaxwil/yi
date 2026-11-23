@@ -58,6 +58,11 @@ pub const SCENES: &[Scene] = &[
         setup: just_chat,
     },
     Scene {
+        name: "shell/places",
+        stage: Stage::App,
+        setup: places,
+    },
+    Scene {
         name: "shell/empty",
         stage: Stage::App,
         setup: empty,
@@ -147,6 +152,18 @@ fn just_chat(hub: &mut Hub) {
         saved: JUST_CHAT,
     };
     step(&mut hub.model, Msg::Grid(show));
+}
+
+/// Review picked in a session whose only change is a diff: Changes in its Review place beside
+/// the chat, and Files and the terminal waiting with no hole where they will go.
+fn places(hub: &mut Hub) {
+    mockup(hub);
+    let mut scenes = yd_panes::registry::scenes();
+    if let Some(scene) = scenes.find(|scene| scene.name == "changes/mockup") {
+        (scene.setup)(hub);
+    }
+    let (window, saved) = (MAIN, "review");
+    step(&mut hub.model, Msg::Grid(GridMsg::Show { window, saved }));
 }
 
 /// The mockup's first frame: the sidebar, the bars, and every pane of Everything in the

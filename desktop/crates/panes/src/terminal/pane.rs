@@ -2,7 +2,7 @@
 
 use rune::{Cx, El, ScrollSpec, Tx, col, row, text};
 use yd_core::feed::{FeedEvent, FeedStatus, SourceCmd, Table};
-use yd_core::ids::{FeedId, PaneId, RowId, TabId};
+use yd_core::ids::{FeedId, PaneId, RowId, TabId, WindowId};
 use yd_core::model::Model;
 use yd_core::msg::{Msg, step};
 use yd_core::pane::PaneKind;
@@ -170,6 +170,28 @@ fn blank(shell: &Shell) -> bool {
         .try_lock()
         .map_or(true, |parser| !parser.screen().contents().trim().is_empty());
     !scrolled && !shown
+}
+
+/// Whether a terminal has something to show in `window`: a command its thread's agent ran,
+/// or a shell of one of its Terminal panes that has printed.
+pub(crate) fn has(hub: &Hub, window: WindowId) -> bool {
+    if agent(yd_ui::shown::thread(hub, window)).is_some() {
+        return true;
+    }
+    let grid = &hub.model.grid;
+    let here = |pane: PaneId| {
+        let layout = grid.window(window).map(|window| &window.layout);
+        layout.is_some_and(|layout| layout.slot(pane).is_some())
+    };
+    let terminals = grid
+        .panes
+        .iter()
+        .filter(|pane| pane.kind == PaneKind::Terminal);
+    let mut shells = terminals
+        .filter(|pane| here(pane.id))
+        .filter_map(|pane| hub.panes.get::<Shells>(Some(pane.id)))
+        .flat_map(|shells| &shells.tabs);
+    shells.any(|shell| !blank(shell))
 }
 
 /// `<cwd> · exit N`: the folder is the shell's own, or its thread's while it has none.

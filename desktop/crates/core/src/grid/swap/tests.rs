@@ -135,6 +135,7 @@ fn a_drop_that_would_go_under_the_minimum_is_refused() -> Check {
     let panes = kinds.map(|kind| Pane {
         id: pane(kind),
         kind,
+        seated: false,
     });
     let window = Window {
         id: WindowId(0),
@@ -148,6 +149,7 @@ fn a_drop_that_would_go_under_the_minimum_is_refused() -> Check {
         panes: panes.to_vec(),
         windows: vec![window],
         own: Vec::new(),
+        ..Windows::default()
     };
     let before = grid.clone();
     let drop = GridMsg::Drop {
@@ -232,10 +234,12 @@ fn a_docked_grid_is_saved_and_read_back_as_it_is() -> Check {
             .map(|kind| Pane {
                 id: pane(kind),
                 kind,
+                seated: false,
             })
             .to_vec(),
         windows: vec![window],
         own: Vec::new(),
+        ..Windows::default()
     };
     let at = Spot::Side(Edge::Bottom);
     let drop = GridMsg::Drop {

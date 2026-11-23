@@ -62,8 +62,12 @@ impl Shape {
         }
     }
 
-    /// A window's layout as it is drawn, closed up round the panes that are out.
+    /// A window's layout as it is drawn, closed up round the panes that are pulled out. A
+    /// resting pane keeps its place in the shape: a layout is places, not what shows today.
     pub fn of(layout: &Layout, kind: impl Fn(PaneId) -> Option<PaneKind>) -> Option<Shape> {
+        let mut places = layout.clone();
+        places.away.retain(|hole| !hole.resting);
+        let layout = &places;
         let shown = close_up(layout).ok()?;
         let areas = shown
             .areas

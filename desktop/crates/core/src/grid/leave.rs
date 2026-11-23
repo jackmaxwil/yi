@@ -185,6 +185,7 @@ pub fn leave(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
     layout.away.push(Hole {
         pane,
         beside: beside(&shown, pane),
+        resting: false,
     });
     // Invariant: no hole, ever. A pane is out only if the grid closes up without it.
     let closed = close_up(layout).map(drop);
@@ -192,6 +193,15 @@ pub fn leave(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
         layout.away.pop();
     }
     closed
+}
+
+/// Takes `pane` out of the grid for want of anything to show, as [`leave`] does.
+pub fn rest(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
+    leave(layout, pane)?;
+    if let Some(hole) = layout.away.last_mut() {
+        hole.resting = true;
+    }
+    Ok(())
 }
 
 /// Puts a pane that is out back: into its slot, or with no slot here, into half the room

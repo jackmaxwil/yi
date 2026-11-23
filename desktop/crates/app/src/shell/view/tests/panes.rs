@@ -1,8 +1,9 @@
 //! The top bar's one Panes button and its panel: layouts as pictures, layouts of your own
 //! kept, renamed and deleted in place, the chat side, and every pane switched on and off.
 
-use yd_core::grid::layout::{ChatSide, Size};
+use yd_core::grid::layout::{ChatSide, Layout, Size};
 use yd_core::grid::saved::{EVERYTHING, OwnId};
+use yd_core::ids::PaneId;
 use yd_core::pane::PaneKind;
 use yd_ui::grid_view::picker::BUTTON;
 use yd_ui::menu::command_box::{self, Found};
@@ -21,11 +22,29 @@ fn open(runtime: &mut Runtime<Win>) {
 }
 
 fn kinds(runtime: &Runtime<Win>) -> Result<Vec<PaneKind>, Box<dyn Error>> {
+    seated(runtime, |layout| {
+        layout.docked().map(|(pane, _)| pane).collect()
+    })
+}
+
+/// The kinds the window's layout has a place for, drawn or resting.
+fn places(runtime: &Runtime<Win>) -> Result<Vec<PaneKind>, Box<dyn Error>> {
+    seated(runtime, |layout| {
+        layout.areas.iter().map(|(pane, _)| *pane).collect()
+    })
+}
+
+fn seated(
+    runtime: &Runtime<Win>,
+    panes: impl Fn(&Layout) -> Vec<PaneId>,
+) -> Result<Vec<PaneKind>, Box<dyn Error>> {
     let hub = runtime.state.hub.try_borrow()?;
     let grid = &hub.model.grid;
     let window = grid.window(root::MAIN).ok_or("no window")?;
-    let docked = window.layout.docked();
-    Ok(docked.filter_map(|(pane, _)| grid.kind(pane)).collect())
+    Ok(panes(&window.layout)
+        .into_iter()
+        .filter_map(|pane| grid.kind(pane))
+        .collect())
 }
 
 fn own(runtime: &Runtime<Win>) -> Result<Vec<(u8, String)>, Box<dyn Error>> {
@@ -112,7 +131,32 @@ fn the_panel_closes_on_escape_a_press_outside_and_a_layout_chosen() -> Check {
         PaneKind::Terminal,
         PaneKind::Chat,
     ];
-    assert_eq!(kinds(&runtime)?, want, "and shows it");
+    assert_eq!(
+        places(&runtime)?,
+        want,
+        "and gives each of its kinds a place"
+    );
+    assert_eq!(
+        kinds(&runtime)?,
+        [PaneKind::Chat],
+        "a session with nothing in it draws the chat alone"
+    );
+    let changes = yd_panes::registry::scenes().find(|scene| scene.name == "changes/mockup");
+    (changes.ok_or("no changes scene")?.setup)(&mut *runtime.state.hub.try_borrow_mut()?);
+    rest(&mut runtime);
+    assert_eq!(
+        kinds(&runtime)?,
+        [PaneKind::Changes, PaneKind::Chat],
+        "Changes takes its place once there are changes"
+    );
+    let hub = runtime.state.hub.try_borrow()?;
+    let size = Size {
+        w: 1000.0,
+        h: 700.0,
+    };
+    let placed = hub.model.grid.place(root::MAIN, size);
+    let across: f32 = placed.iter().map(|(_, rect)| rect.w).sum();
+    assert!((across - size.w).abs() < 0.5, "with no hole: {placed:?}");
     Ok(())
 }
 
@@ -285,7 +329,7 @@ fn a_layout_saved_in_the_panel_takes_the_next_key_and_is_listed_everywhere() -> 
     save(&mut runtime, "Writing")?;
     assert_eq!(own(&runtime)?, [(6, "Writing".to_owned())]);
     assert_eq!(shown(&runtime)?, Some(OwnId(6)), "the window shows it now");
-    let kept = kinds(&runtime)?;
+    let kept = places(&runtime)?;
     assert_eq!(
         help(&runtime, "grid.panel.layout.own-6").as_deref(),
         Some("Writing ⌥⌘6")
@@ -315,9 +359,9 @@ fn a_layout_saved_in_the_panel_takes_the_next_key_and_is_listed_everywhere() -> 
     drop(hub);
     assert!(!put_up.is_empty());
     strike(&mut runtime, Key::Text("1".into()), held());
-    assert_ne!(kinds(&runtime)?, kept, "Everything");
+    assert_ne!(places(&runtime)?, kept, "Everything");
     strike(&mut runtime, Key::Text("6".into()), held());
-    assert_eq!(kinds(&runtime)?, kept, "⌥⌘6 shows it again");
+    assert_eq!(places(&runtime)?, kept, "⌥⌘6 gives its places again");
     assert_eq!(shown(&runtime)?, Some(OwnId(6)));
     Ok(())
 }
