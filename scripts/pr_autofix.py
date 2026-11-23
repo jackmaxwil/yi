@@ -1335,6 +1335,28 @@ def red_issue(repo, base_ref):
                  and (i.get("user") or {}).get("login") == pr_review.BOT), None)
 
 
+# Invariant: the forge writes a cancelled job as `failure` and a skipped one as `success`; only the
+# description tells either from a lane that ran to its end, and only such a run speaks for a base.
+RAN = re.compile(r"(?:Successful in|Failing after) ")
+
+
+def base_lane(repo, base_ref):
+    """The test lane's newest run on the base, as the forge has it: "success" or "failure", None when no
+    recent commit carries a test-lane status, UNREAD when the forge did not say or that newest run was
+    cancelled, skipped or unfinished. First-parent, so a merged PR's own red heads are not the base's.
+    The job log, which names the tests, is not served to a runner."""
+    for sha in forge_pr.git("rev-list", "--first-parent", "-n", "8", f"origin/{base_ref}").split():
+        rows = forge_pr.head_statuses(repo, sha)
+        if rows is None:
+            return forge_pr.UNREAD
+        for job, status, description in rows:
+            if job in ("gate (test)", "warm (test)"):
+                if not RAN.match(description):
+                    return forge_pr.UNREAD
+                return "success" if status == "success" else "failure"
+    return None
+
+
 def report_base_red(repo, ids, base_ref, tests):
     """The only thing that says the base is red: `warm (test)` on main is cancelled by the next merge's
     record commit, so nothing did when #1924 broke it. One issue per base, its body the tests the pass closes it by."""
@@ -1343,7 +1365,8 @@ def report_base_red(repo, ids, base_ref, tests):
         return None
     known = set(RED_TEST.findall((have or {}).get("body") or ""))
     tests = {pair for pair in tests if RED_TEST.fullmatch(f"- `{pair[0]} {pair[1]}`")}
-    body = (f"These fail in the fixer's clone of origin/{base_ref}, so its gate waits on them. A pass closes this when they pass:\n\n"
+    body = (f"The forge's test lane on {base_ref} is red and these fail in the fixer's clone of it, so its gate waits on them. "
+            "A pass closes this when they pass there or that lane is green again:\n\n"
             + "\n".join(f"- `{b} {t}`" for b, t in sorted(known | tests)) + "\n")
     if have:
         if not tests <= known:
@@ -1358,9 +1381,10 @@ def report_base_red(repo, ids, base_ref, tests):
 
 
 def settle_base_red(repo, bases):
-    """Close a base's red issue once its named tests really passed there, which releases the PRs waiting
-    on it. A build that broke prints no FAIL row, so only the run's exit says passed. In a token-free
-    clone: a stacked PR's branch is a base too, and a worktree of the checkout shares its credentials."""
+    """Close a base's red issue once the forge's own lane on it is green or its named tests really passed
+    there, which releases the PRs waiting on it. A build that broke prints no FAIL row, so only the run's
+    exit says passed. In a token-free clone: a stacked PR's branch is a base too, and a worktree of the
+    checkout shares its credentials. Incident: #2330 named two tests only the fixer's clone fails."""
     for base_ref in bases:
         have = red_issue(repo, base_ref)
         tests = set(RED_TEST.findall((have or {}).get("body") or ""))
@@ -1368,8 +1392,11 @@ def settle_base_red(repo, bases):
             continue
         try:
             forge_pr.git("fetch", "-q", "origin", base_ref)
-            with workspace(ROOT, forge_pr.git("rev-parse", f"origin/{base_ref}")) as work:
-                ran = in_worker(work, "filter", {"expr": " | ".join(f"test(={t})" for t in sorted({t for _, t in tests}))})
+            if base_lane(repo, base_ref) == "success":
+                ran = 0
+            else:
+                with workspace(ROOT, forge_pr.git("rev-parse", f"origin/{base_ref}")) as work:
+                    ran = in_worker(work, "filter", {"expr": " | ".join(f"test(={t})" for t in sorted({t for _, t in tests}))})
         except (subprocess.TimeoutExpired, RuntimeError, OSError) as err:
             print(f"autofix: could not read {RED_TITLE.format(base_ref)!r}: {err}")
             continue
@@ -1482,30 +1509,30 @@ def attempt(repo, pr, ids, asked=False):
     try:
         fields = fix(pr, kind=kind, rnd=rnd, tried=misses(notes), meter=meter, stopped=restart_from(notes), lanes=lanes)
         verdict = "pushed"
-    except Flaky as err:
-        # One rerun per head: a lane that fails again on the same head is a person's to read.
-        short = sha[:12]
-        if head_rows(notes, sha, "rerun"):
-            fields, verdict, reason = {"kind": "gate", "from": short, "stop": "gate"}, "handoff", f"{err}, and its rerun failed again; the job log says why"
-        else:
-            if forge_pr.cmd_rerun(argparse.Namespace(number=str(number))):
-                return "waiting"
-            fields, verdict, reason = {"kind": "gate", "from": short}, "rerun", str(err)
-    except BaseRed as err:
-        # The clone measures the runner as well as the code, so a head the base may not explain reruns first,
-        # and a base that keeps going red and green around one head stops being the base's to explain.
-        short = sha[:12]
-        if len(head_rows(notes, sha, "base-red")) > RETRIES:
+    except (Flaky, BaseRed) as err:
+        # One rerun per head: a lane that fails again on the same head is a person's to read. A base that keeps
+        # going red and green around one head stops being the base's to explain.
+        # Incident: #2237's lanes failed on its runner's load, two other tests failed only in the fixer's clone, at
+        # main too, and it waited on a main the forge had green. The clone measures its runner; the forge says red.
+        short, lane = sha[:12], base_lane(repo, err.base_ref) if isinstance(err, BaseRed) else None
+        if lane == forge_pr.UNREAD:
+            return "waiting"
+        why = str(err) if lane == "failure" or isinstance(err, Flaky) else (
+            f"the {', '.join(lanes)} lane(s) pass in the fixer's clone at this head; {err}, "
+            "which the forge's own run of that base does not fail, so they are the clone's")
+        if lane == "failure" and len(head_rows(notes, sha, "base-red")) > RETRIES:
             fields, verdict, reason = {"kind": "gate", "from": short, "stop": "gate"}, "handoff", f"{err}, again after {RETRIES + 1} waits on it"
-        elif head_rows(notes, sha, "rerun"):
+        elif lane == "failure" and head_rows(notes, sha, "rerun"):
             issue = report_base_red(repo, ids, err.base_ref, err.tests)
             if not issue:
                 return "waiting"
             fields, verdict, reason = {"kind": "gate", "from": short}, "base-red", f"{err}; #{issue} tracks it."
+        elif head_rows(notes, sha, "rerun"):
+            fields, verdict, reason = {"kind": "gate", "from": short, "stop": "gate"}, "handoff", f"{why}, and its rerun failed again; the job log says why"
         else:
             if forge_pr.cmd_rerun(argparse.Namespace(number=str(number))):
                 return "waiting"
-            fields, verdict, reason = {"kind": "gate", "from": short}, "rerun", str(err)
+            fields, verdict, reason = {"kind": "gate", "from": short}, "rerun", why
     except Handoff as err:
         fields = {"kind": kind, "from": sha[:12], "stop": kind, **({"round": rnd["n"]} if rnd and kind == "findings" else {})}
         reason, verdict = str(err), "handoff"
@@ -1855,7 +1882,7 @@ def waits_selfcheck():
     errs, module, bot = [], sys.modules[__name__], {"user": {"login": pr_review.BOT}}
     now, posted, labelled, calls, reruns = time.time(), [], [], [], []
     iso = lambda at: datetime.datetime.fromtimestamp(at, datetime.timezone.utc).isoformat()
-    forge, seen_paths, saved_sh = {"issues": [], "listing": True}, [], sh
+    forge, seen_paths, saved_sh = {"issues": [], "listing": True, "base": [("failure", "Failing after 9m")]}, [], sh
 
     def api(method, path, payload=None):
         seen_paths.append(path)
@@ -1870,6 +1897,9 @@ def waits_selfcheck():
             posted.append(payload["body"])
         if method == "GET" and "/issues?" in path:
             return [i for i in forge["issues"] if i.get("state") != "closed"] if forge["listing"] else {"message": "busy"}
+        if method == "GET" and (m := re.search(r"/commits/(\d+)/status$", path)):
+            status, said = forge["base"][int(m.group(1))]
+            return {"statuses": [{"context": "postmerge / warm (test) (push)", "status": status, "description": said}]} if forge["listing"] else {"message": "busy"}
         return []
 
     def raising(err):
@@ -1885,7 +1915,8 @@ def waits_selfcheck():
     meta = lambda at, verdict, sha="a" * 12, extra="": dict(bot, created_at=iso(at), body=f"<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 from={sha}{extra} verdict={verdict} -->\n")
     notes = []
     try:
-        forge_pr.git, forge_pr.fgj_api, forge_pr.cmd_rerun = (lambda *a, **k: ""), api, (lambda ns: reruns.append(ns.number))
+        forge_pr.git = lambda *a, **k: "\n".join(map(str, range(len(forge["base"])))) if a[0] == "rev-list" else ""
+        forge_pr.fgj_api, forge_pr.cmd_rerun = api, (lambda ns: reruns.append(ns.number))
         pr_review.comments, pr_review.authors, bot_meter.since = (lambda repo, n: notes), (lambda: {"jack"}), (lambda *a: [])
         pr_review.rounds_of, module.conflicts, module.quiet_for = (lambda *a: []), (lambda pr, push=False: []), (lambda *a: QUIET)
         module.set_label = lambda repo, n, ids, name, on: labelled.append((name, on))
@@ -1924,11 +1955,39 @@ def waits_selfcheck():
         if attempt("o/r", pr, {}) != "waiting" or calls:
             errs.append("a forge that did not answer read as a green base")
         forge["listing"] = True
-        # The pass closes the issue only when the named tests ran and passed; then the head takes the base.
         ran = []
         module.workspace = lambda *a: contextlib.nullcontext("work")
         verdict_of_run = {"rc": 101}
         module.in_worker = lambda work, op, args: (ran.append(args["expr"]) or verdict_of_run["rc"])
+        # A test only the clone fails, at the base too, is the clone's: the head is judged as if it had passed
+        # there, by the flake's rule, with no wait on the base and no issue. Incident: #2237 and #2330.
+        was, held, forge["issues"], forge["base"] = forge["issues"], notes[:], [], [("success", "Successful in 9m")]
+        module.fix, count = raising(BaseRed("main", {t1})), len(reruns)
+        for rows, want, says in (([], "rerun", "pass in the fixer's clone at this head"), ([meta(now - 60, "rerun")], "handoff", "rerun failed again")):
+            notes[:] = rows
+            said = attempt("o/r", pr, {})
+            if said != want or says not in posted[-1] or "are the clone's" not in posted[-1] or forge["issues"]:
+                errs.append(f"a test only the clone fails read {said}, not {want}, with {len(forge['issues'])} issue(s): {posted[-1][-300:]!r}")
+        if len(reruns) != count + 1:
+            errs.append(f"a test only the clone fails reran its head {len(reruns) - count} time(s), not the flake's one")
+        # Main's lane is red only where it ran to its end and failed: a cancelled run is written `failure` too.
+        forge["base"] = [("failure", "Has been cancelled"), ("success", "Has been skipped"), ("success", "Successful in 9m")]
+        if attempt("o/r", pr, {}) == "base-red" or forge["issues"]:
+            errs.append("a cancelled lane over a green one on main opened the red-main issue")
+        forge["base"], forge["listing"], count = [("failure", "Failing after 9m")], False, len(posted)
+        if attempt("o/r", pr, {}) != "waiting" or len(posted) != count:
+            errs.append("a forge that did not say whether the base is red was read as an answer")
+        forge["listing"] = True
+        if attempt("o/r", pr, {}) != "base-red":
+            errs.append("a lane that ran and failed on main did not read as a red base")
+        # An issue standing over a base the forge has green is closed, however the clone's own run of its tests ends.
+        forge["base"] = [("success", "Successful in 9m")]
+        settle_base_red("o/r", {"main"})
+        if ran or forge["issues"][0].get("state") != "closed":
+            errs.append(f"a red-main issue outlived a main the forge has green, the clone asked {ran}")
+        forge["issues"], forge["base"], notes[:] = was, [("failure", "Failing after 9m")], held
+        calls.clear()
+        # The pass closes the issue only when the named tests ran and passed; then the head takes the base.
         named = "test(=console_drive::a_hidden_sidebar) | test(=t::two)"
         settle_base_red("o/r", {"main"})
         if forge["issues"][0].get("state") == "closed":
@@ -2427,12 +2486,27 @@ def merge_selfcheck():
     return errs
 
 
+def base_lane_selfcheck():
+    errs, rows, saved = [], {}, (forge_pr.git, forge_pr.fgj_api)
+    try:
+        forge_pr.git = lambda *a, **k: "c0\nc1" if a[0] == "rev-list" else ""
+        forge_pr.fgj_api = lambda method, path, payload=None: {"statuses": rows[path.split("/")[-2]]}
+        for newest, want in ((("failure", "Has been cancelled"), forge_pr.UNREAD), (("success", "Has been skipped"), forge_pr.UNREAD)):
+            rows.update(c0=[{"context": "pr / gate (test) (push)", "status": newest[0], "description": newest[1]}],
+                        c1=[{"context": "pr / gate (test) (push)", "status": "success", "description": "Successful in 9m"}])
+            got = base_lane("o/r", "main")
+            if got != want:
+                errs.append(f"a base whose newest test lane was {newest[1]!r} read {got!r}, not {want!r}, by walking to an older green run")
+    finally:
+        forge_pr.git, forge_pr.fgj_api = saved
+    return errs
+
 def selfcheck():
     global PASSWD
     installed_passwd, box = PASSWD, pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-passwd-"))
     try:
         PASSWD = box / "passwd"
-        errs = merge_selfcheck() + gate_selfcheck() + waits_selfcheck() + confined_selfcheck()
+        errs = merge_selfcheck() + gate_selfcheck() + waits_selfcheck() + confined_selfcheck() + base_lane_selfcheck()
     finally:
         PASSWD = installed_passwd
         shutil.rmtree(box, ignore_errors=True)

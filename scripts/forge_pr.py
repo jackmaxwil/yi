@@ -557,16 +557,22 @@ def required():
 UNREAD = "the commit's statuses, unreadable"
 
 
+def head_statuses(name, sha):
+    """(job, state, description) for each status on one head, in the forge's order; None when the forge did not say."""
+    combined = fgj_api("GET", f"repos/{name}/commits/{sha}/status")
+    if not isinstance(combined, dict) or "message" in combined:
+        return None
+    return [(required_jobs([s["context"]])[0], s["status"], s.get("description") or "") for s in combined.get("statuses") or []]
+
 def head_jobs(name, sha):
     """Job name to its newest status on one head. Incident: the task list has no row until a runner
     claims a job, so #1887's waiting rerun read as its old failure, and 60 rows is an hour or two."""
-    combined = fgj_api("GET", f"repos/{name}/commits/{sha}/status") or {}
-    if "message" in combined:
+    rows = head_statuses(name, sha)
+    if rows is None:
         return {UNREAD: "pending"}
     jobs = {}
-    for status in combined.get("statuses") or []:
-        job = required_jobs([status["context"]])[0]
-        jobs[job] = "failure" if status["status"] == "error" else status["status"]
+    for job, status, _ in rows:
+        jobs[job] = "failure" if status == "error" else status
     return jobs
 
 
