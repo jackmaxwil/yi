@@ -17,7 +17,11 @@ const BASE: &str = "https://api.kimi.ai/coding/v1";
 /// The entry as Kimi's `/models` lists it, through the same mapping a refresh writes.
 pub(crate) fn kimi_model(entry: Value) -> Result<Model, Box<dyn Error>> {
     let id = entry["id"].as_str().ok_or("entry has no id")?.to_owned();
-    let (written, _) = yi_ai::kimi::catalog(&json!({"data": [entry]}), BASE)?;
+    let (written, _) = yi_ai::kimi::catalog(
+        &json!({"data": [entry]}),
+        BASE,
+        &yi_ai::catalog::Catalog::bundled(),
+    )?;
     let model = written["openai-completions"][id.as_str()].clone();
     Ok(serde_json::from_value(model)?)
 }
@@ -362,7 +366,7 @@ fn an_anthropic_protocol_kimi_model_posts_to_beta_messages() -> TestResult {
     let base = format!("http://127.0.0.1:{port}/coding/v1");
     let list =
         json!({"data": [{"id": "k3-a", "protocol": "anthropic", "limit": {"context": 262144}}]});
-    let (written, _) = yi_ai::kimi::catalog(&list, &base)?;
+    let (written, _) = yi_ai::kimi::catalog(&list, &base, &yi_ai::catalog::Catalog::bundled())?;
     let model: Model = serde_json::from_value(written["anthropic-messages"]["k3-a"].clone())?;
     let options = yi_ai::anthropic::AnthropicOptions::default();
     let runtime = tokio::runtime::Builder::new_current_thread()

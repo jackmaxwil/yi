@@ -273,7 +273,7 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
   default. This default does not select a primary model.
 - Custom providers: `providers.<id>{baseUrl,api,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
-  contextWindow,maxTokens,cost}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
+  contextWindow,maxTokens,cost,readTimeoutSecs}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
   `api`: `openai-completions` (unset), `openai-responses` or `anthropic-messages`, any other value
   refused at load; an id a built-in provider, `laya` or `faux` holds refuses at load. Explicit
   models merge after the cache, so no refresh rewrites or drops them. An empty or omitted list
@@ -298,7 +298,10 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   the loop reads as final; `x-should-retry: true` retries any status.
 - A read timeout is the model's `readTimeoutSecs` (default 60 s) and bounds one read, so an idle
   gap between chunks and not the whole body; a timeout is neither retried nor resent, and its
-  refusal names the field, the default and the attempts that ran.
+  refusal names the field, the default and the attempts that ran. A request on a pooled
+  socket that has already carried a finished stream is bounded by the same wait on a helper thread
+  (ureq clears the deadline on a pooled socket), ends the same way, drops the pooled agent, and is
+  never sent twice. A child's model keeps `readTimeoutSecs` or 300 s.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
   outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
   into `ToolUse`.
@@ -1275,7 +1278,7 @@ an unknown method −32601, bad JSON −32700.
 | Method | Side | What |
 |---|---|---|
 | `initialize`, `session/new`, `session/resume{replayFrom?}`, `session/list` | both | The daemon routes new/resume by cwd and lists from its ledger without a cwd |
-| `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3), and one still queued at close gets −32800; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
+| `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3) under the same lock that decides whether to start, so queue order is send order, and answers at once with `{messageId, queuePlace}` (1 is next after the running turn), a close then drops it unrun without a second answer; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
 | `_yi/kernel_execute`, `_yi/tracked`, `_yi/branch_diff`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; a hunk's blame chain; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again in `_meta.yi.prefill`) or `at` it, attached beside the source, which keeps its own branch; any other position is refused by name (`AcpForkParams`) |

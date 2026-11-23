@@ -63,6 +63,8 @@ pub enum Answerer {
     Reviewer,
     Classifier,
     Nobody,
+    /// The session was stopped while the ask waited; recorded as a stop, not a person's deny.
+    Stopped,
     #[serde(untagged)]
     Other(String),
 }

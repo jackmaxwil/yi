@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use yi_runtime::{AskOutcome, Asker};
 use yi_types::acp::{
-    AcpDiffChange, AcpDiffOperation, AcpDiffPatch, AcpFrame, AcpPatchFormat, AcpPermissionOption,
-    AcpPermissionOptionKind, AcpPermissionOutcome, AcpPermissionParams, AcpPermissionSubject,
-    AcpToolCallUpdate, AcpToolContent,
+    AcpAsker, AcpDiffChange, AcpDiffOperation, AcpDiffPatch, AcpFrame, AcpMeta, AcpPatchFormat,
+    AcpPermissionOption, AcpPermissionOptionKind, AcpPermissionOutcome, AcpPermissionParams,
+    AcpPermissionSubject, AcpToolCallUpdate, AcpToolContent, AcpYiMeta,
 };
 use yi_types::permission::{choices, chosen};
 
@@ -56,6 +56,14 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             title: ask.title.to_owned(),
             description: Some(ask.description.to_owned()),
             options: permission_options(ask.grants),
+            meta: ask.agent.map(|name| AcpMeta {
+                yi: AcpYiMeta {
+                    asker: Some(AcpAsker {
+                        child_id: name.to_owned(),
+                    }),
+                    ..AcpYiMeta::default()
+                },
+            }),
             subject: ask.patch.map(|patch| AcpPermissionSubject::ToolCall {
                 tool_call: Box::new(AcpToolCallUpdate {
                     tool_call_id: ask.tool_call_id.unwrap_or_default().to_owned(),
@@ -77,11 +85,20 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             params: serde_json::to_value(&params).ok(),
         };
         sink(&json!(request));
-        let response = receiver.recv();
+        // Polled, not parked: the session's abort has no channel to this receiver.
+        let response = loop {
+            match receiver.recv_timeout(std::time::Duration::from_millis(100)) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if !ask.stop.is_some_and(|s| s()) => {}
+                other => break other.map_err(|_| ()),
+            }
+        };
         if let Some(map) = pending.lock().ok().as_mut().and_then(|map| map.as_mut()) {
             map.remove(&id);
         }
         let Ok(response) = response else {
+            sink(&json!({"jsonrpc": "2.0", "method": "_yi/permission_closed",
+                "params": {"sessionId": session_id, "requestId": id}}));
             return AskOutcome::Reject;
         };
         let outcome = response

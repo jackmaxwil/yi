@@ -42,6 +42,7 @@ fn shown(row: &SettingRow, value: &Value) -> Value {
         (SettingKind::List | SettingKind::Json, Value::Object(fields)) => Value::from(fields.len()),
         (SettingKind::List | SettingKind::Json, Value::Null) => Value::Null,
         (SettingKind::List | SettingKind::Json, _) => Value::from(1),
+        (SettingKind::Other(_), _) => Value::Null,
         _ => value.clone(),
     }
 }

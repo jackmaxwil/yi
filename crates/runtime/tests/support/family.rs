@@ -66,6 +66,7 @@ pub struct Built {
     pub wall: Wall,
     pub deadline: Option<std::time::Duration>,
     pub tokens: Option<u64>,
+    pub read_timeout_secs: Option<u64>,
 }
 
 pub struct Family {
@@ -213,6 +214,7 @@ fn family_build(
                     wall: build.wall.clone(),
                     deadline: build.deadline,
                     tokens: build.tokens,
+                    read_timeout_secs: build.model.read_timeout_secs,
                 });
             }
             let provider = Arc::new(ProviderStream::new(None));

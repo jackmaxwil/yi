@@ -7,6 +7,8 @@ use yi_types::telemetry::{QUOTA_STAMP, REFUSED_STAMP};
 
 use crate::retry::{RetryPolicy, is_retryable_status, quota_exhausted, server_wait, wait_for};
 use crate::sse::SseEvent;
+use pool::{at_helper_cap, pooled_idle_from_now, send_on_pooled, stream_agent};
+mod pool;
 mod reply;
 
 pub use reply::{Stripped, note_reply, note_resend, note_stripped, note_upstream, record_stripped};
@@ -30,6 +32,12 @@ pub fn empty_assistant(model: &Model) -> AgentMessage {
         end_turn: None,
         timestamp: 0,
     }
+}
+
+/// Invariant: a request that ran spent at least one token, so a usage object counting none and
+/// charging nothing is a provider that reported nothing, not a free turn.
+pub(crate) fn nothing_reported(usage: &Usage) -> bool {
+    usage.total_tokens == 0 && usage.cost.total.as_f64().is_none_or(|cost| cost <= 0.0)
 }
 
 pub(crate) fn assistant_content_mut(message: &mut AgentMessage) -> Option<&mut Vec<Content>> {
@@ -328,76 +336,6 @@ pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
     }
 }
 
-/// Past this a pooled connection is not trusted: a NAT may have dropped it without a FIN.
-const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
-
-static POOLED: std::sync::Mutex<Vec<Pooled>> = std::sync::Mutex::new(Vec::new());
-
-/// A deadline is built into the agent, so a pool keyed by nothing but idle time handed a fast
-/// model's connection the slow model's bound. One slot thrashed two models in one session.
-struct Pooled {
-    agent: ureq::Agent,
-    idle_since: std::time::Instant,
-    read_timeout: std::time::Duration,
-}
-
-// ponytail: a proxied request pools nothing; key the pool by proxy if that path matters.
-fn stream_agent(proxy: Option<&ureq::Proxy>, read_timeout: std::time::Duration) -> ureq::Agent {
-    let builder = ureq::AgentBuilder::new()
-        .user_agent(yi_types::USER_AGENT)
-        .timeout_connect(std::time::Duration::from_secs(30))
-        .timeout_read(read_timeout)
-        // ureq keeps one idle connection per host by default, so a later turn of the session
-        // dialed again: the family's eight live streams is the width worth keeping.
-        .max_idle_connections(16)
-        .max_idle_connections_per_host(16);
-    if let Some(proxy) = proxy {
-        return builder.proxy(proxy.clone()).build();
-    }
-    let Ok(mut pooled) = POOLED.lock() else {
-        return builder.build();
-    };
-    pooled.retain(|held| held.idle_since.elapsed() < KEEP_ALIVE);
-    if let Some(agent) = pooled
-        .iter_mut()
-        .find(|held| held.read_timeout == read_timeout)
-        .map(|held| {
-            held.idle_since = std::time::Instant::now();
-            held.agent.clone()
-        })
-    {
-        return agent;
-    }
-    let agent = builder.build();
-    if pooled.len() >= POOLED_SLOTS
-        && let Some((at, _)) = pooled
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, held)| held.idle_since)
-    {
-        drop(pooled.swap_remove(at));
-    }
-    pooled.push(Pooled {
-        agent: agent.clone(),
-        idle_since: std::time::Instant::now(),
-        read_timeout,
-    });
-    agent
-}
-
-/// Two deadlines at once is the alternating main/advisor pattern; a third covers a subagent.
-const POOLED_SLOTS: usize = 3;
-
-fn pooled_idle_from_now(read_timeout: std::time::Duration) {
-    if let Ok(mut pooled) = POOLED.lock()
-        && let Some(held) = pooled
-            .iter_mut()
-            .find(|held| held.read_timeout == read_timeout)
-    {
-        held.idle_since = std::time::Instant::now();
-    }
-}
-
 /// The cache fields a 400 may name, the specific ones before the generic `cache`.
 const CACHE_FIELDS: [&str; 6] = [
     "prompt_cache_retention",
@@ -409,7 +347,40 @@ const CACHE_FIELDS: [&str; 6] = [
 ];
 
 fn cache_field(text: &str) -> Option<&'static str> {
-    CACHE_FIELDS.into_iter().find(|field| text.contains(field))
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(text) else {
+        return CACHE_FIELDS
+            .into_iter()
+            .find(|field| prose_names(text, field));
+    };
+    let error = body.get("error").unwrap_or(&body);
+    let identifiers = [string_at(error.get("param")), string_at(error.get("code"))];
+    let message = error
+        .as_str()
+        .or_else(|| string_at(error.get("message")))
+        .or_else(|| string_at(body.get("message")));
+    CACHE_FIELDS.into_iter().find(|field| {
+        identifiers.contains(&Some(*field))
+            || message.is_some_and(|message| prose_names(message, field))
+    })
+}
+
+fn prose_names(text: &str, field: &str) -> bool {
+    field != "cache" && names_token(text, field)
+}
+
+fn string_at(value: Option<&serde_json::Value>) -> Option<&str> {
+    value.and_then(serde_json::Value::as_str)
+}
+
+fn names_token(text: &str, token: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(token).any(|(at, _)| {
+        let before = text.get(..at).and_then(|head| head.chars().next_back());
+        let after = text
+            .get(at.saturating_add(token.len())..)
+            .and_then(|tail| tail.chars().next());
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
 }
 
 pub fn send_with_retry(
@@ -433,10 +404,11 @@ pub fn send_stripping_cache(
 ) -> Result<ureq::Response, String> {
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
-    let agent = stream_agent(
-        proxy.and_then(|config| config.proxy_for(host_of(url))),
-        retry.deadline,
-    );
+    let proxy = proxy.and_then(|config| config.proxy_for(host_of(url)));
+    let (agent, reused) = match stream_agent(proxy, retry.deadline, false) {
+        (_, true) if at_helper_cap() => (stream_agent(proxy, retry.deadline, true).0, false),
+        held => held,
+    };
     let mut bare: Option<crate::breakpoints::Encoded> = None;
     let mut serialized = {
         let _span = yi_types::trace::span("ai.serialize");
@@ -455,8 +427,16 @@ pub fn send_stripping_cache(
             .arg("attempt", attempt)
             .arg("bytes", serialized.len());
         retry.bump();
-        let sent = request.send_string(&serialized);
+        let sent = if reused {
+            send_on_pooled(request, &serialized, retry.deadline)
+        } else {
+            Some(request.send_string(&serialized))
+        };
         drop(sending);
+        let Some(sent) = sent else {
+            stream_agent(proxy, retry.deadline, true);
+            return Err(read_timeout_notice(retry.deadline, retry.ran()));
+        };
         match sent {
             Ok(response) => return Ok(response),
             Err(ureq::Error::Status(status, response)) => {

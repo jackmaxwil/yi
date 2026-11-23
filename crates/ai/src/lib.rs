@@ -25,6 +25,7 @@ pub mod search;
 
 pub mod schema;
 pub mod settle;
+mod slot;
 pub mod sse;
 pub mod transform;
 

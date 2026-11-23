@@ -107,6 +107,10 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                 &format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}"),
                 *timestamp,
             )),
+            AgentMessage::Other(unknown) => Some(AgentMessage::user_input(
+                yi_types::message::UserContent::Text(yi_types::message::UNREAD_MESSAGE.to_owned()),
+                unknown.timestamp(),
+            )),
             AgentMessage::User {
                 content,
                 timestamp,

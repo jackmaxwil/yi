@@ -2,6 +2,7 @@
 //! its cost would be a guess. OpenRouter bills a dropped stream for what was generated and
 //! serves the record at `/generation?id=` within seconds, so the cut turn is settled from it.
 
+use crate::slot::Slot;
 use serde_json::Value;
 use yi_types::message::Usage;
 use yi_types::model::Model;
@@ -21,26 +22,17 @@ static PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 /// The schedule's 28 s of waiting plus typical fetch time; a fetch hung past it is lost.
 const SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(32);
 
-struct Pending;
-
-impl Drop for Pending {
-    fn drop(&mut self) {
-        PENDING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-    }
-}
-
 /// Invariant: counted from creation, which precedes the turn's terminal event, so a drain run
 /// on that event waits for a settlement whose thread has not started yet.
 #[must_use]
 pub struct Job {
-    pending: Pending,
+    pending: Slot,
     run: Box<dyn FnOnce() + Send>,
 }
 
 pub fn job(run: impl FnOnce() + Send + 'static) -> Job {
-    PENDING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     Job {
-        pending: Pending,
+        pending: Slot::take(&PENDING),
         run: Box::new(run),
     }
 }

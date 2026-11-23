@@ -15,11 +15,17 @@ use crate::loopback_server::serve;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn refused(message: &str) -> String {
-    let body = json!({"error": {"message": message}}).to_string();
+fn refused_as(content_type: &str, body: &str) -> String {
     format!(
-        "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+        "HTTP/1.1 400 Bad Request\r\ncontent-type: {content_type}\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
         body.len()
+    )
+}
+
+fn refused(message: &str) -> String {
+    refused_as(
+        "application/json",
+        &json!({"error": {"message": message}}).to_string(),
     )
 }
 
@@ -189,6 +195,82 @@ fn a_400_that_names_no_cache_field_is_not_resent() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_400_with_a_top_level_identifier_is_not_resent_when_error_exists() -> TestResult {
+    for identifier in ["param", "code"] {
+        let body =
+            format!(r#"{{"error":{{"message":"unsupported"}},"{identifier}":"cache_control"}}"#);
+        let (port, count, server) = serve(vec![refused_as("application/json", &body)])?;
+        let stripped = Stripped::default();
+        let quiet = |_| {};
+        let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
+        let failed = yi_ai::request::send_stripping_cache(
+            &url(port),
+            &[],
+            &marked_body(),
+            None,
+            &retry,
+            &stripped,
+        )
+        .err()
+        .ok_or("a top-level identifier caused a resend")?;
+        let _ = server.join().map_err(|_| "server thread panicked")?;
+        assert_eq!(count.load(Ordering::SeqCst), 1, "{identifier}: {failed}");
+        assert_eq!(stripped.take(), None, "{identifier}");
+    }
+    Ok(())
+}
+
+fn resends_without_cache_field(refusal: String) -> TestResult {
+    let (port, count, server) = serve(vec![refusal, answer()])?;
+    let stripped = Stripped::default();
+    let quiet = |_| {};
+    let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
+    let reply = yi_ai::request::send_stripping_cache(
+        &url(port),
+        &[],
+        &marked_body(),
+        None,
+        &retry,
+        &stripped,
+    )?;
+    let _ = reply.into_string();
+    let requests = server.join().map_err(|_| "server thread panicked")?;
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "the refusal was not resent"
+    );
+    assert!(
+        !requests[1].contains("cache_control"),
+        "the resend kept the field the route refused: {}",
+        requests[1]
+    );
+    assert_eq!(stripped.take(), Some("cache_control"));
+    Ok(())
+}
+
+#[test]
+fn a_400_with_a_string_error_naming_a_cache_field_is_resent() -> TestResult {
+    resends_without_cache_field(refused_as(
+        "application/json",
+        &json!({"error": "cache_control is not supported"}).to_string(),
+    ))
+}
+
+#[test]
+fn a_400_with_a_top_level_message_naming_a_cache_field_is_resent() -> TestResult {
+    resends_without_cache_field(refused_as(
+        "application/json",
+        &json!({"message": "cache_control is not supported"}).to_string(),
+    ))
+}
+
+#[test]
+fn a_plain_text_400_naming_a_cache_field_is_resent() -> TestResult {
+    resends_without_cache_field(refused_as("text/plain", "cache_control is not supported"))
+}
+
 fn context() -> LlmContext {
     LlmContext {
         system_prompt: "You are a test.".to_owned(),
@@ -263,5 +345,56 @@ async fn the_reply_records_the_field_the_route_refused() -> TestResult {
         Some(&json!("cache_ttl")),
         "{note:?}"
     );
+    Ok(())
+}
+
+/// Dies with a resend: a 400 whose text merely contains a cache word is the remote's prose, not a
+/// refusal of a field, and the prompt is not posted a second time for it.
+#[test]
+fn a_400_that_only_mentions_cache_in_passing_is_not_resent() -> TestResult {
+    for message in [
+        "your prompt cache is warming, retry later",
+        "invalid value near mycache_controlled",
+    ] {
+        let (port, count, server) = serve(vec![refused(message)])?;
+        let stripped = Stripped::default();
+        let quiet = |_| {};
+        let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
+        let failed = yi_ai::request::send_stripping_cache(
+            &url(port),
+            &[],
+            &marked_body(),
+            None,
+            &retry,
+            &stripped,
+        );
+        let _ = server.join().map_err(|_| "server thread panicked")?;
+        assert!(failed.is_err(), "{message}");
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{message}"
+        );
+        assert_eq!(stripped.take(), None, "{message}");
+    }
+    Ok(())
+}
+
+/// Dies with a plain-text 400: only a JSON error body that names a field starts the resend.
+#[test]
+fn a_400_naming_the_field_in_error_param_is_resent() -> TestResult {
+    let body = json!({"error": {"message": "unsupported", "param": "cache_control"}}).to_string();
+    let refusal = format!(
+        "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let (port, count, server) = serve(vec![refusal, answer()])?;
+    let stripped = Stripped::default();
+    let quiet = |_| {};
+    let retry = yi_ai::request::Retry::new(std::time::Duration::from_secs(60), None, &quiet);
+    yi_ai::request::send_stripping_cache(&url(port), &[], &marked_body(), None, &retry, &stripped)?;
+    let _ = server.join().map_err(|_| "server thread panicked")?;
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(stripped.take(), Some("cache_control"));
     Ok(())
 }
