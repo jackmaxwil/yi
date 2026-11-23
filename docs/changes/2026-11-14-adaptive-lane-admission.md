@@ -1,4 +1,6 @@
 ---
+version: 0.1091.0
+decisions: D612
 issue: #2225
 growth: +445 the host sampler (load, memory, disk, and the machine's processor count the load is weighed against), the pure admit decision, shared bounded probe runner, capped lane refusal retry (disk refusals only) and their tests; weighed for deletion: the fixed 8-child, 16-family and plan width ceilings are now defaults of 0 (no ceiling), so nothing was added beside them
 decision: Admit children and lanes by host headroom, never by a fixed count | a count of 8 refused work a roomy host could run and let a loaded one thrash | reversible via family.max_children, family.cap and plan.width_max levers set above 0
