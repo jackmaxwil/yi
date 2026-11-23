@@ -1341,16 +1341,19 @@ RAN = re.compile(r"(?:Successful in|Failing after) ")
 
 
 def base_lane(repo, base_ref):
-    """The test lane's newest finished run on the base, as the forge has it: "success" or "failure", None
-    when its last commits carry none, UNREAD when the forge did not say. First-parent, so a merged PR's
-    own red heads are not the base's. The job log, which names the tests, is not served to a runner."""
+    """The test lane's newest run on the base, as the forge has it: "success" or "failure", None when no
+    recent commit carries a test-lane status, UNREAD when the forge did not say or that newest run was
+    cancelled, skipped or unfinished. First-parent, so a merged PR's own red heads are not the base's.
+    The job log, which names the tests, is not served to a runner."""
     for sha in forge_pr.git("rev-list", "--first-parent", "-n", "8", f"origin/{base_ref}").split():
-        combined = forge_pr.fgj_api("GET", f"repos/{repo}/commits/{sha}/status")
-        if not isinstance(combined, dict) or "message" in combined:
+        rows = forge_pr.head_statuses(repo, sha)
+        if rows is None:
             return forge_pr.UNREAD
-        for status in combined.get("statuses") or []:
-            if forge_pr.required_jobs([status["context"]])[0] in ("gate (test)", "warm (test)") and RAN.match(status.get("description") or ""):
-                return "success" if status["status"] == "success" else "failure"
+        for job, status, description in rows:
+            if job in ("gate (test)", "warm (test)"):
+                if not RAN.match(description):
+                    return forge_pr.UNREAD
+                return "success" if status == "success" else "failure"
     return None
 
 
@@ -2483,12 +2486,27 @@ def merge_selfcheck():
     return errs
 
 
+def base_lane_selfcheck():
+    errs, rows, saved = [], {}, (forge_pr.git, forge_pr.fgj_api)
+    try:
+        forge_pr.git = lambda *a, **k: "c0\nc1" if a[0] == "rev-list" else ""
+        forge_pr.fgj_api = lambda method, path, payload=None: {"statuses": rows[path.split("/")[-2]]}
+        for newest, want in ((("failure", "Has been cancelled"), forge_pr.UNREAD), (("success", "Has been skipped"), forge_pr.UNREAD)):
+            rows.update(c0=[{"context": "pr / gate (test) (push)", "status": newest[0], "description": newest[1]}],
+                        c1=[{"context": "pr / gate (test) (push)", "status": "success", "description": "Successful in 9m"}])
+            got = base_lane("o/r", "main")
+            if got != want:
+                errs.append(f"a base whose newest test lane was {newest[1]!r} read {got!r}, not {want!r}, by walking to an older green run")
+    finally:
+        forge_pr.git, forge_pr.fgj_api = saved
+    return errs
+
 def selfcheck():
     global PASSWD
     installed_passwd, box = PASSWD, pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-passwd-"))
     try:
         PASSWD = box / "passwd"
-        errs = merge_selfcheck() + gate_selfcheck() + waits_selfcheck() + confined_selfcheck()
+        errs = merge_selfcheck() + gate_selfcheck() + waits_selfcheck() + confined_selfcheck() + base_lane_selfcheck()
     finally:
         PASSWD = installed_passwd
         shutil.rmtree(box, ignore_errors=True)
