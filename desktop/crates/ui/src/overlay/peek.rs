@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rune::{Cx, El, Key, KeyEvent, Picked, PointerEvent, Shadow, Tx, col, el, row, spacer, text};
+use rune::{Cx, El, Key, KeyEvent, Picked, PointerEvent, Tx, col, row, spacer, text};
 use yd_core::address::thing::{Thing, lines};
 use yd_core::address::uri::Address;
 use yd_core::feed::{FILES, FeedEvent, SourceCmd};
@@ -19,8 +19,8 @@ use crate::overlay::boxes;
 use crate::overlay::pick::{self, Found};
 use crate::pane::{Scene, Stage};
 use crate::theme::look::{BODY, CODE_LINE, META, colour};
-use crate::theme::scale::{LINE_DIVIDER, POPOVER, RADIUS_MENU, RING_MENU, SHADOW_MENU};
-use crate::win::{Hub, Win, dispatch};
+use crate::theme::scale::{LINE_DIVIDER, POPOVER, RADIUS_MENU};
+use crate::win::{Hub, Win, ask};
 
 pub const SCENES: &[Scene] = &[Scene {
     name: "peek/file",
@@ -195,16 +195,6 @@ fn said<'a>(hub: &'a Hub, thing: &'a Thing) -> Said<'a> {
     }
 }
 
-/// Asks the files source for the text of `path` once, when this is laid out.
-fn asked(path: &str) -> El {
-    let file = PathBuf::from(path);
-    el().key(format!("{KEY}.ask.{path}"))
-        .size(0.0, 0.0)
-        .on_layout_tx(move |win: &mut Win, _, _: &mut Tx| {
-            dispatch(win, Msg::Source(FILES, SourceCmd::Read(file.clone())));
-        })
-}
-
 fn line(tokens: &Tokens, at: usize, number: Option<usize>, words: &str) -> El {
     let gutter = number.map(|number| {
         let said = text(number.to_string())
@@ -263,30 +253,21 @@ fn card(tokens: &Tokens, open: &Open, said: &Said<'_>, at: [f32; 2]) -> El {
         .child(faint("space to close".to_owned()))
         .child(spacer())
         .child(faint(count).key(format!("{KEY}.count")));
-    col()
+    context::popover_shadow(col()
         .key(KEY)
         .absolute(at[0], at[1])
         .w(WIDTH)
         .radius(RADIUS_MENU.of(tokens))
         .fill(colour(POPOVER.of(tokens)))
-        .paint_order(OVER_ALL)
-        .box_shadow(Shadow {
-            spread: 1.0,
-            color: colour(RING_MENU.of(tokens)),
-            ..Shadow::default()
-        })
-        .box_shadow(Shadow {
-            y: 18.0,
-            blur: 44.0,
-            spread: -10.0,
-            color: colour(SHADOW_MENU.of(tokens)),
-            ..Shadow::default()
-        })
+        .paint_order(OVER_ALL), tokens)
         .on_background_press_tx(|_: &mut Win, _: &mut Tx| {})
         .child(head)
         .child(col().w_full().py(4.0).px(2.0).children(rows))
         .child(foot)
-        .children(said.unread.map(asked))
+        .children(said.unread.map(|path| {
+            let file = PathBuf::from(path);
+            ask(format!("{KEY}.ask.{path}"), Msg::Source(FILES, SourceCmd::Read(file)))
+        }))
 }
 
 /// This window's peek over `layer`: a ground that closes it on a press, then the card,
@@ -309,17 +290,9 @@ pub fn layer(win: &Win, hub: &Hub, cx: &mut Cx<Win>, layer: &mut Vec<El>) {
     let fits = under + tall + EDGE <= room[1];
     let top = if fits { under } else { y - tall - EDGE };
     let at = [x.min(room[0] - WIDTH - EDGE).max(EDGE), top.max(EDGE)];
-    let shut = |win: &mut Win, _: &mut Tx| {
+    let scrim = context::full_scrim(SCRIM, |win: &mut Win, _: &mut Tx| {
         close(win);
-    };
-    let scrim = el()
-        .key(SCRIM)
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
-        .paint_order(OVER_ALL)
-        .on_background_press_tx(shut)
-        .on_secondary_press_local(move |win: &mut Win, _: PointerEvent, tx: &mut Tx| shut(win, tx));
+    });
     layer.push(scrim);
     layer.push(card(&hub.model.tokens, open, &said, at));
 }

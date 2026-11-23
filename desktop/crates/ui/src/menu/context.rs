@@ -22,6 +22,7 @@ use yd_core::ids::{CommandId, PaneId, WindowId};
 use yd_core::kind::Kind;
 use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
+use yd_core::tokens::Tokens;
 
 use crate::chrome::tabs;
 use crate::grid_view::aimed;
@@ -393,7 +394,7 @@ impl Drawn<'_> {
     fn card(&self, at: [f32; 2], room: f32) -> El {
         let tokens = &self.hub.model.tokens;
         let middle = middle(self.hub, self.open);
-        let mut card = col()
+        let mut card = popover_shadow(col()
             .key(KEY)
             .absolute(at[0], at[1])
             .w(WIDTH)
@@ -404,19 +405,7 @@ impl Drawn<'_> {
             .padding(4.0)
             .radius(RADIUS_MENU.of(tokens))
             .fill(colour(MENU.of(tokens)))
-            .paint_order(OVER_ALL)
-            .box_shadow(Shadow {
-                spread: 1.0,
-                color: colour(RING_MENU.of(tokens)),
-                ..Shadow::default()
-            })
-            .box_shadow(Shadow {
-                y: 18.0,
-                blur: 44.0,
-                spread: -10.0,
-                color: colour(SHADOW_MENU.of(tokens)),
-                ..Shadow::default()
-            })
+            .paint_order(OVER_ALL), tokens)
             .on_background_press_tx(|_: &mut Win, _: &mut Tx| {})
             .child(self.head())
             .child(self.asks())
@@ -466,19 +455,38 @@ pub fn view(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> Vec<El> {
     };
     let at = [place(open.at[0], 0, REACH), place(open.at[1], 1, tall)];
     let room = room(1).map_or(f32::MAX, |room| room - 2.0 * EDGE);
-    let shut = |win: &mut Win, _: &mut Tx| {
+    let scrim = full_scrim(SCRIM, |win: &mut Win, _: &mut Tx| {
         close(win);
-    };
-    let scrim = el()
-        .key(SCRIM)
+    });
+    let drawn = Drawn { win, hub, open };
+    vec![scrim, drawn.card(at, room)]
+}
+
+/// A ground over the whole window that runs `shut` on a press, primary or secondary.
+pub fn full_scrim(key: &'static str, shut: impl Fn(&mut Win, &mut Tx) + Copy + 'static) -> El {
+    el().key(key)
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
         .paint_order(OVER_ALL)
         .on_background_press_tx(shut)
-        .on_secondary_press_local(move |win: &mut Win, _: PointerEvent, tx: &mut Tx| shut(win, tx));
-    let drawn = Drawn { win, hub, open };
-    vec![scrim, drawn.card(at, room)]
+        .on_secondary_press_local(move |win: &mut Win, _: PointerEvent, tx: &mut Tx| shut(win, tx))
+}
+
+/// The ring and drop shadow every menu card and popover wears.
+pub fn popover_shadow(card: El, tokens: &Tokens) -> El {
+    card.box_shadow(Shadow {
+        spread: 1.0,
+        color: colour(RING_MENU.of(tokens)),
+        ..Shadow::default()
+    })
+    .box_shadow(Shadow {
+        y: 18.0,
+        blur: 44.0,
+        spread: -10.0,
+        color: colour(SHADOW_MENU.of(tokens)),
+        ..Shadow::default()
+    })
 }
 
 /// The diff line the mockup's frame 14 right-clicks: line 18 of the new rate limiter.

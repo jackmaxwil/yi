@@ -14,6 +14,7 @@ use yd_ui::list::state::Lists;
 use yd_ui::list::view::part;
 use yd_ui::pane::PaneCx;
 use yd_ui::theme::look::{META, colour, white};
+use yd_ui::win::ask;
 
 use crate::debugger::console;
 use crate::debugger::desc::{
@@ -21,7 +22,6 @@ use crate::debugger::desc::{
     VARIABLES_PART, WATCH, WATCH_PART, WATCHES, breakpoint_row, frame_row, shown, variable_row,
     watch_row,
 };
-use crate::debugger::source::ask;
 
 pub const WIDTH: f32 = 252.0;
 /// A heading's height, and what an open row's detail adds under it.

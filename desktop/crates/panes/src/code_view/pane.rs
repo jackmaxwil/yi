@@ -27,7 +27,7 @@ use yd_ui::code::view::{CodeView, Gutter};
 use yd_ui::overlay::pick::Finder;
 use yd_ui::pane::{PaneCx, PaneDef, TabAsk};
 use yd_ui::theme::look::{CODE_LINE, META, colour, white};
-use yd_ui::win::{Hub, Win, dispatch};
+use yd_ui::win::{Hub, Win, ask, dispatch};
 
 use super::refs;
 use crate::lsp::marks;
@@ -428,16 +428,6 @@ fn cut_row(tokens: &Tokens, key: &str, file: &Row) -> El {
         .child(text(said).font(META).color(colour(tokens.faint)).truncate())
 }
 
-/// Asks the files source for the text of `path` once, when this is laid out.
-fn asked(key: &str, path: &str) -> El {
-    let file = PathBuf::from(path);
-    el().key(format!("{key}.unread.{path}.ask"))
-        .size(0.0, 0.0)
-        .on_layout_tx(move |win: &mut Win, _, _: &mut Tx| {
-            dispatch(win, Msg::Source(FILES, SourceCmd::Read(file.clone())));
-        })
-}
-
 fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
     let tokens = pane.tokens();
     let key = pane.key(PaneKind::Code);
@@ -453,7 +443,10 @@ fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
     let unread = shown
         .as_ref()
         .filter(|shown| read.is_none() && shown.tab.is_none());
-    let ask = unread.map(|shown| asked(&key, shown.path));
+    let asked = unread.map(|shown| {
+        let file = PathBuf::from(shown.path);
+        ask(format!("{key}.unread.{}.ask", shown.path), Msg::Source(FILES, SourceCmd::Read(file)))
+    });
     let cut = read
         .filter(|row| row.get("truncated") == Some(&Value::Flag(true)))
         .map(|row| cut_row(tokens, &key, row));
@@ -485,7 +478,7 @@ fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
             let rev = shown.loaded.as_ref()?.doc.rev();
             Some(told(&key, shown.path, rev))
         }))
-        .children(ask)
+        .children(asked)
         .children(marks::card(pane.hub, cx, &key));
     crate::files::pane::copy::under(pane, &key, pane_col)
 }

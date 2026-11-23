@@ -1,7 +1,7 @@
 //! The Panes panel under the top bar's button: a picture of every layout, the chat side, and
 //! every pane kind with a switch. The layouts kept are named, renamed and deleted in place.
 
-use rune::{Align, Cursor, Cx, El, Key, KeyEvent, Shadow, Side, TextEdit, Tx, col, el, row, text};
+use rune::{Align, Cursor, Cx, El, Key, KeyEvent, Side, TextEdit, Tx, col, el, row, text};
 use rune::{spacer, text_input};
 use yd_core::command::keys::Map;
 use yd_core::command::table::{FLIP_CHAT, Route, Run};
@@ -24,10 +24,10 @@ use crate::kit::label::section;
 use crate::kit::segmented::segmented;
 use crate::kit::toggle::toggle;
 use crate::menu::command_box;
+use crate::menu::context::popover_shadow;
 use crate::theme::look::{LABEL, NONE, colour};
 use crate::theme::scale::{
-    HOVER, LINE_MENU, LINE_PICKED, POPOVER, RADIUS_BADGE, RADIUS_CHIP, RADIUS_MENU, RING_MENU,
-    SHADOW_MENU,
+    HOVER, LINE_MENU, LINE_PICKED, POPOVER, RADIUS_BADGE, RADIUS_CHIP, RADIUS_MENU,
 };
 use crate::win::{Field, Hub, Win, dispatch};
 
@@ -433,7 +433,7 @@ pub fn layer(win: &Win, hub: &Hub, cx: &mut Cx<Win>, layer: &mut Vec<El>) {
         row().gap(4.0).children(items)
     });
     let line = el().h(1.0).w_full().fill(colour(LINE_MENU.of(tokens)));
-    let surface = col()
+    let surface = popover_shadow(col()
         .key(KEY)
         .role("grid")
         .label("Panes and layouts")
@@ -442,19 +442,7 @@ pub fn layer(win: &Win, hub: &Hub, cx: &mut Cx<Win>, layer: &mut Vec<El>) {
         .padding(6.0)
         .gap(3.0)
         .radius(RADIUS_MENU.of(tokens))
-        .fill(colour(POPOVER.of(tokens)))
-        .box_shadow(Shadow {
-            spread: 1.0,
-            color: colour(RING_MENU.of(tokens)),
-            ..Shadow::default()
-        })
-        .box_shadow(Shadow {
-            y: 18.0,
-            blur: 44.0,
-            spread: -10.0,
-            color: colour(SHADOW_MENU.of(tokens)),
-            ..Shadow::default()
-        })
+        .fill(colour(POPOVER.of(tokens))), tokens)
         .child(section(tokens, "Layouts", None, None))
         .child(layouts(hub, win.window, room, &keys))
         .children(asking(win, hub, now.naming))
