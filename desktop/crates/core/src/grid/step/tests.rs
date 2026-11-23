@@ -2,10 +2,10 @@
 //! split and closed, and the grid written to a file and read back.
 
 use crate::command::table::{FLIP_CHAT, Route, Run};
-use crate::grid::layout::{Axis, Line, MAX_TRACKS, Point, Rect, Size};
+use crate::grid::layout::{Axis, Edge, Line, MAX_TRACKS, Point, Rect, Size};
 use crate::grid::place::probe::{Check, FRAME_1, find, rect, tiled};
 use crate::grid::windows::{Frame, WindowOp, Windows};
-use crate::ids::{PaneId, WindowId};
+use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::model::Model;
 use crate::msg::{Effect, Msg, step};
 use crate::pane::PaneKind::{self, Changes, Chat, Code, Files, Remote, Report, Terminal, Web};
@@ -31,7 +31,7 @@ pub(super) fn record() -> Model {
     model
 }
 
-fn showing(saved: &'static str) -> Model {
+pub(super) fn showing(saved: &'static str) -> Model {
     let mut model = record();
     let window = MAIN;
     change(&mut model, GridMsg::Show { window, saved });
@@ -50,6 +50,25 @@ pub(super) fn drawn(model: &Model) -> Result<Vec<(PaneId, Rect)>, String> {
     let placed = model.grid.place(MAIN, FRAME_1);
     tiled(&placed, FRAME_1)?;
     Ok(placed)
+}
+
+pub(super) const HAVE_KINDS: [PaneKind; 6] = [Chat, Code, Changes, Files, Terminal, Web];
+
+pub(super) fn have(
+    model: &mut Model,
+    window: WindowId,
+    kinds: &[PaneKind],
+    thread: Option<&str>,
+) {
+    let thread = thread.map(ThreadId::new);
+    change(
+        model,
+        GridMsg::Have {
+            window,
+            kinds: kinds.to_vec(),
+            thread,
+        },
+    );
 }
 
 pub(super) fn expect(model: &Model, want: &[(PaneKind, Rect)]) -> Check {
@@ -192,7 +211,13 @@ fn a_layout_switch_keeps_what_is_out_out_and_what_is_hidden_alive() -> Check {
 fn a_layout_switch_keeps_the_pane_in_view_in_view() -> Check {
     let mut model = showing("just-chat");
     let chat = pane(&model, Chat)?;
-    change(&mut model, GridMsg::Split(chat));
+    change(
+        &mut model,
+        GridMsg::SplitAt {
+            pane: chat,
+            edge: Edge::Right,
+        },
+    );
     let copy = model.grid.panes.last().ok_or("no pane")?.id;
     change(&mut model, GridMsg::Leave(chat));
     let own = model.grid.window_of(chat);
@@ -258,7 +283,13 @@ fn a_split_goes_to_the_right_as_drawn_with_chat_on_either_side() -> Check {
             step(&mut model, Msg::Command(Route::Model, Run::new(FLIP_CHAT)));
         }
         let changes = pane(&model, Changes)?;
-        change(&mut model, GridMsg::Split(changes));
+        change(
+            &mut model,
+            GridMsg::SplitAt {
+                pane: changes,
+                edge: Edge::Right,
+            },
+        );
         let copy = model.grid.panes.last().ok_or("no pane")?;
         assert_eq!((copy.kind, model.grid.panes.len()), (Changes, 5));
         let placed = drawn(&model)?;
@@ -319,11 +350,23 @@ fn a_split_past_the_most_columns_changes_nothing() -> Check {
     let mut model = showing("just-chat");
     let chat = pane(&model, Chat)?;
     for made in 2..=MAX_TRACKS {
-        change(&mut model, GridMsg::Split(chat));
+        change(
+            &mut model,
+            GridMsg::SplitAt {
+                pane: chat,
+                edge: Edge::Right,
+            },
+        );
         assert_eq!(model.grid.panes.len(), made, "the split that makes {made}");
     }
     let before = model.grid.clone();
-    change(&mut model, GridMsg::Split(chat));
+    change(
+        &mut model,
+        GridMsg::SplitAt {
+            pane: chat,
+            edge: Edge::Right,
+        },
+    );
     assert_eq!(model.grid, before);
     assert_eq!(drawn(&model)?.len(), MAX_TRACKS);
     Ok(())
@@ -505,7 +548,13 @@ fn the_grid_reads_back_from_its_file_as_it_was() -> Check {
             b: chat,
         },
     );
-    change(&mut model, GridMsg::Split(code));
+    change(
+        &mut model,
+        GridMsg::SplitAt {
+            pane: code,
+            edge: Edge::Right,
+        },
+    );
     step(&mut model, Msg::Command(Route::Model, Run::new(FLIP_CHAT)));
     let moved = model.grid.window(own).and_then(|window| window.frame);
     assert_eq!(moved, Some(frame));

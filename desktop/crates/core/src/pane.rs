@@ -65,7 +65,8 @@ macro_rules! panes {
 
 /// The four places a window's panes stack in: the chat, the work beside it, a narrow list
 /// column, and a short shelf along the bottom.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Place {
     Chat,
     Work,
@@ -113,9 +114,7 @@ impl Opens {
         let word = |line: &str| {
             let (pane, word) = line.trim().split_once(' ')?;
             let kind = PaneKind::ALL.iter().find(|kind| kind.slug() == pane)?;
-            let place = Place::ALL
-                .into_iter()
-                .find(|place| place.slug() == word.trim());
+            let place = Place::named(word.trim());
             let word = match place {
                 Some(place) => Opens::Always(place),
                 None if word.trim() == Self::NEVER => Opens::Never,
