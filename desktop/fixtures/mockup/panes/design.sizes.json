@@ -1,0 +1,74 @@
+{
+ "pane": "design",
+ "frame": 24,
+ "sizes": [
+  {
+   "part": "pane-tab-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs",
+   "height": 20,
+   "width": 400,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "pane-tab",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs .pt",
+   "height": 19,
+   "width": 61,
+   "padding": [
+    0,
+    5,
+    0,
+    5
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "row",
+   "check": [
+    "height"
+   ],
+   "selector": ".dsr",
+   "height": 22,
+   "width": 400,
+   "padding": [
+    0,
+    10,
+    0,
+    10
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "design-header",
+   "check": [
+    "height"
+   ],
+   "selector": ".dsh",
+   "height": 26,
+   "width": 400,
+   "padding": [
+    0,
+    10,
+    0,
+    10
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  }
+ ]
+}

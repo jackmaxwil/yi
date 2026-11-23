@@ -2,7 +2,7 @@
 
 Yi Desktop is a native Mac app for Yi: a client of `yi serve`, written in Rust and drawn with Rune (the owner's fork). One window is a dense grid of panes around a conversation; any pane can become its own window, and the whole window can become one conversation. The app talks to Yi over the same ACP socket the console uses, and to this Mac's own tools (git, a shell, Chrome, rust-analyzer, LLDB, Docker, launchd) directly.
 
-This folder documents the app while it is built outside this tree. The code is not in Yi yet: it lives in a staging repository and lands here as `desktop/`, its own cargo workspace, in one reviewed change (#2257).
+This folder documents how the app was built. The code is `desktop/`, its own cargo workspace, imported in one reviewed change (#2257) from the staging repository that keeps its history.
 
 | Document | What it holds |
 |---|---|

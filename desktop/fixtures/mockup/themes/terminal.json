@@ -1,0 +1,27 @@
+{
+ "id": "terminal",
+ "name": "Terminal",
+ "note": "code font everywhere",
+ "dark": true,
+ "values": {
+  "accent": "#8fd3a6",
+  "needs_you": "#d8dfa0",
+  "ok": "#7fcf9a",
+  "bad": "#f58585",
+  "text.1": "#cfe0d0",
+  "text.2": "#a3b8a6",
+  "text.3": "#7b8f7f",
+  "code.keyword": "#9fd8c0",
+  "code.type": "#cfe0d0",
+  "code.string": "#b8d99a",
+  "code.number": "#d8c0e0",
+  "code.comment": "#7a8196",
+  "font.text": "\"Geist Mono\",ui-monospace,monospace",
+  "surface.pane": 0.5,
+  "surface.pane_active": 0.62,
+  "surface.window": 0.5,
+  "space.row": 20.0,
+  "space.line": 16.0,
+  "space.gutter": 8.0
+ }
+}

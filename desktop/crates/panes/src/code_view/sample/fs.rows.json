@@ -1,0 +1,16 @@
+[
+ {
+  "id": "file:src/middleware/rate_limit.rs",
+  "cells": {
+   "path": {
+    "text": "src/middleware/rate_limit.rs"
+   },
+   "text": {
+    "text": "use std::time::{Duration, Instant};\n\nconst LIMIT: u32 = 20;\nconst WINDOW: Duration = Duration::from_secs(60);\n\n/// Twenty uploads a minute for each user.\npub struct Bucket {\n    tokens: u32,\n    refill_at: Instant,\n}\n\nimpl Bucket {\n    pub fn take(&mut self, now: Instant) -> Result<(), Duration> {\n        if now >= self.refill_at {\n            self.tokens = LIMIT;\n            self.refill_at = now + WINDOW;\n        }\n        match self.tokens.checked_sub(1) {\n            Some(left) => { self.tokens = left; Ok(()) }\n            None => Err(self.refill_at - now),\n        }\n    }\n}\n"
+   },
+   "lines": {
+    "text": "23"
+   }
+  }
+ }
+]

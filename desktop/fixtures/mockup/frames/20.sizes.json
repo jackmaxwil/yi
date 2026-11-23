@@ -1,0 +1,107 @@
+{
+ "frame": 20,
+ "sizes": [
+  {
+   "part": "top-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".top",
+   "height": 25,
+   "width": 1192,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "status-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".sbar",
+   "height": 17,
+   "width": 1192,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 9.5,
+   "line_height": 13.3
+  },
+  {
+   "part": "sidebar-strip",
+   "check": [
+    "width"
+   ],
+   "selector": ".strip",
+   "height": 700,
+   "width": 158,
+   "padding": [
+    2,
+    2,
+    2,
+    2
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "pane-tab-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs",
+   "height": 20,
+   "width": 345,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "pane-tab",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs .pt",
+   "height": 19,
+   "width": 91,
+   "padding": [
+    0,
+    5,
+    0,
+    5
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "row",
+   "check": [
+    "height"
+   ],
+   "selector": ".agr:not(.hd),.spn.xr,.lgl,.fd.xr,.ast,.ctr,.vmr,.dmn,.plg,.dgn,.stg,.vrr,.f2,.fx,.thm,.tk",
+   "height": 20,
+   "width": 345,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  }
+ ]
+}

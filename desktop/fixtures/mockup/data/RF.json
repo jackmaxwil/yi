@@ -1,0 +1,110 @@
+{
+ "take": {
+  "k": "function",
+  "after": 13,
+  "g": [
+   [
+    "src/middleware/rate_limit.rs",
+    [
+     [
+      13,
+      "pub fn §take§(&mut self, now: Instant) -> Result<(), Duration> {",
+      "definition"
+     ]
+    ]
+   ],
+   [
+    "src/routes/upload.rs",
+    [
+     [
+      31,
+      "match bucket.§take§(Instant::now()) {"
+     ],
+     [
+      58,
+      "let _ = bucket.§take§(now);"
+     ]
+    ]
+   ],
+   [
+    "tests/upload.rs",
+    [
+     [
+      12,
+      "assert!(b.§take§(t0).is_ok());"
+     ],
+     [
+      27,
+      "let wait = b.§take§(t0).unwrap_err();"
+     ],
+     [
+      41,
+      "assert!(b.§take§(t0 + WINDOW).is_ok());"
+     ]
+    ]
+   ]
+  ]
+ },
+ "Bucket": {
+  "k": "struct",
+  "after": 7,
+  "g": [
+   [
+    "src/middleware/rate_limit.rs",
+    [
+     [
+      7,
+      "pub struct §Bucket§ {",
+      "definition"
+     ],
+     [
+      12,
+      "impl §Bucket§ {"
+     ],
+     [
+      36,
+      "buckets: DashMap<UserId, §Bucket§>,"
+     ]
+    ]
+   ],
+   [
+    "tests/upload.rs",
+    [
+     [
+      9,
+      "let mut b = §Bucket§::new(t0);"
+     ]
+    ]
+   ]
+  ]
+ },
+ "LIMIT": {
+  "k": "constant",
+  "after": 3,
+  "g": [
+   [
+    "src/middleware/rate_limit.rs",
+    [
+     [
+      3,
+      "const §LIMIT§: u32 = 20;",
+      "definition"
+     ],
+     [
+      15,
+      "self.tokens = §LIMIT§;"
+     ]
+    ]
+   ],
+   [
+    "src/routes/upload.rs",
+    [
+     [
+      24,
+      ".layer(RateLimit::per_user(§LIMIT§))"
+     ]
+    ]
+   ]
+  ]
+ }
+}

@@ -1,0 +1,135 @@
+{
+ "bar": [
+  {
+   "text": "Yi",
+   "dot": null,
+   "count": false
+  },
+  {
+   "text": "File",
+   "dot": null,
+   "count": false
+  },
+  {
+   "text": "Edit",
+   "dot": null,
+   "count": false
+  },
+  {
+   "text": "View",
+   "dot": null,
+   "count": false
+  },
+  {
+   "text": "Thread",
+   "dot": null,
+   "count": false
+  },
+  {
+   "text": "Window",
+   "dot": null,
+   "count": false
+  },
+  {
+   "text": "Help",
+   "dot": null,
+   "count": false
+  },
+  {
+   "text": "",
+   "dot": null,
+   "count": false
+  },
+  {
+   "text": "2",
+   "dot": "var(--need)",
+   "count": true
+  },
+  {
+   "text": "2",
+   "dot": "rgb(143, 180, 255)",
+   "count": true
+  },
+  {
+   "text": "Sat 14 Nov 17:58",
+   "dot": null,
+   "count": false
+  }
+ ],
+ "menu": [
+  {
+   "type": "head",
+   "text": "2 need you"
+  },
+  {
+   "type": "item",
+   "dot": "var(--need)",
+   "name": "Rate limit",
+   "note": "wants to run cargo test",
+   "key": "Allow ↵",
+   "on": true,
+   "text": "Rate limitwants to run cargo testAllow ↵"
+  },
+  {
+   "type": "item",
+   "dot": "var(--need)",
+   "name": "Cold start",
+   "note": "asks: profile the release build?",
+   "key": "",
+   "on": false,
+   "text": "Cold startasks: profile the release build?"
+  },
+  {
+   "type": "head",
+   "text": "2 working"
+  },
+  {
+   "type": "item",
+   "dot": "rgb(143, 180, 255)",
+   "name": "Sessions",
+   "note": "editing 0042_sessions.sql",
+   "key": "3m",
+   "on": false,
+   "text": "Sessionsediting 0042_sessions.sql3m"
+  },
+  {
+   "type": "item",
+   "dot": "rgb(143, 180, 255)",
+   "name": "Cart flake",
+   "note": "running the suite a fourth time",
+   "key": "6m",
+   "on": false,
+   "text": "Cart flakerunning the suite a fourth time6m"
+  },
+  {
+   "type": "rule"
+  },
+  {
+   "type": "item",
+   "dot": null,
+   "name": "",
+   "note": "",
+   "key": "⌘N",
+   "on": false,
+   "text": "New thread⌘N"
+  },
+  {
+   "type": "item",
+   "dot": null,
+   "name": "",
+   "note": "",
+   "key": "⌃⌘W",
+   "on": false,
+   "text": "Show all windows⌃⌘W"
+  },
+  {
+   "type": "item",
+   "dot": null,
+   "name": "",
+   "note": "",
+   "key": "",
+   "on": false,
+   "text": "Pause all agents"
+  }
+ ]
+}

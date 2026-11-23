@@ -1,0 +1,26 @@
+[
+ [
+  "Classic",
+  "The tree you know: folders, files, a letter for added or changed."
+ ],
+ [
+  "Changed first",
+  "What this thread changed sits on top as a flat list. The full tree folds away underneath."
+ ],
+ [
+  "Columns",
+  "Each folder opens a column to its right. No indenting, and you always see where you are."
+ ],
+ [
+  "Agent map",
+  "Not asked for. The tree shows what the agent did: read, edited, or writing right now. Untouched files fade."
+ ],
+ [
+  "Search first",
+  "No tree until you want one. Type to find a file or a name inside one; open and recent files wait below."
+ ],
+ [
+  "Symbols",
+  "Files open into what is inside them. A function is something you can jump to, or attach."
+ ]
+]

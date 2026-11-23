@@ -1,0 +1,76 @@
+{
+ "initialize": [
+  {
+   "result": {
+    "capabilities": {
+     "textDocumentSync": 1,
+     "hoverProvider": true,
+     "definitionProvider": true,
+     "referencesProvider": true,
+     "renameProvider": true,
+     "inlayHintProvider": {
+      "resolveProvider": false
+     },
+     "codeActionProvider": {
+      "codeActionKinds": [
+       "quickfix"
+      ]
+     },
+     "experimental": {
+      "newThing": 1
+     }
+    },
+    "serverInfo": {
+     "name": "fake",
+     "version": "1"
+    }
+   }
+  }
+ ],
+ "textDocument/didOpen": [
+  {
+   "notify": [
+    {
+     "jsonrpc": "2.0",
+     "method": "experimental/serverStatus",
+     "params": {
+      "health": "ok",
+      "quiescent": true,
+      "message": null
+     }
+    }
+   ]
+  },
+  {
+   "notify": [
+    {
+     "jsonrpc": "2.0",
+     "method": "textDocument/publishDiagnostics",
+     "params": {
+      "uri": "$ROOT/src/lib.rs",
+      "version": 1,
+      "diagnostics": [
+       {
+        "range": {
+         "start": {
+          "line": 1,
+          "character": 25
+         },
+         "end": {
+          "line": 1,
+          "character": 26
+         }
+        },
+        "severity": 2,
+        "code": "unused_variables",
+        "source": "rustc",
+        "message": "unused variable: `x`",
+        "futureField": true
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

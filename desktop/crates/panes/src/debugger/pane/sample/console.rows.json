@@ -1,0 +1,6 @@
+[
+ {"id": "out:1", "cells": {"role": {"text": "input"}, "text": {"text": "breakpoint set -f rate_limit.rs -l 18 -c 'self.tokens == 0'"}}},
+ {"id": "out:2", "cells": {"role": {"text": "output"}, "text": {"text": "Breakpoint 2: where = api`Bucket::take + 96 at rate_limit.rs:18"}}},
+ {"id": "out:3", "cells": {"role": {"text": "input"}, "text": {"text": "p self.refill_at - now"}}},
+ {"id": "out:4", "cells": {"role": {"text": "output"}, "text": {"text": "(core::time::Duration) 41.2s"}}}
+]

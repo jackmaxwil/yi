@@ -1,0 +1,91 @@
+{
+ "pane": "references",
+ "frame": 8,
+ "sizes": [
+  {
+   "part": "pane-tab-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs",
+   "height": 20,
+   "width": 405,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "pane-tab",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs .pt",
+   "height": 19,
+   "width": 86,
+   "padding": [
+    0,
+    5,
+    0,
+    5
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "pane-header",
+   "check": [
+    "height"
+   ],
+   "selector": ".phd",
+   "height": 22,
+   "width": 405,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "code-line",
+   "check": [
+    "height"
+   ],
+   "selector": ".dl",
+   "height": 16,
+   "width": 405,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 10.5,
+   "line_height": 16
+  },
+  {
+   "part": "row",
+   "check": [
+    "height"
+   ],
+   "selector": ".rfr",
+   "height": 16,
+   "width": 405,
+   "padding": [
+    0,
+    8,
+    0,
+    20
+   ],
+   "font_size": 10.5,
+   "line_height": 16
+  }
+ ]
+}

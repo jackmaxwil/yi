@@ -1,0 +1,151 @@
+{
+ "about": "A turn stops at an approval while Agents, Trace and Logs are shown: Trace holds the waiting step, Logs the agent's line, Agents the thread; a log line made a finding lands in Findings; the approval is answered from Trace and the turn ends.",
+ "worker": true,
+ "empty": true,
+ "files": {
+  "Library/Logs/Yi Desktop/yi-desktop.log": [
+   {
+    "ts": 1730000000000,
+    "level": "error",
+    "msg": "build failed: missing semicolon",
+    "file": "src/main.rs"
+   },
+   {
+    "ts": 1730000001000,
+    "level": "info",
+    "msg": "retrying"
+   }
+  ]
+ },
+ "runs": [
+  {
+   "size": "1800x1100",
+   "steps": [
+    {
+     "t": 3.0,
+     "type": "tap",
+     "key": "chat-8.composer.input"
+    },
+    {
+     "t": 3.2,
+     "type": "type",
+     "text": "run the command"
+    },
+    {
+     "t": 4.0,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 6.0,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 6.3,
+     "type": "type",
+     "text": "Show Agents"
+    },
+    {
+     "t": 6.9,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 7.6,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 7.8999999999999995,
+     "type": "type",
+     "text": "Show Trace"
+    },
+    {
+     "t": 8.5,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 9.2,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 9.5,
+     "type": "type",
+     "text": "Show Logs"
+    },
+    {
+     "t": 10.1,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 10.799999999999999,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 11.1,
+     "type": "type",
+     "text": "Show Findings"
+    },
+    {
+     "t": 11.7,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 13,
+     "type": "tap",
+     "key": "logs-11.row.1730000000000-1"
+    },
+    {
+     "t": 14.5,
+     "type": "tap",
+     "key": "logs-11.detail.1730000000000-1.logs.make-finding"
+    },
+    {
+     "t": 16,
+     "type": "tap",
+     "key": "trace-10.row.wait-c1"
+    },
+    {
+     "t": 17,
+     "type": "tap",
+     "key": "trace-10.detail.wait-c1.trace.run"
+    },
+    {
+     "t": 21,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "keys": [
+     "agents-9.pane-frame",
+     "trace-10.row.tool-c1",
+     "logs-11.row.1730000000000-1",
+     "findings-12.row.made/0"
+    ],
+    "texts": [
+     "warm up",
+     "turn done"
+    ],
+    "contains": [
+     "bash echo one > one.txt"
+    ],
+    "files": [
+     "one.txt"
+    ],
+    "bodies": [
+     "agents-9",
+     "trace-10",
+     "logs-11",
+     "findings-12"
+    ]
+   }
+  }
+ ]
+}

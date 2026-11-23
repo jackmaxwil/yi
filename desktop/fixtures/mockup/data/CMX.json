@@ -1,0 +1,254 @@
+{
+ "lines": [
+  [
+   "search",
+   "Find references",
+   "⌃ click"
+  ],
+  [
+   "branch",
+   "Which turn wrote this",
+   "turn 2"
+  ],
+  [
+   "reload",
+   "Put these lines back as they were"
+  ],
+  [
+   "target",
+   "Stop here in the debugger"
+  ]
+ ],
+ "file": [
+  [
+   "folder",
+   "Show in the file tree"
+  ],
+  [
+   "diff",
+   "What this thread changed in it"
+  ],
+  [
+   "branch",
+   "Every thread that touched it"
+  ]
+ ],
+ "thread": [
+  [
+   "branch",
+   "Fork from here"
+  ],
+  [
+   "stop",
+   "Pause it"
+  ],
+  [
+   "sliders",
+   "Show its trace"
+  ]
+ ],
+ "agent": [
+  [
+   "stop",
+   "Pause it"
+  ],
+  [
+   "sliders",
+   "Show its trace"
+  ],
+  [
+   "plus",
+   "Give it more budget"
+  ]
+ ],
+ "log line": [
+  [
+   "file",
+   "Show logs around this moment"
+  ],
+  [
+   "branch",
+   "Jump to the turn at this time"
+  ],
+  [
+   "search",
+   "Only this source"
+  ]
+ ],
+ "finding": [
+  [
+   "branch",
+   "Give it to an agent"
+  ],
+  [
+   "search",
+   "Show ones like it"
+  ],
+  [
+   "x",
+   "Not a problem, and stop raising it"
+  ]
+ ],
+ "span": [
+  [
+   "file",
+   "Logs for this step"
+  ],
+  [
+   "reload",
+   "Run this step again"
+  ],
+  [
+   "sliders",
+   "Why was it slow?"
+  ]
+ ],
+ "container": [
+  [
+   "file",
+   "Logs"
+  ],
+  [
+   "term",
+   "Shell"
+  ],
+  [
+   "reload",
+   "Restart"
+  ]
+ ],
+ "VM": [
+  [
+   "monitor",
+   "Open its screen"
+  ],
+  [
+   "plus",
+   "Snapshot"
+  ],
+  [
+   "reload",
+   "Restart"
+  ]
+ ],
+ "service": [
+  [
+   "file",
+   "Logs"
+  ],
+  [
+   "reload",
+   "Restart"
+  ],
+  [
+   "stop",
+   "Stop"
+  ]
+ ],
+ "window": [
+  [
+   "monitor",
+   "Screenshot it"
+  ],
+  [
+   "edit",
+   "Mark it up"
+  ]
+ ],
+ "command": [
+  [
+   "check",
+   "Allow once"
+  ],
+  [
+   "check",
+   "Always allow this"
+  ],
+  [
+   "search",
+   "What will it do?"
+  ]
+ ],
+ "approval": [
+  [
+   "check",
+   "Allow once"
+  ],
+  [
+   "check",
+   "Always allow this"
+  ],
+  [
+   "search",
+   "What will it do?"
+  ]
+ ],
+ "answer": [
+  [
+   "sliders",
+   "Show the trace of this answer"
+  ],
+  [
+   "reload",
+   "Go back to before this answer"
+  ],
+  [
+   "file",
+   "Copy as text"
+  ]
+ ],
+ "message": [
+  [
+   "edit",
+   "Edit and send again"
+  ],
+  [
+   "branch",
+   "Fork from here"
+  ]
+ ],
+ "tab": [
+  [
+   "panel",
+   "Split right"
+  ],
+  [
+   "panel",
+   "Split down"
+  ],
+  [
+   "out",
+   "Pull out as a window"
+  ]
+ ],
+ "terminal": [
+  [
+   "search",
+   "Explain this output"
+  ],
+  [
+   "reload",
+   "Run it again"
+  ]
+ ],
+ "stack frame": [
+  [
+   "file",
+   "Open this line"
+  ],
+  [
+   "search",
+   "Explain how we got here"
+  ]
+ ],
+ "variable": [
+  [
+   "eye",
+   "Watch it"
+  ],
+  [
+   "search",
+   "Where is it set?"
+  ]
+ ]
+}

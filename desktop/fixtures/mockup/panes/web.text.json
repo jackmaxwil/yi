@@ -1,0 +1,20 @@
+{
+ "pane": "web",
+ "frame": 1,
+ "strings": [
+  "localhost:5173",
+  "200 · 38 ms",
+  "localhost:5173/upload",
+  "Pick",
+  "Storefront",
+  "Products",
+  "Orders",
+  "Uploads",
+  "Signed in",
+  "Too many uploads. Try again in 41 seconds.",
+  "Drop images here, or",
+  "Choose files",
+  "Agent"
+ ],
+ "titles": []
+}

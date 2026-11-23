@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Upload limit, simulated</title>
+<style>
+body{margin:0;background:#fff;color:#1a1b1d;font:13px -apple-system,system-ui,sans-serif}
+.art{width:552px;padding:20px 24px}
+h1{font-size:19px;font-weight:650;margin:0 0 10px}
+p{color:#5a5d63;margin:0 0 14px;line-height:1.35}
+.chart{display:flex;align-items:flex-end;gap:4px;height:80px}
+.chart i{display:block;width:10px}
+.ok{background:#2f9a57}
+.no{background:#d24545}
+.axis{display:flex;justify-content:space-between;font-size:9px;color:#5a5d63;margin-top:4px}
+.axis .from{color:#d24545}
+.legend{display:flex;gap:16px;font-size:9px;color:#5a5d63;margin-top:8px}
+table{border-collapse:collapse;font-size:11px;margin-top:14px}
+td,th{padding:3px 10px;border-bottom:1px solid #e6e6e2;text-align:left}
+.legend b{display:inline-block;width:8px;height:8px;margin-right:5px}
+</style>
+</head>
+<body>
+<div class="art">
+<h1>Upload limit, simulated</h1>
+<p>One user sends 30 uploads in the first minute, then 8 more after the bucket refills. Twenty-eight get through. Ten are turned away with a wait time.</p>
+<div class="chart">
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="no" style="height:26px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+<i class="ok" style="height:70px"></i>
+</div>
+<div class="axis"><span>0 s</span><span class="from">429 from here</span><span>60 s, bucket refills</span></div>
+<div class="legend"><span><b class="ok"></b>200 OK, 28 uploads</span><span><b class="no"></b>429 Too Many Requests, 10 uploads</span></div>
+<table hidden>
+<thead><tr><th>Status</th><th>Uploads</th><th>Wait shown</th></tr></thead>
+<tbody>
+<tr><td>200 OK</td><td>28</td><td>none</td></tr>
+<tr><td>429 Too Many Requests</td><td>10</td><td>41 s to 1 s</td></tr>
+</tbody>
+</table>
+</div>
+</body>
+</html>

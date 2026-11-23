@@ -30,7 +30,7 @@ self-modification (a `just refine` variant lands only as a PR the owner merges) 
 semantic search · resident LSP or DAP servers · a JavaScript runtime or Node sidecar · embedding
 `yi-runtime` through N-API or WASM · document converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
-§17.1) · a GUI · a model tool for the console's browser pane, which shows the user a page and gives
+§17.1) · a GUI that is not `desktop/`, the Mac client of `yi serve` (§17.5) · a model tool for the console's browser pane, which shows the user a page and gives
 the model nothing (driving the desktop is the `agent-desktop` plugin's, and a web page the
 `agent-browser` plugin's, §17.1) · email, or any capability that is not a coding agent other
 than those plugins ·
@@ -1454,6 +1454,17 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Menu}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
 - Settled by: D95, D96, D112, D113, D141, D201, D276, D264, D267, D271
+
+### 17.5 Desktop
+The Mac app is `desktop/`: its own cargo workspace, never a member of Yi's (its lock holds 461 packages,
+most of them Rune's, against Yi's budget of 23 direct and 174 transitive), a client of `yi serve` over the ACP socket. Of Yi's code it
+reads only `yi-types` and `yi-browser`, by path; it takes Rune as a pinned git revision of the
+owner's fork, and gates itself with `desktop/justfile`. Yi's gates read none of it; the repository-wide
+ones take four exemptions: the mirror's address substitutions, the scan's journey fixtures, two blobs,
+the spelling check's wire recordings.
+It needs a Mac with a GPU, so no forge runner builds it.
+- Owner: [`desktop/docs/architecture.md`](../desktop/docs/architecture.md), [`desktop/docs/deps.md`](../desktop/docs/deps.md)
+- Settled by: D603, D604
 
 ## 18. Dependencies and size
 

@@ -1,0 +1,133 @@
+[
+ [
+  "lab",
+  "atlas-api"
+ ],
+ [
+  "root+",
+  "need",
+  "Rate-limit the upload endpoint",
+  "now",
+  1
+ ],
+ [
+  "mid",
+  "idle",
+  "Turn 1 · found the route",
+  "18m"
+ ],
+ [
+  "mid",
+  "idle",
+  "Fork · sliding window",
+  "14m"
+ ],
+ [
+  "last",
+  "need",
+  "Turn 2 · add the limit",
+  "now"
+ ],
+ [
+  "root+",
+  "work",
+  "Migrate sessions to UUIDs",
+  "3m"
+ ],
+ [
+  "last",
+  "work",
+  "Child · backfill script",
+  "1m"
+ ],
+ [
+  "root",
+  "ask",
+  "Why is cold start 900 ms?",
+  "11m"
+ ],
+ [
+  "root",
+  "idle",
+  "Tidy CI cache keys",
+  "2d"
+ ],
+ [
+  "root",
+  "idle",
+  "Audit the auth middleware",
+  "3d"
+ ],
+ [
+  "root",
+  "idle",
+  "Bump tokio to 1.48",
+  "5d"
+ ],
+ [
+  "lab",
+  "storefront"
+ ],
+ [
+  "root",
+  "work",
+  "Flaky test in cart totals",
+  "6m"
+ ],
+ [
+  "root",
+  "done",
+  "Checkout button overlaps",
+  "24m"
+ ],
+ [
+  "root",
+  "idle",
+  "Swap the date library",
+  "1d"
+ ],
+ [
+  "root",
+  "idle",
+  "Dark mode colour tokens",
+  "4d"
+ ],
+ [
+  "root",
+  "idle",
+  "Cart drawer keyboard trap",
+  "6d"
+ ],
+ [
+  "lab",
+  "docs"
+ ],
+ [
+  "root",
+  "idle",
+  "Write the 2.4 release notes",
+  "2h"
+ ],
+ [
+  "root",
+  "idle",
+  "API reference pass",
+  "1w"
+ ],
+ [
+  "lab",
+  "infra"
+ ],
+ [
+  "root",
+  "idle",
+  "Terraform drift report",
+  "2d"
+ ],
+ [
+  "root",
+  "idle",
+  "Rotate the deploy keys",
+  "1w"
+ ]
+]
