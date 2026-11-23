@@ -119,15 +119,19 @@ pub fn step(grid: &mut Windows, change: GridMsg) -> Vec<Effect> {
             layout.is_some_and(|layout| layout.front(*filled) == layout.front(*pane))
         })
     };
+    let told = match &change {
+        GridMsg::Have { window, .. } => Some(*window),
+        _ => None,
+    };
     let quiet = match &change {
-        GridMsg::Fill(_) | GridMsg::Have { .. } | GridMsg::Moved { .. } => true,
+        GridMsg::Fill(_) | GridMsg::Moved { .. } => true,
         GridMsg::Front(pane) => tab(pane),
         _ => false,
     };
     let Ok(ops) = apply(&mut next, change) else {
         return Vec::new();
     };
-    if !quiet {
+    if !quiet && told.is_none_or(|window| changed(grid, &next, window)) {
         next.filled.clear();
     }
     // A pane that is drawn has been seen: its tab carries no dot once it is behind again.
@@ -304,20 +308,26 @@ fn edit(
     change: impl FnOnce(&mut Layout) -> Result<(), GridError>,
 ) -> Result<(), GridError> {
     let window = find(grid, id)?;
-    // A slot is named by its stack's first tab: which tab is in front is no change of layout.
-    let shape = |layout: &Layout| {
-        let named =
-            |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
-        let areas: Vec<_> = layout.areas.iter().map(named).collect();
-        let tracks = (layout.cols.clone(), layout.rows.clone());
-        (tracks, areas, layout.stacks.clone())
-    };
-    let before = shape(&window.layout);
+    let before = layout_shape(&window.layout);
     change(&mut window.layout)?;
-    if shape(&window.layout) != before {
+    if layout_shape(&window.layout) != before {
         (window.saved, window.own) = (None, None);
     }
     Ok(())
+}
+
+/// A slot is named by its stack's first tab: which tab is in front is no change of layout.
+fn layout_shape(layout: &Layout) -> impl PartialEq + use<> {
+    let named =
+        |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
+    let areas: Vec<_> = layout.areas.iter().map(named).collect();
+    let tracks = (layout.cols.clone(), layout.rows.clone());
+    (tracks, areas, layout.stacks.clone())
+}
+
+fn changed(before: &Windows, after: &Windows, window: WindowId) -> bool {
+    let shape = |grid: &Windows| grid.window(window).map(|found| layout_shape(&found.layout));
+    shape(before) != shape(after)
 }
 
 /// Brings `pane` of `window` in front of its stack and back into the grid if its slot rests.

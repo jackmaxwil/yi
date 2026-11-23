@@ -331,8 +331,7 @@ impl Windows {
         let drawn = |pane: &PaneId| placed.iter().any(|(other, _)| other == pane);
         match self.fills(window).filter(drawn) {
             Some(pane) => {
-                let (x, y, Size { w, h }) = (0.0, 0.0, size);
-                vec![(pane, Rect { x, y, w, h })]
+                vec![(pane, size.whole())]
             }
             None => placed,
         }
