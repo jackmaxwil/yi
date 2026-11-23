@@ -1441,9 +1441,9 @@ def attempt(repo, pr, ids, asked=False):
     blocked = bool(rnd and (rnd["verdict"] == "blocked" or owed_mediums(rnd)))
     if blocked and pr_review.answered(forge_pr.git("log", "-1", "--format=%B", pr["head"]["sha"]), rnd["n"], number):
         blocked = False
-    # The owner (2026-10-03): review fixes go to drafts only; a ready PR is being landed, and a bot
-    # push mid-landing restarts its checks. Conflict fixes still go to every PR.
-    if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT):
+    # The owner (2026-10-03): no review fix on a PR being landed, whose checks a bot push restarts. Incident: ready
+    # #2237 and #2299 drew blocked rounds, the queue refused them, and nothing answered either for a week.
+    if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT) and ("queue" in labels or rnd["verdict"] != "blocked"):
         blocked = False
     stale = retired and pr.get("title", "").startswith(forge_pr.DRAFT)
     # A round the fixer declined whole on this head waits for a person, a new round, a new head or
@@ -1550,7 +1550,9 @@ def attempt(repo, pr, ids, asked=False):
 
 
 KINDS = {"fix": "conflict", "findings": "findings", "gate": "gate"}
-CITED = re.compile(r"\b(?:Closes|Refs) #(\d+)\.?[ \t]*")
+# Incident: #2301 said "which closes #2280" mid-sentence; `title` reads the keyword in any case, and a
+# tidy that matched capitals alone left the PR red and its closed-issue twin standing.
+CITED = re.compile(r"\b(?:Closes|Refs)\s+#(\d+)\.?[ \t]*", re.I)
 
 
 def tidied(body, state_of):
@@ -2452,6 +2454,8 @@ def selfcheck():
     body = "Closes #1076. Refs #1072. Stacked on #1098.\nRefs #1077."
     if tidied(body, states) != "Closes #1076. Stacked on #1098.\nRefs #1077.":
         errs.append(f"a closed citation was not taken out cleanly: {tidied(body, states)!r}")
+    if "#1072" in (tidied("Closes #1076. It carries #9, which closes  #1072.", states) or "#1072"):
+        errs.append("a closed issue cited in lower case, as the title gate reads it, was left in the body")
     if tidied("Refs #1072.", states) is not None or tidied("Closes #1076.", states) is not None:
         errs.append("a body citing only closed issues, or none, was rewritten")
     statuses, real_api, patched = [("gate (test)", "failure"), ("gate (lint)", "pending"), ("title", "failure")], forge_pr.fgj_api, []
@@ -2941,15 +2945,18 @@ def selfcheck():
                     errs.append(f"an unreadable queue timeline raised {type(fault).__name__} and read {said!r}, so one PR can escape or stop the pass")
         finally:
             forge_pr.queue_mode, forge_pr.jobs_of, pr_queue.enqueued_at, pr_queue.eligible_problem = real_queue
-        # A blocked round at the head: answered on a draft, left alone on a ready PR.
+        # A blocked round at the head: answered on a draft and on a ready PR outside the queue, which the queue
+        # refuses; left alone on a queued one, and a ready PR's clean round with a medium is the queue's to land.
         module.conflicts = lambda pr, push=False: []
-        pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
-        for title, want in ((forge_pr.DRAFT + "t", "findings"), ("t", None)):
+        medium = [{"severity": "medium", "lens": "correctness"}]
+        for title, names, verdict, want in ((forge_pr.DRAFT + "t", [], "blocked", "findings"), ("t", [], "blocked", "findings"),
+                                            ("t", ["queue"], "blocked", None), ("t", [], "clean", None)):
+            pr_review.rounds_of = lambda *a, verdict=verdict: [{"n": 2, "sha": "abc", "verdict": verdict, "findings": medium}]
             passed.clear()
-            attempt("o/r", {"number": 1, "title": title, "labels": [{"name": "autofix"}],
+            attempt("o/r", {"number": 1, "title": title, "labels": [{"name": name} for name in ("autofix", *names)],
                             "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
             if passed.get("kind") != want:
-                errs.append(f"a blocked round on {title!r} reached fix() as {passed.get('kind')}, not {want}")
+                errs.append(f"a {verdict} round on {title!r} labelled {names} reached fix() as {passed.get('kind')}, not {want}")
         # A clean round still listing a medium is answered; one listing only lows is not.
         for found, want in (([{"severity": "medium", "lens": "correctness"}], "findings"), ([{"severity": "low", "lens": "x"}], None),
                             ([{"severity": "medium", "lens": "template"}], None)):
