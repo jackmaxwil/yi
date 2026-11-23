@@ -11,6 +11,31 @@ use crate::plan::ops::{ENGINE_AGENT, OWNER_AGENT};
 use crate::provider::select_model;
 use yi_types::model::{Effort, Model};
 
+pub(super) fn default_session_name(prompt: &str, child_id: &str) -> String {
+    let slug: String = prompt
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug
+        .split('-')
+        .filter(|word| !word.is_empty())
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        format!("subagent-{child_id}")
+    } else {
+        format!("{slug}-{child_id}")
+    }
+}
+
 /// What a build is made from, read off the spawn's kwargs: the model, the effort, the wall.
 pub(crate) type Cast = (
     Model,
@@ -114,10 +139,13 @@ impl SubagentHost {
             Some(format!(
                 "\"{session_name}\" is reserved: it names the plan's owner, engine or host; pick another name"
             ))
-        } else if matches!(standing, Standing::Worker) && held >= self.options.max_children {
+        } else if matches!(standing, Standing::Worker)
+            && let Some(max_children) = std::num::NonZeroUsize::new(self.options.max_children)
+            && held >= max_children.get()
+        {
             Some(format!(
                 "RLM child limit reached: {held} of {} children held ({failed} failed, {finished} finished, {running} running); rlm.delete_subagent frees a slot",
-                self.options.max_children
+                max_children.get()
             ))
         } else {
             children
