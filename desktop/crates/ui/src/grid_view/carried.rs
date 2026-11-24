@@ -117,9 +117,11 @@ pub fn hand(win: &mut Win, thing: &Address, from: PaneId, at: At, drag: &Drag, t
                 size,
             };
             dispatch(win, Msg::Grid(put));
-            let made = win.hub.try_borrow().ok().and_then(|hub| {
-                hub.model.grid.drawn_about(window, kind, thing)
-            });
+            let made = win
+                .hub
+                .try_borrow()
+                .ok()
+                .and_then(|hub| hub.model.grid.drawn_about(window, kind, thing));
             if let Some(made) = made {
                 act(win, tx, Act::Focus(made));
             }

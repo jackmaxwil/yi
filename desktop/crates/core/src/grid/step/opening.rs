@@ -90,7 +90,9 @@ pub(in crate::grid) fn put(
         return Err(GridError::NoSuchWindow(id));
     }
     let ops = open(grid, id, kind, Some(thing.clone()), None)?;
-    let pane = grid.drawn_about(id, kind, thing).ok_or(GridError::NoSuchWindow(id))?;
+    let pane = grid
+        .drawn_about(id, kind, thing)
+        .ok_or(GridError::NoSuchWindow(id))?;
     let side = grid.side;
     // On a middle it joins those tabs even when it has none of its own: unlike a carried
     // pane, it has no slot to give in exchange.

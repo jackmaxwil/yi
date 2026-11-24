@@ -5,8 +5,8 @@ use yd_core::ids::PaneId;
 use yd_core::pane::PaneKind;
 use yd_ui::grid_view::view::Grips;
 
-use super::docking::{carry, near, part, tiles};
 use super::beside::about;
+use super::docking::{carry, near, part, tiles};
 use super::*;
 
 const MAIN_RS: &str = "files-1.row.src/main.rs";

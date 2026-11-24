@@ -10,8 +10,8 @@ use crate::pane::PaneKind::{self, Changes, Code, Files, Terminal};
 
 use super::GridMsg;
 use super::beside::file;
-use super::stacks::{open, window};
-use super::tests::{MAIN, change, drawn, pane};
+use super::stacks::window;
+use super::tests::{MAIN, change, drawn, open, pane};
 
 /// Chat, Changes beside it, Files in the side column and a shell along the bottom.
 fn four() -> Model {
