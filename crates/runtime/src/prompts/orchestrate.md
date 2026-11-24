@@ -142,7 +142,7 @@ inside a child's tree by hand. A failed child keeps its slot until
 `rlm.tree().merge(h.tree)`, or `rlm.discard_worktree(name)` if it never
 changed its fork. A cold reviewer is a reader whose brief is
 only the acceptance list and the checks. The caps: depth one unless the
-config raises it, eight children per parent, sixteen live per family.
+config raises it. No fixed child or family count: a spawn is admitted while the host has load, memory and disk room, and a refusal names the resource.
 
 ## Patterns
 

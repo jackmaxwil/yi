@@ -1,7 +1,7 @@
 //! The Panes panel under the top bar's button: a picture of every layout, the chat side, and
 //! the session's panes by place. The layouts kept are named, renamed and deleted in place.
 
-use rune::{Align, Cursor, Cx, El, Key, KeyEvent, Shadow, Side, TextEdit, Tx, col, el, row, text};
+use rune::{Align, Cursor, Cx, El, Key, KeyEvent, Side, TextEdit, Tx, col, el, row, text};
 use rune::{spacer, text_input};
 use yd_core::command::keys::Map;
 use yd_core::command::table::{FLIP_CHAT, Route, Run};
@@ -23,10 +23,10 @@ use crate::kit::icons::glyph;
 use crate::kit::label::section;
 use crate::kit::segmented::segmented;
 use crate::menu::command_box;
+use crate::menu::context::popover_shadow;
 use crate::theme::look::{LABEL, NONE, colour};
 use crate::theme::scale::{
-    HOVER, LINE_MENU, LINE_PICKED, POPOVER, RADIUS_BADGE, RADIUS_CHIP, RADIUS_MENU, RING_MENU,
-    SHADOW_MENU,
+    HOVER, LINE_MENU, LINE_PICKED, POPOVER, RADIUS_BADGE, RADIUS_CHIP, RADIUS_MENU,
 };
 use crate::win::{Field, Hub, Win, dispatch};
 
@@ -354,37 +354,28 @@ pub fn layer(win: &Win, hub: &Hub, cx: &mut Cx<Win>, layer: &mut Vec<El>) {
     };
     let keys = command_box::keymap(hub);
     let line = el().h(1.0).w_full().fill(colour(LINE_MENU.of(tokens)));
-    let surface = col()
-        .key(KEY)
-        .role("grid")
-        .label("Panes and layouts")
-        .focus_group()
-        .w(WIDTH)
-        .padding(6.0)
-        .gap(3.0)
-        .radius(RADIUS_MENU.of(tokens))
-        .fill(colour(POPOVER.of(tokens)))
-        .box_shadow(Shadow {
-            spread: 1.0,
-            color: colour(RING_MENU.of(tokens)),
-            ..Shadow::default()
-        })
-        .box_shadow(Shadow {
-            y: 18.0,
-            blur: 44.0,
-            spread: -10.0,
-            color: colour(SHADOW_MENU.of(tokens)),
-            ..Shadow::default()
-        })
-        .child(section(tokens, "Layouts", None, None))
-        .child(layouts(hub, win.window, room, &keys))
-        .children(asking(win, hub, now.naming))
-        .child(side_switch(tokens, grid.side))
-        .child(line)
-        .children(places::rows(hub, win.window))
-        .paint_order(OVER_ALL)
-        .anchored(BUTTON, Side::Bottom, Align::End, 4.0)
-        .modal(true, close);
+    let surface = popover_shadow(
+        col()
+            .key(KEY)
+            .role("grid")
+            .label("Panes and layouts")
+            .focus_group()
+            .w(WIDTH)
+            .padding(6.0)
+            .gap(3.0)
+            .radius(RADIUS_MENU.of(tokens))
+            .fill(colour(POPOVER.of(tokens))),
+        tokens,
+    )
+    .child(section(tokens, "Layouts", None, None))
+    .child(layouts(hub, win.window, room, &keys))
+    .children(asking(win, hub, now.naming))
+    .child(side_switch(tokens, grid.side))
+    .child(line)
+    .children(places::rows(hub, win.window))
+    .paint_order(OVER_ALL)
+    .anchored(BUTTON, Side::Bottom, Align::End, 4.0)
+    .modal(true, close);
     layer.push(surface);
 }
 
