@@ -158,7 +158,11 @@ fn options_for(
     mode: &str,
 ) -> Vec<acp::SessionConfigOption> {
     let choice = |value: String, name: String| acp::SessionConfigSelectOption::new(value, name);
-    let models: Vec<_> = pickable_models(model)
+    let mut offered = pickable_models(model);
+    if !(offered.iter()).any(|other| other.provider == model.provider && other.id == model.id) {
+        offered.insert(0, model.clone());
+    }
+    let models: Vec<_> = offered
         .iter()
         .map(|candidate| {
             let value = format!("{}/{}", candidate.provider, candidate.id);
@@ -174,12 +178,7 @@ fn options_for(
         .iter()
         .map(|level| choice(level.to_string(), level.to_string()))
         .collect();
-    let select = |config_id: &str,
-                  name: &str,
-                  current_value: String,
-                  options: Vec<acp::SessionConfigSelectOption>| {
-        acp::SessionConfigOption::select(config_id, name, current_value, options)
-    };
+    let select = acp::SessionConfigOption::select;
     vec![
         select(
             "model",
