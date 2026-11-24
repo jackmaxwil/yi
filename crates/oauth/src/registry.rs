@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use yi_types::oauth::ProfileFile;
 
 use crate::Result;
@@ -61,6 +61,29 @@ pub struct CodeLogin {
 /// Providers whose login is a pasted key: no endpoints, no identity, nothing to supply.
 pub const API_KEY_IDS: [&str; 4] = ["anthropic", "openai", "openrouter", "google"];
 pub const CURSOR_ID: &str = "cursor";
+pub const CODEX_ID: &str = "openai-codex";
+
+/// Incident: the Codex CLI's public client registers exactly `localhost:1455/auth/callback`
+/// as its redirect, so the port cannot fall back to a free one.
+fn codex_profile() -> Result<Kind> {
+    let value = json!({
+        "kind": "oauth-code",
+        "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+        "token": "https://auth.openai.com/oauth/token",
+        "scopes": "openid profile email offline_access",
+        "authorize": "https://auth.openai.com/oauth/authorize",
+        "callback_port": 1455,
+        "callback_path": "/auth/callback",
+        "redirect_host": "localhost",
+        "port_fallback": false,
+        "extra_authorize": {
+            "id_token_add_organizations": "true",
+            "codex_cli_simplified_flow": "true",
+            "originator": "codex_cli_rs"
+        }
+    });
+    parse(CODEX_ID, &value)
+}
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -196,7 +219,7 @@ pub fn lookup(provider: &str) -> Result<Option<Kind>> {
     match load(provider)? {
         Some(kind) => Ok(Some(kind)),
         None if provider == CURSOR_ID => Ok(Some(Kind::Cursor)),
-        None if provider == crate::codex::CODEX_ID => Ok(Some(crate::codex::profile())),
+        None if provider == CODEX_ID => Ok(Some(codex_profile()?)),
         None => Ok(API_KEY_IDS.contains(&provider).then_some(Kind::ApiKey)),
     }
 }
@@ -233,11 +256,7 @@ pub fn load(provider: &str) -> Result<Option<Kind>> {
 pub fn ids() -> Vec<String> {
     let mut found: Vec<String> = API_KEY_IDS
         .iter()
-        .chain([
-            &CURSOR_ID,
-            &crate::codex::CODEX_ID,
-            &crate::claude::CLAUDE_ID,
-        ])
+        .chain([&CURSOR_ID, &CODEX_ID, &crate::claude::CLAUDE_ID])
         .map(|id| (*id).to_owned())
         .collect();
     let Ok(entries) = std::fs::read_dir(profile_root()) else {

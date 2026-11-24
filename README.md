@@ -96,7 +96,7 @@ That is every default written out; an empty file does the same. `model` has no d
 | key | default | meaning |
 |---|---|---|
 | `model`, `thinking` | none, `medium` | `provider/id`; `off` to `max` effort |
-| `models.summarizer`, `.advisor`, `.autoReview` | main, off, off | compaction, titles; naming one turns it on |
+| `models.summarizer`, `.advisor` | main, off | compaction, titles; naming one turns it on |
 | `models.classifier` | off | TypeSafe's Jev through OpenRouter (`typesafe/jev-1.13`) as the permission and skill classifier; typed messages and judged commands leave the machine |
 | `routing` | none | OpenRouter's `provider` object |
 | `permissions.mode`, `permissions.allow` | `auto`, none | `ask`, `auto` or `yolo`; calls that run unasked |

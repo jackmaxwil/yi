@@ -403,7 +403,6 @@ fn family_root(
             family_dir: None,
             summarizer: None,
             advisor: None,
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(root.join("plans")),
             parent_link: None,

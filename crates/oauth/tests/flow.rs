@@ -9,10 +9,14 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yi_oauth::flow;
 use yi_oauth::registry::{self, CodeLogin, Login, OauthCode};
-use yi_oauth::store::{self, Credential, Kind, Store};
+use yi_oauth::store::{self, Credential, Store};
 
 mod common;
 use common::{Res, Seen};
+
+#[path = "common/identity.rs"]
+mod identity;
+use identity::{ID_TOKEN, expired};
 
 fn spec(port: u16) -> OauthCode {
     OauthCode {
@@ -41,15 +45,7 @@ fn code_login(callback_port: u16) -> Login {
 }
 
 fn expired_credential() -> Credential {
-    Credential {
-        kind: Kind::Oauth,
-        access: "old-access".to_owned(),
-        refresh: Some("old-refresh".to_owned()),
-        expires: Some(store::now() - Duration::from_secs(60)),
-        account: None,
-        org: None,
-        extra: Default::default(),
-    }
+    expired(None)
 }
 
 /// A token endpoint that answers `hits` requests with `body` and logs each one it read.
@@ -96,7 +92,7 @@ fn a_chatgpt_id_token_names_the_account_and_a_huge_expiry_does_not_panic() -> Re
     let body = json!({
         "access_token": "new-access",
         "expires_in": u64::MAX,
-        "id_token": "e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC03In19.sig"
+        "id_token": ID_TOKEN
     })
     .to_string();
     let (port, _) = serve_tokens(body, 1)?;

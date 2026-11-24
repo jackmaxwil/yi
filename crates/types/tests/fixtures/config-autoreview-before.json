@@ -1,0 +1,5 @@
+{
+  "model": "openrouter/z-ai/glm-5.3-flash",
+  "models": { "primary": "openrouter/z-ai/glm-5.3-flash", "advisor": "faux/faux-1", "autoReview": "faux/faux-1" },
+  "telemetry": { "enabled": true }
+}

@@ -78,10 +78,57 @@ fn login_logout_round_trip() -> TestResult {
         home.join(".yi/providers/tokens/lonely.json"),
         r#"{"version":1,"kind":"key","access":"x"}"#,
     )?;
+    let claude = home.join(".yi/providers/tokens/anthropic.json");
+    std::fs::write(&claude, r#"{"version":1,"kind":"key","access":"x"}"#)?;
+    assert_eq!(login(&["logout", "claude"], "")?.status.code(), Some(0));
+    assert!(
+        !claude.exists(),
+        "`logout claude` removes the token `login claude` stores"
+    );
     let cleared = login(&["logout"], "")?;
     assert_eq!(cleared.status.code(), Some(0));
     assert!(!token.exists(), "openai token removed");
     assert!(!home.join(".yi/providers/tokens/lonely.json").exists());
+    Ok(())
+}
+
+#[test]
+fn openai_codex_login_warns_only_for_a_user_profile() -> TestResult {
+    let _reserved = std::net::TcpListener::bind("127.0.0.1:1455")?;
+    let workspace = Workspace::new("openai-codex-warning")?;
+    let home = workspace.0.join("home");
+    let built_in = yi_command(&home)
+        .args(["login", "openai-codex", "--no-browser"])
+        .output()?;
+    let built_in_stderr = String::from_utf8_lossy(&built_in.stderr);
+    assert_eq!(built_in.status.code(), Some(1), "{built_in_stderr}");
+    assert!(
+        !built_in_stderr.contains("profile you supplied"),
+        "{built_in_stderr}"
+    );
+
+    let profile = home.join(".yi/oauth/openai-codex.json");
+    std::fs::create_dir_all(profile.parent().ok_or("profile parent")?)?;
+    std::fs::write(
+        profile,
+        json!({
+            "kind": "oauth-code",
+            "client_id": "test-client",
+            "authorize": "https://example.invalid/authorize",
+            "token": "https://example.invalid/token",
+            "callback_port": 1455
+        })
+        .to_string(),
+    )?;
+    let user_profile = yi_command(&home)
+        .args(["login", "openai-codex", "--no-browser"])
+        .output()?;
+    let user_profile_stderr = String::from_utf8_lossy(&user_profile.stderr);
+    assert_eq!(user_profile.status.code(), Some(1), "{user_profile_stderr}");
+    assert!(
+        user_profile_stderr.contains("profile you supplied"),
+        "{user_profile_stderr}"
+    );
     Ok(())
 }
 
@@ -1113,6 +1160,26 @@ fn a_config_that_still_names_gates_runs_and_says_the_key_is_gone() -> TestResult
     assert_eq!(stderr.matches("`gates`").count(), 1, "{stderr}");
     assert!(
         stdout(&answered).contains("faux: gates check"),
+        "{}",
+        stdout(&answered)
+    );
+    Ok(())
+}
+
+/// The model auto-reviewer is gone; a config that names its role still runs and says so once.
+#[test]
+fn a_config_that_still_names_auto_review_runs_and_says_the_key_is_gone() -> TestResult {
+    let workspace = Workspace::new("config-auto-review")?;
+    write_config(
+        &workspace,
+        r#"{"models":{"primary":"faux/faux-1","autoReview":"faux/faux-1"}}"#,
+    )?;
+    let answered = workspace.yi(&["ask", "review check"])?;
+    let stderr = String::from_utf8_lossy(&answered.stderr);
+    assert_eq!(answered.status.code(), Some(0), "{stderr}");
+    assert_eq!(stderr.matches("`models.autoReview`").count(), 1, "{stderr}");
+    assert!(
+        stdout(&answered).contains("faux: review check"),
         "{}",
         stdout(&answered)
     );

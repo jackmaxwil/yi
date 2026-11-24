@@ -333,7 +333,6 @@ fn build_session(
             sessions_dir: Some(default_session_dir(args)),
             summarizer: roles::summarizer_model(args),
             advisor: roles::advisor_model(),
-            auto_review: roles::auto_review_model(),
             parent_link: None,
             wall: yi_runtime::Wall::default(),
             plan_stale_turns: config()

@@ -94,13 +94,6 @@ pub const ROLES: &[Role] = &[
         mix: Some(Mix::FRESH_READ),
     },
     Role {
-        name: "autoReview",
-        exponent: 1.5,
-        floor: 35.0,
-        min_context: 0,
-        mix: Some(Mix::FRESH_READ),
-    },
-    Role {
         name: "selector",
         exponent: 1.0,
         floor: 25.0,

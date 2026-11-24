@@ -90,8 +90,7 @@ fn family(parent: &Arc<AgentSession>, kind: Child) -> std::io::Result<Family> {
             };
             match kind {
                 Child::Asks => {
-                    let ask =
-                        yi_runtime::auto_review::AskUserTool::new(None).asking(Some(build.link));
+                    let ask = yi_runtime::ask_user::AskUserTool::default().asking(Some(build.link));
                     child.use_tools(vec![Arc::new(ask)], std::env::temp_dir(), None);
                 }
                 Child::Holds(_) => {

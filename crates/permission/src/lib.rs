@@ -6,7 +6,6 @@ mod catastrophic;
 mod decide;
 mod desktop;
 pub mod outbox;
-mod review;
 mod rules;
 mod safety;
 mod scope;
@@ -22,9 +21,6 @@ pub use decide::{
     Decision, Hold, HoldPattern, HoldSource, PermissionMode, ToolCall, decide, mode_fragment,
 };
 pub use desktop::{drives, source};
-pub use review::{
-    ActionId, ActionLedger, ActionState, LEDGER_CAP, RequestId, ReviewedAsk, UserVerdict,
-};
 pub use rules::{
     ConfigRule, ConfigRuleAction, Grant, PathGlob, RuleStateError, SessionRules,
     canonical_command_identity, canonical_tool_identity, egress_grant, grants, is_exact_command,

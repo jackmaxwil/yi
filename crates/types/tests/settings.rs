@@ -72,7 +72,6 @@ fn leaves() -> Vec<String> {
                 primary,
                 summarizer,
                 advisor,
-                auto_review,
                 classifier,
                 selector,
                 web_search,

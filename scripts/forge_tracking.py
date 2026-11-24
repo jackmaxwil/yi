@@ -8,7 +8,9 @@ due when its open size-days divide out. Transport is a parameter, which is what
 lets the selfcheck exercise the arithmetic and the routing without a server.
 """
 import argparse
+import contextlib
 import datetime
+import io
 import json
 import math
 import os
@@ -21,6 +23,7 @@ from forgejo_pr_comment import send, upsert
 
 # The sizing the register was written in and the labels carry: S = a day, M = three, L = a week.
 WEIGHTS = {"size:S": 1, "size:M": 3, "size:L": 7}
+PRIORITIES = ("priority:first", "priority:next", "priority:later")
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Forgejo's own default keywords, because they are what closed the issue: a
 # wider pattern would annotate issues this merge only mentioned.
@@ -152,27 +155,43 @@ def comment_closed(transport, api, repo, message, release, sha):
     return numbers
 
 
+def surplus(number, repo, names, family, noun):
+    """The miss for more than one label of one family, and the command that removes all but the first."""
+    order = tuple(family)
+    labels = sorted((name for name in names if name in family), key=order.index)
+    if len(labels) < 2:
+        return None
+    return (
+        f"#{number} carries {len(labels)} {noun} labels ({', '.join(labels)})",
+        f"fgj issue edit {number} {' '.join('--remove-label ' + label for label in labels[1:])} -R {repo}",
+    )
+
+
 def hygiene(transport, api, repo, window, today):
-    """(misses, notes). A miss is what is wrong and the command that fixes it."""
-    misses, notes, pinned = [], [], None
+    """(misses, notes, priorities). A miss is what is wrong and the command that fixes it."""
+    misses, notes, pinned, priorities = [], [], None, []
     for issue in paged(transport, f"{api}/repos/{repo}/issues?type=issues&state=open"):
         number = issue["number"]
         names = [label["name"] for label in issue["labels"]]
         sizes = [name for name in names if name in WEIGHTS]
+        ranks = sorted((name for name in names if name in PRIORITIES), key=PRIORITIES.index)
+        if ranks:
+            priorities.append((ranks[0], number, issue.get("title") or ""))
         if issue.get("pin_order") and issue["title"] == "Tracking":
             pinned = issue
             # Infrastructure the estate timer writes, not planned work: sizing
             # or milestoning it would fold its size into the milestone's own
             # due-date arithmetic below.
             continue
-        if len(sizes) > 1:
-            misses.append(
-                (
-                    f"#{number} carries {len(sizes)} size labels ({', '.join(sizes)})",
-                    f"fgj issue edit {number} {' '.join('--remove-label ' + s for s in sizes[1:])} -R {repo}",
-                )
+        misses.extend(
+            found
+            for found in (
+                surplus(number, repo, names, WEIGHTS, "size"),
+                surplus(number, repo, names, PRIORITIES, "priority"),
             )
-        elif not sizes:
+            if found
+        )
+        if not sizes:
             misses.append(
                 (
                     f"#{number} has no size label",
@@ -215,7 +234,7 @@ def hygiene(transport, api, repo, window, today):
         # A warning until the estate timer that writes it lands; a repo with no
         # tracking verdict is unproven, not yet broken.
         notes.append("no pinned issue titled Tracking; the estate timer has not landed")
-        return misses, notes
+        return misses, notes, priorities
     number = pinned["number"]
     read = f"fgj issue view {number} -R {repo}; fgj api repos/{repo}/issues/{number}/comments"
     first = ((pinned.get("body") or "").strip().splitlines() or [""])[0]
@@ -225,7 +244,19 @@ def hygiene(transport, api, repo, window, today):
     age = (today - datetime.datetime.fromisoformat(pinned["updated_at"]).date()).days
     if age > 8:
         misses.append((f"pinned Tracking #{number} was last written {age} days ago", read))
-    return misses, notes
+    return misses, notes, priorities
+
+
+def hygiene_report(transport, api, repo, window, today):
+    misses, notes, priorities = hygiene(transport, api, repo, window, today)
+    for label, number, title in sorted(priorities, key=lambda row: (PRIORITIES.index(row[0]), row[1])):
+        print(f"{label:15} #{number} {title}")
+    for note in notes:
+        print(f"warn {repo}: {note}")
+    for what, fix in misses:
+        print(f"MISS {what}\n     {fix}")
+    print(f"{repo}: {len(misses)} misses")
+    return 1 if misses else 0
 
 
 def selfcheck():
@@ -327,7 +358,7 @@ def selfcheck():
     pages["issues?type=issues&state=closed"] = [[issue(1, "size:M", "2026-03-09T00:00:00Z")]]
     pages["milestones?"] = [[{"id": 1, "title": "wide", "due_on": "2026-01-01T23:59:59Z"}]]
     transport, calls = recorder(pages)
-    misses, notes = hygiene(transport, "https://git.example/api/v1", "apex/yi", 14, today)
+    misses, notes, _priorities = hygiene(transport, "https://git.example/api/v1", "apex/yi", 14, today)
     reported = [what for what, _fix in misses]
     assert any("#21 carries 2 size labels" in r for r in reported), reported
     assert any("#21 has no area label" in r for r in reported), reported
@@ -337,6 +368,38 @@ def selfcheck():
     assert not [r for r in reported if r.startswith("#20")], reported
     assert notes == ["no pinned issue titled Tracking; the estate timer has not landed"], notes
     assert misses[1][1] == "fgj issue edit 21 --add-label area:runtime -R apex/yi", misses
+
+    pages["issues?type=issues&state=open"] = [
+        [
+            {"number": 30, "title": "later one", "labels": [{"name": "priority:later"}], "milestone": None},
+            {"number": 31, "title": "plain", "labels": [], "milestone": None},
+            {"number": 32, "title": "first one", "labels": [{"name": "priority:first"}], "milestone": None},
+            {"number": 33, "title": "next one", "labels": [{"name": "priority:next"}], "milestone": None},
+            {
+                "number": 34,
+                "title": "both",
+                "labels": [{"name": "priority:later"}, {"name": "priority:first"}],
+                "milestone": None,
+            },
+        ]
+    ]
+    misses, _notes, _priorities = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    twice = [m for m in misses if m[0].startswith("#34 carries")]
+    assert twice == [
+        (
+            "#34 carries 2 priority labels (priority:first, priority:later)",
+            "fgj issue edit 34 --remove-label priority:later -R apex/yi",
+        )
+    ], misses
+    assert not [m for m in misses if m[0].startswith(("#30 carries", "#32 carries", "#33 carries"))], misses
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        hygiene_report(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    printed = buffer.getvalue().splitlines()
+    ranked = [line.split()[1] for line in printed if line.startswith("priority:")]
+    assert ranked == ["#32", "#34", "#33", "#30"], printed
+    first_miss = next(i for i, line in enumerate(printed) if line.startswith("MISS"))
+    assert all(i < first_miss for i, line in enumerate(printed) if line.startswith("priority:")), printed
 
     # The pinned verdict is read against the estate timer's real contract
     # (the infra repository scripts/forgejo_tracking_check.py, verdict_body()):
@@ -380,13 +443,13 @@ def selfcheck():
 
     # A real green verdict is zero misses.
     pages["issues?type=issues&state=open"] = pinned_issue_pages(real_green, fresh)
-    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    misses, notes, _priorities = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
     assert misses == [], misses
     assert notes == [], notes
 
     # A real red verdict is exactly one miss.
     pages["issues?type=issues&state=open"] = pinned_issue_pages(real_red, fresh)
-    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    misses, notes, _priorities = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
     assert len(misses) == 1, misses
     assert "does not open green" in misses[0][0], misses
 
@@ -397,7 +460,7 @@ def selfcheck():
         "#5 · in green-ish-backlog · must be in Next · rule text\n"
     )
     pages["issues?type=issues&state=open"] = pinned_issue_pages(tricky_red, fresh)
-    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    misses, notes, _priorities = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
     assert len(misses) == 1, misses
     assert "does not open green" in misses[0][0], misses
 
@@ -405,13 +468,13 @@ def selfcheck():
     truncated = real_green.splitlines()[0][:-3]  # a write cut off mid-word
     for bad_body in (truncated, "", "not a verdict line"):
         pages["issues?type=issues&state=open"] = pinned_issue_pages(bad_body, fresh)
-        misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+        misses, notes, _priorities = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
         assert len(misses) == 1, (bad_body, misses)
         assert "does not open green" in misses[0][0], misses
 
     # Staleness still fires on a genuinely green verdict written too long ago.
     pages["issues?type=issues&state=open"] = pinned_issue_pages(real_green, "2026-02-01T00:00:00Z")
-    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    misses, notes, _priorities = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
     assert len(misses) == 1, misses
     assert "last written 37 days ago" in misses[0][0], misses
 
@@ -448,13 +511,7 @@ def main(argv):
         print(f"{args.repo}: {sha[:12]} closed {numbers or 'nothing'}")
         return 0
     if args.hygiene:
-        misses, notes = hygiene(send, args.api, args.repo, args.window, today)
-        for note in notes:
-            print(f"warn {args.repo}: {note}")
-        for what, fix in misses:
-            print(f"MISS {what}\n     {fix}")
-        print(f"{args.repo}: {len(misses)} misses")
-        return 1 if misses else 0
+        return hygiene_report(send, args.api, args.repo, args.window, today)
     commit = git("rev-parse", "--short", "HEAD")
     closed, rows = measure(send, args.api, args.repo, args.window, today)
     rate = closed / args.window

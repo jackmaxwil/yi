@@ -97,20 +97,6 @@ fn each_role_picks_its_hand_computed_high_medium_and_low() -> TestResult {
                 ("low", "c", 721.649),
             ]),
         ),
-        (
-            "autoReview",
-            Mix {
-                uncached: 0.85,
-                cache_read: 0.10,
-                cache_write: 0.0,
-                output: 0.05,
-            },
-            tagged(&[
-                ("high", "a", 438.451),
-                ("medium", "c", 4269.336),
-                ("low", "c", 4269.336),
-            ]),
-        ),
     ];
     for (name, mix, want) in cases {
         assert_eq!(picks(name, &mix, &field())?, want, "{name}");
