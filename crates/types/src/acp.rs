@@ -540,3 +540,51 @@ pub enum AcpPermissionOutcome {
         option_id: String,
     },
 }
+
+/// The agent's request that its client show a thing; only a client that set `_meta.yi.shows`
+/// when it opened the session is sent one.
+pub const SHOW_METHOD: &str = "_yi/show";
+
+/// `_yi/show` request params: the agent asks its client to put one thing in front of the user.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpShowParams {
+    pub session_id: String,
+    /// A path, `path:LINE` or a `yi://` address, as the model wrote it; the client resolves it.
+    pub address: String,
+    /// The session's working directory: what a relative path in `address` is relative to.
+    pub cwd: String,
+    pub strength: AcpShowStrength,
+}
+
+/// How hard a `_yi/show` asks; `front` may still land as a tab when the user is busy there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpShowStrength {
+    Peek,
+    Tab,
+    Front,
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// `_yi/show` response: what the client did, and its own words on why when it has any.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpShowResult {
+    pub outcome: AcpShowOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// What became of a `_yi/show`; `refused` is a thing the client cannot show.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpShowOutcome {
+    Peek,
+    Tab,
+    Front,
+    Refused,
+    #[serde(untagged)]
+    Other(String),
+}

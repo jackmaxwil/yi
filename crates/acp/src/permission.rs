@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use yi_runtime::{AskOutcome, Asker};
@@ -17,6 +18,54 @@ use crate::LineSink;
 
 /// `None` once stdin has ended: no answer can come, so an ask rejects instead of waiting.
 pub(crate) type PendingAsks = Arc<Mutex<Option<HashMap<String, std::sync::mpsc::Sender<Value>>>>>;
+const POLL: Duration = Duration::from_millis(100);
+
+pub(crate) enum PendingWait {
+    UntilStopped,
+    Attempts(u32),
+}
+
+pub(crate) fn with_pending_ask<F>(
+    pending: &PendingAsks,
+    id: &str,
+    sink: &LineSink,
+    request: &Value,
+    wait: PendingWait,
+    stopped: &F,
+) -> Option<Value>
+where
+    F: Fn() -> bool + ?Sized,
+{
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut asks = pending.lock().ok()?;
+    asks.as_mut()?.insert(id.to_owned(), sender);
+    drop(asks);
+    sink(request);
+    let response = match wait {
+        PendingWait::UntilStopped => loop {
+            match receiver.recv_timeout(POLL) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !stopped() => {}
+                other => break other.ok(),
+            }
+        },
+        PendingWait::Attempts(polls) => {
+            let mut answer = None;
+            for _ in 0..polls {
+                answer = receiver.recv_timeout(POLL).ok();
+                if answer.is_some() || stopped() {
+                    break;
+                }
+            }
+            answer
+        }
+    };
+    if let Ok(mut guard) = pending.lock()
+        && let Some(asks) = guard.as_mut()
+    {
+        asks.remove(id);
+    }
+    response
+}
 
 fn permission_options(grants: &[yi_runtime::Grant]) -> Vec<AcpPermissionOption> {
     use AcpPermissionOptionKind::{AllowAlways, AllowOnce, RejectOnce};
@@ -44,14 +93,7 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             let n = *counter;
             format!("perm_{session_id}_{n}")
         };
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let open = (pending.lock().ok())
-            .and_then(|mut map| map.as_mut().map(|map| map.insert(id.clone(), sender)))
-            .is_some();
-        if !open {
-            return AskOutcome::Reject;
-        }
-        let params = AcpPermissionParams {
+        let request = AcpPermissionParams {
             session_id: session_id.clone(),
             title: ask.title.to_owned(),
             description: Some(ask.description.to_owned()),
@@ -82,21 +124,18 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             jsonrpc: "2.0".to_owned(),
             id: Some(Value::String(id.clone())),
             method: "session/request_permission".to_owned(),
-            params: serde_json::to_value(&params).ok(),
+            params: serde_json::to_value(&request).ok(),
         };
-        sink(&json!(request));
-        // Polled, not parked: the session's abort has no channel to this receiver.
-        let response = loop {
-            match receiver.recv_timeout(std::time::Duration::from_millis(100)) {
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                    if !ask.stop.is_some_and(|s| s()) => {}
-                other => break other.map_err(|_| ()),
-            }
-        };
-        if let Some(map) = pending.lock().ok().as_mut().and_then(|map| map.as_mut()) {
-            map.remove(&id);
-        }
-        let Ok(response) = response else {
+        let stopped = || ask.stop.is_some_and(|stop| stop());
+        let response = with_pending_ask(
+            &pending,
+            &id,
+            &sink,
+            &json!(request),
+            PendingWait::UntilStopped,
+            &stopped,
+        );
+        let Some(response) = response else {
             sink(&json!({"jsonrpc": "2.0", "method": "_yi/permission_closed",
                 "params": {"sessionId": session_id, "requestId": id}}));
             return AskOutcome::Reject;

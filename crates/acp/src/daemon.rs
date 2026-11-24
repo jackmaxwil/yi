@@ -16,6 +16,7 @@ use crate::negotiate;
 mod mail;
 mod pending;
 mod settings;
+mod show;
 use mail::SUPERVISOR;
 
 pub struct DaemonOptions {
@@ -387,10 +388,16 @@ impl Supervisor {
         // A frame with an id and no method is a response to a
         // worker-originated request (the permission bridge).
         if method.is_empty() {
-            if let Some(request_id) = id.as_ref().and_then(Value::as_str)
-                && let Some(held) = self.worker_requests.remove(request_id)
-            {
-                self.forward_response_to_worker(&held.root, frame).await;
+            if let Some(request_id) = id.as_ref().and_then(Value::as_str) {
+                let shown = request_id.starts_with("show_");
+                let asked = if frame.get("error").is_some() && shown {
+                    None
+                } else {
+                    self.worker_requests.remove(request_id)
+                };
+                if let Some(held) = asked {
+                    self.forward_response_to_worker(&held.root, frame).await;
+                }
             }
             return;
         }
@@ -647,6 +654,11 @@ impl Supervisor {
                 map.insert("id".to_owned(), original);
             }
             self.send_client(client, frame.to_string());
+            return;
+        }
+        // A show is relayed or refused here and now; any other request is held until a client
+        // answers it or the worker closes it.
+        if self.worker_asked(&root, &frame, &line) {
             return;
         }
         self.hold_request(&root, &method, &frame);
@@ -984,7 +996,7 @@ mod tests {
     }
 
     /// A supervisor with no worker, its pinned and unpinned `/repo` rows mid-turn for client 7.
-    fn supervisor_with_rows() -> Supervisor {
+    pub(super) fn supervisor_with_rows() -> Supervisor {
         let (ledger, _stored) = std::sync::mpsc::channel();
         let (input, _inputs) = mpsc::unbounded_channel();
         let mut supervisor = Supervisor {

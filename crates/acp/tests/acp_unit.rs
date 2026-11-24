@@ -995,6 +995,105 @@ fn a_childs_ask_names_the_child_and_the_roots_does_not() -> TestResult {
     Ok(())
 }
 
+/// A sink that records each frame and answers a request with `reply`, when it has one.
+fn showing(pending: &Pending, reply: Option<Value>) -> (yi_acp::LineSink, Seen) {
+    let seen: Seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (route, record) = (std::sync::Arc::clone(pending), std::sync::Arc::clone(&seen));
+    let sink: yi_acp::LineSink = std::sync::Arc::new(move |frame: &Value| {
+        if let Ok(mut log) = record.lock() {
+            log.push(frame.clone());
+        }
+        let id = frame.get("id").and_then(Value::as_str).unwrap_or_default();
+        let sender = route
+            .lock()
+            .ok()
+            .and_then(|map| map.as_ref()?.get(id).cloned());
+        if let (Some(sender), Some(reply)) = (sender, reply.clone()) {
+            let mut answer = json!({"jsonrpc": "2.0", "id": id});
+            if let (Some(answer), Some(reply)) = (answer.as_object_mut(), reply.as_object()) {
+                answer.extend(reply.clone());
+            }
+            let _ = sender.send(answer);
+        }
+    });
+    (sink, seen)
+}
+
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+
+fn show_ask(address: &str) -> yi_runtime::ShowAsk<'_> {
+    yi_runtime::ShowAsk {
+        stop: None,
+        address,
+        cwd: std::path::Path::new("/repo"),
+        strength: yi_types::acp::AcpShowStrength::Front,
+    }
+}
+
+/// The request is written before the wait, names the session, the address as the model
+/// wrote it and the strength, and the client's answer comes back as it was given.
+#[test]
+fn show_bridge_writes_the_request_and_reads_the_clients_answer() -> TestResult {
+    use yi_types::acp::{AcpShowOutcome, AcpShowResult};
+    let pending: Pending = std::sync::Arc::new(std::sync::Mutex::new(Some(
+        std::collections::HashMap::new(),
+    )));
+    let reply = json!({"result": {"outcome": "tab", "note": "The user is typing there."}});
+    let (sink, seen) = showing(&pending, Some(reply));
+    let shower = yi_acp::bridge_shower("s1".to_owned(), sink, pending.clone(), 20);
+    let answer = shower(&show_ask("src/main.rs:12"));
+    let want = AcpShowResult {
+        outcome: AcpShowOutcome::Tab,
+        note: Some("The user is typing there.".to_owned()),
+    };
+    assert_eq!(answer, Some(want));
+    let log = seen.lock().map_err(|error| error.to_string())?;
+    let request = log.first().ok_or("no request was written")?;
+    assert_eq!(request["method"], "_yi/show");
+    assert_eq!(
+        request["params"],
+        json!({"sessionId": "s1", "address": "src/main.rs:12", "cwd": "/repo", "strength": "front"})
+    );
+    let left = pending.lock().map_err(|error| error.to_string())?;
+    assert!(left.as_ref().is_some_and(|asks| asks.is_empty()));
+    Ok(())
+}
+
+/// A show never holds a turn: with no answer it gives up after its polls, an error from a
+/// client that cannot show is no answer either, and a stopped session releases it at once.
+#[test]
+fn a_show_with_no_answer_gives_up_and_leaves_nothing_waiting() -> TestResult {
+    use std::sync::{Arc, Mutex};
+    let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
+    // A wait that never ends fails here in ten seconds, where it would hang the suite.
+    let within = |shower: yi_runtime::Shower, stopped: bool| {
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+            let ask = yi_runtime::ShowAsk {
+                stop: stopped.then_some(&stop),
+                ..show_ask("a.rs")
+            };
+            let _ = done.send(shower(&ask));
+        });
+        let limit = std::time::Duration::from_secs(10);
+        waited.recv_timeout(limit).map_err(|_| "still waiting")
+    };
+    let (silent, _) = showing(&pending, None);
+    let shower = yi_acp::bridge_shower("s1".to_owned(), silent, pending.clone(), 2);
+    assert_eq!(within(shower, false), Ok(None), "nobody answered");
+    let refusal = json!({"error": {"code": -32601, "message": "Method not found"}});
+    let (deaf, _) = showing(&pending, Some(refusal));
+    let shower = yi_acp::bridge_shower("s1".to_owned(), deaf, pending.clone(), 20);
+    assert_eq!(within(shower, false), Ok(None), "an error is no answer");
+    let (silent, _) = showing(&pending, None);
+    let shower = yi_acp::bridge_shower("s1".to_owned(), silent, pending.clone(), 100_000);
+    assert_eq!(within(shower, true), Ok(None), "the session was stopped");
+    let left = pending.lock().map_err(|error| error.to_string())?;
+    assert!(left.as_ref().is_some_and(|asks| asks.is_empty()));
+    Ok(())
+}
+
 /// A standard-ACP client sees a running tool's output as `_yi/tool_progress` chunks keyed by
 /// its call id; the same event still rides `_yi/event` verbatim (#2286).
 #[test]
