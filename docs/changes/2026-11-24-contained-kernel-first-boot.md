@@ -1,0 +1,4 @@
+---
+raise: comments +5, crate runtime +56, tests +5
+---
+A contained kernel on Linux boots on its first `ipython` call. Its Landlock profile names only paths that exist when the profile is built, and the profile was built before the bootstrap made the venv and the kernel's connection dir, so a first boot could not exec its own python and the cell failed with "Kernel exited before resolving ports". The kernel now bootstraps and makes its connection dir before its profile is built. On Linux a contained kernel also gets `IPYTHONDIR` and `TMPDIR` inside that connection dir, because under Landlock access(2) still reports a read-only home as writable and IPython would try to create `~/.ipython` there. The postmerge journey that mails an evicted session now fails with the sending cell's own error when that cell fails.

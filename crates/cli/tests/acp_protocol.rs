@@ -2561,6 +2561,11 @@ fn a_letter_to_an_evicted_session_loads_it_and_reads_the_letter() -> TestResult 
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
+    let failed = client.log.iter().find(|frame| {
+        let update = &frame["params"]["update"];
+        update["toolCallId"] == "user-1" && update["status"] == "failed"
+    });
+    assert!(failed.is_none(), "the sending cell failed: {failed:?}");
     assert!(
         woke,
         "the evicted session was not loaded and its letter not read within 30 s"

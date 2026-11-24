@@ -576,11 +576,29 @@ impl KernelService {
         let (home, family) = (&self.options.home, self.options.family_dir.as_deref());
         let progress = booting.progress();
         let admitted = crate::node::admit(home, &holder, family, &*progress, cancelled).await?;
+        // Incident: Landlock grants only paths that exist as the profile is built, so a first boot
+        // wrapped before its venv and connection dir existed could not exec its own python.
+        let (python, wrap) = match wrap {
+            Some(_) => {
+                let home = self.options.home.clone();
+                let python = crate::kernel_bootstrap::venv_python(home, progress).await?;
+                crate::kernel_bootstrap::own_dir(&self.connection_dir)?;
+                (
+                    Some(python),
+                    self.kernel_wrap(self.options.sandbox.as_ref(), state.as_deref()),
+                )
+            }
+            None => (None, None),
+        };
         let manager = Arc::new(KernelManager::new(KernelOptions {
-            python: None,
+            python,
             cwd: Some(self.options.cwd.clone()),
             env: (self.kernel_env(state.as_deref()).into_iter())
                 .chain(self.egress_env(wrap.is_some())?)
+                .chain(crate::kernel_bootstrap::landlock_env(
+                    &self.connection_dir,
+                    wrap.is_some(),
+                ))
                 .collect(),
             username: "yi".to_owned(),
             home: self.options.home.clone(),

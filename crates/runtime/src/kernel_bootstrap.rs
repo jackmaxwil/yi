@@ -279,6 +279,44 @@ impl Drop for Booting {
     }
 }
 
+/// The kernel's python, built before a contained boot names the venv in its profile.
+pub(crate) async fn venv_python(
+    home: std::path::PathBuf,
+    progress: Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<std::path::PathBuf, String> {
+    tokio::task::spawn_blocking(move || {
+        yi_kernel::bootstrap::ensure_kernel_python(&yi_kernel::bootstrap::BootstrapOptions {
+            on_progress: Some(Box::new(move |message: &str| progress(message))),
+            home,
+            runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
+            skills_source_dir: yi_kernel::bootstrap::default_skills_source_dir(),
+            toolchain: None,
+            venv_dir: None,
+        })
+    })
+    .await
+    .map_err(|error| format!("bootstrap task failed: {error}"))?
+}
+
+pub(crate) fn own_dir(dir: &std::path::Path) -> Result<(), String> {
+    let mut builder = std::fs::DirBuilder::new();
+    std::os::unix::fs::DirBuilderExt::mode(builder.recursive(true), 0o700);
+    (builder.create(dir)).map_err(|error| format!("create {}: {error}", dir.display()))
+}
+
+/// Invariant: under Landlock access(2) still calls a read-only home writable, so IPython's own
+/// temp fallback never fires; its dir and tempfiles go in the kernel's one writable dir.
+pub(crate) fn landlock_env(own: &std::path::Path, contained: bool) -> Vec<(String, String)> {
+    if !(contained && cfg!(target_os = "linux")) {
+        return Vec::new();
+    }
+    let own = own.to_string_lossy().into_owned();
+    vec![
+        ("IPYTHONDIR".to_owned(), format!("{own}/ipython")),
+        ("TMPDIR".to_owned(), own),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
