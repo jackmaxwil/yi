@@ -127,7 +127,10 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
         }
         8..=10 => GridMsg::Leave(dice.pick(&drawn)?),
         11..=13 => GridMsg::Rejoin(dice.pick(&out)?),
-        14 => GridMsg::Split(dice.pick(&drawn)?),
+        14 => GridMsg::SplitAt {
+            pane: dice.pick(&drawn)?,
+            edge: Edge::Right,
+        },
         15 => {
             let edges = [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom];
             let (pane, edge) = (dice.pick(&all)?, dice.pick(&edges)?);
@@ -356,7 +359,10 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
             let free = others(*pane) || drawn_in(*pane).is_some_and(|w| w.layout.away.is_empty());
             kept && free && after.origin_of(*pane).is_some()
         }
-        GridMsg::Split(pane) => {
+        GridMsg::SplitAt {
+            pane,
+            edge: Edge::Right,
+        } => {
             let full =
                 |w: &Window| w.layout.cols.len() >= MAX_TRACKS || w.layout.areas.len() >= MAX_PANES;
             drawn_in(*pane).is_some_and(|w| !full(w)) && after.panes.len() == before.panes.len()
@@ -403,8 +409,7 @@ fn filled(grid: &Windows, size: Size) -> Result<(), String> {
         let Some(pane) = grid.fills(*window) else {
             continue;
         };
-        let (x, y, Size { w, h }) = (0.0, 0.0, size);
-        if grid.place(*window, size) != [(pane, Rect { x, y, w, h })] {
+        if grid.place(*window, size) != [(pane, size.whole())] {
             return Err(format!("{pane:?} does not fill {window:?}"));
         }
         if !plain

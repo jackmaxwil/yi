@@ -339,6 +339,7 @@ impl Wire {
                 description: ask.description.clone(),
                 options: ask.options.clone(),
                 subject: ask.subject.clone(),
+                meta: None,
             };
             let frame = serde_json::json!({"jsonrpc": "2.0", "id": ask.wire_id,
                 "method": request::PERMISSION, "params": params});

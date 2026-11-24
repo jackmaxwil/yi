@@ -36,7 +36,7 @@ fn tap_with(runtime: &mut Runtime<Win>, key: &str, held: Mods) -> Check {
 }
 
 /// The code pane about `path`, when the grid holds one.
-fn about(runtime: &Runtime<Win>, path: &str) -> Result<Option<PaneId>, Box<dyn Error>> {
+pub(super) fn about(runtime: &Runtime<Win>, path: &str) -> Result<Option<PaneId>, Box<dyn Error>> {
     let file = Address::new(Kind::File, path)?;
     let hub = runtime.state.hub.try_borrow()?;
     let is = |pane: &&yd_core::grid::windows::Pane| pane.thing.as_ref() == Some(&file);

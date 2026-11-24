@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use rune::{El, Tx, el};
+use rune::{El, Tx};
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
 use yd_core::command::table::{Run, Target};
@@ -21,7 +21,7 @@ use yd_ui::code::view::{CodeView, Gutter};
 use yd_ui::list::state::Lists;
 use yd_ui::menu::command_box;
 use yd_ui::pane::PaneCx;
-use yd_ui::win::{Hub, Win, dispatch};
+use yd_ui::win::{Hub, Win, ask};
 
 use super::desc::{FRAME, STACK_PART};
 use super::pane::session::Session;
@@ -190,15 +190,6 @@ fn toggle(win: &mut Win, tx: &mut Tx, path: &str, line: LineNo) {
     };
     let line = address.part(format!("L{}", line.get()));
     command_box::run(win, tx, Run::new(BREAK).on(Target::Thing(line)));
-}
-
-/// An element that asks, once, when it is first laid out: the view cannot send.
-pub fn ask(key: String, msg: Msg) -> El {
-    el().key(key)
-        .size(0.0, 0.0)
-        .on_layout_tx(move |win: &mut Win, _, _: &mut Tx| {
-            dispatch(win, msg.clone());
-        })
 }
 
 /// The source area: the file on the code surface, or the plain words of why there is none.

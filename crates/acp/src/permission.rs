@@ -8,9 +8,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yi_runtime::{AskOutcome, Asker};
 use yi_types::acp::{
-    AcpDiffChange, AcpDiffOperation, AcpDiffPatch, AcpFrame, AcpPatchFormat, AcpPermissionOption,
-    AcpPermissionOptionKind, AcpPermissionOutcome, AcpPermissionParams, AcpPermissionSubject,
-    AcpToolCallUpdate, AcpToolContent,
+    AcpAsker, AcpDiffChange, AcpDiffOperation, AcpDiffPatch, AcpFrame, AcpMeta, AcpPatchFormat,
+    AcpPermissionOption, AcpPermissionOptionKind, AcpPermissionOutcome, AcpPermissionParams,
+    AcpPermissionSubject, AcpToolCallUpdate, AcpToolContent, AcpYiMeta,
 };
 use yi_types::permission::{choices, chosen};
 
@@ -98,6 +98,14 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             title: ask.title.to_owned(),
             description: Some(ask.description.to_owned()),
             options: permission_options(ask.grants),
+            meta: ask.agent.map(|name| AcpMeta {
+                yi: AcpYiMeta {
+                    asker: Some(AcpAsker {
+                        child_id: name.to_owned(),
+                    }),
+                    ..AcpYiMeta::default()
+                },
+            }),
             subject: ask.patch.map(|patch| AcpPermissionSubject::ToolCall {
                 tool_call: Box::new(AcpToolCallUpdate {
                     tool_call_id: ask.tool_call_id.unwrap_or_default().to_owned(),
@@ -128,6 +136,8 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             &stopped,
         );
         let Some(response) = response else {
+            sink(&json!({"jsonrpc": "2.0", "method": "_yi/permission_closed",
+                "params": {"sessionId": session_id, "requestId": id}}));
             return AskOutcome::Reject;
         };
         let outcome = response

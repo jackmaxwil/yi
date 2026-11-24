@@ -5,7 +5,7 @@ use crate::grid::layout::{
     Axis, ChatSide, Edge, GridError, Layout, MAX_PANES, MAX_TRACKS, MIN_PANE, Point, Rect, Size,
     Track, area,
 };
-use crate::grid::leave::{close, front, next_tab, split, stack};
+use crate::grid::leave::{front, next_tab, part, split, stack};
 use crate::grid::place::place;
 use crate::ids::PaneId;
 
@@ -87,14 +87,14 @@ pub fn land(
         Spot::Beside(other, edge) => {
             let other = if other == pane { mate } else { Some(other) };
             let other = other.ok_or(GridError::NoSuchPane(pane))?;
-            close(layout, pane)?;
+            part(layout, pane)?;
             if !docked(layout, other) {
                 return Err(GridError::NoSuchPane(other));
             }
             split(layout, other, own(edge, side), pane)?;
         }
         Spot::Side(edge) => {
-            close(layout, pane)?;
+            part(layout, pane)?;
             along(layout, own(edge, side), pane)?;
         }
     }
@@ -112,7 +112,7 @@ pub fn land(
 /// Makes `pane` the tab in front of `other`'s slot. The slot it had goes to the tab behind
 /// it, else closes up.
 pub fn join(layout: &mut Layout, pane: PaneId, other: PaneId) -> Result<(), GridError> {
-    close(layout, pane)?;
+    part(layout, pane)?;
     stack(layout, other, pane)?;
     front(layout, pane)
 }
@@ -210,14 +210,18 @@ pub fn zone_at(
         return None;
     }
     let mut next = layout.clone();
-    let lands = land(&mut next, side, pane, spot, size).ok().and_then(|()| {
-        let drawn = place(&next, size, side);
-        drawn
-            .into_iter()
-            .find(|(id, _)| *id == pane)
-            .map(|(_, rect)| rect)
-    });
+    let lands = land(&mut next, side, pane, spot, size)
+        .ok()
+        .and_then(|()| rect_in(&next, side, size, pane));
     (next != *layout || lands.is_none()).then_some(Zone { spot, band, lands })
+}
+
+/// Where `pane` is drawn in a grid of `size` with `layout`, if it is drawn.
+pub fn rect_in(layout: &Layout, side: ChatSide, size: Size, pane: PaneId) -> Option<Rect> {
+    place(layout, size, side)
+        .into_iter()
+        .find(|(id, _)| *id == pane)
+        .map(|(_, rect)| rect)
 }
 
 /// The zone of `other`, drawn at `rect`, that `at` is in: the edge band it is deepest in,

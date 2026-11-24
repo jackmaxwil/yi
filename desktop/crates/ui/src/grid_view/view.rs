@@ -149,6 +149,12 @@ pub enum Act {
     Pick,
 }
 
+fn began(phase: GesturePhase, total: &mut f32) {
+    if phase == GesturePhase::Began {
+        *total = 0.0;
+    }
+}
+
 /// How far a pinch goes, as a change in magnification, before it fills or gives back.
 const PINCH: f32 = 0.2;
 
@@ -162,9 +168,7 @@ fn pinch(win: &mut Win, tx: &mut Tx, pane: PaneId, event: MagnifyEvent) -> bool 
         .is_ok_and(|hub| hub.model.grid.fills(window) == Some(pane));
     let mut far = false;
     grip(win, |grip| {
-        if event.phase == GesturePhase::Began {
-            grip.pinch = 0.0;
-        }
+        began(event.phase, &mut grip.pinch);
         grip.pinch += event.delta;
         far = if filled {
             grip.pinch < -PINCH
@@ -187,14 +191,15 @@ pub(crate) fn swipe(win: &mut Win, tx: &mut Tx, pane: PaneId, event: WheelEvent)
     if event.dx.abs() <= event.dy.abs() {
         return false;
     }
-    let mut way = None;
+    if event.momentum {
+        return true;
+    }
+    let mut ways = Vec::new();
     grip(win, |grip| {
-        if event.phase == GesturePhase::Began {
-            grip.swipe = 0.0;
-        }
-        grip.swipe += if event.momentum { 0.0 } else { event.dx };
-        if grip.swipe.abs() >= SWIPE {
-            way = Some(if grip.swipe < 0.0 {
+        began(event.phase, &mut grip.swipe);
+        grip.swipe += event.dx;
+        while grip.swipe.abs() >= SWIPE {
+            ways.push(if grip.swipe < 0.0 {
                 Turn::On
             } else {
                 Turn::Back
@@ -202,7 +207,7 @@ pub(crate) fn swipe(win: &mut Win, tx: &mut Tx, pane: PaneId, event: WheelEvent)
             grip.swipe -= SWIPE.copysign(grip.swipe);
         }
     });
-    if let Some(way) = way {
+    for way in ways {
         act(win, tx, Act::Turn(pane, way));
     }
     true
@@ -390,13 +395,16 @@ fn highest(win: &Win) -> Option<PaneId> {
     let hub = win.hub.try_borrow().ok()?;
     hub.model.grid.panes.iter().map(|pane| pane.id).max()
 }
+pub(crate) fn split(win: &mut Win, pane: PaneId, edge: Edge) {
+    dispatch(win, Msg::Grid(GridMsg::SplitAt { pane, edge }));
+}
 
 /// A tab pulled out is a split and a leave: the grid makes a pane of the same kind beside
 /// this one and pulls it out, which asks the window layer for its window.
 fn tear_out(win: &mut Win, tx: &mut Tx, pane: PaneId, tab: TabId) {
     let before = highest(win);
     tx.motion_curve(GLIDE);
-    dispatch(win, Msg::Grid(GridMsg::Split(pane)));
+    split(win, pane, Edge::Right);
     let Some(copy) = highest(win).filter(|id| Some(*id) > before) else {
         return;
     };
@@ -870,11 +878,7 @@ pub fn alone(win: &Win, hub: &Hub, cx: &mut Cx<Win>, kind: PaneKind) -> El {
 /// fills whatever room its parent gives it.
 pub fn grid(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
     let known = cx.window_layout(KEY);
-    let [x, y, w, h] = known.unwrap_or_default();
-    let at = At {
-        origin: [x, y],
-        size: Size { w, h },
-    };
+    let at = At::of(cx);
     let model = &hub.model;
     // Incident: panes laid out before the grid knew its size were 0 by 0 for one layout, and
     // every scroll area in them was reported as collapsed. None is drawn until it is known.

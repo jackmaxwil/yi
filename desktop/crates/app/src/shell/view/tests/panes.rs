@@ -1,8 +1,9 @@
 //! The top bar's one Panes button and its panel: layouts as pictures, layouts of your own
 //! kept, renamed and deleted in place, and the chat side. The list of panes is in `places`.
 
-use yd_core::grid::layout::{ChatSide, Size};
+use yd_core::grid::layout::{ChatSide, Layout, Size};
 use yd_core::grid::saved::{EVERYTHING, OwnId};
+use yd_core::ids::PaneId;
 use yd_core::pane::PaneKind;
 use yd_ui::grid_view::picker::BUTTON;
 use yd_ui::menu::command_box::{self, Found};
@@ -21,20 +22,29 @@ pub(super) fn open(runtime: &mut Runtime<Win>) {
 }
 
 pub(super) fn kinds(runtime: &Runtime<Win>) -> Result<Vec<PaneKind>, Box<dyn Error>> {
-    let hub = runtime.state.hub.try_borrow()?;
-    let grid = &hub.model.grid;
-    let window = grid.window(root::MAIN).ok_or("no window")?;
-    let docked = window.layout.docked();
-    Ok(docked.filter_map(|(pane, _)| grid.kind(pane)).collect())
+    seated(runtime, |layout| {
+        layout.docked().map(|(pane, _)| pane).collect()
+    })
 }
 
 /// The kinds the window's layout has a place for, drawn or resting.
 fn places(runtime: &Runtime<Win>) -> Result<Vec<PaneKind>, Box<dyn Error>> {
+    seated(runtime, |layout| {
+        layout.areas.iter().map(|(pane, _)| *pane).collect()
+    })
+}
+
+fn seated(
+    runtime: &Runtime<Win>,
+    panes: impl Fn(&Layout) -> Vec<PaneId>,
+) -> Result<Vec<PaneKind>, Box<dyn Error>> {
     let hub = runtime.state.hub.try_borrow()?;
     let grid = &hub.model.grid;
     let window = grid.window(root::MAIN).ok_or("no window")?;
-    let slots = window.layout.areas.iter();
-    Ok(slots.filter_map(|(pane, _)| grid.kind(*pane)).collect())
+    Ok(panes(&window.layout)
+        .into_iter()
+        .filter_map(|pane| grid.kind(pane))
+        .collect())
 }
 
 fn own(runtime: &Runtime<Win>) -> Result<Vec<(u8, String)>, Box<dyn Error>> {

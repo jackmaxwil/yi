@@ -522,6 +522,7 @@ fn permission_options_keep_their_bytes_for_zero_one_and_two_grants() -> TestResu
             grants: grants.get(..count).ok_or("grants")?,
             tool_call_id: None,
             stop: None,
+            agent: None,
         });
         let log = seen.lock().map_err(|error| error.to_string())?;
         let request = log.first().ok_or("no request")?;
@@ -575,6 +576,7 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         grants: &grants,
         tool_call_id: None,
         stop: None,
+        agent: None,
     });
     assert!(
         matches!(outcome, yi_runtime::AskOutcome::AllowAlways(1)),
@@ -915,7 +917,13 @@ fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
     let stopped = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stopped);
     let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || flag.load(Ordering::SeqCst));
-    let sink: yi_acp::LineSink = Arc::new(|_: &Value| {});
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let sink: yi_acp::LineSink = Arc::new(move |frame: &Value| {
+        if let Ok(mut frames) = record.lock() {
+            frames.push(frame.clone());
+        }
+    });
     let asker = yi_acp::bridge_asker("s1".to_owned(), sink, Arc::clone(&pending));
     let raise = stopped.clone();
     let stopper = std::thread::spawn(move || {
@@ -930,6 +938,7 @@ fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
         grants: &[],
         tool_call_id: None,
         stop: Some(&stop),
+        agent: None,
     });
     stopper.join().map_err(|_| "stopper panicked")?;
     assert!(matches!(outcome, yi_runtime::AskOutcome::Reject));
@@ -938,6 +947,51 @@ fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
         left.as_ref()
             .is_some_and(std::collections::HashMap::is_empty)
     );
+    let frames = seen.lock().map_err(|e| e.to_string())?;
+    let closed = frames
+        .iter()
+        .find(|frame| frame["method"] == "_yi/permission_closed")
+        .ok_or("stopped ask did not close its ACP request")?;
+    assert_eq!(closed["params"]["sessionId"], "s1");
+    assert_eq!(closed["params"]["requestId"], "perm_s1_1");
+    Ok(())
+}
+
+#[test]
+fn a_childs_ask_names_the_child_and_the_roots_does_not() -> TestResult {
+    use std::sync::{Arc, Mutex};
+    let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let sink: yi_acp::LineSink = Arc::new(move |frame: &Value| {
+        if let Ok(mut log) = record.lock() {
+            log.push(frame.clone());
+        }
+    });
+    let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let asker = yi_acp::bridge_asker("s1".to_owned(), sink, pending);
+    for agent in [Some("sub-655c3f0b"), None] {
+        asker(&yi_runtime::PermissionAsk {
+            title: "ipython requires permission",
+            description: "tool invocation is not read-only: ipython",
+            patch: None,
+            changes: &[],
+            grants: &[],
+            tool_call_id: None,
+            stop: Some(&release),
+            agent,
+        });
+    }
+    let log = seen.lock().map_err(|error| error.to_string())?;
+    let asks: Vec<&Value> = log
+        .iter()
+        .filter(|frame| frame["method"] == "session/request_permission")
+        .collect();
+    assert_eq!(
+        asks[0]["params"]["_meta"]["yi"]["asker"]["childId"],
+        "sub-655c3f0b"
+    );
+    assert!(asks[1]["params"].get("_meta").is_none(), "{}", asks[1]);
     Ok(())
 }
 

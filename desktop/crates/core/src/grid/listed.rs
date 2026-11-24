@@ -70,7 +70,9 @@ impl Windows {
     pub fn unopened(&self, window: WindowId) -> Vec<PaneKind> {
         let listed = self.listed(window);
         let open = |kind: &PaneKind| listed.iter().any(|entry| entry.kind == *kind);
-        let have = self.have.get(&window).into_iter().flatten().copied();
+        let shown = self.shows.get(&window).cloned();
+        let have = self.have.get(&(window, shown));
+        let have = have.into_iter().flatten().copied();
         have.filter(|kind| *kind != PaneKind::Chat && !open(kind))
             .collect()
     }

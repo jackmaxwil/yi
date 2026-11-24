@@ -2,17 +2,15 @@
 //! client that attaches later, and never answered by a client that only says it cannot.
 use serde_json::{Value, json};
 
+use super::pending::Held;
 use super::{Input, Supervisor};
 use yi_types::acp::SHOW_METHOD;
 
 impl Supervisor {
     /// Sends a worker's show to every client watching its session; with none, the worker is
-    /// told at once. True when `frame` was a show and is dealt with; any other id is kept.
+    /// told at once. True when `frame` was a show and is dealt with.
     pub(super) fn worker_asked(&mut self, root: &str, frame: &Value, line: &str) -> bool {
         if frame.get("method").and_then(Value::as_str) != Some(SHOW_METHOD) {
-            if let Some(id) = frame.get("id").and_then(Value::as_str) {
-                self.worker_requests.insert(id.to_owned(), root.to_owned());
-            }
             return false;
         }
         let session = frame.pointer("/params/sessionId").and_then(Value::as_str);
@@ -22,7 +20,8 @@ impl Supervisor {
         if !watchers.is_empty()
             && let Some(id) = frame.get("id").and_then(Value::as_str)
         {
-            self.worker_requests.insert(id.to_owned(), root.to_owned());
+            let held = Held::new(root.to_owned(), frame);
+            self.worker_requests.insert(id.to_owned(), held);
         }
         for client in &watchers {
             self.send_client(*client, line.to_owned());
@@ -46,6 +45,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::super::Input;
+    use super::super::pending::Held;
     use super::super::tests::supervisor_with_rows;
 
     fn show(session: &str) -> Value {
@@ -110,12 +110,10 @@ mod tests {
             generation,
         };
         supervisor.workers.insert(root, worker);
-        supervisor
-            .worker_requests
-            .insert("show_pinned_0".to_owned(), "/repo".to_owned());
-        supervisor
-            .worker_requests
-            .insert("perm_pinned_1".to_owned(), "/repo".to_owned());
+        for id in ["show_pinned_0", "perm_pinned_1"] {
+            let held = Held::new("/repo".to_owned(), &json!({"id": id}));
+            supervisor.worker_requests.insert(id.to_owned(), held);
+        }
         let deaf = json!({"jsonrpc": "2.0", "id": "show_pinned_0",
             "error": {"code": -32601, "message": "Method not found"}});
         let answer = json!({"jsonrpc": "2.0", "id": "show_pinned_0", "result": {"outcome": "tab"}});
@@ -153,7 +151,7 @@ mod tests {
             supervisor
                 .worker_requests
                 .get("show_pinned_0")
-                .map(String::as_str),
+                .map(|held| held.root.as_str()),
             Some("/repo")
         );
         let Some(entry) = supervisor.sessions.get_mut("loose") else {
@@ -173,7 +171,7 @@ mod tests {
             supervisor
                 .worker_requests
                 .get("show_pinned_0")
-                .map(String::as_str),
+                .map(|held| held.root.as_str()),
             Some("/repo"),
             "a client error leaves the request for another client"
         );
