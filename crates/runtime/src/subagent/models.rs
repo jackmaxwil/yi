@@ -58,7 +58,7 @@ pub fn credentialed_models(stream: &ProviderStream) -> Vec<Model> {
 }
 
 pub fn selector_of(model: &Model) -> String {
-    format!("{}/{}", model.provider, model.id)
+    model.route()
 }
 
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);

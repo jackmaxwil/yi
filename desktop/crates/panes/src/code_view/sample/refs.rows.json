@@ -1,0 +1,110 @@
+[
+ {
+  "id": "src/middleware/rate_limit.rs:13",
+  "group": "src/middleware/rate_limit.rs",
+  "cells": {
+   "name": {
+    "text": "take"
+   },
+   "kind": {
+    "text": "function"
+   },
+   "line": {
+    "text": "13"
+   },
+   "text": {
+    "text": "pub fn take(&mut self, now: Instant) -> Result<(), Duration> {"
+   }
+  }
+ },
+ {
+  "id": "src/routes/upload.rs:31",
+  "group": "src/routes/upload.rs",
+  "cells": {
+   "name": {
+    "text": "take"
+   },
+   "kind": {
+    "text": "function"
+   },
+   "line": {
+    "text": "31"
+   },
+   "text": {
+    "text": "match bucket.take(Instant::now()) {"
+   }
+  }
+ },
+ {
+  "id": "src/routes/upload.rs:58",
+  "group": "src/routes/upload.rs",
+  "cells": {
+   "name": {
+    "text": "take"
+   },
+   "kind": {
+    "text": "function"
+   },
+   "line": {
+    "text": "58"
+   },
+   "text": {
+    "text": "let _ = bucket.take(now);"
+   }
+  }
+ },
+ {
+  "id": "tests/upload.rs:12",
+  "group": "tests/upload.rs",
+  "cells": {
+   "name": {
+    "text": "take"
+   },
+   "kind": {
+    "text": "function"
+   },
+   "line": {
+    "text": "12"
+   },
+   "text": {
+    "text": "assert!(b.take(t0).is_ok());"
+   }
+  }
+ },
+ {
+  "id": "tests/upload.rs:27",
+  "group": "tests/upload.rs",
+  "cells": {
+   "name": {
+    "text": "take"
+   },
+   "kind": {
+    "text": "function"
+   },
+   "line": {
+    "text": "27"
+   },
+   "text": {
+    "text": "let wait = b.take(t0).unwrap_err();"
+   }
+  }
+ },
+ {
+  "id": "tests/upload.rs:41",
+  "group": "tests/upload.rs",
+  "cells": {
+   "name": {
+    "text": "take"
+   },
+   "kind": {
+    "text": "function"
+   },
+   "line": {
+    "text": "41"
+   },
+   "text": {
+    "text": "assert!(b.take(t0 + WINDOW).is_ok());"
+   }
+  }
+ }
+]

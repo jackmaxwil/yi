@@ -1557,3 +1557,23 @@ fn a_block_this_build_cannot_read_reaches_the_summarizer_as_its_notice() -> Test
     );
     Ok(())
 }
+
+#[test]
+fn an_unknown_message_reaches_the_model_as_a_notice_at_its_own_time() -> TestResult {
+    let unknown: AgentMessage =
+        serde_json::from_value(json!({"role": "futureRole", "timestamp": 42, "payload": "x"}))?;
+    let out = convert_to_llm(&[unknown]);
+    let [
+        AgentMessage::User {
+            content: UserContent::Text(text),
+            timestamp,
+            ..
+        },
+    ] = out.as_slice()
+    else {
+        return Err("an unknown message should become one notice turn".into());
+    };
+    assert_eq!(text, yi_types::message::UNREAD_MESSAGE);
+    assert_eq!(*timestamp, 42);
+    Ok(())
+}

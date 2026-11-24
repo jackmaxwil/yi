@@ -330,7 +330,7 @@ impl StreamFn for ProviderStream {
     }
 
     fn cache_tail(&self, model: &Model) -> bool {
-        let route = format!("{}/{}", model.provider, model.id);
+        let route = model.route();
         self.advice()
             .is_none_or(|advice| advice.tail(yi_session::now_ms(), &route))
     }
@@ -347,7 +347,7 @@ impl ProviderStream {
     }
 
     fn pinned_upstream(&self, model: &Model) -> Option<String> {
-        let route = format!("{}/{}", model.provider, model.id);
+        let route = model.route();
         let advice = self.advice()?;
         advice.pin(yi_session::now_ms(), &route).map(str::to_owned)
     }

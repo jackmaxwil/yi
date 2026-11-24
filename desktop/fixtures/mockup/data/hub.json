@@ -1,0 +1,289 @@
+{
+ "head": "9 openHigh 1Med 3Low 5This project Find",
+ "items": [
+  {
+   "type": "group",
+   "title": "2 new from agents",
+   "note": "nothing is filed until you say so",
+   "extra": "Accept all",
+   "suggestions": true
+  },
+  {
+   "type": "finding",
+   "sv": "Med",
+   "sev": "M",
+   "title": "429 answer has no body, clients show a blank error",
+   "state": null,
+   "buttons": [
+    "Accept",
+    "Not a problem"
+   ],
+   "on": false,
+   "meta": [
+    {
+     "text": "upload.rs:31",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "agent · review",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "sure of it",
+     "blocks": false,
+     "spark": null
+    }
+   ]
+  },
+  {
+   "type": "finding",
+   "sv": "Low",
+   "sev": "L",
+   "title": "Uploader retries with no jitter",
+   "state": null,
+   "buttons": [
+    "Accept",
+    "Not a problem"
+   ],
+   "on": false,
+   "meta": [
+    {
+     "text": "ci-ubuntu · Atlas Uploader",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "agent · desktop",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "fairly sure",
+     "blocks": false,
+     "spark": null
+    }
+   ]
+  },
+  {
+   "type": "group",
+   "title": "Being fixed",
+   "note": "2 · one agent on both",
+   "extra": ""
+  },
+  {
+   "type": "finding",
+   "sv": "High",
+   "sev": "H",
+   "title": "Bucket::take can underflow when the clock steps back",
+   "state": {
+    "label": "Proving",
+    "cls": "prove"
+   },
+   "buttons": [],
+   "on": true,
+   "meta": [
+    {
+     "text": "rate_limit.rs:20",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "you + rust-analyzer",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "Tests · upload",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "blocks done",
+     "blocks": true,
+     "spark": null
+    }
+   ]
+  },
+  {
+   "type": "finding",
+   "sv": "Low",
+   "sev": "L",
+   "title": "No test covers the refill boundary",
+   "state": {
+    "label": "Fixing",
+    "cls": "fix"
+   },
+   "buttons": [],
+   "on": false,
+   "meta": [
+    {
+     "text": "tests/upload.rs",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "agent · tests",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "Tests · upload",
+     "blocks": false,
+     "spark": null
+    }
+   ]
+  },
+  {
+   "type": "group",
+   "title": "Open",
+   "note": "3 · nobody on them",
+   "extra": "Give all Low to one agent"
+  },
+  {
+   "type": "finding",
+   "sv": "Med",
+   "sev": "M",
+   "title": "Limit is keyed by user id only, anonymous uploads are unlimited",
+   "state": {
+    "label": "Open",
+    "cls": "open"
+   },
+   "buttons": [],
+   "on": false,
+   "meta": [
+    {
+     "text": "rate_limit.rs:41",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "agent · review",
+     "blocks": false,
+     "spark": null
+    }
+   ]
+  },
+  {
+   "type": "finding",
+   "sv": "Low",
+   "sev": "L",
+   "title": "Alert does not say how long to wait in words",
+   "state": {
+    "label": "Open",
+    "cls": "open"
+   },
+   "buttons": [],
+   "on": false,
+   "meta": [
+    {
+     "text": "localhost:5173 · div.alert",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "you · design mode",
+     "blocks": false,
+     "spark": null
+    }
+   ]
+  },
+  {
+   "type": "finding",
+   "sv": "Low",
+   "sev": "L",
+   "title": "Docs still describe the old upload limits",
+   "state": {
+    "label": "Open",
+    "cls": "open"
+   },
+   "buttons": [],
+   "on": false,
+   "meta": [
+    {
+     "text": "docs/uploads.md",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "agent · docs",
+     "blocks": false,
+     "spark": null
+    }
+   ]
+  },
+  {
+   "type": "group",
+   "title": "Being watched",
+   "note": "2 · from standing checks",
+   "extra": ""
+  },
+  {
+   "type": "finding",
+   "sv": "Low",
+   "sev": "L",
+   "title": "Connection resets on the database",
+   "state": {
+    "label": "Watching",
+    "cls": "watch"
+   },
+   "buttons": [],
+   "on": false,
+   "meta": [
+    {
+     "text": "docker:db",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "seen 4 times",
+     "blocks": false,
+     "spark": [
+      2,
+      2,
+      5,
+      3,
+      7,
+      4,
+      9
+     ]
+    },
+    {
+     "text": "last 12m ago",
+     "blocks": false,
+     "spark": null
+    }
+   ]
+  },
+  {
+   "type": "finding",
+   "sv": "Med",
+   "sev": "M",
+   "title": "runner-b has no backup",
+   "state": {
+    "label": "Watching",
+    "cls": "watch"
+   },
+   "buttons": [],
+   "on": false,
+   "meta": [
+    {
+     "text": "VMs · runner-b",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "seen once",
+     "blocks": false,
+     "spark": null
+    },
+    {
+     "text": "3h ago",
+     "blocks": false,
+     "spark": null
+    }
+   ]
+  }
+ ]
+}

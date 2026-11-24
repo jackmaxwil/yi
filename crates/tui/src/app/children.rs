@@ -78,6 +78,7 @@ impl ChildRow {
         task: Option<&str>,
         born_under: Option<String>,
     ) -> Self {
+        let name = crate::colors::leaf_name(name);
         let mut text = format!("subagent {name} ({})", id.as_str());
         if let Some(role) = role {
             text.push_str(&format!(" · {role}"));
@@ -168,7 +169,8 @@ fn end_rule(end: ChildEnd<'_>) -> Cell {
     } else {
         yi_runtime::family::read_exit(end.exit).row
     };
-    let mut text = format!("subagent {} ({}) · {outcome}", end.name, end.id.as_str());
+    let name = crate::colors::leaf_name(end.name);
+    let mut text = format!("subagent {name} ({}) · {outcome}", end.id.as_str());
     if let Some(ms) = end.elapsed_ms {
         text.push_str(&format!(" · {}", crate::cell::elapsed_label(ms)));
     }
@@ -308,7 +310,7 @@ impl App {
                         spawn,
                         answer: None,
                         answer_dropped: 0,
-                        activity: update.activity,
+                        activity: update.activity.clone(),
                         flag: None,
                     },
                     started: self.clock.now(),
@@ -381,7 +383,7 @@ impl App {
             }
             state.cell.flag = update.flag.clone();
             state.cell.status = status;
-            state.cell.activity = update.activity;
+            state.cell.activity = update.activity.clone();
             state.cell.error = update.error.clone();
             state.cell.toolcalls = toolcalls;
             state.cell.tokens = update.token_count;

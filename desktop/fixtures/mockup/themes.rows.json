@@ -1,0 +1,102 @@
+[
+ {
+  "id": "yi",
+  "cells": {
+   "theme": {
+    "text": "Yi Dark"
+   },
+   "note": {
+    "text": "yours · the default"
+   },
+   "swatches": {
+    "tags": [
+     "#14161d",
+     "#dcdfe6",
+     "#8fb4ff",
+     "#78d2c6",
+     "#e3a3bf"
+    ]
+   }
+  }
+ },
+ {
+  "id": "graphite",
+  "cells": {
+   "theme": {
+    "text": "Graphite"
+   },
+   "note": {
+    "text": "grey, nearly solid panes"
+   },
+   "swatches": {
+    "tags": [
+     "#1b1c1f",
+     "#d5d6da",
+     "#a9b0bd",
+     "#c9cdd6",
+     "#c3c6ce"
+    ]
+   }
+  }
+ },
+ {
+  "id": "ink",
+  "cells": {
+   "theme": {
+    "text": "Ink"
+   },
+   "note": {
+    "text": "deep blue with violet"
+   },
+   "swatches": {
+    "tags": [
+     "#0f1224",
+     "#d9dbef",
+     "#a79cf0",
+     "#7fb8f0",
+     "#c9a7f2"
+    ]
+   }
+  }
+ },
+ {
+  "id": "terminal",
+  "cells": {
+   "theme": {
+    "text": "Terminal"
+   },
+   "note": {
+    "text": "code font everywhere"
+   },
+   "swatches": {
+    "tags": [
+     "#0d120f",
+     "#cfe0d0",
+     "#8fd3a6",
+     "#e3d08a",
+     "#9fd8c0"
+    ]
+   }
+  }
+ },
+ {
+  "id": "contrast",
+  "cells": {
+   "theme": {
+    "text": "High contrast"
+   },
+   "note": {
+    "text": "for bright rooms"
+   },
+   "swatches": {
+    "tags": [
+     "#000000",
+     "#ffffff",
+     "#9cc2ff",
+     "#7ff0e0",
+     "#ffb3d0"
+    ]
+   }
+  }
+ }
+]

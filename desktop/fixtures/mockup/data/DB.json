@@ -1,0 +1,75 @@
+[
+ [
+  "●",
+  "rate_limit.rs:14",
+  "",
+  "hit 20",
+  0,
+  [
+   [
+    "Stops",
+    "every time"
+   ],
+   [
+    "Hit",
+    "20 times"
+   ],
+   [
+    "Added",
+    "by you"
+   ]
+  ],
+  [
+   "Add a condition",
+   "Turn off",
+   "Remove"
+  ]
+ ],
+ [
+  "●",
+  "rate_limit.rs:18",
+  "if self.tokens == 0",
+  "hit 1",
+  0,
+  [
+   [
+    "Stops when",
+    "self.tokens == 0"
+   ],
+   [
+    "Hit",
+    "once"
+   ],
+   [
+    "Added",
+    "from finding F12"
+   ]
+  ],
+  [
+   "Edit condition",
+   "Turn off",
+   "Remove"
+  ]
+ ],
+ [
+  "○",
+  "upload.rs:31",
+  "",
+  "off",
+  1,
+  [
+   [
+    "State",
+    "off"
+   ],
+   [
+    "Hit",
+    "never"
+   ]
+  ],
+  [
+   "Turn on",
+   "Remove"
+  ]
+ ]
+]

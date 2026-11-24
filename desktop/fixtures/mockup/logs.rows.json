@@ -1,0 +1,650 @@
+[
+ {
+  "id": "17:57:58.101",
+  "cells": {
+   "time": {
+    "text": "17:57:58.101"
+   },
+   "level": {
+    "badge": [
+     "INFO",
+     "dim"
+    ]
+   },
+   "source": {
+    "text": "yi"
+   },
+   "message": {
+    "text": "turn 2 started · thread rate-limit"
+   },
+   "thread": {
+    "text": "Rate limit"
+   },
+   "turn": {
+    "text": "2"
+   },
+   "process": {
+    "text": "yi serve, pid 4412"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:57:58.101Z\",\"level\":\"info\",\"src\":\"yi\",\"msg\":\"turn 2 started · thread rate-limit\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only yi",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:57:59.220",
+  "cells": {
+   "time": {
+    "text": "17:57:59.220"
+   },
+   "level": {
+    "badge": [
+     "DEBUG",
+     "faint"
+    ]
+   },
+   "source": {
+    "text": "agent"
+   },
+   "message": {
+    "text": "read src/routes/upload.rs (84 lines)"
+   },
+   "thread": {
+    "text": "Rate limit"
+   },
+   "agent": {
+    "text": "root, Opus 5.5"
+   },
+   "turn": {
+    "text": "2"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:57:59.220Z\",\"level\":\"debug\",\"src\":\"agent\",\"msg\":\"read src/routes/upload.rs (84 lines)\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only agent",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:00.014",
+  "cells": {
+   "time": {
+    "text": "17:58:00.014"
+   },
+   "level": {
+    "badge": [
+     "DEBUG",
+     "faint"
+    ]
+   },
+   "source": {
+    "text": "agent"
+   },
+   "message": {
+    "text": "search \"RateLimit\" → 3 matches"
+   },
+   "thread": {
+    "text": "Rate limit"
+   },
+   "agent": {
+    "text": "root, Opus 5.5"
+   },
+   "turn": {
+    "text": "2"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:00.014Z\",\"level\":\"debug\",\"src\":\"agent\",\"msg\":\"search \\\"RateLimit\\\" → 3 matches\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only agent",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:01.730",
+  "cells": {
+   "time": {
+    "text": "17:58:01.730"
+   },
+   "level": {
+    "badge": [
+     "INFO",
+     "dim"
+    ]
+   },
+   "source": {
+    "text": "agent"
+   },
+   "message": {
+    "text": "edit src/middleware/rate_limit.rs +48"
+   },
+   "thread": {
+    "text": "Rate limit"
+   },
+   "agent": {
+    "text": "root, Opus 5.5"
+   },
+   "turn": {
+    "text": "2"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:01.730Z\",\"level\":\"info\",\"src\":\"agent\",\"msg\":\"edit src/middleware/rate_limit.rs +48\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only agent",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:01.802",
+  "cells": {
+   "time": {
+    "text": "17:58:01.802"
+   },
+   "level": {
+    "badge": [
+     "INFO",
+     "dim"
+    ]
+   },
+   "source": {
+    "text": "agent"
+   },
+   "message": {
+    "text": "edit src/routes/upload.rs +6 −1"
+   },
+   "thread": {
+    "text": "Rate limit"
+   },
+   "agent": {
+    "text": "root, Opus 5.5"
+   },
+   "turn": {
+    "text": "2"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:01.802Z\",\"level\":\"info\",\"src\":\"agent\",\"msg\":\"edit src/routes/upload.rs +6 −1\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only agent",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:02.118",
+  "cells": {
+   "time": {
+    "text": "17:58:02.118"
+   },
+   "level": {
+    "badge": [
+     "INFO",
+     "dim"
+    ]
+   },
+   "source": {
+    "text": "api"
+   },
+   "message": {
+    "text": "POST /upload 200 hero-01.png 41ms"
+   },
+   "service": {
+    "text": "atlas-api"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "request": {
+    "text": "req_7f3a91"
+   },
+   "in_trace": {
+    "text": "turn 2, step 6"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:02.118Z\",\"level\":\"info\",\"src\":\"api\",\"msg\":\"POST /upload 200 hero-01.png 41ms\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only api",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:02.431",
+  "cells": {
+   "time": {
+    "text": "17:58:02.431"
+   },
+   "level": {
+    "badge": [
+     "INFO",
+     "dim"
+    ]
+   },
+   "source": {
+    "text": "api"
+   },
+   "message": {
+    "text": "POST /upload 200 hero-02.png 38ms"
+   },
+   "service": {
+    "text": "atlas-api"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "request": {
+    "text": "req_7f3a91"
+   },
+   "in_trace": {
+    "text": "turn 2, step 6"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:02.431Z\",\"level\":\"info\",\"src\":\"api\",\"msg\":\"POST /upload 200 hero-02.png 38ms\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only api",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:03.007",
+  "tone": "warn",
+  "cells": {
+   "time": {
+    "text": "17:58:03.007"
+   },
+   "level": {
+    "badge": [
+     "WARN",
+     "warn"
+    ]
+   },
+   "source": {
+    "text": "api"
+   },
+   "message": {
+    "text": "POST /upload 429 retry-after=41 user=u_193"
+   },
+   "service": {
+    "text": "atlas-api"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "request": {
+    "text": "req_7f3a91"
+   },
+   "in_trace": {
+    "text": "turn 2, step 6"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:03.007Z\",\"level\":\"warn\",\"src\":\"api\",\"msg\":\"POST /upload 429 retry-after=41 user=u_193\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only api",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:03.009",
+  "tone": "warn",
+  "cells": {
+   "time": {
+    "text": "17:58:03.009"
+   },
+   "level": {
+    "badge": [
+     "WARN",
+     "warn"
+    ]
+   },
+   "source": {
+    "text": "uploader"
+   },
+   "message": {
+    "text": "queue paused, 2 files left"
+   },
+   "host": {
+    "text": "ci-ubuntu"
+   },
+   "app": {
+    "text": "Atlas Uploader"
+   },
+   "seen_via": {
+    "text": "remote desktop"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:03.009Z\",\"level\":\"warn\",\"src\":\"uploader\",\"msg\":\"queue paused, 2 files left\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only uploader",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:03.050",
+  "cells": {
+   "time": {
+    "text": "17:58:03.050"
+   },
+   "level": {
+    "badge": [
+     "INFO",
+     "dim"
+    ]
+   },
+   "source": {
+    "text": "yi"
+   },
+   "message": {
+    "text": "approval requested: cargo test -p api upload::"
+   },
+   "thread": {
+    "text": "Rate limit"
+   },
+   "turn": {
+    "text": "2"
+   },
+   "process": {
+    "text": "yi serve, pid 4412"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:03.050Z\",\"level\":\"info\",\"src\":\"yi\",\"msg\":\"approval requested: cargo test -p api upload::\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only yi",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:03.412",
+  "tone": "bad",
+  "cells": {
+   "time": {
+    "text": "17:58:03.412"
+   },
+   "level": {
+    "badge": [
+     "ERROR",
+     "bad"
+    ]
+   },
+   "source": {
+    "text": "docker:db"
+   },
+   "message": {
+    "text": "connection reset by peer (pool 3/10)"
+   },
+   "container": {
+    "text": "atlas-db"
+   },
+   "image": {
+    "text": "postgres:16"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "peer": {
+    "text": "198.51.100.14:53122"
+   },
+   "pool": {
+    "text": "3 of 10 in use"
+   },
+   "seen": {
+    "text": "4 times this hour"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:03.412Z\",\"level\":\"error\",\"src\":\"docker:db\",\"msg\":\"connection reset by peer (pool 3/10)\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only docker:db",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:03.655",
+  "cells": {
+   "time": {
+    "text": "17:58:03.655"
+   },
+   "level": {
+    "badge": [
+     "INFO",
+     "dim"
+    ]
+   },
+   "source": {
+    "text": "docker:db"
+   },
+   "message": {
+    "text": "reconnected in 243ms"
+   },
+   "container": {
+    "text": "atlas-db"
+   },
+   "image": {
+    "text": "postgres:16"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "peer": {
+    "text": "198.51.100.14:53122"
+   },
+   "pool": {
+    "text": "3 of 10 in use"
+   },
+   "seen": {
+    "text": "4 times this hour"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:03.655Z\",\"level\":\"info\",\"src\":\"docker:db\",\"msg\":\"reconnected in 243ms\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only docker:db",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:04.000",
+  "cells": {
+   "time": {
+    "text": "17:58:04.000"
+   },
+   "level": {
+    "badge": [
+     "DEBUG",
+     "faint"
+    ]
+   },
+   "source": {
+    "text": "yi"
+   },
+   "message": {
+    "text": "heartbeat ok · 6 agents"
+   },
+   "thread": {
+    "text": "Rate limit"
+   },
+   "turn": {
+    "text": "2"
+   },
+   "process": {
+    "text": "yi serve, pid 4412"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:04.000Z\",\"level\":\"debug\",\"src\":\"yi\",\"msg\":\"heartbeat ok · 6 agents\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only yi",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:04.512",
+  "cells": {
+   "time": {
+    "text": "17:58:04.512"
+   },
+   "level": {
+    "badge": [
+     "INFO",
+     "dim"
+    ]
+   },
+   "source": {
+    "text": "api"
+   },
+   "message": {
+    "text": "POST /upload 429 retry-after=40 user=u_193"
+   },
+   "service": {
+    "text": "atlas-api"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "request": {
+    "text": "req_7f3a91"
+   },
+   "in_trace": {
+    "text": "turn 2, step 6"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:04.512Z\",\"level\":\"info\",\"src\":\"api\",\"msg\":\"POST /upload 429 retry-after=40 user=u_193\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only api",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ },
+ {
+  "id": "17:58:05.020",
+  "cells": {
+   "time": {
+    "text": "17:58:05.020"
+   },
+   "level": {
+    "badge": [
+     "DEBUG",
+     "faint"
+    ]
+   },
+   "source": {
+    "text": "agent"
+   },
+   "message": {
+    "text": "child Docs · changelog: wrote CHANGELOG.md"
+   },
+   "thread": {
+    "text": "Rate limit"
+   },
+   "agent": {
+    "text": "root, Opus 5.5"
+   },
+   "turn": {
+    "text": "2"
+   },
+   "json": {
+    "text": "{\"ts\":\"2026-11-14T17:58:05.020Z\",\"level\":\"debug\",\"src\":\"agent\",\"msg\":\"child Docs · changelog: wrote CHANGELOG.md\"}"
+   },
+   "actions": {
+    "tags": [
+     "Show in trace",
+     "Logs around it",
+     "Only agent",
+     "Attach",
+     "Make it a finding"
+    ]
+   }
+  }
+ }
+]

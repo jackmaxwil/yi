@@ -1,0 +1,51 @@
+{
+ "about": "A first launch with no thread at all: New chat's project chip opens its menu, Choose a folder… opens the folder chooser, the project is chosen, a prompt is typed and sent, and the server's own list of that folder's threads holds the new thread.",
+ "runs": [
+  {
+   "steps": [
+    {
+     "t": 3.0,
+     "type": "tap",
+     "key": "new-chat.project"
+    },
+    {
+     "t": 3.5,
+     "type": "menu-pick",
+     "id": "choose"
+    },
+    {
+     "t": 4.0,
+     "type": "file-dialog",
+     "path": "{PROJECT}"
+    },
+    {
+     "t": 4.6,
+     "type": "tap",
+     "key": "new-chat.composer.input"
+    },
+    {
+     "t": 4.8,
+     "type": "type",
+     "text": "hello project"
+    },
+    {
+     "t": 5.4,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 11.0,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "texts": [
+     "hello project",
+     "faux:"
+    ],
+    "project_threads": 1
+   }
+  }
+ ]
+}

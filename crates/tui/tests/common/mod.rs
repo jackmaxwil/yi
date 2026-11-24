@@ -527,7 +527,8 @@ pub fn replay_stream(
             AgentMessage::BashExecution { .. }
             | AgentMessage::Custom { .. }
             | AgentMessage::BranchSummary { .. }
-            | AgentMessage::CompactionSummary { .. } => {}
+            | AgentMessage::CompactionSummary { .. }
+            | AgentMessage::Other(_) => {}
         }
     }
     if turn_open {

@@ -140,8 +140,7 @@ pub fn gutter(lines: Vec<Line<'static>>, first: bool, theme: &Theme) -> Vec<Line
         .into_iter()
         .map(|line| {
             let content = !line.spans.iter().all(|s| s.content.trim().is_empty());
-            // A callout carries its own rail; a dot beside it marks the same
-            // block twice.
+            // A callout carries its own rail; a dot beside it marks the same block twice.
             let railed = line
                 .spans
                 .first()
@@ -655,6 +654,7 @@ pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
         ChildActivity::Waiting => "waiting",
         ChildActivity::Writing => "writing",
         ChildActivity::Executing => "executing",
+        ChildActivity::Other(_) => "unknown",
     }
 }
 
@@ -730,7 +730,7 @@ impl TaskCell {
         spinner_phase: usize,
         rows: &AnswerRows,
     ) -> Vec<Line<'static>> {
-        let activity = activity_label(self.activity);
+        let activity = activity_label(self.activity.clone());
         let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
         let flagged = match (self.status, &self.flag) {
             (TaskStatus::Running, Some(ChildFlag::NeedsYou { note })) => {
@@ -747,7 +747,7 @@ impl TaskCell {
             (TaskStatus::Done, None) => ('↳', "done", theme.purple),
             (TaskStatus::Failed, None) => (StatusMark::Failed.symbol(), "failed", theme.error),
         };
-        let (name, hash) = humanize(&self.description);
+        let (name, hash) = humanize(crate::colors::leaf_name(&self.description));
         let hash = if hash.is_empty() {
             hash
         } else {

@@ -1028,16 +1028,11 @@ impl KernelManager {
 }
 
 fn aborted_result() -> ExecuteResult {
-    ExecuteResult {
-        stdout: String::new(),
-        stderr: String::new(),
-        result: None,
-        result_mime: None,
-        attachments: Vec::new(),
-        status: ExecuteStatus::Aborted,
-        error: None,
-        duration_ms: 0,
-    }
+    crate::reduce::finish(
+        crate::reduce::CellState::new(String::new(), 0, true),
+        0,
+        true,
+    )
 }
 
 #[cfg(test)]

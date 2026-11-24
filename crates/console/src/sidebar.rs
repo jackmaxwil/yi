@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
-use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
+use yi_tui::colors::{Theme, accent_rgb, leaf_name, name_tile, tile_style_at};
 
 use crate::app::App;
 use crate::avatar::Placement;
@@ -157,7 +157,7 @@ fn name_cols(app: &App) -> usize {
             let (children, _) = shown_children(app, id);
             children
                 .into_iter()
-                .map(|child| drawn_width(&child.name))
+                .map(|child| drawn_width(leaf_name(&child.name)))
                 .chain(std::iter::once(drawn_width(&row.label())))
                 .max()
         })
@@ -321,18 +321,36 @@ pub(crate) fn project_roots(state: &crate::model::ConsoleState) -> Vec<String> {
     roots
 }
 
+/// Every root the saved order names, in its place, then the live roots it does not name: a
+/// directory with no sessions right now keeps its slot until the person moves it.
+pub(crate) fn saved_order(state: &crate::model::ConsoleState) -> Vec<String> {
+    let mut order = state.side.order.clone();
+    order.extend(
+        project_roots(state)
+            .into_iter()
+            .filter(|root| !state.side.order.contains(root)),
+    );
+    let mut seen = std::collections::HashSet::new();
+    order.retain(|root| seen.insert(root.clone()));
+    order
+}
+
 /// Move project `root` to where `to` is in the painted order of projects.
 pub(crate) fn move_group(state: &mut crate::model::ConsoleState, root: &str, to: &str) {
-    let mut roots = project_roots(state);
+    let painted = project_roots(state);
+    if !painted.iter().any(|known| known == root) || !painted.iter().any(|known| known == to) {
+        return;
+    }
+    let mut order = saved_order(state);
     let (Some(from), Some(at)) = (
-        roots.iter().position(|known| known == root),
-        roots.iter().position(|known| known == to),
+        order.iter().position(|known| known == root),
+        order.iter().position(|known| known == to),
     ) else {
         return;
     };
-    let moved = roots.remove(from);
-    roots.insert(at, moved);
-    state.side.order = roots;
+    let moved = order.remove(from);
+    order.insert(at, moved);
+    state.side.order = order;
 }
 
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
@@ -652,17 +670,20 @@ fn child_rows(
         } else {
             "  ├"
         };
-        let hue = app.accent_of(&id.0, &id.0);
+        let name = leaf_name(&child.name);
+        let parent_seed = app
+            .state
+            .sessions
+            .get(id)
+            .map_or(id.0.as_str(), crate::avatar::hue_seed);
+        let hue = app.accent_of(&id.0, parent_seed);
         let mut spans = vec![
             Span::styled(connector.to_owned(), theme.dim_style()),
-            tile_span(app, name_tile(&child.name), hue),
+            tile_span(app, name_tile(name), hue),
             Span::raw(" "),
         ];
         if !rail {
-            spans.push(Span::styled(
-                pad_cells(&child.name, cols),
-                theme.dim_style(),
-            ));
+            spans.push(Span::styled(pad_cells(name, cols), theme.dim_style()));
             spans.push(Span::raw(" "));
         }
         spans.push(Span::styled(
@@ -794,7 +815,7 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
 impl App {
     /// The project order as the sidebar lists it, written to config so the next console starts in it.
     pub(crate) fn save_order(&mut self, outbound: &Outbound) {
-        let roots = project_roots(&self.state);
+        let roots = saved_order(&self.state);
         let params = serde_json::json!({"id": "console.projectOrder", "value": roots});
         self.send_request(
             outbound,

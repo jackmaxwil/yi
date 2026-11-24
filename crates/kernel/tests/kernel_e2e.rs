@@ -850,3 +850,37 @@ async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
     assert_eq!(result.stdout.trim(), "True");
     Ok(())
 }
+
+/// Incident (#1915, #2288): these three displays came back from a real kernel as only the
+/// cell's prints. The PNG is the repo's own checker fixture; `Image(data=b"not-a-png")` is the
+/// dogfood report's invalid case.
+#[tokio::test]
+async fn a_cells_displayed_image_and_html_reach_the_result() -> TestResult {
+    let png = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runtime/tests/fixtures/documents/checker.png");
+    let kernel = manager()?;
+    let shown = kernel
+        .execute(
+            &format!(
+                "from IPython.display import display, Image, HTML\ndisplay(Image(filename={:?}))\nprint('after image')\ndisplay(Image(data=b'not-a-png', format='png'))\ndisplay(HTML('<b>only html</b>'))",
+                png.to_string_lossy()
+            ),
+            ExecuteOptions::default(),
+        )
+        .await?;
+    kernel.dispose().await;
+    assert_eq!(shown.attachments.len(), 1, "{shown:?}");
+    assert_eq!(shown.attachments[0].mime_type, "image/png");
+    assert_eq!(shown.status, ExecuteStatus::Ok);
+    let rows = shown.notices.join("\n");
+    assert!(rows.contains("[image/png display not shown: "), "{rows}");
+    assert!(shown.stdout.contains("after image"), "{}", shown.stdout);
+    assert!(
+        shown.stdout.contains("<IPython.core.display.HTML object>"),
+        "{}",
+        shown.stdout
+    );
+    assert_eq!(shown.displays.len(), 1);
+    assert_eq!(shown.displays[0].data, "<b>only html</b>");
+    Ok(())
+}

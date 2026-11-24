@@ -1,0 +1,79 @@
+{
+ "about": "A turn waits on an approval and the app is quit and started again with no record of the ask: the server does not ask again after a reconnect, so the thread comes back with its step said to be lost and the run held, nobody is told it needs them, and a prompt typed to it says why it is not sent.",
+ "worker": true,
+ "empty": true,
+ "runs": [
+  {
+   "steps": [
+    {
+     "t": 3.0,
+     "type": "tap",
+     "key": "chat-8.composer.input"
+    },
+    {
+     "t": 3.2,
+     "type": "type",
+     "text": "run the command"
+    },
+    {
+     "t": 4.0,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 8,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "texts": [
+     "run the command"
+    ],
+    "contains": [
+     "1 need you"
+    ]
+   }
+  },
+  {
+   "steps": [
+    {
+     "t": 5,
+     "type": "tap",
+     "key": "chat-8.composer.input"
+    },
+    {
+     "t": 5.2,
+     "type": "type",
+     "text": "please continue"
+    },
+    {
+     "t": 6.0,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 8,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "texts": [
+     "run the command",
+     "warm up"
+    ],
+    "contains": [
+     "This approval was lost when the app quit. Yi is still waiting on it",
+     "not sent, a lost approval holds the run · please continue"
+    ],
+    "absent": [
+     "one.txt"
+    ],
+    "absent_texts": [
+     "1 need you"
+    ]
+   }
+  }
+ ]
+}

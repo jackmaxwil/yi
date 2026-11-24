@@ -1,0 +1,565 @@
+{
+ "Variables": [
+  {
+   "text": "self&mut Bucket",
+   "detail": {
+    "kv": [
+     [
+      "Type",
+      "&mut Bucket"
+     ],
+     [
+      "Holds",
+      "2 fields"
+     ],
+     [
+      "Lives at",
+      "0x16f2a41c0"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Watch",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "tokens0u32 · was 1",
+   "detail": {
+    "kv": [
+     [
+      "Type",
+      "u32"
+     ],
+     [
+      "Now",
+      "0"
+     ],
+     [
+      "Was",
+      "1, one stop ago"
+     ],
+     [
+      "Changed at",
+      "rate_limit.rs:19"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Stop when it changes",
+      "kind": "plain"
+     },
+     {
+      "text": "Watch",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "refill_at1772.62sInstant",
+   "detail": {
+    "kv": [
+     [
+      "Type",
+      "Instant"
+     ],
+     [
+      "Now",
+      "1772.62s"
+     ],
+     [
+      "Which is",
+      "41.2s from now"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Watch",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "now1731.42sInstant",
+   "detail": {
+    "kv": [
+     [
+      "Type",
+      "Instant"
+     ],
+     [
+      "Now",
+      "1731.42s"
+     ],
+     [
+      "Passed in by",
+      "RateLimit::call"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Watch",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "leftnot set yet",
+   "detail": {
+    "kv": [
+     [
+      "Type",
+      "u32"
+     ],
+     [
+      "State",
+      "not set until line 19"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Stop when it is set",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  }
+ ],
+ "Watch": [
+  {
+   "text": "self.refill_at - now41.2s",
+   "detail": {
+    "kv": [
+     [
+      "Result",
+      "41.2s"
+     ],
+     [
+      "Type",
+      "Duration"
+     ],
+     [
+      "Was",
+      "42.2s, one stop ago"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Edit",
+      "kind": "plain"
+     },
+     {
+      "text": "Remove",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "LIMIT20",
+   "detail": {
+    "kv": [
+     [
+      "Type",
+      "u32, a constant"
+     ],
+     [
+      "Set at",
+      "rate_limit.rs:3"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Open line",
+      "kind": "plain"
+     },
+     {
+      "text": "Remove",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  }
+ ],
+ "Call stack · thread 1, tokio worker": [
+  {
+   "text": "#0Bucket::takerate_limit.rs:18",
+   "detail": {
+    "kv": [
+     [
+      "Function",
+      "Bucket::take"
+     ],
+     [
+      "At",
+      "rate_limit.rs:18"
+     ],
+     [
+      "Variables",
+      "4 in view"
+     ],
+     [
+      "Called with",
+      "now = 1731.42s"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Open line",
+      "kind": "plain"
+     },
+     {
+      "text": "Show its variables",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "#1RateLimit::callrate_limit.rs:52",
+   "detail": {
+    "kv": [
+     [
+      "Function",
+      "RateLimit::call"
+     ],
+     [
+      "At",
+      "rate_limit.rs:52"
+     ],
+     [
+      "Variables",
+      "3 in view"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Open line",
+      "kind": "plain"
+     },
+     {
+      "text": "Show its variables",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "#2uploadupload.rs:31",
+   "detail": {
+    "kv": [
+     [
+      "Function",
+      "upload"
+     ],
+     [
+      "At",
+      "upload.rs:31"
+     ],
+     [
+      "Variables",
+      "5 in view"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Open line",
+      "kind": "plain"
+     },
+     {
+      "text": "Show its variables",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "#3axum::servelibrary",
+   "detail": {
+    "kv": [
+     [
+      "From",
+      "a library, no source here"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Step out to your code",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "thread 2 · parked3 more threads",
+   "detail": null,
+   "dim": true
+  }
+ ],
+ "Breakpoints": [
+  {
+   "text": "●rate_limit.rs:14 hit 20",
+   "detail": {
+    "kv": [
+     [
+      "Stops",
+      "every time"
+     ],
+     [
+      "Hit",
+      "20 times"
+     ],
+     [
+      "Added",
+      "by you"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Add a condition",
+      "kind": "plain"
+     },
+     {
+      "text": "Turn off",
+      "kind": "plain"
+     },
+     {
+      "text": "Remove",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "●rate_limit.rs:18 if self.tokens == 0hit 1",
+   "detail": {
+    "kv": [
+     [
+      "Stops when",
+      "self.tokens == 0"
+     ],
+     [
+      "Hit",
+      "once"
+     ],
+     [
+      "Added",
+      "from finding F12"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Edit condition",
+      "kind": "plain"
+     },
+     {
+      "text": "Turn off",
+      "kind": "plain"
+     },
+     {
+      "text": "Remove",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": false
+  },
+  {
+   "text": "○upload.rs:31 off",
+   "detail": {
+    "kv": [
+     [
+      "State",
+      "off"
+     ],
+     [
+      "Hit",
+      "never"
+     ]
+    ],
+    "kvl": [],
+    "buttons": [
+     {
+      "text": "Turn on",
+      "kind": "plain"
+     },
+     {
+      "text": "Remove",
+      "kind": "plain"
+     },
+     {
+      "text": "Attach",
+      "kind": "plain"
+     }
+    ],
+    "note": "",
+    "lead": "",
+    "caps": [],
+    "perms": [],
+    "toggle": null,
+    "pre": ""
+   },
+   "dim": true
+  }
+ ]
+}

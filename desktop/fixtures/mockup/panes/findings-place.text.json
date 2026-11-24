@@ -1,0 +1,22 @@
+{
+ "pane": "findings-place",
+ "frame": 10,
+ "strings": [
+  "By place",
+  "By source",
+  "8 places",
+  "rate_limit.rs",
+  "3",
+  "upload.rs",
+  "2",
+  "tests/upload.rs",
+  "1",
+  "docs/uploads.md",
+  "ci-ubuntu",
+  "docker:db",
+  "VMs · runner-b",
+  "localhost:5173",
+  "Click a place to open it with its findings boxed"
+ ],
+ "titles": []
+}

@@ -1,0 +1,147 @@
+[
+ [
+  "H",
+  "Bucket::take can underflow when the clock steps back",
+  "rate_limit.rs:20",
+  "prove",
+  "Proving",
+  "Tests · upload",
+  "now",
+  "Can crash the server if the machine clock is set back.",
+  "The new clock-steps-back test passes",
+  "waiting on you",
+  "w",
+  [
+   "Allow the test ↵",
+   "Open its agent"
+  ],
+  [
+   "rate_limit.rs line 20",
+   "problem from rust-analyzer",
+   "your comment"
+  ],
+  1
+ ],
+ [
+  "M",
+  "429 answer has no body, clients show a blank error",
+  "upload.rs:31",
+  "new",
+  "New",
+  "nobody yet",
+  "2m",
+  "People see an empty error and cannot tell when to try again.",
+  "A request over the limit gets a body with the wait in it",
+  "not started",
+  "pe",
+  [
+   "Accept",
+   "Not a problem"
+  ],
+  [
+   "upload.rs line 31",
+   "web app · div.alert"
+  ]
+ ],
+ [
+  "M",
+  "Limit is keyed by user id only, anonymous uploads are unlimited",
+  "rate_limit.rs:41",
+  "open",
+  "Open",
+  "nobody yet",
+  "2m",
+  "Anyone not signed in can still flood the endpoint.",
+  "A flood with no sign-in is turned away in a test",
+  "not started",
+  "pe",
+  [
+   "Give it to an agent",
+   "Fix now"
+  ],
+  [
+   "rate_limit.rs line 41"
+  ]
+ ],
+ [
+  "M",
+  "Uploader retries with no jitter",
+  "ci-ubuntu · Uploader",
+  "new",
+  "New",
+  "nobody yet",
+  "6m",
+  "Many clients would retry at the same instant.",
+  "Two runs retry at different moments",
+  "not started",
+  "pe",
+  [
+   "Accept",
+   "Not a problem"
+  ],
+  [
+   "ci-ubuntu · Atlas Uploader window",
+   "uploader log, 17:58:03"
+  ]
+ ],
+ [
+  "L",
+  "No test covers the refill boundary",
+  "tests/upload.rs",
+  "fix",
+  "Fixing",
+  "Tests · upload",
+  "3m",
+  "A change to the refill could break without anyone noticing.",
+  "A test at second 59 and at second 60",
+  "being written",
+  "w",
+  [
+   "Open its agent"
+  ],
+  [
+   "tests/upload.rs"
+  ]
+ ],
+ [
+  "L",
+  "Alert does not say how long to wait in words",
+  "div.alert",
+  "open",
+  "Open",
+  "you",
+  "9m",
+  "From your note in design mode.",
+  "The alert reads as a full sentence",
+  "not started",
+  "pe",
+  [
+   "Give it to an agent",
+   "Fix now"
+  ],
+  [
+   "web app · div.alert"
+  ]
+ ],
+ [
+  "L",
+  "3 connection resets in the last hour",
+  "docker:db",
+  "watch",
+  "Watching",
+  "a standing check",
+  "12m",
+  "Seen 4 times. May be the size of the connection pool.",
+  "No resets for a full hour",
+  "41 minutes to go",
+  "w",
+  [
+   "Stop watching",
+   "Give it to an agent"
+  ],
+  [
+   "docker:db log, 17:58:03",
+   "3 earlier lines"
+  ]
+ ]
+]

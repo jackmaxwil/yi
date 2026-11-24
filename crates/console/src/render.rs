@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use yi_tui::SessionPort;
-use yi_tui::colors::{ColorTier, Theme, name_tile, tile_style_at};
+use yi_tui::colors::{ColorTier, Theme, leaf_name, name_tile, tile_style_at};
 use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
@@ -583,7 +583,7 @@ fn pane_view_content(
 }
 
 pub(crate) fn short_path(path: &str) -> String {
-    path.rsplit('/').next().unwrap_or(path).to_owned()
+    leaf_name(path).to_owned()
 }
 
 pub(crate) fn status_style(theme: &Theme, status: SessionStatus) -> Style {
@@ -753,8 +753,8 @@ fn paint_chat_pane(
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
     let blank = chat.app.blank_above();
     pane.scroll_from_bottom = scroll;
-    let (runs, thoughts) = (chat.app.run_chips(), chat.app.folded_thoughts());
-    crate::hit::offer_chat(app, view.id, runs, thoughts);
+    let found = chat.app.chat_hits();
+    crate::hit::offer_chat(app, view.id, found);
     crate::start::chat(app, buffer, inner, view.id, blank, theme);
     if dim {
         crate::chrome::soften(buffer, inner, theme);

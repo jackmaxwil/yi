@@ -1,0 +1,66 @@
+{
+  "about": "New chat's words make a thread; the app is stopped and started again, and the thread and its conversation come back from the server.",
+  "seed": [
+    "hello"
+  ],
+  "runs": [
+    {
+      "steps": [
+        {
+          "t": 3.0,
+          "type": "key",
+          "name": "n",
+          "cmd": true
+        },
+        {
+          "t": 4.0,
+          "type": "tap",
+          "key": "new-chat.composer.input"
+        },
+        {
+          "t": 4.2,
+          "type": "type",
+          "text": "what now"
+        },
+        {
+          "t": 5.0,
+          "type": "key",
+          "name": "Enter"
+        },
+        {
+          "t": 10.0,
+          "type": "mark",
+          "name": "end"
+        }
+      ],
+      "expect": {
+        "texts": [
+          "what now",
+          "faux:"
+        ],
+        "contains": [
+          "2 threads"
+        ]
+      }
+    },
+    {
+      "steps": [
+        {
+          "t": 4.0,
+          "type": "mark",
+          "name": "end"
+        }
+      ],
+      "expect": {
+        "texts": [
+          "what now",
+          "faux:",
+          "hello"
+        ],
+        "contains": [
+          "2 threads"
+        ]
+      }
+    }
+  ]
+}

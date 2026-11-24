@@ -1,0 +1,316 @@
+[
+ {
+  "id": "ci-ubuntu",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "ci-ubuntu"
+   },
+   "cpu": {
+    "text": "4"
+   },
+   "memory": {
+    "meter": {
+     "ratio": 0.62,
+     "text": "62% of 8 GB"
+    }
+   },
+   "disk": {
+    "text": "41 / 80 GB"
+   },
+   "address": {
+    "text": "198.51.100.14"
+   },
+   "snaps": {
+    "text": "3"
+   },
+   "up": {
+    "text": "6d"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "system": {
+    "text": "Ubuntu 24.04"
+   },
+   "memory_detail": {
+    "text": "62% of 8 GB"
+   },
+   "snapshots": {
+    "text": "3, last 2h ago"
+   },
+   "note": {
+    "text": "the agent is using this one"
+   },
+   "actions": {
+    "tags": [
+     "Open screen",
+     "Snapshot",
+     "Restart",
+     "Stop",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "db-01",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "db-01"
+   },
+   "cpu": {
+    "text": "4"
+   },
+   "memory": {
+    "meter": {
+     "ratio": 0.81,
+     "text": "81% of 16 GB"
+    }
+   },
+   "disk": {
+    "text": "122 / 200 GB"
+   },
+   "address": {
+    "text": "198.51.100.11"
+   },
+   "snaps": {
+    "text": "7"
+   },
+   "up": {
+    "text": "31d"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "system": {
+    "text": "Ubuntu 24.04"
+   },
+   "memory_detail": {
+    "text": "81% of 16 GB"
+   },
+   "snapshots": {
+    "text": "7, last 2h ago"
+   },
+   "actions": {
+    "tags": [
+     "Open screen",
+     "Snapshot",
+     "Restart",
+     "Stop",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "git-01",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "git-01"
+   },
+   "cpu": {
+    "text": "2"
+   },
+   "memory": {
+    "meter": {
+     "ratio": 0.44,
+     "text": "44% of 4 GB"
+    }
+   },
+   "disk": {
+    "text": "18 / 40 GB"
+   },
+   "address": {
+    "text": "198.51.100.12"
+   },
+   "snaps": {
+    "text": "2"
+   },
+   "up": {
+    "text": "12d"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "system": {
+    "text": "Ubuntu 24.04"
+   },
+   "memory_detail": {
+    "text": "44% of 4 GB"
+   },
+   "snapshots": {
+    "text": "2, last 2h ago"
+   },
+   "actions": {
+    "tags": [
+     "Open screen",
+     "Snapshot",
+     "Restart",
+     "Stop",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "runner-a",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "runner-a"
+   },
+   "cpu": {
+    "text": "8"
+   },
+   "memory": {
+    "meter": {
+     "ratio": 0.93,
+     "text": "93% of 16 GB"
+    }
+   },
+   "disk": {
+    "text": "60 / 120 GB"
+   },
+   "address": {
+    "text": "198.51.100.21"
+   },
+   "snaps": {
+    "text": "0"
+   },
+   "up": {
+    "text": "2h"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "system": {
+    "text": "Ubuntu 24.04"
+   },
+   "memory_detail": {
+    "text": "93% of 16 GB"
+   },
+   "snapshots": {
+    "text": "0"
+   },
+   "actions": {
+    "tags": [
+     "Open screen",
+     "Snapshot",
+     "Restart",
+     "Stop",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "runner-b",
+  "dim": true,
+  "cells": {
+   "state": {
+    "dot": "stop"
+   },
+   "name": {
+    "text": "runner-b"
+   },
+   "cpu": {
+    "text": "8"
+   },
+   "memory": {
+    "text": "16 GB"
+   },
+   "disk": {
+    "text": "58 / 120 GB"
+   },
+   "address": {
+    "text": "–"
+   },
+   "snaps": {
+    "text": "0"
+   },
+   "up": {
+    "text": "–"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "system": {
+    "text": "Ubuntu 24.04"
+   },
+   "memory_detail": {
+    "text": "16 GB, not in use"
+   },
+   "snapshots": {
+    "text": "0"
+   },
+   "actions": {
+    "tags": [
+     "Start",
+     "Snapshot",
+     "Delete",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "win-test",
+  "cells": {
+   "state": {
+    "dot": "pause"
+   },
+   "name": {
+    "text": "win-test"
+   },
+   "cpu": {
+    "text": "4"
+   },
+   "memory": {
+    "text": "8 GB"
+   },
+   "disk": {
+    "text": "64 / 100 GB"
+   },
+   "address": {
+    "text": "198.51.100.30"
+   },
+   "snaps": {
+    "text": "1"
+   },
+   "up": {
+    "text": "paused"
+   },
+   "host": {
+    "text": "hv-01"
+   },
+   "system": {
+    "text": "Windows 11"
+   },
+   "memory_detail": {
+    "text": "8 GB, not in use"
+   },
+   "snapshots": {
+    "text": "1, last 2h ago"
+   },
+   "actions": {
+    "tags": [
+     "Resume",
+     "Open screen",
+     "Snapshot",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

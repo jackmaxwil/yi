@@ -1,0 +1,128 @@
+[
+ [
+  0,
+  "down",
+  "self",
+  "",
+  "&amp;mut Bucket",
+  0,
+  [
+   [
+    "Type",
+    "&amp;mut Bucket"
+   ],
+   [
+    "Holds",
+    "2 fields"
+   ],
+   [
+    "Lives at",
+    "0x16f2a41c0"
+   ]
+  ],
+  [
+   "Watch"
+  ]
+ ],
+ [
+  1,
+  "",
+  "tokens",
+  "0",
+  "u32 · was 1",
+  1,
+  [
+   [
+    "Type",
+    "u32"
+   ],
+   [
+    "Now",
+    "0"
+   ],
+   [
+    "Was",
+    "1, one stop ago"
+   ],
+   [
+    "Changed at",
+    "rate_limit.rs:19"
+   ]
+  ],
+  [
+   "Stop when it changes",
+   "Watch"
+  ]
+ ],
+ [
+  1,
+  "chev",
+  "refill_at",
+  "1772.62s",
+  "Instant",
+  0,
+  [
+   [
+    "Type",
+    "Instant"
+   ],
+   [
+    "Now",
+    "1772.62s"
+   ],
+   [
+    "Which is",
+    "41.2s from now"
+   ]
+  ],
+  [
+   "Watch"
+  ]
+ ],
+ [
+  0,
+  "chev",
+  "now",
+  "1731.42s",
+  "Instant",
+  0,
+  [
+   [
+    "Type",
+    "Instant"
+   ],
+   [
+    "Now",
+    "1731.42s"
+   ],
+   [
+    "Passed in by",
+    "RateLimit::call"
+   ]
+  ],
+  [
+   "Watch"
+  ]
+ ],
+ [
+  0,
+  "",
+  "left",
+  "",
+  "not set yet",
+  0,
+  [
+   [
+    "Type",
+    "u32"
+   ],
+   [
+    "State",
+    "not set until line 19"
+   ]
+  ],
+  [
+   "Stop when it is set"
+  ]
+ ]
+]

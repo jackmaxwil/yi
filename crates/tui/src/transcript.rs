@@ -451,6 +451,11 @@ impl AnswerTrack {
         self.open_message(appended)
     }
 
+    /// Invariant: a refused answer holds the draft beside it, so the resubmission leaves it.
+    pub(crate) fn refused(&mut self, is_error: bool) {
+        self.bodied |= is_error;
+    }
+
     pub(crate) fn wrote(&mut self, before: usize, after: usize) {
         if self.parent && after > before {
             self.message.push(before);

@@ -188,7 +188,8 @@ impl MissTracker {
         let engine = Engine::of_route(api, provider, model);
         // A record from before D315 names no TTL: its history went out for five minutes.
         let request = Request {
-            route: format!("{provider}/{model}"),
+            route: detail(CACHE_DIAGNOSTIC, "route")
+                .unwrap_or_else(|| format!("{provider}/{model}")),
             prompt,
             write,
             stable: detail(CACHE_DIAGNOSTIC, "stable"),

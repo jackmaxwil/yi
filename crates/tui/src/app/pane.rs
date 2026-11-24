@@ -24,6 +24,35 @@ impl App {
         )
     }
 
+    /// Each position of the composer's idle improve control on the last paint, as a rectangle.
+    pub fn rewrite_slots(&self) -> Vec<(Rect, Option<yi_types::config::RewriteLength>)> {
+        let Some((left, row)) = self.composer.foot_at() else {
+            return Vec::new();
+        };
+        let found = self.composer.rewrite.slots(self.width);
+        found
+            .into_iter()
+            .map(|(at, wide, position)| {
+                (Rect::new(left.saturating_add(at), row, wide, 1), position)
+            })
+            .collect()
+    }
+
+    /// Everything on the last paint a press or a hover can land on: run chips, folded
+    /// thoughts and the improve control's positions.
+    pub fn chat_hits(&self) -> crate::hits::ChatHits {
+        crate::hits::ChatHits {
+            runs: self.run_chips(),
+            thoughts: self.folded_thoughts(),
+            improve: self.rewrite_slots(),
+        }
+    }
+
+    pub fn pick_rewrite(&mut self, position: Option<yi_types::config::RewriteLength>) {
+        self.composer.rewrite.pick(position);
+        self.scheduler.request();
+    }
+
     pub fn pane_row(&self, y: u16) -> Option<Option<(usize, Option<&str>)>> {
         let rows = &self.pane_rows;
         let row = rows.rows.get(usize::from(y.checked_sub(rows.top)?))?;

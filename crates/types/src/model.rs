@@ -203,9 +203,17 @@ pub struct Model {
 /// read, which a gateway that answers only when its first token is ready outlives.
 pub const DEFAULT_READ_TIMEOUT_SECS: u64 = 60;
 
+/// What a child's model waits for one read when its entry names no `readTimeoutSecs`: a child
+/// writes whole documents in one response, and a thinking model's gap past 60 s is not a dead stream.
+pub const CHILD_READ_TIMEOUT_SECS: u64 = 300;
+
 impl Model {
     pub fn read_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.read_timeout_secs.unwrap_or(DEFAULT_READ_TIMEOUT_SECS))
+    }
+
+    pub fn route(&self) -> String {
+        format!("{}/{}", self.provider, self.id)
     }
 }
 

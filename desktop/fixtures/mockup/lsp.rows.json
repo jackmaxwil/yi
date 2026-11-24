@@ -1,0 +1,134 @@
+[
+ {
+  "id": "rust-analyzer",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "server": {
+    "text": "rust-analyzer"
+   },
+   "language": {
+    "text": "Rust"
+   },
+   "project": {
+    "text": "atlas-api"
+   },
+   "memory": {
+    "text": "612 MB"
+   },
+   "status": {
+    "text": "ready · 214 files indexed · answered 38 requests this turn, slowest 120 ms"
+   },
+   "can_do": {
+    "tags": [
+     "Problems",
+     "Hover",
+     "Go to definition",
+     "Find references",
+     "Rename",
+     "Format",
+     "Type hints",
+     "Quick fixes"
+    ]
+   },
+   "agent_may_ask": {
+    "flag": true
+   },
+   "actions": {
+    "tags": [
+     "Restart",
+     "Logs",
+     "Settings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "typescript",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "server": {
+    "text": "typescript"
+   },
+   "language": {
+    "text": "TypeScript"
+   },
+   "project": {
+    "text": "storefront"
+   },
+   "memory": {
+    "text": "280 MB"
+   },
+   "status": {
+    "text": "ready · 96 files indexed · answered 4 requests this turn"
+   },
+   "can_do": {
+    "tags": [
+     "Problems",
+     "Hover",
+     "Go to definition",
+     "Find references",
+     "Rename",
+     "Format"
+    ]
+   },
+   "agent_may_ask": {
+    "flag": true
+   },
+   "actions": {
+    "tags": [
+     "Restart",
+     "Logs",
+     "Settings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "pyright",
+  "dim": true,
+  "cells": {
+   "state": {
+    "dot": "stop"
+   },
+   "server": {
+    "text": "pyright"
+   },
+   "language": {
+    "text": "Python"
+   },
+   "project": {
+    "text": "docs"
+   },
+   "memory": {
+    "text": "–"
+   },
+   "status": {
+    "text": "off · starts by itself when a Python file opens"
+   },
+   "can_do": {
+    "tags": [
+     "Problems",
+     "Hover",
+     "Go to definition",
+     "Find references"
+    ]
+   },
+   "agent_may_ask": {
+    "flag": false
+   },
+   "actions": {
+    "tags": [
+     "Start now",
+     "Settings",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

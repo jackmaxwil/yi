@@ -1,0 +1,24 @@
+{
+ "id": "yi",
+ "name": "Yi Dark",
+ "note": "yours · the default",
+ "dark": true,
+ "values": {
+  "accent": "#8fb4ff",
+  "needs_you": "#78d2c6",
+  "ok": "#7fcf9a",
+  "bad": "#f58585",
+  "text.1": "#dcdfe6",
+  "text.2": "#b3b7c2",
+  "text.3": "#8c909b",
+  "code.keyword": "#e3a3bf",
+  "code.type": "#86d6c8",
+  "code.string": "#a9d9a0",
+  "code.number": "#c6b3f7",
+  "code.comment": "#7a8196",
+  "font.text": "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+  "space.row": 20.0,
+  "space.line": 16.0,
+  "space.gutter": 8.0
+ }
+}
