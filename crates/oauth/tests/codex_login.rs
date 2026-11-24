@@ -7,17 +7,17 @@ use std::path::PathBuf;
 use std::sync::Once;
 use std::time::Duration;
 
-use serde_json::{Value, json};
-use yi_oauth::codex;
+use serde_json::json;
 use yi_oauth::flow;
 use yi_oauth::registry::{self, CodeLogin, Kind as ProfileKind, Login, OauthCode};
-use yi_oauth::store::{self, Credential, Kind, Store};
+use yi_oauth::store::Store;
 
 mod common;
 use common::Res;
 
-const ID_TOKEN: &str =
-    "e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC03In19.sig";
+#[path = "common/identity.rs"]
+mod identity;
+use identity::{ID_TOKEN, expired};
 
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("yi-codex-{tag}-{}", std::process::id()));
@@ -67,7 +67,7 @@ fn environment() -> Res {
 }
 
 fn codex_spec() -> Result<OauthCode, Box<dyn std::error::Error>> {
-    match codex::profile() {
+    match registry::lookup("openai-codex")?.ok_or("openai-codex is built in")? {
         ProfileKind::OauthCode(spec) => Ok(*spec),
         ProfileKind::ApiKey | ProfileKind::Cursor => {
             Err("openai-codex is not an OAuth code profile".into())
@@ -80,18 +80,6 @@ fn query(url: &str, key: &str) -> Option<String> {
     rest.split('&')
         .find_map(|pair| pair.strip_prefix(&format!("{key}=")))
         .map(str::to_owned)
-}
-
-fn expired(org: Option<&str>) -> Credential {
-    Credential {
-        kind: Kind::Oauth,
-        access: "old-access".to_owned(),
-        refresh: Some("old-refresh".to_owned()),
-        expires: Some(store::now() - Duration::from_secs(60)),
-        account: None,
-        org: org.map(str::to_owned),
-        extra: Default::default(),
-    }
 }
 
 #[test]
@@ -207,39 +195,5 @@ fn a_refresh_keeps_the_account_id_the_response_does_not_repeat() -> Res {
                 && row.contains("refresh_token=old-refresh")),
         "{rows:?}"
     );
-    Ok(())
-}
-
-#[test]
-fn the_codex_login_is_built_in_and_a_user_profile_file_wins() -> Res {
-    environment()?;
-    let ProfileKind::OauthCode(built_in) = registry::lookup("openai-codex")?.ok_or("built in")?
-    else {
-        return Err("openai-codex is not an OAuth code profile".into());
-    };
-    assert_eq!(built_in.client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
-    let Login::Code(login) = &built_in.login else {
-        return Err("code login".into());
-    };
-    assert_eq!(login.callback_port, 1455);
-    assert!(!login.port_fallback, "the registered redirect is fixed");
-    assert!(registry::ids().iter().any(|id| id == "openai-codex"));
-
-    let path = registry::profile_path("openai-codex");
-    std::fs::create_dir_all(path.parent().ok_or("profile dir")?)?;
-    let custom: Value = json!({
-        "kind": "oauth-code",
-        "client_id": "mine",
-        "authorize": "https://example.invalid/a",
-        "token": "https://example.invalid/t",
-        "callback_port": 4242
-    });
-    std::fs::write(&path, custom.to_string())?;
-    let looked_up = registry::lookup("openai-codex");
-    std::fs::remove_file(&path)?;
-    let ProfileKind::OauthCode(user) = looked_up?.ok_or("profile")? else {
-        return Err("openai-codex is not an OAuth code profile".into());
-    };
-    assert_eq!(user.client_id, "mine");
     Ok(())
 }
