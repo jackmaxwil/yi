@@ -16,6 +16,7 @@ without a forge or a model; the verbs are `just pr review|fix|sweep`.
 """
 import argparse
 import contextlib
+import datetime
 import fcntl
 import fnmatch
 import functools
@@ -231,6 +232,11 @@ def verdict(findings, overridden, n):
     if not holding({"n": n, "findings": findings}):
         return "clean"
     return "override" if overridden else "blocked"
+
+
+def when(at):
+    """A comment's ISO time as a Unix time, 0 for a row that carries none."""
+    return datetime.datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp() if at else 0.0
 
 
 def on_head(sha, head):
@@ -876,9 +882,10 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
 # --- the verbs ------------------------------------------------------------------------
 
 
-def comments(repo, number):
+def comments(repo, number, timeout=None):
+    # Invariant: without a timeout the call is the two-argument one every forge double in the selfchecks answers.
     def transport(method, path, payload):
-        answer = forge_pr.fgj_api(method, path, payload) or []
+        answer = (forge_pr.fgj_api(method, path, payload) if timeout is None else forge_pr.fgj_api(method, path, payload, timeout=timeout)) or []
         if not isinstance(answer, list):
             raise Unanswered(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
         return answer

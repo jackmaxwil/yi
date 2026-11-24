@@ -81,7 +81,7 @@ def scope():
     return ("-R", repo(), "--hostname", HOST)
 
 
-def fgj_api(method, path, payload=None):
+def fgj_api(method, path, payload=None, timeout=None):
     """A missing resource is None, the way check_pr_metadata's transport expects.
 
     fgj prints the response body on stdout whatever the status and `HTTP <code>` on
@@ -91,7 +91,7 @@ def fgj_api(method, path, payload=None):
     if payload is not None:
         command += ["--input", "-"]
         body = json.dumps(payload)
-    out = subprocess.run(command, input=body, capture_output=True, text=True, check=False)
+    out = subprocess.run(command, input=body, capture_output=True, text=True, check=False, timeout=timeout)
     if out.returncode and "HTTP 404" in out.stderr:
         return None
     text = (out.stdout or out.stderr).strip()
@@ -557,23 +557,36 @@ def required():
 UNREAD = "the commit's statuses, unreadable"
 
 
-def head_statuses(name, sha):
-    """(job, state, description) for each status on one head, in the forge's order; None when the forge did not say."""
-    combined = fgj_api("GET", f"repos/{name}/commits/{sha}/status")
+def status_rows(name, sha, timeout=None):
+    """The forge's own status objects on one head, in its order; None when the forge did not say."""
+    path = f"repos/{name}/commits/{sha}/status"
+    combined = fgj_api("GET", path) if timeout is None else fgj_api("GET", path, timeout=timeout)
     if not isinstance(combined, dict) or "message" in combined:
         return None
-    return [(required_jobs([s["context"]])[0], s["status"], s.get("description") or "") for s in combined.get("statuses") or []]
+    return combined.get("statuses") or []
+
+
+def as_jobs(rows):
+    """(job, state, description) for each of a head's status objects."""
+    return [(required_jobs([s["context"]])[0], s["status"], s.get("description") or "") for s in rows]
+
+
+def head_statuses(name, sha):
+    """(job, state, description) for each status on one head, in the forge's order; None when the forge did not say."""
+    rows = status_rows(name, sha)
+    return None if rows is None else as_jobs(rows)
+
+
+def job_states(rows):
+    """Job name to its newest state among `as_jobs` rows; an `error` is a failure."""
+    return {job: "failure" if status == "error" else status for job, status, _ in rows}
+
 
 def head_jobs(name, sha):
     """Job name to its newest status on one head. Incident: the task list has no row until a runner
     claims a job, so #1887's waiting rerun read as its old failure, and 60 rows is an hour or two."""
     rows = head_statuses(name, sha)
-    if rows is None:
-        return {UNREAD: "pending"}
-    jobs = {}
-    for job, status, _ in rows:
-        jobs[job] = "failure" if status == "error" else status
-    return jobs
+    return {UNREAD: "pending"} if rows is None else job_states(rows)
 
 
 def jobs_of(pr):
@@ -1418,6 +1431,7 @@ def build_parser():
     queue = pr.add_parser("queue", help="add a reviewed PR to the merge queue; no number prints the queue")
     queue.add_argument("number", nargs="?")
     queue.set_defaults(run=pr_queue.cmd_queue)
+    pr.add_parser("parked", help="every open PR past the clock of its state, oldest first; writes nothing").set_defaults(run=pr_queue.cmd_parked)
     return parser
 
 

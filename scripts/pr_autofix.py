@@ -171,11 +171,6 @@ def misses(notes):
     return sum(v in ("failed", "deferred", "missed") for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
 
 
-def when(at):
-    """A comment's ISO time as a Unix time, 0 for a row that carries none."""
-    return datetime.datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp() if at else 0.0
-
-
 def autofix_rows(notes):
     """The fixer's own meta rows on this PR, the ledger every cap and streak below is read from."""
     return [row for row in bot_meter.rows(notes) if row["kind"] == "yi-autofix"]
@@ -183,7 +178,7 @@ def autofix_rows(notes):
 
 def last_stop(notes):
     """When the fixer last stopped on this PR (a Unix time, 0 for never): its newest failure or hand-off."""
-    return max((when(row["at"]) for row in autofix_rows(notes) if row.get("verdict") in ("failed", "handoff") and row.get("at")), default=0.0)
+    return max((pr_review.when(row["at"]) for row in autofix_rows(notes) if row.get("verdict") in ("failed", "handoff") and row.get("at")), default=0.0)
 
 
 def stops(notes):
@@ -194,9 +189,9 @@ def stops(notes):
 def retry_due(notes, now):
     """Whether the label a stop left has run out its window and clears itself. A declined round is
     the owner's to rule on and never expires, and the third failure keeps the label for good."""
-    newest = max(autofix_rows(notes), key=lambda row: when(row.get("at")), default=None)
+    newest = max(autofix_rows(notes), key=lambda row: pr_review.when(row.get("at")), default=None)
     return bool(newest and newest.get("verdict") in ("failed", "capped") and stops(notes) <= RETRIES
-                and when(newest.get("at")) + RETRY_AFTER <= now)
+                and pr_review.when(newest.get("at")) + RETRY_AFTER <= now)
 
 
 def head_rows(notes, sha, verdict):
@@ -213,8 +208,8 @@ def handed_off(notes, sha, stop, now, round_=""):
     """Whether this head waits on its hand-off of this kind of fix: until a new head, a new round, or
     the window its comment named, twice per head. A streak is a limit, and a limit only delays."""
     rows = held_rows(notes, sha, stop, round_)
-    newest = max(rows, key=lambda row: when(row.get("at")), default=None)
-    return bool(newest) and (len(rows) > RETRIES or when(newest.get("at")) + RETRY_AFTER > now)
+    newest = max(rows, key=lambda row: pr_review.when(row.get("at")), default=None)
+    return bool(newest) and (len(rows) > RETRIES or pr_review.when(newest.get("at")) + RETRY_AFTER > now)
 
 
 def restart_from(notes):
@@ -232,7 +227,7 @@ def cap_wait(notes, now):
     """This PR's spend in the last 24 hours and when that window reopens, or None while under the cap.
     The reopen is when enough of the window has aged out that what is left is under the cap, not when
     the oldest row expires: a fix that overshot the cap is what usually took the PR past it."""
-    inside = sorted(((when(row["at"]), row) for row in autofix_rows(notes) if row.get("at") and when(row["at"]) > now - WINDOW),
+    inside = sorted(((pr_review.when(row["at"]), row) for row in autofix_rows(notes) if row.get("at") and pr_review.when(row["at"]) > now - WINDOW),
                     key=lambda pair: pair[0])
     spent = bot_meter.spent([row for _, row in inside])
     if spent < CAP_PR:
@@ -252,7 +247,7 @@ def cap_reason(spent, reopens):
 
 def waited(notes, now):
     """Whether this window already carries its wait comment: one per window, not one per pass."""
-    return any(row.get("verdict") == "capped" and when(row.get("at")) > now - WINDOW for row in autofix_rows(notes))
+    return any(row.get("verdict") == "capped" and pr_review.when(row.get("at")) > now - WINDOW for row in autofix_rows(notes))
 
 
 def hourly(at):
@@ -1408,7 +1403,7 @@ def settle_base_red(repo, bases):
 
 def quiet_for(pr, notes, now):
     """Seconds since a person last touched the PR: a comment, or a head commit not the bot's."""
-    times = [when(c.get("created_at")) for c in notes if (c.get("user") or {}).get("login") != pr_review.BOT]
+    times = [pr_review.when(c.get("created_at")) for c in notes if (c.get("user") or {}).get("login") != pr_review.BOT]
     head = sh(ROOT, "git", "log", "-1", "--format=%ct%x00%cn", pr["head"]["sha"], check=False).stdout.strip()
     if "\x00" in head and head.split("\x00", 1)[1] != pr_review.BOT:
         times.append(float(head.split("\x00", 1)[0]))
@@ -1438,7 +1433,7 @@ def attempt(repo, pr, ids, asked=False):
         return "hold"
     forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", pr["base"]["ref"])
     behind = sh(ROOT, "git", "merge-base", "--is-ancestor", f"origin/{pr['base']['ref']}", pr["head"]["sha"], check=False).returncode != 0
-    if behind and time.time() - when(pr.get("updated_at")) < 5 * 60:
+    if behind and time.time() - pr_review.when(pr.get("updated_at")) < 5 * 60:
         return "recent"
     # Incident: a clean main merge into a queued PR moved its head and the queue dropped a green
     # candidate; the queue builds on main itself and labels a real conflict `autofix`. A PR the queue
@@ -3063,7 +3058,7 @@ def selfcheck():
                                    "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
             lifted = ("autofix:failed", False) in labelled
             if said != want or lifted != (want == "clean"):
-                errs.append(f"a failure {int((now - when(stale_rows[0]['created_at'])) // 3600)}h old read {said} "
+                errs.append(f"a failure {int((now - pr_review.when(stale_rows[0]['created_at'])) // 3600)}h old read {said} "
                             f"with labels {labelled}, not {want} and the label {'lifted' if want == 'clean' else 'kept'}")
         # The capped branch itself: one wait comment and no failed label, and silence inside its window.
         module.conflicts, posted = (lambda pr, push=False: []), []
