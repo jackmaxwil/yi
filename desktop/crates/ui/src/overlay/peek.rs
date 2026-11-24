@@ -253,21 +253,27 @@ fn card(tokens: &Tokens, open: &Open, said: &Said<'_>, at: [f32; 2]) -> El {
         .child(faint("space to close".to_owned()))
         .child(spacer())
         .child(faint(count).key(format!("{KEY}.count")));
-    context::popover_shadow(col()
-        .key(KEY)
-        .absolute(at[0], at[1])
-        .w(WIDTH)
-        .radius(RADIUS_MENU.of(tokens))
-        .fill(colour(POPOVER.of(tokens)))
-        .paint_order(OVER_ALL), tokens)
-        .on_background_press_tx(|_: &mut Win, _: &mut Tx| {})
-        .child(head)
-        .child(col().w_full().py(4.0).px(2.0).children(rows))
-        .child(foot)
-        .children(said.unread.map(|path| {
-            let file = PathBuf::from(path);
-            ask(format!("{KEY}.ask.{path}"), Msg::Source(FILES, SourceCmd::Read(file)))
-        }))
+    context::popover_shadow(
+        col()
+            .key(KEY)
+            .absolute(at[0], at[1])
+            .w(WIDTH)
+            .radius(RADIUS_MENU.of(tokens))
+            .fill(colour(POPOVER.of(tokens)))
+            .paint_order(OVER_ALL),
+        tokens,
+    )
+    .on_background_press_tx(|_: &mut Win, _: &mut Tx| {})
+    .child(head)
+    .child(col().w_full().py(4.0).px(2.0).children(rows))
+    .child(foot)
+    .children(said.unread.map(|path| {
+        let file = PathBuf::from(path);
+        ask(
+            format!("{KEY}.ask.{path}"),
+            Msg::Source(FILES, SourceCmd::Read(file)),
+        )
+    }))
 }
 
 /// This window's peek over `layer`: a ground that closes it on a press, then the card,

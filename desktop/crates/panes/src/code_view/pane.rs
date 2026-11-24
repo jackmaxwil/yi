@@ -445,7 +445,10 @@ fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
         .filter(|shown| read.is_none() && shown.tab.is_none());
     let asked = unread.map(|shown| {
         let file = PathBuf::from(shown.path);
-        ask(format!("{key}.unread.{}.ask", shown.path), Msg::Source(FILES, SourceCmd::Read(file)))
+        ask(
+            format!("{key}.unread.{}.ask", shown.path),
+            Msg::Source(FILES, SourceCmd::Read(file)),
+        )
     });
     let cut = read
         .filter(|row| row.get("truncated") == Some(&Value::Flag(true)))

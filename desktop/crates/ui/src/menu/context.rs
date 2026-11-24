@@ -394,22 +394,25 @@ impl Drawn<'_> {
     fn card(&self, at: [f32; 2], room: f32) -> El {
         let tokens = &self.hub.model.tokens;
         let middle = middle(self.hub, self.open);
-        let mut card = popover_shadow(col()
-            .key(KEY)
-            .absolute(at[0], at[1])
-            .w(WIDTH)
-            .max_h(room)
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .padding(4.0)
-            .radius(RADIUS_MENU.of(tokens))
-            .fill(colour(MENU.of(tokens)))
-            .paint_order(OVER_ALL), tokens)
-            .on_background_press_tx(|_: &mut Win, _: &mut Tx| {})
-            .child(self.head())
-            .child(self.asks())
-            .children(TOP.iter().map(|item| self.item(item)));
+        let mut card = popover_shadow(
+            col()
+                .key(KEY)
+                .absolute(at[0], at[1])
+                .w(WIDTH)
+                .max_h(room)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .padding(4.0)
+                .radius(RADIUS_MENU.of(tokens))
+                .fill(colour(MENU.of(tokens)))
+                .paint_order(OVER_ALL),
+            tokens,
+        )
+        .on_background_press_tx(|_: &mut Win, _: &mut Tx| {})
+        .child(self.head())
+        .child(self.asks())
+        .children(TOP.iter().map(|item| self.item(item)));
         if !middle.is_empty() {
             card = card.child(self.rule());
             card = card.children(middle.into_iter().map(|item| self.item(item)));

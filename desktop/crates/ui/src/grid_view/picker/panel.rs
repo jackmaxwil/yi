@@ -433,26 +433,29 @@ pub fn layer(win: &Win, hub: &Hub, cx: &mut Cx<Win>, layer: &mut Vec<El>) {
         row().gap(4.0).children(items)
     });
     let line = el().h(1.0).w_full().fill(colour(LINE_MENU.of(tokens)));
-    let surface = popover_shadow(col()
-        .key(KEY)
-        .role("grid")
-        .label("Panes and layouts")
-        .focus_group()
-        .w(WIDTH)
-        .padding(6.0)
-        .gap(3.0)
-        .radius(RADIUS_MENU.of(tokens))
-        .fill(colour(POPOVER.of(tokens))), tokens)
-        .child(section(tokens, "Layouts", None, None))
-        .child(layouts(hub, win.window, room, &keys))
-        .children(asking(win, hub, now.naming))
-        .child(side_switch(tokens, grid.side))
-        .child(line)
-        .child(section(tokens, "Panes", None, None))
-        .children(pairs)
-        .paint_order(OVER_ALL)
-        .anchored(BUTTON, Side::Bottom, Align::End, 4.0)
-        .modal(true, close);
+    let surface = popover_shadow(
+        col()
+            .key(KEY)
+            .role("grid")
+            .label("Panes and layouts")
+            .focus_group()
+            .w(WIDTH)
+            .padding(6.0)
+            .gap(3.0)
+            .radius(RADIUS_MENU.of(tokens))
+            .fill(colour(POPOVER.of(tokens))),
+        tokens,
+    )
+    .child(section(tokens, "Layouts", None, None))
+    .child(layouts(hub, win.window, room, &keys))
+    .children(asking(win, hub, now.naming))
+    .child(side_switch(tokens, grid.side))
+    .child(line)
+    .child(section(tokens, "Panes", None, None))
+    .children(pairs)
+    .paint_order(OVER_ALL)
+    .anchored(BUTTON, Side::Bottom, Align::End, 4.0)
+    .modal(true, close);
     layer.push(surface);
 }
 
