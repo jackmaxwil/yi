@@ -98,12 +98,13 @@ def issue_problems(transport, api, repo, number):
         ]
     labels = [label.get("name", "") for label in issue.get("labels") or []]
     areas = [name for name in labels if name.startswith("area:")]
-    if not any(name.startswith("size:") for name in labels):
+    sizes = [*WEIGHTS, *sorted(name for name in labels if name.startswith("size:") and name not in WEIGHTS)]
+    if not any(name in sizes for name in labels):
         errs += [
             f"#{number} carries no `size:` label; exactly one is mandatory",
             f"  fgj issue edit {number} --add-label size:M",
         ]
-    elif twice := surplus(number, repo, labels, WEIGHTS, "size"):
+    elif twice := surplus(number, repo, labels, sizes, "size"):
         errs += [f"{twice[0]}; exactly one is", f"  {twice[1]}"]
     if not areas:
         errs += [
@@ -338,6 +339,8 @@ def selfcheck():
     assert "no `size:` label" in errs[0] and "--add-label size:M" in errs[1], errs
     errs = only(dict(good, labels=[{"name": "size:S"}, {"name": "size:L"}, {"name": "area:tui"}]))
     assert "2 size labels" in errs[0] and "--remove-label size:L" in errs[1], errs
+    errs = only(dict(good, labels=[{"name": "size:XL"}, {"name": "size:M"}, {"name": "area:tui"}]))
+    assert "2 size labels" in errs[0] and "--remove-label size:XL" in errs[1], errs
     errs = only(dict(good, labels=[{"name": "size:M"}]))
     assert "no `area:` label" in errs[0], errs
     errs = only(dict(good, milestone=None))
