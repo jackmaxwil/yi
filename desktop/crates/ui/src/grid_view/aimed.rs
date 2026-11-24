@@ -8,7 +8,7 @@ use yd_core::command::by_kind::{
 };
 use yd_core::command::table::Target;
 use yd_core::grid::layout::Edge;
-use yd_core::grid::step::GridMsg;
+use yd_core::grid::step::{GridMsg, takes};
 use yd_core::ids::{CommandId, PaneId, TabId};
 use yd_core::kind::Kind;
 use yd_core::msg::Msg;
@@ -58,7 +58,10 @@ pub fn offered(hub: &Hub, command: CommandId, address: &Address) -> bool {
         TAB_CLOSE_OTHERS => {
             !grid.mates(pane).is_empty() || !own_others(hub, pane, address).is_empty()
         }
-        _ => true,
+        // A move is offered where the grid would make it: not to the place the pane is in,
+        // nor to a pane out in its own window or the last one of its window.
+        _ => by_kind::moves(command)
+            .is_none_or(|place| !chat && takes(grid, GridMsg::Place { pane, place })),
     }
 }
 
@@ -76,7 +79,9 @@ pub fn carry(win: &mut Win, tx: &mut Tx, command: CommandId, target: &Target) ->
     let Target::Thing(address) = target else {
         return false;
     };
-    let Some(pane) = pane_named(address).filter(|_| rows.contains(&command)) else {
+    let place = by_kind::moves(command);
+    let ours = rows.contains(&command) || place.is_some();
+    let Some(pane) = pane_named(address).filter(|_| ours) else {
         return false;
     };
     let read = win.hub.try_borrow().ok().map(|hub| {
@@ -88,6 +93,10 @@ pub fn carry(win: &mut Win, tx: &mut Tx, command: CommandId, target: &Target) ->
         return false;
     };
     tx.motion_curve(GLIDE);
+    if let Some(place) = place {
+        dispatch(win, Msg::Grid(GridMsg::Place { pane, place }));
+        return true;
+    }
     match command {
         TAB_SPLIT_RIGHT => split(win, pane, Edge::Right),
         TAB_SPLIT_DOWN => split(win, pane, Edge::Bottom),

@@ -65,7 +65,8 @@ macro_rules! panes {
 
 /// The four places a window's panes stack in: the chat, the work beside it, a narrow list
 /// column, and a short shelf along the bottom.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Place {
     Chat,
     Work,
@@ -75,6 +76,14 @@ pub enum Place {
 
 impl Place {
     pub const ALL: [Place; 4] = [Place::Chat, Place::Work, Place::Side, Place::Shelf];
+
+    /// The place a settings line or the grid's file names by `slug`.
+    pub fn named(slug: &str) -> Option<Place> {
+        Place::ALL
+            .iter()
+            .copied()
+            .find(|place| place.slug() == slug)
+    }
 
     /// The word a settings line names the place by.
     pub const fn slug(self) -> &'static str {
@@ -105,9 +114,7 @@ impl Opens {
         let word = |line: &str| {
             let (pane, word) = line.trim().split_once(' ')?;
             let kind = PaneKind::from_slug(pane)?;
-            let place = Place::ALL
-                .into_iter()
-                .find(|place| place.slug() == word.trim());
+            let place = Place::named(word.trim());
             let word = match place {
                 Some(place) => Opens::Always(place),
                 None if word.trim() == Self::NEVER => Opens::Never,

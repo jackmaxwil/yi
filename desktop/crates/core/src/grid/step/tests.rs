@@ -5,7 +5,7 @@ use crate::command::table::{FLIP_CHAT, Route, Run};
 use crate::grid::layout::{Axis, Edge, Line, MAX_TRACKS, Point, Rect, Size};
 use crate::grid::place::probe::{Check, FRAME_1, find, rect, tiled};
 use crate::grid::windows::{Frame, WindowOp, Windows};
-use crate::ids::{PaneId, WindowId};
+use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::model::Model;
 use crate::msg::{Effect, Msg, step};
 use crate::pane::PaneKind::{self, Changes, Chat, Code, Files, Remote, Report, Terminal, Web};
@@ -31,7 +31,7 @@ pub(super) fn record() -> Model {
     model
 }
 
-fn showing(saved: &'static str) -> Model {
+pub(super) fn showing(saved: &'static str) -> Model {
     let mut model = record();
     let window = MAIN;
     change(&mut model, GridMsg::Show { window, saved });
@@ -50,6 +50,20 @@ pub(super) fn drawn(model: &Model) -> Result<Vec<(PaneId, Rect)>, String> {
     let placed = model.grid.place(MAIN, FRAME_1);
     tiled(&placed, FRAME_1)?;
     Ok(placed)
+}
+
+pub(super) const HAVE_KINDS: [PaneKind; 6] = [Chat, Code, Changes, Files, Terminal, Web];
+
+pub(super) fn have(model: &mut Model, kinds: &[PaneKind], thread: Option<&str>) {
+    let thread = thread.map(ThreadId::new);
+    change(
+        model,
+        GridMsg::Have {
+            window: MAIN,
+            kinds: kinds.to_vec(),
+            thread,
+        },
+    );
 }
 
 /// The grid written to its file and read back, with what the file does not keep copied over.

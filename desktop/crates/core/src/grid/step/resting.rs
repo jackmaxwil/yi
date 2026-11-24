@@ -9,7 +9,9 @@ use crate::model::Model;
 use crate::pane::PaneKind::{self, Changes, Chat, Files, Terminal};
 
 use super::GridMsg;
-use super::tests::{FRAME_2, MAIN, REVIEW_PLACED, change, drawn, expect, pane, record, reread};
+use super::tests::{
+    FRAME_2, MAIN, REVIEW_PLACED, change, drawn, expect, have, pane, record, reread,
+};
 
 /// A window that was told its kinds before a layout was picked, as the running app's is.
 fn told(kinds: &[PaneKind], saved: &'static str) -> Model {
@@ -22,19 +24,9 @@ fn told(kinds: &[PaneKind], saved: &'static str) -> Model {
             saved: "chat",
         },
     );
-    have(&mut model, kinds);
+    have(&mut model, kinds, None);
     change(&mut model, GridMsg::Show { window, saved });
     model
-}
-
-fn have(model: &mut Model, kinds: &[PaneKind]) {
-    let (window, kinds, thread) = (MAIN, kinds.to_vec(), None);
-    let told = GridMsg::Have {
-        window,
-        kinds,
-        thread,
-    };
-    change(model, told);
 }
 
 pub(super) fn kinds_drawn(model: &Model) -> Result<Vec<PaneKind>, String> {
@@ -77,7 +69,7 @@ fn a_layout_seats_only_the_kinds_with_something_to_show() -> Check {
 #[test]
 fn a_resting_pane_takes_its_own_slot_when_its_kind_has_something() -> Check {
     let mut model = told(&[Chat], "review");
-    have(&mut model, &[Chat, Changes]);
+    have(&mut model, &[Chat, Changes], None);
     assert_eq!(kinds_drawn(&model)?, [Chat, Changes]);
     let mut closed = record();
     let (window, saved) = (MAIN, "review");
@@ -91,9 +83,9 @@ fn a_resting_pane_takes_its_own_slot_when_its_kind_has_something() -> Check {
         let (ours, theirs) = (pane(&model, kind)?, pane(&closed, kind)?);
         assert_eq!(find(&resting, ours)?, find(&without, theirs)?, "{kind:?}");
     }
-    have(&mut model, &[Chat, Changes, Files, Terminal]);
+    have(&mut model, &[Chat, Changes, Files, Terminal], None);
     expect(&model, &REVIEW_PLACED)?;
-    have(&mut model, &[Chat]);
+    have(&mut model, &[Chat], None);
     assert_eq!(
         kinds_drawn(&model)?,
         [Chat],
@@ -122,7 +114,7 @@ fn asking_for_a_resting_pane_shows_it_and_keeps_it() -> Check {
         seat.map(|(_, at)| *at),
         "its Review slot, not half a pane"
     );
-    have(&mut model, &[Chat]);
+    have(&mut model, &[Chat], None);
     assert_eq!(kinds_drawn(&model)?, [Chat, Terminal]);
     assert_eq!(
         model.grid.panes.len(),
@@ -172,7 +164,7 @@ fn a_pane_closes_while_others_rest() -> Check {
     let files = pane(&model, Files)?;
     change(&mut model, GridMsg::Close(files));
     assert_eq!(kinds_drawn(&model)?, [Chat]);
-    have(&mut model, &[Chat, Changes]);
+    have(&mut model, &[Chat, Changes], None);
     assert_eq!(kinds_drawn(&model)?, [Chat, Changes]);
     Ok(())
 }

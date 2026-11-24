@@ -2,11 +2,16 @@
 //! under the menu, whichever pane has the keyboard.
 
 use yd_core::address::uri::Address;
-use yd_core::command::by_kind::{TAB_CLOSE_OTHERS, TAB_PULL_OUT};
+use yd_core::command::by_kind::{
+    PANE_TO_SHELF, PANE_TO_SIDE, PANE_TO_WORK, TAB_CLOSE_OTHERS, TAB_PULL_OUT,
+};
+use yd_core::grid::step::GridMsg;
 use yd_core::ids::PaneId;
 use yd_core::kind::Kind;
-use yd_core::pane::PaneKind;
+use yd_core::msg::Msg;
+use yd_core::pane::{PaneKind, Place};
 use yd_ui::grid_view::aimed;
+use yd_ui::win::dispatch;
 
 use super::opens::menu;
 use super::tabs::{front, stacked};
@@ -18,6 +23,9 @@ const PULL_OUT: &str = "window.context-menu.row.tab.pull-out";
 const KEEP: &str = "window.context-menu.row.tab.keep";
 const ACROSS: &str = "window.context-menu.row.tab.keep-across";
 const OTHERS: &str = "window.context-menu.row.tab.close-others";
+const WORK: &str = "window.context-menu.row.pane.to-work";
+const SIDE: &str = "window.context-menu.row.pane.to-side";
+const SHELF: &str = "window.context-menu.row.pane.to-shelf";
 
 /// The panes of `kind` the grid holds, in the order it made them.
 fn of(runtime: &Runtime<Win>, kind: PaneKind) -> Result<Vec<PaneId>, Box<dyn Error>> {
@@ -120,7 +128,7 @@ fn split_down_and_pull_out_act_on_the_pane_under_the_menu() -> Check {
         Ok(aimed::offered(&hub, TAB_PULL_OUT, &address))
     };
     assert!(offered(&runtime)?, "a docked pane can be pulled out");
-    menu(&mut runtime, &format!("files-{}.", files.0), "")?;
+    menu(&mut runtime, "files-", ".tab-0.")?;
     tap(&mut runtime, PULL_OUT)?;
     let out = {
         let hub = runtime.state.hub.try_borrow()?;
@@ -157,5 +165,73 @@ fn close_others_on_a_panes_own_tab_closes_its_other_tabs() -> Check {
     assert_eq!(one(&runtime, PaneKind::Code)?, code, "the pane stays");
     menu(&mut runtime, &format!("code-{}.tab-2.", code.0), "")?;
     assert!(!live(&runtime, OTHERS), "one tab left: no others");
+    Ok(())
+}
+
+/// The menu of a pane low in the window opens with every row inside the window, and in a
+/// window shorter than the menu it is no taller than the window.
+#[test]
+fn the_bars_menu_stays_inside_the_window() -> Check {
+    let mut runtime = settled("shell/everything")?;
+    for tall in [750.0, 480.0] {
+        runtime.set_viewport((1200.0, tall), 1.0);
+        rest(&mut runtime);
+        menu(&mut runtime, "terminal-", "")?;
+        let shown = runtime.elements();
+        let [_, y, _, h] = by_key(&shown, "window.context-menu").ok_or("no menu")?.rect;
+        assert!(live(&runtime, KEEP), "the bar's rows are in it");
+        assert!(y >= 0.0 && y + h <= tall + 0.5, "{y} + {h} in {tall}");
+        strike(&mut runtime, Key::Escape, Mods::default());
+        rest(&mut runtime);
+    }
+    Ok(())
+}
+
+/// A pane's menu offers the places it is not in. Moved, it is drawn in that place's stack,
+/// and the menu then offers the place it left. The chat is offered no move.
+#[test]
+fn move_to_a_place_puts_the_pane_there_and_offers_the_place_it_left() -> Check {
+    let mut runtime = settled("shell/everything")?;
+    let files = one(&runtime, PaneKind::Files)?;
+    let place = |runtime: &Runtime<Win>| -> Result<Option<Place>, Box<dyn Error>> {
+        Ok(runtime.state.hub.try_borrow()?.model.grid.slot_place(files))
+    };
+    let rows = |runtime: &Runtime<Win>| [WORK, SIDE, SHELF].map(|row| live(runtime, row));
+    assert_eq!(place(&runtime)?, Some(Place::Side));
+    menu(&mut runtime, "files-", "")?;
+    assert_eq!(rows(&runtime), [true, false, true], "not where it is");
+    tap(&mut runtime, WORK)?;
+    assert_eq!(place(&runtime)?, Some(Place::Work));
+    let frame = format!("files-{}.pane-frame", files.0);
+    assert!(live(&runtime, &frame), "drawn, in front of the work stack");
+    let tabs = {
+        let hub = runtime.state.hub.try_borrow()?;
+        hub.model.grid.tabs(root::MAIN, files).len()
+    };
+    assert_eq!(tabs, 2, "a tab of that stack");
+    menu(&mut runtime, "files-", ".tab-0.")?;
+    assert_eq!(rows(&runtime), [false, true, true], "it can go back");
+    tap(&mut runtime, SHELF)?;
+    assert_eq!(place(&runtime)?, Some(Place::Shelf));
+    menu(&mut runtime, "files-", ".tab-0.")?;
+    tap(&mut runtime, SIDE)?;
+    assert_eq!(
+        place(&runtime)?,
+        Some(Place::Side),
+        "each row its own place"
+    );
+    menu(&mut runtime, "chat-", "")?;
+    assert_eq!(rows(&runtime), [false; 3], "the chat stays in its place");
+    strike(&mut runtime, Key::Escape, Mods::default());
+    runtime.update(move |win, _| dispatch(win, Msg::Grid(GridMsg::Leave(files))));
+    rest(&mut runtime);
+    let hub = runtime.state.hub.try_borrow()?;
+    let address = Address::new(Kind::Pane, files.0.to_string())?;
+    let out = [PANE_TO_WORK, PANE_TO_SIDE, PANE_TO_SHELF];
+    let offered = out.map(|row| aimed::offered(&hub, row, &address));
+    assert_eq!(
+        offered, [false; 3],
+        "out in its own window, it has no place"
+    );
     Ok(())
 }

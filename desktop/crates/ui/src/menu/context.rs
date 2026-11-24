@@ -7,7 +7,8 @@ mod tests;
 use std::collections::BTreeMap;
 
 use rune::{
-    Cursor, Cx, El, Icon, Picked, PointerEvent, Shadow, TextStyle, Tx, col, el, row, spacer, text,
+    Cursor, Cx, El, Icon, Picked, PointerEvent, ScrollSpec, Shadow, TextStyle, Tx, col, el, row,
+    spacer, text,
 };
 use yd_core::address::attach::AttachMsg;
 use yd_core::address::thing::Thing;
@@ -49,8 +50,10 @@ pub const KEY: &str = "window.context-menu";
 const HEAD: &str = "window.context-menu-head";
 const SCRIM: &str = "window.context-menu-scrim";
 const WIDTH: f32 = 244.0;
-/// How far from the window's right and bottom edges the menu's corner may open (record 4.10).
-const REACH: [f32; 2] = [252.0, 380.0];
+/// How far from the window's right edge the menu's corner may open (record 4.10).
+const REACH: f32 = 252.0;
+/// The menu's height less its rows: the record's 380 with eleven rows of 22.
+const CHROME: f32 = 138.0;
 const EDGE: f32 = 4.0;
 const ITEM: f32 = 22.0;
 /// The menu paints over every pane and the grid's own menus.
@@ -239,6 +242,13 @@ fn pick(win: &mut Win, tx: &mut Tx, command: CommandId, words: Option<&str>) {
     }
 }
 
+/// The kind's own rows the menu offers for the thing it is open on.
+fn middle(hub: &Hub, open: &Open) -> Vec<&'static Item> {
+    let address = &open.thing.address;
+    let offered = |item: &&Item| aimed::offered(hub, item.command, address);
+    items(open.thing.kind()).iter().filter(offered).collect()
+}
+
 /// The words of the item that runs `command`, on any kind's menu.
 fn items_titled(command: CommandId) -> Option<&'static str> {
     let all = TOP.iter().chain(ENDS.iter().copied().flatten());
@@ -380,16 +390,17 @@ impl Drawn<'_> {
         asks.children(ASKS.iter().map(ask))
     }
 
-    fn card(&self, at: [f32; 2]) -> El {
+    fn card(&self, at: [f32; 2], room: f32) -> El {
         let tokens = &self.hub.model.tokens;
-        let address = &self.open.thing.address;
-        let offered = |item: &&Item| aimed::offered(self.hub, item.command, address);
-        let middle = items(self.open.thing.kind()).iter().filter(offered);
-        let middle: Vec<&Item> = middle.collect();
+        let middle = middle(self.hub, self.open);
         let mut card = col()
             .key(KEY)
             .absolute(at[0], at[1])
             .w(WIDTH)
+            .max_h(room)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
             .padding(4.0)
             .radius(RADIUS_MENU.of(tokens))
             .fill(colour(MENU.of(tokens)))
@@ -442,15 +453,19 @@ pub fn view(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> Vec<El> {
     else {
         return Vec::new();
     };
+    // Incident: the menu kept the record's 380 points clear below it whatever its rows, and
+    // a bar's seventeen ran 128 points off the bottom of the window.
+    let groups = ENDS.iter().map(|group| group.len()).sum::<usize>();
+    let rows = TOP.len() + middle(hub, open).len() + groups;
+    let tall = CHROME + ITEM * rows as f32;
     let size = cx.layout_size(SCRIM);
-    let place = |at: f32, axis: usize| {
-        let far = size.map_or(f32::MAX, |size| {
-            let room = size.get(axis).copied().unwrap_or(0.0);
-            room - REACH.get(axis).copied().unwrap_or(0.0)
-        });
+    let room = |axis: usize| size.and_then(|size| size.get(axis).copied());
+    let place = |at: f32, axis: usize, reach: f32| {
+        let far = room(axis).map_or(f32::MAX, |room| room - reach);
         at.min(far).max(EDGE)
     };
-    let at = [place(open.at[0], 0), place(open.at[1], 1)];
+    let at = [place(open.at[0], 0, REACH), place(open.at[1], 1, tall)];
+    let room = room(1).map_or(f32::MAX, |room| room - 2.0 * EDGE);
     let shut = |win: &mut Win, _: &mut Tx| {
         close(win);
     };
@@ -463,7 +478,7 @@ pub fn view(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> Vec<El> {
         .on_background_press_tx(shut)
         .on_secondary_press_local(move |win: &mut Win, _: PointerEvent, tx: &mut Tx| shut(win, tx));
     let drawn = Drawn { win, hub, open };
-    vec![scrim, drawn.card(at)]
+    vec![scrim, drawn.card(at, room)]
 }
 
 /// The diff line the mockup's frame 14 right-clicks: line 18 of the new rate limiter.

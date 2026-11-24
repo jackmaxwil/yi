@@ -11,7 +11,7 @@ use crate::grid::swap::{Spot, land, own, swap};
 use crate::grid::windows::{Frame, Pane, Scope, Window, WindowOp, Windows};
 use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::msg::Effect;
-use crate::pane::PaneKind;
+use crate::pane::{PaneKind, Place};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridMsg {
@@ -55,6 +55,12 @@ pub enum GridMsg {
     SplitAt {
         pane: PaneId,
         edge: Edge,
+    },
+    /// Move a pane to a place: a tab in front of that place's stack, else a slot where the
+    /// place goes. It is of that place from then on, whatever its kind.
+    Place {
+        pane: PaneId,
+        place: Place,
     },
     /// Close a pane for good; its neighbours fill the room.
     Close(PaneId),
@@ -151,6 +157,14 @@ pub fn step(grid: &mut Windows, change: GridMsg) -> Vec<Effect> {
     ops.into_iter().map(Effect::Window).collect()
 }
 
+/// Whether the grid would take `change` and be different for it, found on a copy: what a
+/// menu asks before it offers a row.
+#[must_use]
+pub fn takes(grid: &Windows, change: GridMsg) -> bool {
+    let mut next = grid.clone();
+    apply(&mut next, change).is_ok() && next != *grid
+}
+
 fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError> {
     let side = grid.side;
     match change {
@@ -227,6 +241,25 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
         GridMsg::Leave(pane) => return pull(grid, pane),
         GridMsg::Rejoin(pane) => return dock(grid, pane),
         GridMsg::Close(pane) => return shut(grid, pane),
+        GridMsg::Place { pane, place } => {
+            let window = grid.home_of(pane).ok_or(GridError::NoSuchPane(pane))?;
+            if grid.slot_place(pane) == Some(place) {
+                return Ok(Vec::new());
+            }
+            // The tab left in the slot may be another session's: the slot settles on its own.
+            let mate = next_tab(&find(grid, window)?.layout, pane);
+            edit(grid, window, |layout| close(layout, pane))?;
+            for moved in grid.panes.iter_mut().filter(|other| other.id == pane) {
+                moved.at = Some(place);
+            }
+            handled(grid, window, pane);
+            if seat(grid, window, pane)? {
+                raise(grid, window, pane)?;
+            }
+            if mate.is_some() {
+                settle_in(grid, window, mate)?;
+            }
+        }
         GridMsg::Fill(pane) => {
             let window = grid.home_of(pane).ok_or(GridError::NoSuchPane(pane))?;
             let was = grid.filled.remove(&window);
@@ -432,6 +465,7 @@ fn add(grid: &mut Windows, kind: PaneKind) -> Result<PaneId, GridError> {
         seated,
         scope,
         thing,
+        at: None,
         unseen,
     });
     Ok(id)
@@ -677,7 +711,7 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
 }
 
 mod opening;
-use opening::{arrivals, open};
+use opening::{arrivals, open, seat};
 
 #[cfg(test)]
 mod about;
@@ -687,6 +721,8 @@ mod bar;
 mod carry;
 #[cfg(test)]
 mod fill;
+#[cfg(test)]
+mod moved;
 #[cfg(test)]
 mod random;
 #[cfg(test)]

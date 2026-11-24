@@ -67,7 +67,7 @@ pub(super) fn open(
 
 /// Puts `pane`, which `id` does not hold, where panes of its place go: a tab of that place's
 /// stack, behind the one in front, else a slot of its own. True when it is a tab.
-fn seat(grid: &mut Windows, id: WindowId, pane: PaneId) -> Result<bool, GridError> {
+pub(super) fn seat(grid: &mut Windows, id: WindowId, pane: PaneId) -> Result<bool, GridError> {
     let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
     let found = grid.panes.iter().find(|other| other.id == pane);
     let goes = grid.place_of(found.ok_or(GridError::NoSuchPane(pane))?);
