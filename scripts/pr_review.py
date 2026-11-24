@@ -1177,7 +1177,7 @@ def walled(paths):
 
 # Incident: #1111 left draft on a clean round while its test lane was red; a sweep retries
 # each draft, so one whose lanes are still running or red leaves on a later sweep.
-GATE_LANES = ("gate (guardrails)", "gate (lint)", "gate (test)")
+GATE_LANES = ("gate (desktop)", "gate (guardrails)", "gate (lint)", "gate (test)")
 
 
 def promote(repo, pr, rounds):

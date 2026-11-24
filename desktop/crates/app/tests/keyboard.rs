@@ -185,7 +185,8 @@ fn with_only_the_keyboard_a_chat_is_started_sent_and_a_file_opened() -> Check {
         &mut runtime,
         Key::Text("k".into()),
         Mods {
-            cmd: true,
+            cmd: cfg!(target_os = "macos"),
+            logo: true,
             ..Mods::default()
         },
     );
@@ -241,7 +242,8 @@ fn with_only_the_keyboard_a_chat_is_started_sent_and_a_file_opened() -> Check {
     assert!(said(&log) >= 1, "the first prompt carried the words");
     // A new thread opens blank: Everything comes back by its key.
     let layout = Mods {
-        cmd: true,
+        cmd: cfg!(target_os = "macos"),
+        logo: true,
         alt: true,
         ..Mods::default()
     };
@@ -628,7 +630,8 @@ fn a_shell_lives_on_while_another_thread_is_shown() -> Check {
 fn the_keyboard_help_says_which_always_cmd_return_picks() -> Check {
     let mut runtime = window("shell/everything")?;
     let cmd = Mods {
-        cmd: true,
+        cmd: cfg!(target_os = "macos"),
+        logo: true,
         ..Mods::default()
     };
     key(&mut runtime, Key::Text("/".into()), cmd);

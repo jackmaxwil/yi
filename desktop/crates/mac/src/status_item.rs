@@ -9,38 +9,7 @@ use objc2::{ClassType, DeclaredClass, declare_class, msg_send, msg_send_id, muta
 use objc2_app_kit::{NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
 use objc2_foundation::{MainThreadMarker, NSString};
 
-/// Which row of a status menu was picked. The caller chooses the numbers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RowId(pub u32);
-
-/// One row of a status menu.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Row {
-    /// A greyed section title, such as "2 need you".
-    Header(String),
-    /// A row the user can pick.
-    Item {
-        id: RowId,
-        title: String,
-    },
-    /// A row the user can pick, which Return also picks while the menu is open.
-    Return {
-        id: RowId,
-        title: String,
-    },
-    Separator,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum StatusError {
-    #[error("status items are made on the main thread")]
-    NotMainThread,
-    #[error("the system gave the status item no button")]
-    NoButton,
-    #[error("the status menu has no row {index}")]
-    NoRow { index: usize },
-}
+use crate::{Row, RowId, StatusError};
 
 type Pick = Box<dyn Fn(RowId)>;
 
@@ -203,7 +172,8 @@ impl Drop for StatusItem {
 
 #[cfg(test)]
 mod tests {
-    use super::{StatusError, StatusItem};
+    use super::StatusItem;
+    use crate::StatusError;
 
     #[test]
     fn a_status_item_made_off_the_main_thread_is_refused() -> Result<(), Box<dyn std::error::Error>>

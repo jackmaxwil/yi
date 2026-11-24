@@ -554,7 +554,8 @@ fn a_typed_address_opens_a_pushed_frame_is_drawn_and_a_press_reaches_the_page() 
     tap(&mut runtime, &format!("{key}.address.input"))?;
     let all = Mods {
         cmd: true,
-        logo: true,
+        logo: cfg!(target_os = "macos"),
+        ctrl: !cfg!(target_os = "macos"),
         ..Mods::default()
     };
     strike(&mut runtime, Key::Command('a'), all);

@@ -127,7 +127,8 @@ fn strike(runtime: &mut Runtime<Win>, key: Key, mods: Mods) {
 
 fn cmd() -> Mods {
     Mods {
-        cmd: true,
+        cmd: cfg!(target_os = "macos"),
+        logo: true,
         ..Mods::default()
     }
 }

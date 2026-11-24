@@ -540,7 +540,7 @@ def is_behind(pr):
 
 
 def required():
-    """Invariant: a merge waits on the three gates whatever the protection rule lists, because the
+    """Invariant: a merge waits on every gate lane whatever the protection rule lists, because the
     rule is a setting someone can shorten and the merge verb is where red must stop."""
     import pr_review
 
@@ -1029,7 +1029,7 @@ def selfcheck():
             globals().update(saved)
         return code, posts
 
-    green = {"gate (guardrails)": "success", "gate (lint)": "success", "gate (test)": "success", "title": "success"}
+    green = {"gate (desktop)": "success", "gate (guardrails)": "success", "gate (lint)": "success", "gate (test)": "success", "title": "success"}
     listed = ["pr / title (pull_request)"]
     code, posts = merge_on_fake_forge(listed, green)
     assert code == 0 and posts == [{"Do": "merge", "head_commit_id": "abc1234"}], ("the merge names the head the gates ran on", posts)

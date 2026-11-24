@@ -93,7 +93,8 @@ fn rect(rt: &Runtime<Win>, key: &str) -> Result<[f32; 4], Box<dyn Error>> {
 fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {
     let mods = Mods {
         cmd,
-        logo: cmd,
+        logo: cmd && cfg!(target_os = "macos"),
+        ctrl: cmd && !cfg!(target_os = "macos"),
         ..Mods::default()
     };
     rt.key(KeyEvent { key, mods });

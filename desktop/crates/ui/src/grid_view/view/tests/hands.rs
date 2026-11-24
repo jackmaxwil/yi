@@ -10,11 +10,11 @@ use super::{
 use yd_core::grid::swap::Spot;
 
 const CMD: Mods = Mods {
-    cmd: true,
+    cmd: cfg!(target_os = "macos"),
     shift: false,
     alt: false,
     ctrl: false,
-    logo: false,
+    logo: true,
 };
 
 /// A point on the bar of the pane of `kind`, clear of its tabs and icons.

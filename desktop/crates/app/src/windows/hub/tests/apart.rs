@@ -30,6 +30,10 @@ fn a_panes_window_is_opaque_edge_to_edge() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn command_backtick_brings_the_next_window_forward() -> Result<(), Box<dyn Error>> {
     let cycle = r#"{"t":1.0,"type":"key","name":"`","cmd":true,"code":"`"}"#;
     let events = format!("{SHOW},{cycle},{END}");
@@ -43,6 +47,10 @@ fn command_backtick_brings_the_next_window_forward() -> Result<(), Box<dyn Error
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn settings_closed_with_command_w_is_remembered_where_it_was() -> Result<(), Box<dyn Error>> {
     let close = r#"{"t":1.0,"type":"key","name":"w","cmd":true,"code":"w"}"#;
     let events = format!("{SHOW},{close},{END}");
@@ -63,6 +71,10 @@ fn settings_closed_with_command_w_is_remembered_where_it_was() -> Result<(), Box
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn settings_opens_where_it_was_last() -> Result<(), Box<dyn Error>> {
     let mut places = Places::memory();
     let there = Frame {
@@ -107,6 +119,10 @@ fn a_panes_window_is_never_smaller_than_its_pane_can_draw() {
 /// Incident: ⌘, pressed in a pane's own window split that window for Settings, so closing it
 /// later sent its pane home and left a stray window holding Settings' place.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn settings_asked_from_a_panes_window_leaves_the_app_window_not_that_one()
 -> Result<(), Box<dyn Error>> {
     let focus = r#"{"t":0.3,"type":"tap","x":1000,"y":150}"#;

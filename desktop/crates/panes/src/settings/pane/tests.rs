@@ -64,7 +64,8 @@ fn tap(rt: &mut Runtime<Win>, key: &str) -> Check {
 fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {
     let mods = Mods {
         cmd,
-        logo: cmd,
+        logo: cmd && cfg!(target_os = "macos"),
+        ctrl: cmd && !cfg!(target_os = "macos"),
         ..Mods::default()
     };
     rt.key(KeyEvent { key, mods });

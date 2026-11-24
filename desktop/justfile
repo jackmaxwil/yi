@@ -38,7 +38,10 @@ journey *NAMES:
 supply:
     status=0; cargo deny check || status=1; cargo audit || status=1; exit $status
 
-check: fmt-check lint har colours test scenes
+# What a machine with no Mac can judge: every gate but the pictures. The forge runs it on Linux.
+gate: fmt-check lint har colours test
+
+check: gate scenes
 
 # Lay out target/package/Yi Desktop.app (unsigned, the build without tooling) and prove a tooling
 # build kept beside it starts headless from inside the bundle.
