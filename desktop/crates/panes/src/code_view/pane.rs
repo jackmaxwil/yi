@@ -1,15 +1,16 @@
 //! Code viewer pane: tabs for the open files, the breadcrumb and one file on the code surface.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use rune::{Cx, El, Tx, col, el, row, text};
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
-use yd_core::command::run::{PREVIEW, opened, previewed};
+use yd_core::command::run::{PREVIEW, opened_last, previewed, shown_path};
 use yd_core::command::table::{Command, OPEN_FILE, Route, Run, Target};
 use yd_core::command::tools::lsp::REFERENCES;
-use yd_core::feed::{FILES, FeedEvent, FeedStatus, LSP, OPEN_FILES, Table};
+use yd_core::feed::{FILES, FeedEvent, FeedStatus, LSP, OPEN_FILES, SourceCmd, Table};
 use yd_core::ids::{PaneId, RowId, TabId};
 use yd_core::kind::Kind;
 use yd_core::msg::Msg;
@@ -90,13 +91,18 @@ fn path(tab: &Row) -> &str {
     tab.words("path").unwrap_or_default()
 }
 
+/// A path's last part, which names its tab.
+fn name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or_default()
+}
+
 fn tabs(table: &Table) -> impl Iterator<Item = &Row> {
     (0..table.len()).filter_map(|at| table.get(at))
 }
 
 /// The tab that shows: the one opened last.
 fn current(table: &Table) -> Option<&Row> {
-    tabs(table).max_by_key(|tab| opened(tab))
+    opened_last(table)
 }
 
 /// Opens `file` from a handler: runs `code.open`, which makes its tab the one that shows
@@ -117,10 +123,24 @@ fn file_tabs(pane: &PaneCx<'_>) -> Tabs {
     let Some(table) = pane.model().tables.get(OPEN_FILES) else {
         return Tabs::default();
     };
-    let shown = Shown::of(pane.hub);
-    let front = shown.as_ref().map(|shown| &shown.tab.id);
+    let shown = Shown::of(pane.hub, pane.pane);
+    // A pane about one file has that file as its one tab, whatever else is open.
+    if let Some(shown) = shown.as_ref().filter(|shown| shown.about) {
+        let tab = Tab {
+            title: name(shown.path).to_owned(),
+            meta: shown.meta(pane.hub),
+            ..Tab::of(PaneKind::Code)
+        };
+        return Tabs {
+            active: Some(tab.id),
+            tabs: vec![tab],
+            adds: false,
+            tool: None,
+        };
+    }
+    let front = shown.as_ref().map(|shown| &shown.id);
     let files = tabs(table).filter_map(|file| {
-        let name = path(file).rsplit('/').next().unwrap_or_default();
+        let name = name(path(file));
         let meta = shown.as_ref().filter(|_| front == Some(&file.id));
         Some(Tab {
             id: tab_id(file)?,
@@ -132,7 +152,7 @@ fn file_tabs(pane: &PaneCx<'_>) -> Tabs {
     });
     Tabs {
         tabs: files.collect(),
-        active: shown.as_ref().and_then(|shown| tab_id(shown.tab)),
+        active: shown.as_ref().and_then(|shown| tab_id(shown.tab?)),
         adds: false,
         tool: None,
     }
@@ -167,49 +187,59 @@ fn on_tab(win: &mut Win, _: PaneId, ask: TabAsk) {
     }
 }
 
-/// The open file of a pane: its tab, and its text once the files source has read it.
+/// The file a pane shows, and its text once the files source has read it.
 struct Shown<'a> {
-    tab: &'a Row,
+    id: RowId,
+    path: &'a str,
+    /// Its row among the open files; a file the pane is about may have none.
+    tab: Option<&'a Row>,
+    /// Whether the pane is about this file, and so shows no other.
+    about: bool,
     loaded: Option<Loaded>,
 }
 
 impl<'a> Shown<'a> {
-    fn of(hub: &'a Hub) -> Option<Shown<'a>> {
-        let tab = current(hub.model.tables.get(OPEN_FILES)?)?;
+    fn of(hub: &'a Hub, pane: PaneId) -> Option<Shown<'a>> {
+        let file = shown_path(&hub.model, pane)?;
+        let open = hub.model.tables.get(OPEN_FILES);
+        let tab = open.and_then(|open| tabs(open).find(|tab| path(tab) == file));
+        let id = tab.map_or_else(|| RowId::new(format!("file:{file}")), |tab| tab.id.clone());
+        let about = hub.model.grid.thing(pane).is_some();
         let files = hub.model.tables.get(FILES);
-        let read = files.and_then(|files| Some((files.version(), files.find(&tab.id)?)));
-        let loaded = read.and_then(|(stamp, file)| {
+        let read = files.and_then(|files| Some((files.version(), files.find(&id)?)));
+        let loaded = read.and_then(|(stamp, read)| {
             // A long file is coloured on a worker, which wakes the first window when done.
             let wake = hub.wins.first().map(|(_, app)| {
                 let app = app.clone();
                 Box::new(move || app.update(|_, _| {})) as Wake
             });
-            let lang = Lang::for_path(path(tab));
-            Some(load(
-                tab.id.as_str(),
-                stamp,
-                file.words("text")?,
-                lang,
-                wake,
-            ))
+            let lang = Lang::for_path(file);
+            Some(load(id.as_str(), stamp, read.words("text")?, lang, wake))
         });
-        Some(Shown { tab, loaded })
+        Some(Shown {
+            id,
+            path: file,
+            tab,
+            about,
+            loaded,
+        })
     }
 
     fn is_new(&self) -> bool {
-        self.tab.get("new") == Some(&Value::Flag(true))
+        let new = |tab: &Row| tab.get("new") == Some(&Value::Flag(true));
+        self.tab.is_some_and(new)
     }
 
     /// The header's facts: `Rust · 23 lines · new · 1 error`.
     fn meta(&self, hub: &Hub) -> String {
-        let mut facts = vec![Lang::for_path(path(self.tab)).title().to_owned()];
+        let mut facts = vec![Lang::for_path(self.path).title().to_owned()];
         facts.extend(
             self.loaded
                 .as_ref()
                 .map(|loaded| format!("{} lines", loaded.doc.lines())),
         );
         facts.extend(self.is_new().then(|| "new".to_owned()));
-        facts.extend(marks::counted(&hub.model, path(self.tab)));
+        facts.extend(marks::counted(&hub.model, self.path));
         facts.join(" · ")
     }
 
@@ -218,7 +248,7 @@ impl<'a> Shown<'a> {
     fn marks(&self, hub: &Hub, viewer: Option<&Viewer>) -> Rc<Marks> {
         let theirs = viewer
             .and_then(|viewer| viewer.marks.as_ref())
-            .filter(|(file, _)| file == path(self.tab))
+            .filter(|(file, _)| file == self.path)
             .map(|(_, marks)| (**marks).clone());
         let base = theirs.unwrap_or_default();
         let base = match self.is_new() {
@@ -226,7 +256,7 @@ impl<'a> Shown<'a> {
             false => base,
         };
         Rc::new(match &self.loaded {
-            Some(loaded) => marks::onto(base, &hub.model, path(self.tab), &loaded.doc),
+            Some(loaded) => marks::onto(base, &hub.model, self.path, &loaded.doc),
             None => base,
         })
     }
@@ -238,15 +268,15 @@ pub fn thing_at(hub: &Hub, pane: PaneId, key: &str) -> Option<Thing> {
     if let Some(reference) = refs::thing_at(hub, pane, key) {
         return Some(reference);
     }
-    let shown = Shown::of(hub)?;
+    let shown = Shown::of(hub, pane)?;
     let line = line_of(key)?;
     let viewer = hub.panes.get::<Viewer>(Some(pane));
     let selected = viewer
         .and_then(|viewer| viewer.selected.as_ref())
-        .filter(|(file, lines)| *file == shown.tab.id && lines.contains(line))
+        .filter(|(file, lines)| *file == shown.id && lines.contains(line))
         .map(|(_, lines)| *lines);
     let lines = selected.unwrap_or(Lines::new(line, line));
-    thing(path(shown.tab), &shown.loaded?.doc, lines)
+    thing(shown.path, &shown.loaded?.doc, lines)
 }
 
 /// The file a surface was built for, kept by the handler that hears it.
@@ -336,9 +366,9 @@ fn surface(pane: &PaneCx<'_>, key: &str, shown: &Shown<'_>, wide: Option<f32>) -
     let id = pane.pane;
     let open = Open {
         pane: id,
-        id: shown.tab.id.clone(),
+        id: shown.id.clone(),
         key: key.to_owned(),
-        path: path(shown.tab).to_owned(),
+        path: shown.path.to_owned(),
         doc: loaded.doc.clone(),
     };
     let fix = marks::bar_line(pane.hub, &open.path);
@@ -398,16 +428,32 @@ fn cut_row(tokens: &Tokens, key: &str, file: &Row) -> El {
         .child(text(said).font(META).color(colour(tokens.faint)).truncate())
 }
 
+/// Asks the files source for the text of `path` once, when this is laid out.
+fn asked(key: &str, path: &str) -> El {
+    let file = PathBuf::from(path);
+    el().key(format!("{key}.unread.{path}.ask"))
+        .size(0.0, 0.0)
+        .on_layout_tx(move |win: &mut Win, _, _: &mut Tx| {
+            dispatch(win, Msg::Source(FILES, SourceCmd::Read(file.clone())));
+        })
+}
+
 fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
     let tokens = pane.tokens();
     let key = pane.key(PaneKind::Code);
-    let shown = Shown::of(pane.hub);
-    let file = shown.as_ref().map(|shown| path(shown.tab));
+    let shown = Shown::of(pane.hub, pane.pane);
+    let file = shown.as_ref().map(|shown| shown.path);
     let crumb =
         file.map(|file| breadcrumb(tokens, &key, file, marks::server(pane.hub, &key, file)));
     let wide = cx.layout_size(&format!("{key}.code")).map(|[wide, _]| wide);
     let files = pane.model().tables.get(FILES);
-    let read = shown.as_ref().and_then(|shown| files?.find(&shown.tab.id));
+    let read = shown.as_ref().and_then(|shown| files?.find(&shown.id));
+    // Invariant: a file's text is asked for when its tab opens. A file a pane is about and
+    // no tab holds was asked for by nothing, so the pane asks.
+    let unread = shown
+        .as_ref()
+        .filter(|shown| read.is_none() && shown.tab.is_none());
+    let ask = unread.map(|shown| asked(&key, shown.path));
     let cut = read
         .filter(|row| row.get("truncated") == Some(&Value::Flag(true)))
         .map(|row| cut_row(tokens, &key, row));
@@ -437,8 +483,9 @@ fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
         .child(body)
         .children(shown.as_ref().and_then(|shown| {
             let rev = shown.loaded.as_ref()?.doc.rev();
-            Some(told(&key, path(shown.tab), rev))
+            Some(told(&key, shown.path, rev))
         }))
+        .children(ask)
         .children(marks::card(pane.hub, cx, &key));
     crate::files::pane::copy::under(pane, &key, pane_col)
 }

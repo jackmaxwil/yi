@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::error::Error;
 use std::rc::Rc;
 
-use rune::{Cx, El, Env, Runtime, col};
+use rune::{Cx, El, Env, Mods, PhysicalInput, Runtime, col};
 use yd_core::command::table::Target;
 use yd_core::feed::{FeedEvent, LSP, OPEN_FILES, SourceCmd};
 use yd_core::ids::WindowId;
@@ -259,6 +259,12 @@ fn command_click_goes_to_the_definition_once_its_row_has_come() -> Check {
             feed(&mut hub, vec![answer]);
         }
     });
+    // The answer comes while ⌘ is still down from the click: it opens in the viewer all the
+    // same, where a press with ⌘ held would open the file beside.
+    rt.physical_input(PhysicalInput::Modifiers(Mods {
+        cmd: true,
+        ..Mods::default()
+    }));
     assert!(followed(&mut rt));
     let hub = rt.state.hub.try_borrow()?;
     let open = hub.model.tables.get(OPEN_FILES).ok_or("no open files")?;

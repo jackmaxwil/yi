@@ -12,7 +12,7 @@ use yd_core::kind::Kind;
 use yd_core::row::{Dot, Value};
 use yd_ui::code::doc::{Lang, LineNo};
 use yd_ui::code::hover::{self, Card, Link, Press};
-use yd_ui::grid_view::view::open_file;
+use yd_ui::grid_view::view::open_here;
 use yd_ui::kit::button::{Button, button};
 use yd_ui::kit::status::{badge, dot};
 use yd_ui::menu::command_box;
@@ -76,7 +76,7 @@ pub(super) fn arrived(win: &mut Win, tx: &mut Tx) -> bool {
         return false;
     };
     kept(win, |kept, _| kept.pending = None);
-    open_file(win, tx, place);
+    open_here(win, tx, place);
     true
 }
 

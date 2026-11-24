@@ -6,7 +6,7 @@ use crate::grid::layout::{ChatSide, Edge, GridError, Layout};
 use crate::grid::leave::{split, stack};
 use crate::grid::place::place;
 use crate::grid::saved::JUST_CHAT;
-use crate::grid::swap::{Spot, land};
+use crate::grid::swap::{Spot, land, own};
 use crate::grid::windows::{Pane, Scope, WindowOp, Windows};
 use crate::ids::{PaneId, WindowId};
 use crate::pane::{PaneKind, Place};
@@ -23,13 +23,14 @@ fn host(grid: &Windows, layout: &Layout, place: Place) -> Option<PaneId> {
     layout.areas.iter().map(|(pane, _)| *pane).find(placed)
 }
 
-/// Shows a pane of `kind` in `id`, the person's from then on. One the window has comes in
-/// front; else a hidden or a new one joins the stack of its place, or opens that place.
+/// Shows a pane of `kind` in `id`, the person's: one the window has comes in front, else one
+/// joins its place's stack or, with `cut`, takes that edge of the named or its place's slot.
 pub(super) fn open(
     grid: &mut Windows,
     id: WindowId,
     kind: PaneKind,
     thing: Option<Address>,
+    cut: Option<(Option<PaneId>, Edge)>,
 ) -> Result<Vec<WindowOp>, GridError> {
     let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
     let of_kind =
@@ -59,8 +60,17 @@ pub(super) fn open(
         made.thing = thing;
     }
     fresh(grid, id, pane);
-    if seat(grid, id, pane)? {
-        raise(grid, id, pane)?;
+    let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
+    let goes = grid.panes.iter().find(|other| other.id == pane);
+    let goes = goes.map(|made| grid.place_of(made));
+    let beside = cut.and_then(|(named, edge)| {
+        let slot = named.or_else(|| host(grid, layout, goes?))?;
+        Some((layout.front(slot).unwrap_or(slot), own(edge, grid.side)))
+    });
+    match beside {
+        Some((beside, edge)) => edit(grid, id, |layout| split(layout, beside, edge, pane))?,
+        None if seat(grid, id, pane)? => raise(grid, id, pane)?,
+        None => {}
     }
     Ok(Vec::new())
 }

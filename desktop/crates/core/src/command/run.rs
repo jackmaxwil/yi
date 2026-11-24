@@ -7,7 +7,7 @@ use crate::command::by_kind::{FINDING, NEW_FINDING};
 use crate::command::table::{FLIP_CHAT, OPEN_FILE, Run, Target};
 use crate::feed::{FILES, FeedEvent, OPEN_FILES, SourceCmd, Table};
 use crate::findings::triage;
-use crate::ids::{CommandId, RowId};
+use crate::ids::{CommandId, PaneId, RowId};
 use crate::kind::Kind;
 use crate::model::Model;
 use crate::msg::Effect;
@@ -47,9 +47,25 @@ pub fn opened(tab: &Row) -> u64 {
     count.unwrap_or(0)
 }
 
+/// The path of the file a code pane shows: the one it is about, else the open file opened
+/// last, which every code pane about no file shows.
+pub fn shown_path(model: &Model, pane: PaneId) -> Option<&str> {
+    if let Some(file) = model.grid.thing(pane) {
+        return Some(file.id());
+    }
+    let table = model.tables.get(OPEN_FILES)?;
+    opened_last(table)?.words("path")
+}
+
+/// The open file opened last: the tab a code pane about no file shows.
+pub fn opened_last(table: &Table) -> Option<&Row> {
+    (0..table.len())
+        .filter_map(|at| table.get(at))
+        .max_by_key(|tab| opened(tab))
+}
+
 fn newest(table: &Table) -> u64 {
-    let tabs = (0..table.len()).filter_map(|at| table.get(at));
-    tabs.map(opened).max().unwrap_or(0)
+    opened_last(table).map_or(0, opened)
 }
 
 /// The text of a `code.open` that only looks: a file not open yet opens as the one preview tab.
@@ -203,6 +219,41 @@ mod tests {
             both,
             "the preview looked at again is still it"
         );
+        Ok(())
+    }
+
+    /// A code pane about a file shows that file whatever is opened after; one about none
+    /// shows the file opened last.
+    #[test]
+    fn a_pane_about_a_file_shows_it_and_any_other_the_file_opened_last()
+    -> Result<(), Box<dyn Error>> {
+        use crate::grid::layout::Edge;
+        use crate::grid::step::GridMsg;
+        use crate::ids::WindowId;
+        use crate::pane::PaneKind;
+        let mut model = Model::default();
+        let (window, saved) = (WindowId(0), "code");
+        step(&mut model, Msg::Grid(GridMsg::Show { window, saved }));
+        let viewer = model.grid.panes.iter().find(|p| p.kind == PaneKind::Code);
+        let viewer = viewer.map(|pane| pane.id).ok_or("no code pane")?;
+        assert_eq!(shown_path(&model, viewer), None, "nothing is open");
+        open(&mut model, "yi://file/a.rs")?;
+        let thing = "yi://file/a.rs".parse::<Address>()?;
+        let (kind, pane, edge) = (PaneKind::Code, None, Edge::Right);
+        let beside = GridMsg::Beside {
+            window,
+            kind,
+            thing: thing.clone(),
+            pane,
+            edge,
+        };
+        step(&mut model, Msg::Grid(beside));
+        let about = |pane: &&crate::grid::windows::Pane| pane.thing.as_ref() == Some(&thing);
+        let pinned = model.grid.panes.iter().find(about).map(|pane| pane.id);
+        let pinned = pinned.ok_or("no pane about a.rs")?;
+        open(&mut model, "yi://file/b.rs")?;
+        assert_eq!(shown_path(&model, pinned), Some("a.rs"));
+        assert_eq!(shown_path(&model, viewer), Some("b.rs"));
         Ok(())
     }
 

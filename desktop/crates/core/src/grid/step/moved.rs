@@ -142,3 +142,21 @@ fn the_slot_a_moved_tab_left_shows_a_tab_of_the_session_shown() -> Check {
     assert!(!is_drawn(&model, debugger)?, "not the other session's tab");
     Ok(())
 }
+
+/// A pane out in a window of its own is not moved, though that window holds other panes:
+/// the move made it a tab there, which a press on another left in two windows at once.
+#[test]
+fn a_pane_out_of_its_window_is_not_moved_though_its_own_window_holds_others() -> Check {
+    let mut model = showing("everything");
+    let terminal = pane(&model, Terminal)?;
+    change(&mut model, GridMsg::Leave(terminal));
+    let window = model.grid.window_of(terminal).ok_or("it is in no window")?;
+    assert_ne!(window, MAIN, "out in its own");
+    let saved = "code";
+    change(&mut model, GridMsg::Show { window, saved });
+    let before = model.grid.clone();
+    to(&mut model, terminal, Place::Work);
+    assert_eq!(model.grid, before, "refused whole");
+    model.grid.check()?;
+    Ok(())
+}

@@ -12,13 +12,14 @@ use yd_core::grid::saved::{JUST_CHAT, OwnId, Slug};
 use yd_core::grid::step::GridMsg;
 use yd_core::grid::swap::{Spot, Zone};
 use yd_core::ids::{CommandId, PaneId, TabId, WindowId};
+use yd_core::kind::Kind;
 use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
 
 use crate::chrome::frame::{Look, Surface, surface};
 use crate::chrome::tabs::{self, Bar, Tab, Tabs, Turn};
 use crate::grid_view::drag::{At, GLIDE, Gesture, HELD, LIFT, LOOSE, preview};
-use crate::grid_view::{picker, resize};
+use crate::grid_view::{beside, picker, resize};
 use crate::menu::command_box;
 use crate::pane::{PaneCx, SCENE_PANE, Scene, Stage, TabAsk};
 use crate::theme::look::colour;
@@ -258,9 +259,14 @@ fn slot_tabs(context: &PaneCx<'_>, window: WindowId, kind: PaneKind, width: f32)
                 let unseen =
                     |other: &&yd_core::grid::windows::Pane| other.id == *pane && other.unseen;
                 let dot = grid.panes.iter().any(|other| unseen(&other));
+                // A pane about a file is known by the file's name, as on its own bar.
+                let about = grid.thing(*pane).filter(|thing| thing.kind() == Kind::File);
+                let name = about.and_then(|file| file.id().rsplit('/').next());
+                let tab = Tab::stacked(*pane, kind);
                 shown.tabs.push(Tab {
                     dot,
-                    ..Tab::stacked(*pane, kind)
+                    title: name.map_or(tab.title.clone(), str::to_owned),
+                    ..tab
                 });
             }
             None if Some(n) == at => shown.tabs.append(&mut own),
@@ -349,7 +355,23 @@ pub fn preview_file(win: &mut Win, tx: &mut Tx, file: Address) {
     open_as(win, tx, file, Some(PREVIEW.to_owned()));
 }
 
+/// [`open_file`] whatever keys are held: for a file no press chose, as a definition that
+/// arrives while ⌘ is still down.
+pub fn open_here(win: &mut Win, tx: &mut Tx, file: Address) {
+    in_viewer(win, tx, file, None);
+}
+
+/// With ⌘ held the file opens beside, in a code pane about it; with ⌥ too, in a window of
+/// its own. Any other press opens it in the viewer.
 fn open_as(win: &mut Win, tx: &mut Tx, file: Address, text: Option<String>) {
+    let held = tx.mods();
+    if held.cmd {
+        return beside::show(win, tx, &file, None, held.alt);
+    }
+    in_viewer(win, tx, file, text);
+}
+
+fn in_viewer(win: &mut Win, tx: &mut Tx, file: Address, text: Option<String>) {
     let run = Run {
         text,
         ..Run::new(OPEN_FILE).on(Target::Thing(file))
@@ -510,10 +532,7 @@ pub fn act(win: &mut Win, tx: &mut Tx, act_on: Act) {
         }
         Act::TearOut(pane, tab) => tear_out(win, tx, pane, tab),
         Act::NewTab(_) => {}
-        Act::Split(pane) => {
-            tx.motion_curve(GLIDE);
-            split(win, pane, Edge::Right);
-        }
+        Act::Split(pane) => beside::split(win, tx, pane, Edge::Right),
         Act::PopOut(pane) => {
             let pulled = win
                 .hub
@@ -590,23 +609,27 @@ pub fn act(win: &mut Win, tx: &mut Tx, act_on: Act) {
     }
 }
 
+/// The pane this window draws that `kind` alone means: a pane about one thing, a child's
+/// chat or one file's code, is not it.
+pub(super) fn plain(win: &Win, kind: PaneKind) -> Option<PaneId> {
+    let hub = win.hub.try_borrow().ok()?;
+    let grid = &hub.model.grid;
+    let mut docked = grid.window(win.window)?.layout.docked();
+    docked.find_map(|(pane, _)| {
+        (grid.kind(pane) == Some(kind) && grid.thing(pane).is_none()).then_some(pane)
+    })
+}
+
 /// Puts a pane of `kind` in front in this window, opening one beside the largest pane when
 /// the window draws none. None when the grid cannot make room for it.
 pub fn show_pane(win: &mut Win, tx: &mut Tx, kind: PaneKind) -> Option<PaneId> {
     let window = win.window;
-    let drawn = |win: &Win| {
-        let hub = win.hub.try_borrow().ok()?;
-        let grid = &hub.model.grid;
-        let mut docked = grid.window(window)?.layout.docked().map(|(pane, _)| pane);
-        // A pane about one thing, a child's chat, is not the pane its kind alone means.
-        docked.find(|pane| grid.kind(*pane) == Some(kind) && grid.thing(*pane).is_none())
-    };
-    let pane = match drawn(win) {
+    let pane = match plain(win, kind) {
         Some(pane) => pane,
         None => {
             tx.motion_curve(GLIDE);
             dispatch(win, Msg::Grid(GridMsg::Open { window, kind }));
-            drawn(win)?
+            plain(win, kind)?
         }
     };
     act(win, tx, Act::Focus(pane));
