@@ -119,6 +119,8 @@ A table the app reads. Each row: when, what to show, where, and when it ends.
 
 Four rows to start, and this change builds three: the IPython row waits until its kind has a test for something to show (row 118). An untouched tab a rule opened closes when its thing ends. A tab the user clicked or kept stays. Everything that was ever shown stays listed in the Environment column (✓ DF16), one click to bring back.
 
+The rules are checked against recorded sessions, not against what the app drew: `a_recorded_session_ends_with_the_panes_the_rules_say` replays six recordings through the reducer and reads the tabs the rules give.
+
 A right-click on any pane bar offers "Always open here" and "Never open by itself". Each writes a row to the settings file (✓ settings store). That is the whole of the user's control over the automatic part.
 
 As built: both write one settings row, `panes.opens`, a line a kind. "Always open here" names the place of the slot the pane is in, opens the kind there in every session whether or not it has something to show, and covers kinds no rule names. Picking the ticked row takes the word back. The chat is offered neither.

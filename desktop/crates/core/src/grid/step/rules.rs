@@ -155,9 +155,10 @@ fn a_pane_docks_beside_the_slot_its_old_neighbour_came_back_into() -> Check {
     let mut model = window("everything", &[Chat, Changes, Web]);
     let web = pane(&model, Web)?;
     change(&mut model, GridMsg::Leave(web));
+    // Changes has nothing as the layout changes, so it comes later, behind Code.
+    tell(&mut model, "a", &[Chat, Web]);
     let (window, saved) = (MAIN, "chat");
     change(&mut model, GridMsg::Show { window, saved });
-    tell(&mut model, "a", &[Chat, Web]);
     open(&mut model, Code);
     tell(&mut model, "a", &[Chat, Web, Code, Changes]);
     let (code, chat) = (pane(&model, Code)?, pane(&model, Chat)?);
@@ -307,5 +308,24 @@ fn a_pane_always_opened_in_a_place_holds_that_place_for_the_next() -> Check {
     assert_eq!(drawn(&model)?.len(), 2, "its place opened beside the chat");
     tell(&mut model, "a", &[Chat, Logs, Changes]);
     assert_eq!(tabs(&model, logs)?, [Logs, Changes]);
+    Ok(())
+}
+
+/// A layout sets places only: picking one drops the panes it has no seat for, and what the
+/// session still has that opens by itself comes again, the same pane. Not beside Just chat.
+#[test]
+fn what_opened_by_itself_comes_again_after_a_layout_is_picked() -> Check {
+    let mut model = window("chat", &[Chat, Agents]);
+    let agents = pane(&model, Agents)?;
+    let held = |model: &Model| model.grid.home_of(agents) == Some(MAIN);
+    assert!(held(&model), "it opened by itself");
+    let (window, saved) = (MAIN, "chat");
+    change(&mut model, GridMsg::Show { window, saved });
+    assert!(held(&model), "and again after the layout");
+    assert_eq!(of(&model, Agents).len(), 1, "the same pane");
+    assert_eq!(drawn(&model)?.len(), 2);
+    let saved = "just-chat";
+    change(&mut model, GridMsg::Show { window, saved });
+    assert_eq!(drawn(&model)?.len(), 1, "Just chat is the chat alone");
     Ok(())
 }

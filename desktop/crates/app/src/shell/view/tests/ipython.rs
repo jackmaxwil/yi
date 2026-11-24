@@ -30,7 +30,7 @@ fn made(recording: &str) -> Result<ThreadId, Box<dyn Error>> {
 }
 
 /// The app's window over the first `to` recorded lines, its thread shown, chat alone.
-fn window(recording: &str, to: usize) -> Result<Runtime<Win>, Box<dyn Error>> {
+pub(super) fn window(recording: &str, to: usize) -> Result<Runtime<Win>, Box<dyn Error>> {
     let win = root::init();
     let thread = made(recording)?;
     {
