@@ -19,6 +19,7 @@ use yd_ui::pane::{PaneDef, SCENE_PANE, Stage};
 use yd_ui::win::{Hub, Win};
 
 use super::{DEF, current, path, scenes, thing_at};
+use crate::test_support::tap;
 
 const TABS: yd_core::ids::FeedId = OPEN_FILES;
 static DEFS: &[&PaneDef] = &[&DEF];
@@ -153,6 +154,47 @@ fn a_pane_with_no_file_open_keeps_its_name_on_its_tab() -> Check {
         element(&rt, "code-0.tab-0.pane-tab").is_err(),
         "with a file open the tabs are the files"
     );
+    Ok(())
+}
+
+/// A file looked at has the preview tab. Brought in front again by its tab it is still the
+/// preview; its tab pressed while it is in front keeps it.
+#[test]
+fn the_preview_tab_is_kept_by_a_press_on_it_while_it_shows() -> Check {
+    let (mut rt, _) = scene("code/mockup")?;
+    let third = Address::new(Kind::File, "src/lib.rs")?;
+    let look = Run {
+        text: Some(yd_core::command::run::PREVIEW.to_owned()),
+        ..Run::new(OPEN_FILE).on(Target::Thing(third))
+    };
+    rt.update(move |win, _| yd_ui::win::dispatch(win, Msg::Command(Route::Model, look.clone())));
+    run(&mut rt, 0.2);
+    let preview = |rt: &Window| -> Result<bool, Box<dyn Error>> {
+        let hub = rt.state.hub.try_borrow()?;
+        let table = hub.model.tables.get(TABS).ok_or("no tabs")?;
+        let tab = table
+            .find(&RowId::new("file:src/lib.rs"))
+            .ok_or("lib.rs has no tab")?;
+        Ok(yd_core::command::run::previewed(tab))
+    };
+    assert_eq!(shown_file(&rt)?, "src/lib.rs");
+    assert!(preview(&rt)?, "a look is the preview");
+    let third = {
+        let hub = rt.state.hub.try_borrow()?;
+        let table = hub.model.tables.get(TABS).ok_or("no tabs")?;
+        let tab = table.find(&RowId::new("file:src/lib.rs"));
+        let number = tab
+            .and_then(|tab| tab.words("tab"))
+            .ok_or("no tab number")?;
+        format!("code-0.tab-{number}.pane-tab")
+    };
+    tap(&mut rt, "code-0.tab-2.pane-tab", |rt| run(rt, 0.2))?;
+    assert_eq!(shown_file(&rt)?, UPLOAD);
+    tap(&mut rt, &third, |rt| run(rt, 0.2))?;
+    assert_eq!(shown_file(&rt)?, "src/lib.rs");
+    assert!(preview(&rt)?, "brought in front, it is still the preview");
+    tap(&mut rt, &third, |rt| run(rt, 0.2))?;
+    assert!(!preview(&rt)?, "pressed while it shows, it is kept");
     Ok(())
 }
 

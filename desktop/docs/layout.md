@@ -146,8 +146,8 @@ Every row is a `Show` or an existing grid message. Nothing here needs a new idea
 
 | Input | Does | Built on |
 |---|---|---|
-| Click a thing (chat, Environment, Files) | Preview tab in its place | ✚ Show(Preview) |
-| Double-click | Keeps the tab | ✚ |
+| Click a thing (chat, Environment, Files) | Preview tab in its place | ✓ a file in Files (`preview_file`, the `preview` cell of the open-files table); ✚ the rest, with Show |
+| Double-click | Keeps the tab | ✓ a file's row in Files; a press on the preview tab while it shows keeps it too |
 | ⌘-click | Opens beside, as a split | ✓ `Beside` |
 | ⌥⌘-click | Opens in its own window | ✓ `Leave` |
 | Space on a selected thing | Peek: a pop-over, no pane | ✚ Show(Peek) on ✓ `Popover` |

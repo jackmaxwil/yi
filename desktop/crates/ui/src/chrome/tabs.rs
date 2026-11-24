@@ -153,6 +153,8 @@ pub struct Tab {
     pub meta: String,
     /// It cannot close: a pane's own tab that the others go back to. It has no cross.
     pub fixed: bool,
+    /// It is a look, not yet kept: the next look takes its place. Its title is italic.
+    pub preview: bool,
 }
 
 /// Tab ids from here up are not a pane's own: each names a pane stacked behind the one
@@ -188,6 +190,7 @@ impl Tab {
             count: None,
             meta: String::new(),
             fixed: false,
+            preview: false,
         }
     }
 
@@ -385,7 +388,7 @@ fn tab(tokens: &Tokens, bar: &Bar<'_>, tab: &Tab, active: bool) -> El {
         .child(glyph(tab.icon, ICON, ink))
         .child(
             text(tab.title.as_str())
-                .font(LABEL)
+                .font(if tab.preview { LABEL.italic() } else { LABEL })
                 .color(colour(ink))
                 .truncate()
                 .min_w(0.0)

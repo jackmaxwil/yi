@@ -87,6 +87,7 @@ pub(super) fn show(hub: &mut Hub, saved: Slug) {
                 count: *count,
                 meta: meta_of(title).to_owned(),
                 fixed: false,
+                preview: false,
             })
             .collect();
     }

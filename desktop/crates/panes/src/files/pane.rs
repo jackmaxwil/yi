@@ -25,7 +25,7 @@ use yd_core::pane::PaneKind;
 use yd_core::tokens::Tokens;
 use yd_ui::a11y;
 use yd_ui::chrome::tabs::{Tab, Tabs};
-use yd_ui::grid_view::view::open_file;
+use yd_ui::grid_view::view::{open_file, preview_file};
 use yd_ui::kit::chip::{Chip, chip};
 use yd_ui::kit::icons::{SEARCH, glyph};
 use yd_ui::kit::key_hint::key_hint;
@@ -465,6 +465,7 @@ impl Rows {
         };
         let ink = if on { tokens.fg } else { tokens.dim };
         let (pane, path, dir) = (self.pane, path.to_owned(), matches!(fold, Some(Some(_))));
+        let kept = path.clone();
         a11y::item(row(), tokens, on)
             .key(key)
             .h(tokens.row)
@@ -490,6 +491,11 @@ impl Rows {
             )
             .on_press_tx(move |win: &mut Win, tx: &mut Tx| {
                 pressed(win, tx, pane, &id, &path, dir);
+            })
+            .on_double_press_tx(move |win: &mut Win, tx: &mut Tx| {
+                if let (false, Ok(file)) = (dir, Address::new(Kind::File, kept.as_str())) {
+                    open_file(win, tx, file);
+                }
             })
     }
 
@@ -519,7 +525,8 @@ impl Rows {
     }
 }
 
-/// A press on a row: a folder opens or shuts, a file is selected and opened in the viewer.
+/// A press on a row: a folder opens or shuts; a file is selected and shown in the viewer's
+/// preview tab, which a second press on the row keeps.
 fn pressed(win: &mut Win, tx: &mut Tx, pane: PaneId, id: &str, path: &str, dir: bool) {
     change(win, pane, |s| {
         if !dir {
@@ -529,7 +536,7 @@ fn pressed(win: &mut Win, tx: &mut Tx, pane: PaneId, id: &str, path: &str, dir: 
         }
     });
     if let (false, Ok(file)) = (dir, Address::new(Kind::File, path)) {
-        open_file(win, tx, file);
+        preview_file(win, tx, file);
     }
 }
 

@@ -34,9 +34,9 @@ macro_rules! panes {
                 use PaneKind::*;
                 match self {
                     Chat => Place::Chat,
-                    Terminal | Logs | Trace => Place::Shelf,
+                    Terminal | Logs | Trace | LanguageServers => Place::Shelf,
                     Files | Agents | Findings | Assets | Containers | Vms | Daemons
-                    | Plugins | LanguageServers => Place::Side,
+                    | Plugins => Place::Side,
                     Changes | Code | Web | Remote | Report | Design | Debugger | Settings
                     | Themes | PluginKit | Script | IPython => Place::Work,
                 }

@@ -4,7 +4,7 @@ use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, col};
 use yd_core::feed::FeedEvent;
 use yd_core::ids::WindowId;
 use yd_core::msg::{Msg, step};
-use yd_core::row::{Row, Value};
+use yd_core::row::{Row, Rows, Value};
 use yd_ui::pane::{PaneCx, SCENE_PANE};
 use yd_ui::win::{Hub, Win};
 
@@ -224,6 +224,57 @@ fn pressing_a_file_opens_it_in_the_code_viewer() -> Result<(), Box<dyn Error>> {
         tab.is_some(),
         "a pressed file has no tab in the code viewer"
     );
+    Ok(())
+}
+
+/// The viewer's open files as `(file name, is the preview)`, in tab order.
+fn open_files(rt: &Runtime<Win>) -> Result<Vec<(String, bool)>, Box<dyn Error>> {
+    let hub = rt.state.hub.try_borrow()?;
+    let Some(table) = hub.model.tables.get(yd_core::feed::OPEN_FILES) else {
+        return Ok(Vec::new());
+    };
+    let tabs = (0..table.len()).filter_map(|at| table.get(at));
+    let file = |tab: &Row| {
+        let path = tab.words("path").unwrap_or_default();
+        let name = path.rsplit('/').next().unwrap_or_default().to_owned();
+        (name, yd_core::command::run::previewed(tab))
+    };
+    Ok(tabs.map(file).collect())
+}
+
+fn row_of(rt: &Runtime<Win>, name: &str) -> Result<String, Box<dyn Error>> {
+    let row = rt.elements().into_iter().find_map(|e| {
+        let key = e
+            .key
+            .filter(|key| key.contains(".row.") && key.ends_with(name))?;
+        (!e.exiting).then_some(key)
+    });
+    Ok(row.ok_or(format!("{name} has no row"))?)
+}
+
+/// One press on a file looks at it: the next press on another takes its tab. A second press
+/// on the same row keeps the file, and the next look opens beside it.
+#[test]
+fn a_press_looks_at_a_file_and_a_double_press_keeps_it() -> Result<(), Box<dyn Error>> {
+    let mut rt = window(None)?;
+    let (upload, limit) = (row_of(&rt, "upload.rs")?, row_of(&rt, "rate_limit.rs")?);
+    press(&mut rt, &upload)?;
+    press(&mut rt, &limit)?;
+    assert_eq!(open_files(&rt)?, [("rate_limit.rs".to_owned(), true)]);
+    let [x, y, w, h] = find(&rt, &limit)?;
+    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    for _ in 0..2 {
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(open_files(&rt)?, [("rate_limit.rs".to_owned(), false)]);
+    press(&mut rt, &upload)?;
+    let both = [
+        ("rate_limit.rs".to_owned(), false),
+        ("upload.rs".to_owned(), true),
+    ];
+    assert_eq!(open_files(&rt)?, both);
     Ok(())
 }
 
