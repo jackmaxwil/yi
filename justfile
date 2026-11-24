@@ -176,7 +176,8 @@ desktop:
     if [ "$(uname)" = Linux ] && ! pkg-config --exists xkbcommon; then
       apt-get update -qq && apt-get install -y -qq --no-install-recommends libxkbcommon-dev
     fi
-    cd desktop && rustup show active-toolchain && just gate
+    PY=$(scripts/py.sh)
+    cd desktop && rustup show active-toolchain && PY="$PY" just gate
 
 # Tier 3, every version tag: check the tag against the version of record, then the artifact.
 prerelease version:

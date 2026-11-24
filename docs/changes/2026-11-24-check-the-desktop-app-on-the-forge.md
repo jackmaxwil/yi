@@ -1,5 +1,6 @@
 ---
 issue: Closes #2341
+cut: none desktop/justfile
 shares: #2343 this adds one lane name to `GATE_LANES` in pr_review.py and a word to one docstring in pr_autofix.py, lines that pull request leaves alone
 shares: #2342 this changes the candidate's stale limit and its comment in pr_queue.py and one self-check's lane list in forge_pr.py, lines that pull request leaves alone
 shares: #2239 this changes the `yd-mac` row of the crate table in desktop/docs/architecture.md, eighty lines above the one that pull request changes
