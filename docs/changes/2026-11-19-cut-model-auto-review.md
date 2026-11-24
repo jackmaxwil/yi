@@ -1,4 +1,6 @@
 ---
+version: 0.1114.0
+decisions: D615
 issue: Closes #2302
 shares: #2301 deletes the auto-review code this change deletes in auto_review.rs and permission.rs
 shares: #2299 adds a config key and a design line near the keys this change edits in config.rs and YI_DESIGN.md

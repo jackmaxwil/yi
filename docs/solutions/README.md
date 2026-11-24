@@ -585,5 +585,6 @@ edited by hand.
 - [D612](adr/d612.md) - Admit children and lanes by host headroom, never by a fixed count
 - [D613](adr/d613.md) - the autofixer calls a base red only when the forge's own test lane on it ran...
 - [D614](adr/d614.md) - the model gets one tool, `show`
+- [D615](adr/d615.md) - Model auto-review is deleted, and `ask_user` is registered in every session...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

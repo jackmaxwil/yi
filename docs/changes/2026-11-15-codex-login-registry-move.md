@@ -1,4 +1,5 @@
 ---
+version: 0.1113.0
 issue: #2221
 raise: tests +62
 cut: crates/oauth/src/codex.rs | pub const CODEX_ID: &str = "openai-codex"; | the profile and its id moved into registry.rs beside the Claude profile, so the one-provider module has no reason to exist

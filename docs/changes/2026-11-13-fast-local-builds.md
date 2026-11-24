@@ -1,4 +1,5 @@
 ---
+version: 0.1111.0
 growth: +60 build config, docs and an unwired experiment; nothing in src/ moves, nothing was weighed for deletion because every line is new opt-in tooling
 ---
 Opt-in fast local builds. `just dev-fast [cargo build args]` (default `-p yi-cli`) builds with nightly's Cranelift codegen backend on the dev profile into `target/dev-fast`, leaving `target/debug`, `rust-toolchain.toml` (1.94.0) and CI alone. It needs `rustup component add rustc-codegen-cranelift-preview --toolchain nightly` and says so when the component is missing. The recipe sets `RUSTC_WRAPPER=sccache` when sccache is on `PATH`, and on Linux adds `-C link-arg=-fuse-ld=mold` when mold is on `PATH`. mold has no Mach-O support, so macOS keeps the default ld-prime linker. A machine with none of these tools still builds. The recipe is the one entry point: it passes `-Zcodegen-backend` and sets `CARGO_PROFILE_DEV_CODEGEN_BACKEND=cranelift` itself, so no `.cargo` file and no cargo alias exist.
