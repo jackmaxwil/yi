@@ -5,5 +5,6 @@ cut: desktop/crates/app/src/shell/view/tests/panes.rs | fn a_pane_switched_on_is
 cut: none desktop/docs/architecture.md
 cut: none desktop/docs/layout.md
 cut: none desktop/crates/core/src/grid/step/resting.rs
+cut: none desktop/crates/ui/src/overlay/pick.rs
 ---
 In Yi Desktop, the Panes panel (⌥⌘0) now lists what the session has open, grouped by where it sits: chat, work, side and shelf. Click a row to go to that pane, including a tab hidden behind another or a pane pulled out into its own window; the small cross on a row closes it. Kinds of pane that have something to show but are not open are offered at the bottom under "Not open". The old switch for every kind of pane, most of which opened an empty pane, is gone.
