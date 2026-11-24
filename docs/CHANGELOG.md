@@ -6,6 +6,7 @@ there and writes its row here, in the order main landed the files.
 
 | ver | date | change |
 |---|---|---|
+| 0.1100.0 | 2026-11-24 | Yi Desktop's pane bars now answer the trackpad and the middle button: two fingers sideways along a bar turn its tabs, one for each short stretch, and a middle-click on a tab closes it. A flick does not run through the tabs after the fingers lift, and a tab with no close cross is left alone. (Refs #2308) |
 | 0.1099.0 | 2026-11-24 | Yi Desktop can now give one pane the whole window: pinch out on it, tap it twice with two fingers, double-click the empty part of its bar, or press ⌘⇧↩. The same again brings every pane back exactly where it was. Tabs of the filled pane still switch in place; opening, closing, splitting or showing another pane ends the fill. (Refs #2308) |
 | 0.1098.0 | 2026-11-24 | Yi Desktop no longer loses a pane that opened by itself when you pick a layout. Before, Agents, Changes, the Web app or IPython vanished on the pick and stayed gone for the rest of the session; now each comes back as a quiet tab while the session still has something for it. Just chat stays the chat alone. (Refs #2307) |
 | 0.1097.0 | 2026-11-24 | Yi Desktop now opens the IPython pane by itself, as a quiet tab, the first time a kernel cell in the session draws a picture. Cells that only print or return values are already in the chat and open nothing. (Refs #2307) |
