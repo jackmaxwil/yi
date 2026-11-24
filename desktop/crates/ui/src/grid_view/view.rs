@@ -212,7 +212,7 @@ pub(crate) fn swipe(win: &mut Win, tx: &mut Tx, pane: PaneId, event: WheelEvent)
 }
 
 /// The kind of `pane`: the grid's word, or the stage's for the pane a scene draws alone.
-fn kind_of(hub: &Hub, pane: PaneId) -> Option<PaneKind> {
+pub(super) fn kind_of(hub: &Hub, pane: PaneId) -> Option<PaneKind> {
     let staged = match hub.stage {
         Stage::Pane(kind) if pane == SCENE_PANE => Some(kind),
         Stage::Pane(_) | Stage::App | Stage::View(_) => None,
@@ -222,7 +222,7 @@ fn kind_of(hub: &Hub, pane: PaneId) -> Option<PaneKind> {
 
 /// What a pane's bar shows: the tabs its definition keeps, else the tabs kept for it, else
 /// the one tab its kind names.
-fn tabs_of(context: &PaneCx<'_>, kind: PaneKind) -> Tabs {
+pub(super) fn tabs_of(context: &PaneCx<'_>, kind: PaneKind) -> Tabs {
     let hub = context.hub;
     let own = hub
         .def(kind)
@@ -316,7 +316,7 @@ fn turned(win: &mut Win, tx: &mut Tx, act_on: Act) -> bool {
 }
 
 /// Whether panes of `kind` keep their own tabs and hear what is asked of them.
-fn hears_tabs(hub: &Hub, kind: PaneKind) -> bool {
+pub(super) fn hears_tabs(hub: &Hub, kind: PaneKind) -> bool {
     let def = hub.def(kind);
     def.is_some_and(|def| def.tabs.is_some() && def.on_tab.is_some())
 }
@@ -368,13 +368,16 @@ fn highest(win: &Win) -> Option<PaneId> {
     let hub = win.hub.try_borrow().ok()?;
     hub.model.grid.panes.iter().map(|pane| pane.id).max()
 }
+pub(crate) fn split(win: &mut Win, pane: PaneId, edge: Edge) {
+    dispatch(win, Msg::Grid(GridMsg::SplitAt { pane, edge }));
+}
 
 /// A tab pulled out is a split and a leave: the grid makes a pane of the same kind beside
 /// this one and pulls it out, which asks the window layer for its window.
 fn tear_out(win: &mut Win, tx: &mut Tx, pane: PaneId, tab: TabId) {
     let before = highest(win);
     tx.motion_curve(GLIDE);
-    dispatch(win, Msg::Grid(GridMsg::Split(pane)));
+    split(win, pane, Edge::Right);
     let Some(copy) = highest(win).filter(|id| Some(*id) > before) else {
         return;
     };
@@ -509,7 +512,7 @@ pub fn act(win: &mut Win, tx: &mut Tx, act_on: Act) {
         Act::NewTab(_) => {}
         Act::Split(pane) => {
             tx.motion_curve(GLIDE);
-            dispatch(win, Msg::Grid(GridMsg::Split(pane)));
+            split(win, pane, Edge::Right);
         }
         Act::PopOut(pane) => {
             let pulled = win

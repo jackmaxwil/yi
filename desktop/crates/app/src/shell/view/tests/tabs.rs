@@ -12,7 +12,7 @@ use super::*;
 
 /// Everything with the debugger and IPython opened: Changes, the debugger and IPython are
 /// the tabs of one slot, in that order, IPython in front.
-fn stacked() -> Result<Runtime<Win>, Box<dyn Error>> {
+pub(super) fn stacked() -> Result<Runtime<Win>, Box<dyn Error>> {
     let mut runtime = settled("shell/everything")?;
     for kind in [PaneKind::Debugger, PaneKind::IPython] {
         runtime.update(move |win, _| {
@@ -25,7 +25,7 @@ fn stacked() -> Result<Runtime<Win>, Box<dyn Error>> {
 }
 
 /// The slug of the pane drawn in the slot the three share.
-fn front(runtime: &Runtime<Win>) -> Result<&'static str, Box<dyn Error>> {
+pub(super) fn front(runtime: &Runtime<Win>) -> Result<&'static str, Box<dyn Error>> {
     let shown = runtime.elements();
     let drawn = |slug: &&str| {
         let frame = |e: &&ElementInfo| {

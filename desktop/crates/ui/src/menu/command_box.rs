@@ -161,7 +161,7 @@ pub fn run(win: &mut Win, tx: &mut Tx, run: Run) -> Ran {
     if own && carry.is_some_and(|carry| carry(win, tx, id, &run.target)) {
         return Ran::Done;
     }
-    if grid_view::view::run(win, tx, id) {
+    if grid_view::aimed::carry(win, tx, id, &run.target) || grid_view::view::run(win, tx, id) {
         return Ran::Done;
     }
     if carry.is_some_and(|carry| carry(win, tx, id, &run.target)) {

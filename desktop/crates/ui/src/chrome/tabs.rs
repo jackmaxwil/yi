@@ -170,6 +170,12 @@ pub fn pane_of(tab: TabId) -> Option<PaneId> {
     tab.0.checked_sub(STACKED).map(PaneId)
 }
 
+/// Whether `tab` has a close cross on a bar whose pane lets its `own` tabs close. Another
+/// pane of the stack closes from its tab, whatever the pane in front does.
+pub fn closes(own: bool, tab: &Tab) -> bool {
+    (own || pane_of(tab.id).is_some()) && !tab.fixed
+}
+
 /// What names a tab in its key: its number, or `pane-<n>` for another pane of the stack.
 fn part(tab: TabId) -> String {
     pane_of(tab).map_or_else(|| tab.0.to_string(), |pane| format!("pane-{}", pane.0))
@@ -357,8 +363,7 @@ fn tab(tokens: &Tokens, bar: &Bar<'_>, tab: &Tab, active: bool) -> El {
         (false, _) => (tokens.faint, NONE),
     };
     let (pane, id, at) = (bar.pane, tab.id, bar.at);
-    // Another pane of the stack closes from its tab, whatever the pane in front does.
-    let closes = (bar.closes || pane_of(tab.id).is_some()) && !tab.fixed;
+    let closes = closes(bar.closes, tab);
     let counted = tab.count.map_or(0.0, |count| {
         TAB_GAP + rune::text::advance(&count.to_string(), LABEL)
     });

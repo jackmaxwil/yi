@@ -23,6 +23,7 @@ use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
 
 use crate::chrome::tabs;
+use crate::grid_view::aimed;
 use crate::grid_view::view::alone;
 use crate::kit::button::PRESS_SCALE;
 use crate::kit::chip::{Chip, chip};
@@ -184,8 +185,13 @@ fn hint(win: &Win, hub: &Hub, item: &Item, thing: &Thing) -> Option<String> {
         Hint::Said(words) => Some(words.to_owned()),
         Hint::Key => table(hub).find(item.command)?.key.map(keycap),
         Hint::Chosen => {
-            let (_, kind, word) = by_kind::word(&hub.model.grid, item.command, &thing.address)?;
-            let chosen = hub.model.settings.opens().get(&kind) == Some(&word);
+            let grid = &hub.model.grid;
+            let pane = by_kind::pane_named(&thing.address)?;
+            let said = || {
+                let (_, kind, word) = by_kind::word(grid, item.command, &thing.address)?;
+                Some(hub.model.settings.opens().get(&kind) == Some(&word))
+            };
+            let chosen = by_kind::keeps(grid, item.command, pane).or_else(said)?;
             chosen.then(|| "✓".to_owned())
         }
         Hint::Turn => {
@@ -376,13 +382,8 @@ impl Drawn<'_> {
 
     fn card(&self, at: [f32; 2]) -> El {
         let tokens = &self.hub.model.tokens;
-        // A word on opening by itself is offered only on a pane one covers.
         let address = &self.open.thing.address;
-        let offered = |item: &&Item| {
-            let grid = &self.hub.model.grid;
-            ![by_kind::PANE_ALWAYS, by_kind::PANE_NEVER].contains(&item.command)
-                || by_kind::word(grid, item.command, address).is_some()
-        };
+        let offered = |item: &&Item| aimed::offered(self.hub, item.command, address);
         let middle = items(self.open.thing.kind()).iter().filter(offered);
         let middle: Vec<&Item> = middle.collect();
         let mut card = col()
