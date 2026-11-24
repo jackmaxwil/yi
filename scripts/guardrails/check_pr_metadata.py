@@ -33,6 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, FREE_BAND, fail, row_key, table_rows  # noqa: E402
 from check_changes import DIR, LEDGER, apply_ledger, pending  # noqa: E402
 from check_commit_style import NAMED, subject_errors  # noqa: E402
+from forge_tracking import WEIGHTS, surplus  # noqa: E402
 from pr_body import base_commit, diff_stats, git, sentences, surface_delta, surface_diff, surface_entry, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
@@ -96,18 +97,14 @@ def issue_problems(transport, api, repo, number):
             f"  fgj issue reopen {number}   # or cite the issue this work is really under",
         ]
     labels = [label.get("name", "") for label in issue.get("labels") or []]
-    sizes = sorted(name for name in labels if name.startswith("size:"))
     areas = [name for name in labels if name.startswith("area:")]
-    if not sizes:
+    if not any(name.startswith("size:") for name in labels):
         errs += [
             f"#{number} carries no `size:` label; exactly one is mandatory",
             f"  fgj issue edit {number} --add-label size:M",
         ]
-    elif len(sizes) > 1:
-        errs += [
-            f"#{number} carries {len(sizes)} size labels ({', '.join(sizes)}); exactly one is",
-            f"  fgj issue edit {number} {' '.join('--remove-label ' + s for s in sizes[1:])}",
-        ]
+    elif twice := surplus(number, repo, labels, WEIGHTS, "size"):
+        errs += [f"{twice[0]}; exactly one is", f"  {twice[1]}"]
     if not areas:
         errs += [
             f"#{number} carries no `area:` label",
@@ -340,7 +337,7 @@ def selfcheck():
     errs = only(dict(good, labels=[{"name": "area:runtime"}]))
     assert "no `size:` label" in errs[0] and "--add-label size:M" in errs[1], errs
     errs = only(dict(good, labels=[{"name": "size:S"}, {"name": "size:L"}, {"name": "area:tui"}]))
-    assert "2 size labels" in errs[0] and "--remove-label size:S" in errs[1], errs
+    assert "2 size labels" in errs[0] and "--remove-label size:L" in errs[1], errs
     errs = only(dict(good, labels=[{"name": "size:M"}]))
     assert "no `area:` label" in errs[0], errs
     errs = only(dict(good, milestone=None))
