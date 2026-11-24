@@ -335,6 +335,30 @@ def repository_fixtures():
         }
 
 
+def installer_dest_errors(off=""):
+    version = (INSTALL.parent / "gitleaks.version").read_text().strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        (root / "scripts/scan").mkdir(parents=True)
+        shutil.copy(INSTALL.parent / "gitleaks.version", root / "scripts/scan")
+        shutil.copy(ROOT / "scripts/install.sh", root / "scripts")
+        lines = INSTALL.read_text().splitlines()
+        shipped = [line for line in lines if off != "private-dest" or "not private to this user" not in line]
+        script = root / "scripts/scan/install_gitleaks.sh"
+        script.write_text("\n".join(shipped) + "\n")
+        (root / "bin").mkdir()
+        (root / "bin/curl").write_text("#!/bin/sh\nexit 22\n")
+        (root / "bin/curl").chmod(0o755)
+        dest = root / "cache/yi" / f"gitleaks-{version}"
+        dest.mkdir(parents=True)
+        dest.chmod(0o777)
+        env = {**os.environ, "XDG_CACHE_HOME": str(root / "cache"), "PATH": f"{root / 'bin'}:{os.environ['PATH']}"}
+        done = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+        if done.returncode != 1 or "not private to this user" not in done.stdout:
+            return [f"the gitleaks installer used a destination other users can write ({done.returncode}): {done.stdout.strip()}"]
+    return []
+
+
 def selfcheck(off="", fixtures=None):
     global BASELINE
     fixtures = fixtures or {}
@@ -500,6 +524,7 @@ def selfcheck(off="", fixtures=None):
             os.environ.pop("CI", None)
             if ci is not None:
                 os.environ["CI"] = ci
+    errors += installer_dest_errors(off)
     original = BASELINE
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -650,7 +675,7 @@ def main(argv):
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for tool, (cases, _) in FAMILIES.items() if tool in fixtures
                   for rules in cases.values() for rule in rules}
-        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout", "uv-cache"}
+        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout", "uv-cache", "private-dest"}
         if "gitleaks" in fixtures:
             checks |= {"history", "diff"}
         for off in sorted(checks):

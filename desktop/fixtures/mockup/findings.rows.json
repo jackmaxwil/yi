@@ -1,0 +1,455 @@
+[
+ {
+  "id": "429-answer-has-no-body-clients-show-a-blank-error",
+  "group": "2 new from agents",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Med",
+     "warn"
+    ]
+   },
+   "finding": {
+    "text": "429 answer has no body, clients show a blank error"
+   },
+   "meta": {
+    "tags": [
+     "upload.rs:31",
+     "agent · review",
+     "sure of it"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Accept",
+     "Not a problem",
+     "Attach",
+     "Dismiss"
+    ]
+   },
+   "where": {
+    "text": "upload.rs:31"
+   },
+   "who_has_it": {
+    "text": "nobody yet"
+   },
+   "age": {
+    "text": "2m"
+   },
+   "why": {
+    "text": "People see an empty error and cannot tell when to try again."
+   },
+   "proof": {
+    "text": "A request over the limit gets a body with the wait in it"
+   },
+   "proof_state": {
+    "text": "not started"
+   },
+   "evidence": {
+    "tags": [
+     "upload.rs line 31",
+     "web app · div.alert"
+    ]
+   },
+   "group.summary": {
+    "text": "nothing is filed until you say so · Accept all"
+   }
+  }
+ },
+ {
+  "id": "uploader-retries-with-no-jitter",
+  "group": "2 new from agents",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Low",
+     "dim"
+    ]
+   },
+   "finding": {
+    "text": "Uploader retries with no jitter"
+   },
+   "meta": {
+    "tags": [
+     "ci-ubuntu · Atlas Uploader",
+     "agent · desktop",
+     "fairly sure"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Accept",
+     "Not a problem",
+     "Attach",
+     "Dismiss"
+    ]
+   },
+   "where": {
+    "text": "ci-ubuntu · Uploader"
+   },
+   "who_has_it": {
+    "text": "nobody yet"
+   },
+   "age": {
+    "text": "6m"
+   },
+   "why": {
+    "text": "Many clients would retry at the same instant."
+   },
+   "proof": {
+    "text": "Two runs retry at different moments"
+   },
+   "proof_state": {
+    "text": "not started"
+   },
+   "evidence": {
+    "tags": [
+     "ci-ubuntu · Atlas Uploader window",
+     "uploader log, 17:58:03"
+    ]
+   }
+  }
+ },
+ {
+  "id": "bucket-take-can-underflow-when-the-clock-steps-back",
+  "group": "Being fixed",
+  "cells": {
+   "severity": {
+    "badge": [
+     "High",
+     "bad"
+    ]
+   },
+   "finding": {
+    "text": "Bucket::take can underflow when the clock steps back"
+   },
+   "state": {
+    "pill": [
+     "Proving",
+     "need"
+    ]
+   },
+   "meta": {
+    "tags": [
+     "rate_limit.rs:20",
+     "you + rust-analyzer",
+     "Tests · upload",
+     "blocks done"
+    ]
+   },
+   "blocks": {
+    "text": "blocks done"
+   },
+   "where": {
+    "text": "rate_limit.rs:20"
+   },
+   "who_has_it": {
+    "text": "Tests · upload"
+   },
+   "age": {
+    "text": "now"
+   },
+   "why": {
+    "text": "Can crash the server if the machine clock is set back."
+   },
+   "proof": {
+    "text": "The new clock-steps-back test passes"
+   },
+   "proof_state": {
+    "text": "waiting on you"
+   },
+   "evidence": {
+    "tags": [
+     "rate_limit.rs line 20",
+     "problem from rust-analyzer",
+     "your comment"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Allow the test ↵",
+     "Open its agent",
+     "Attach",
+     "Dismiss"
+    ]
+   },
+   "group.summary": {
+    "text": "2 · one agent on both"
+   }
+  }
+ },
+ {
+  "id": "no-test-covers-the-refill-boundary",
+  "group": "Being fixed",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Low",
+     "dim"
+    ]
+   },
+   "finding": {
+    "text": "No test covers the refill boundary"
+   },
+   "state": {
+    "pill": [
+     "Fixing",
+     "accent"
+    ]
+   },
+   "meta": {
+    "tags": [
+     "tests/upload.rs",
+     "agent · tests",
+     "Tests · upload"
+    ]
+   },
+   "where": {
+    "text": "tests/upload.rs"
+   },
+   "who_has_it": {
+    "text": "Tests · upload"
+   },
+   "age": {
+    "text": "3m"
+   },
+   "why": {
+    "text": "A change to the refill could break without anyone noticing."
+   },
+   "proof": {
+    "text": "A test at second 59 and at second 60"
+   },
+   "proof_state": {
+    "text": "being written"
+   },
+   "evidence": {
+    "tags": [
+     "tests/upload.rs"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Open its agent",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ },
+ {
+  "id": "limit-is-keyed-by-user-id-only-anonymous-uploads-are-unlimited",
+  "group": "Open",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Med",
+     "warn"
+    ]
+   },
+   "finding": {
+    "text": "Limit is keyed by user id only, anonymous uploads are unlimited"
+   },
+   "state": {
+    "pill": [
+     "Open",
+     "dim"
+    ]
+   },
+   "meta": {
+    "tags": [
+     "rate_limit.rs:41",
+     "agent · review"
+    ]
+   },
+   "where": {
+    "text": "rate_limit.rs:41"
+   },
+   "who_has_it": {
+    "text": "nobody yet"
+   },
+   "age": {
+    "text": "2m"
+   },
+   "why": {
+    "text": "Anyone not signed in can still flood the endpoint."
+   },
+   "proof": {
+    "text": "A flood with no sign-in is turned away in a test"
+   },
+   "proof_state": {
+    "text": "not started"
+   },
+   "evidence": {
+    "tags": [
+     "rate_limit.rs line 41"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Give it to an agent",
+     "Fix now",
+     "Attach",
+     "Dismiss"
+    ]
+   },
+   "group.summary": {
+    "text": "3 · nobody on them · Give all Low to one agent"
+   }
+  }
+ },
+ {
+  "id": "alert-does-not-say-how-long-to-wait-in-words",
+  "group": "Open",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Low",
+     "dim"
+    ]
+   },
+   "finding": {
+    "text": "Alert does not say how long to wait in words"
+   },
+   "state": {
+    "pill": [
+     "Open",
+     "dim"
+    ]
+   },
+   "meta": {
+    "tags": [
+     "localhost:5173 · div.alert",
+     "you · design mode"
+    ]
+   },
+   "where": {
+    "text": "div.alert"
+   },
+   "who_has_it": {
+    "text": "you"
+   },
+   "age": {
+    "text": "9m"
+   },
+   "why": {
+    "text": "From your note in design mode."
+   },
+   "proof": {
+    "text": "The alert reads as a full sentence"
+   },
+   "proof_state": {
+    "text": "not started"
+   },
+   "evidence": {
+    "tags": [
+     "web app · div.alert"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Give it to an agent",
+     "Fix now",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ },
+ {
+  "id": "docs-still-describe-the-old-upload-limits",
+  "group": "Open",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Low",
+     "dim"
+    ]
+   },
+   "finding": {
+    "text": "Docs still describe the old upload limits"
+   },
+   "state": {
+    "pill": [
+     "Open",
+     "dim"
+    ]
+   },
+   "meta": {
+    "tags": [
+     "docs/uploads.md",
+     "agent · docs"
+    ]
+   }
+  }
+ },
+ {
+  "id": "connection-resets-on-the-database",
+  "group": "Being watched",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Low",
+     "dim"
+    ]
+   },
+   "finding": {
+    "text": "Connection resets on the database"
+   },
+   "state": {
+    "pill": [
+     "Watching",
+     "ok"
+    ]
+   },
+   "meta": {
+    "tags": [
+     "docker:db",
+     "seen 4 times",
+     "last 12m ago"
+    ]
+   },
+   "seen_series": {
+    "series": [
+     2,
+     2,
+     5,
+     3,
+     7,
+     4,
+     9
+    ]
+   },
+   "group.summary": {
+    "text": "2 · from standing checks"
+   }
+  }
+ },
+ {
+  "id": "runner-b-has-no-backup",
+  "group": "Being watched",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Med",
+     "warn"
+    ]
+   },
+   "finding": {
+    "text": "runner-b has no backup"
+   },
+   "state": {
+    "pill": [
+     "Watching",
+     "ok"
+    ]
+   },
+   "meta": {
+    "tags": [
+     "VMs · runner-b",
+     "seen once",
+     "3h ago"
+    ]
+   }
+  }
+ }
+]

@@ -1,0 +1,36 @@
+{
+ "initialize": [
+  {
+   "result": {
+    "capabilities": {
+     "textDocumentSync": 1,
+     "hoverProvider": true,
+     "definitionProvider": true,
+     "referencesProvider": true,
+     "renameProvider": true,
+     "inlayHintProvider": {
+      "resolveProvider": false
+     },
+     "codeActionProvider": {
+      "codeActionKinds": [
+       "quickfix"
+      ]
+     },
+     "experimental": {
+      "newThing": 1
+     }
+    },
+    "serverInfo": {
+     "name": "fake",
+     "version": "1"
+    }
+   }
+  }
+ ],
+ "exit": [
+  {
+   "ignore": true
+  }
+ ],
+ "linger": true
+}

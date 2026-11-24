@@ -1,0 +1,93 @@
+[
+ [
+  0,
+  "need",
+  "Rate-limit the upload endpoint",
+  "waiting on a child",
+  "O",
+  "41.2K",
+  "$0.38",
+  "14m",
+  [
+   0,
+   14
+  ],
+  "k-child"
+ ],
+ [
+  1,
+  "done",
+  "Fork · sliding window",
+  "set aside as a branch",
+  "O",
+  "12.9K",
+  "$0.11",
+  "3m",
+  [
+   2,
+   5
+  ],
+  "k-turn"
+ ],
+ [
+  1,
+  "need",
+  "Tests · upload",
+  "wants to run cargo test",
+  "S",
+  "8.4K",
+  "$0.03",
+  "6m",
+  [
+   8,
+   14
+  ],
+  "k-wait",
+  1
+ ],
+ [
+  2,
+  "work",
+  "Bisect the flaky case",
+  "run 3 of 7",
+  "S",
+  "5.0K",
+  "$0.02",
+  "1:10",
+  [
+   12.8,
+   14
+  ],
+  "k-child"
+ ],
+ [
+  2,
+  "done",
+  "Read the CI logs",
+  "found 2 failing lines",
+  "H",
+  "3.3K",
+  "$0.00",
+  "0:40",
+  [
+   9,
+   9.7
+  ],
+  "k-turn"
+ ],
+ [
+  1,
+  "work",
+  "Docs · changelog",
+  "writing CHANGELOG.md",
+  "H",
+  "2.1K",
+  "$0.00",
+  "0:42",
+  [
+   13.3,
+   14
+  ],
+  "k-child"
+ ]
+]

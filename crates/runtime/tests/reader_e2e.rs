@@ -39,6 +39,7 @@ pub(crate) struct Setup {
     pub(crate) model: Option<Model>,
     pub(crate) resolver: Option<Arc<yi_runtime::fetch::Resolver>>,
     pub(crate) kernel: Option<Hook>,
+    pub(crate) admission: Option<Arc<yi_runtime::subagent::AdmissionFn>>,
 }
 
 impl Default for Setup {
@@ -53,6 +54,7 @@ impl Default for Setup {
             model: None,
             resolver: None,
             kernel: None,
+            admission: None,
         }
     }
 }
@@ -77,6 +79,7 @@ pub(crate) fn family_with(
         model,
         resolver,
         kernel,
+        admission,
     } = setup;
     let model = model.unwrap_or_else(|| faux_model(window));
     let fresh = || Arc::new(ProviderStream::new(None));
@@ -99,7 +102,7 @@ pub(crate) fn family_with(
     let prompts: Arc<Mutex<Vec<String>>> = Arc::default();
     let prompts_sink = Arc::clone(&prompts);
     let (cwd, home) = (workspace.clone(), root.join("home"));
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+    let host = SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
         max_children,
@@ -172,7 +175,11 @@ pub(crate) fn family_with(
         store: Arc::new(move || parent.clone()),
         plans_dir: root.join("plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
-    }));
+    });
+    let host = Arc::new(match admission {
+        Some(admission) => host.with_admission(admission),
+        None => host,
+    });
     host.set_resolver(resolver.unwrap_or_else(|| {
         Arc::new(yi_runtime::fetch::Resolver::new(
             workspace,
@@ -424,10 +431,58 @@ async fn readers_stand_outside_the_worker_cap() -> TestResult {
     Ok(())
 }
 
+/// Dies with the host gate removed: the injected low-memory probe admits a child.
+#[tokio::test]
+async fn spawn_refuses_a_host_that_lacks_memory() -> TestResult {
+    let admission: Arc<yi_runtime::subagent::AdmissionFn> = Arc::new(|_, _| {
+        Err(yi_runtime::admission::Refusal {
+            resource: yi_runtime::admission::Resource::Memory,
+            have: 0,
+            need: 1,
+            live: 0,
+        })
+    });
+    let family = family_with(
+        1,
+        Arc::default(),
+        Setup {
+            admission: Some(admission),
+            ..Setup::default()
+        },
+    )?;
+    let error = family
+        .host
+        .spawn(
+            "work".to_owned(),
+            kwargs(json!({"name": "blocked", "role": "root"})),
+        )
+        .err()
+        .ok_or("a low-memory host admitted a child")?;
+    assert!(error.contains("free memory KiB"), "{error}");
+    assert!(
+        family.host.states().is_empty(),
+        "a refused child was recorded"
+    );
+    Ok(())
+}
+
 /// Dies with the control: count the family by its kernels alone and a parent holds readers
 /// past the family cap, since a reader has no kernel; reaping one frees its seat.
 #[tokio::test]
 async fn held_readers_fill_the_family_cap() -> TestResult {
+    if std::env::var_os("RLM_HELD_READERS_CHILD").is_none() {
+        let output = crate::support::rerun_with_levers(
+            "reader_e2e::held_readers_fill_the_family_cap",
+            "RLM_HELD_READERS_CHILD",
+            r#"{"family.cap":8,"family.max_children":8}"#,
+        )?;
+        assert!(
+            output.status.success(),
+            "held-readers child failed: {output:?}"
+        );
+        return Ok(());
+    }
+    yi_runtime::levers::init(true)?;
     let family = family(1, Arc::default())?;
     let cap = yi_runtime::levers::get().family_cap;
     for index in 0..cap {

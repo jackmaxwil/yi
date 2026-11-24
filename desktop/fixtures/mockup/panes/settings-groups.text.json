@@ -1,0 +1,33 @@
+{
+ "pane": "settings-groups",
+ "frame": 11,
+ "strings": [
+  "Settings",
+  "Search 214 settings",
+  "⌘,",
+  "Appearance",
+  "6",
+  "Theme",
+  "Density",
+  "Type",
+  "Glass",
+  "Layout",
+  "2",
+  "Agents",
+  "Models",
+  "Permissions",
+  "Budgets",
+  "Findings",
+  "Context boxes",
+  "Code",
+  "Terminal",
+  "Notifications",
+  "Keys",
+  "1",
+  "Plugins",
+  "Sync",
+  "9 changed",
+  "Show only changed"
+ ],
+ "titles": []
+}

@@ -1,0 +1,88 @@
+{
+ "api": [
+  [
+   "Service",
+   "atlas-api"
+  ],
+  [
+   "Host",
+   "hv-01"
+  ],
+  [
+   "Request",
+   "req_7f3a91"
+  ],
+  [
+   "In trace",
+   "turn 2, step 6"
+  ]
+ ],
+ "agent": [
+  [
+   "Thread",
+   "Rate limit"
+  ],
+  [
+   "Agent",
+   "root, Opus 5.5"
+  ],
+  [
+   "Turn",
+   "2"
+  ]
+ ],
+ "yi": [
+  [
+   "Thread",
+   "Rate limit"
+  ],
+  [
+   "Turn",
+   "2"
+  ],
+  [
+   "Process",
+   "yi serve, pid 4412"
+  ]
+ ],
+ "uploader": [
+  [
+   "Host",
+   "ci-ubuntu"
+  ],
+  [
+   "App",
+   "Atlas Uploader"
+  ],
+  [
+   "Seen via",
+   "remote desktop"
+  ]
+ ],
+ "docker:db": [
+  [
+   "Container",
+   "atlas-db"
+  ],
+  [
+   "Image",
+   "postgres:16"
+  ],
+  [
+   "Host",
+   "hv-01"
+  ],
+  [
+   "Peer",
+   "198.51.100.14:53122"
+  ],
+  [
+   "Pool",
+   "3 of 10 in use"
+  ],
+  [
+   "Seen",
+   "4 times this hour"
+  ]
+ ]
+}

@@ -1,0 +1,137 @@
+[
+ {
+  "id": "upload-rs-31",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Error",
+     "bad"
+    ]
+   },
+   "message": {
+    "text": "mismatched types: expected Result<(), Duration>, found bool"
+   },
+   "where": {
+    "text": "upload.rs:31"
+   },
+   "why": {
+    "text": "The handler returns a plain yes or no where the limiter now hands back a result."
+   },
+   "fix": {
+    "text": "Match on the result and answer 429 when it fails"
+   },
+   "from": {
+    "text": "rust-analyzer"
+   },
+   "actions": {
+    "tags": [
+     "Quick fix",
+     "Ask agent",
+     "Attach",
+     "Ignore here"
+    ]
+   }
+  }
+ },
+ {
+  "id": "rate-limit-rs-20",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Warn",
+     "warn"
+    ]
+   },
+   "message": {
+    "text": "subtracting two Instants can panic if the clock steps back"
+   },
+   "where": {
+    "text": "rate_limit.rs:20"
+   },
+   "why": {
+    "text": "If the machine clock is set back, this line can crash."
+   },
+   "fix": {
+    "text": "Use saturating_duration_since"
+   },
+   "from": {
+    "text": "rust-analyzer · also finding F12"
+   },
+   "actions": {
+    "tags": [
+     "Quick fix",
+     "Open finding",
+     "Attach",
+     "Ignore here"
+    ]
+   }
+  }
+ },
+ {
+  "id": "upload-rs-58",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Warn",
+     "warn"
+    ]
+   },
+   "message": {
+    "text": "unused Result that must be used"
+   },
+   "where": {
+    "text": "upload.rs:58"
+   },
+   "why": {
+    "text": "A failure here would be dropped without a trace."
+   },
+   "fix": {
+    "text": "Handle it, or mark it as ignored on purpose"
+   },
+   "from": {
+    "text": "rust-analyzer"
+   },
+   "actions": {
+    "tags": [
+     "Quick fix",
+     "Ask agent",
+     "Attach",
+     "Ignore here"
+    ]
+   }
+  }
+ },
+ {
+  "id": "tests-upload-rs-3",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Hint",
+     "dim"
+    ]
+   },
+   "message": {
+    "text": "this import is never used"
+   },
+   "where": {
+    "text": "tests/upload.rs:3"
+   },
+   "why": {
+    "text": "Left over from an earlier edit."
+   },
+   "fix": {
+    "text": "Remove the line"
+   },
+   "from": {
+    "text": "rust-analyzer"
+   },
+   "actions": {
+    "tags": [
+     "Quick fix",
+     "Attach",
+     "Ignore here"
+    ]
+   }
+  }
+ }
+]

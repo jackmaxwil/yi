@@ -1,0 +1,17 @@
+[
+ {"id": "l0", "cells": {"time": {"text": "17:57:58.101"}, "level": {"text": "INFO"}, "source": {"text": "yi"}, "message": {"text": "turn 2 started · thread rate-limit"}}},
+ {"id": "l1", "tone": "faint", "cells": {"time": {"text": "17:57:59.220"}, "level": {"text": "DEBUG"}, "source": {"text": "agent"}, "message": {"text": "read src/routes/upload.rs (84 lines)"}}},
+ {"id": "l2", "tone": "faint", "cells": {"time": {"text": "17:58:00.014"}, "level": {"text": "DEBUG"}, "source": {"text": "agent"}, "message": {"text": "search \"RateLimit\" → 3 matches"}}},
+ {"id": "l3", "cells": {"time": {"text": "17:58:01.730"}, "level": {"text": "INFO"}, "source": {"text": "agent"}, "message": {"text": "edit src/middleware/rate_limit.rs +48"}}},
+ {"id": "l4", "cells": {"time": {"text": "17:58:01.802"}, "level": {"text": "INFO"}, "source": {"text": "agent"}, "message": {"text": "edit src/routes/upload.rs +6 −1"}}},
+ {"id": "l5", "cells": {"time": {"text": "17:58:02.118"}, "level": {"text": "INFO"}, "source": {"text": "api"}, "message": {"text": "POST /upload 200 hero-01.png 41ms"}}},
+ {"id": "l6", "cells": {"time": {"text": "17:58:02.431"}, "level": {"text": "INFO"}, "source": {"text": "api"}, "message": {"text": "POST /upload 200 hero-02.png 38ms"}}},
+ {"id": "l7", "tone": "warn", "cells": {"time": {"text": "17:58:03.007"}, "level": {"text": "WARN"}, "source": {"text": "api"}, "message": {"text": "POST /upload 429 retry-after=41 user=u_193"}}},
+ {"id": "l8", "tone": "warn", "cells": {"time": {"text": "17:58:03.009"}, "level": {"text": "WARN"}, "source": {"text": "uploader"}, "message": {"text": "queue paused, 2 files left"}}},
+ {"id": "l9", "cells": {"time": {"text": "17:58:03.050"}, "level": {"text": "INFO"}, "source": {"text": "yi"}, "message": {"text": "approval requested: cargo test -p api upload::"}}},
+ {"id": "l10", "tone": "bad", "cells": {"time": {"text": "17:58:03.412"}, "level": {"text": "ERROR"}, "source": {"text": "docker:db"}, "message": {"text": "connection reset by peer (pool 3/10)"}, "container": {"text": "atlas-db"}, "image": {"text": "postgres:16"}, "host": {"text": "hv-01"}, "peer": {"text": "198.51.100.14:53122"}, "pool": {"text": "3 of 10 in use"}, "seen": {"text": "4 times this hour"}, "raw": {"text": "{\"ts\":\"2026-11-14T17:58:03.412Z\",\"level\":\"error\",\"src\":\"docker:db\",\"msg\":\"connection reset by peer (pool 3/10)\"}"}}},
+ {"id": "l11", "cells": {"time": {"text": "17:58:03.655"}, "level": {"text": "INFO"}, "source": {"text": "docker:db"}, "message": {"text": "reconnected in 243ms"}}},
+ {"id": "l12", "tone": "faint", "cells": {"time": {"text": "17:58:04.000"}, "level": {"text": "DEBUG"}, "source": {"text": "yi"}, "message": {"text": "heartbeat ok · 6 agents"}}},
+ {"id": "l13", "cells": {"time": {"text": "17:58:04.512"}, "level": {"text": "INFO"}, "source": {"text": "api"}, "message": {"text": "POST /upload 429 retry-after=40 user=u_193"}}},
+ {"id": "l14", "tone": "faint", "cells": {"time": {"text": "17:58:05.020"}, "level": {"text": "DEBUG"}, "source": {"text": "agent"}, "message": {"text": "child Docs · changelog: wrote CHANGELOG.md"}}}
+]

@@ -310,7 +310,7 @@ impl App {
                         spawn,
                         answer: None,
                         answer_dropped: 0,
-                        activity: update.activity,
+                        activity: update.activity.clone(),
                         flag: None,
                     },
                     started: self.clock.now(),
@@ -383,7 +383,7 @@ impl App {
             }
             state.cell.flag = update.flag.clone();
             state.cell.status = status;
-            state.cell.activity = update.activity;
+            state.cell.activity = update.activity.clone();
             state.cell.error = update.error.clone();
             state.cell.toolcalls = toolcalls;
             state.cell.tokens = update.token_count;

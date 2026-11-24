@@ -408,23 +408,11 @@ async fn all_readers_finished(family: &crate::reader_e2e::Family, count: usize) 
 #[tokio::test]
 async fn a_wide_wait_reply_counts_states_and_names_only_the_mover() -> TestResult {
     if std::env::var_os("RLM_WIDE_WAIT_CHILD").is_none() {
-        let dir = crate::scratch::Scratch::new("yi-wide-wait")?;
-        let overrides = dir.join("levers.json");
-        std::fs::write(
-            &overrides,
+        let output = crate::support::rerun_with_levers(
+            "family::a_wide_wait_reply_counts_states_and_names_only_the_mover",
+            "RLM_WIDE_WAIT_CHILD",
             r#"{"family.cap":128,"family.max_children":128}"#,
         )?;
-        let output = yi_tools::command(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "family::a_wide_wait_reply_counts_states_and_names_only_the_mover",
-                "--nocapture",
-            ])
-            .env("RLM_WIDE_WAIT_CHILD", "1")
-            .env("YI_LEVERS", &overrides)
-            .output()?;
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
         assert!(output.status.success(), "wide child failed: {output:?}");
         return Ok(());
     }

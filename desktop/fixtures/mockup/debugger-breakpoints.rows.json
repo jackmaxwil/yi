@@ -1,0 +1,101 @@
+[
+ {
+  "id": "rate-limit-rs-14",
+  "cells": {
+   "enabled": {
+    "flag": true
+   },
+   "where": {
+    "text": "rate_limit.rs:14"
+   },
+   "condition": {
+    "text": ""
+   },
+   "hits": {
+    "text": "hit 20"
+   },
+   "stops": {
+    "text": "every time"
+   },
+   "hit": {
+    "text": "20 times"
+   },
+   "added": {
+    "text": "by you"
+   },
+   "actions": {
+    "tags": [
+     "Add a condition",
+     "Turn off",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "rate-limit-rs-18",
+  "cells": {
+   "enabled": {
+    "flag": true
+   },
+   "where": {
+    "text": "rate_limit.rs:18"
+   },
+   "condition": {
+    "text": "if self.tokens == 0"
+   },
+   "hits": {
+    "text": "hit 1"
+   },
+   "stops_when": {
+    "text": "self.tokens == 0"
+   },
+   "hit": {
+    "text": "once"
+   },
+   "added": {
+    "text": "from finding F12"
+   },
+   "actions": {
+    "tags": [
+     "Edit condition",
+     "Turn off",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "upload-rs-31",
+  "dim": true,
+  "cells": {
+   "enabled": {
+    "flag": false
+   },
+   "where": {
+    "text": "upload.rs:31"
+   },
+   "condition": {
+    "text": ""
+   },
+   "hits": {
+    "text": "off"
+   },
+   "state": {
+    "text": "off"
+   },
+   "hit": {
+    "text": "never"
+   },
+   "actions": {
+    "tags": [
+     "Turn on",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

@@ -3,7 +3,7 @@ use std::error::Error;
 use yi_ai::openai::OpenAiOptions;
 use yi_ai::openai_responses::{EventMapper, build_params};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason};
+use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::{Effort, Model, ModelCost, ToolDef};
 
 use crate::plain::plain_context as context;
@@ -52,19 +52,13 @@ fn canned() -> Vec<Value> {
         json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":100,"output_tokens":20,"input_tokens_details":{"cached_tokens":60},"output_tokens_details":{"reasoning_tokens":5}}}}),
     ]
 }
-
-/// A write is billed at its own rate and is not uncached input; leaving it
-/// inside `input` overstates the cold part of the prompt by the write.
-#[test]
-fn cache_write_tokens_come_off_input() -> TestResult {
+fn usage_with_completed_response(usage: Value) -> Result<Usage, Box<dyn Error>> {
     let model = model(true);
     let mut mapper = EventMapper::new(&model);
     let mut payloads = canned();
-    payloads.pop();
+    let _ = payloads.pop();
     payloads.push(
-        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed",
-        "usage":{"input_tokens":100,"output_tokens":20,
-                 "input_tokens_details":{"cached_tokens":60,"cache_write_tokens":10}}}}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":usage}}),
     );
     for payload in payloads {
         let _ = mapper.push(&payload);
@@ -76,11 +70,33 @@ fn cache_write_tokens_come_off_input() -> TestResult {
     let AgentMessage::Assistant { usage, .. } = message else {
         return Err("not assistant".into());
     };
+    Ok(usage.clone())
+}
+
+/// A write is billed at its own rate and is not uncached input; leaving it
+/// inside `input` overstates the cold part of the prompt by the write.
+#[test]
+fn cache_write_tokens_come_off_input() -> TestResult {
+    let usage = usage_with_completed_response(json!({
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "input_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 10}
+    }))?;
     assert_eq!(
         (usage.input, usage.cache_read, usage.cache_write),
         (30, 60, 10)
     );
     assert_eq!(usage.total_tokens, 120);
+    Ok(())
+}
+
+#[test]
+fn a_zero_usage_object_is_unknown() -> TestResult {
+    let usage = usage_with_completed_response(json!({"input_tokens": 0, "output_tokens": 0}))?;
+    assert!(
+        usage.unknown,
+        "zero tokens and zero charge is not a free turn"
+    );
     Ok(())
 }
 

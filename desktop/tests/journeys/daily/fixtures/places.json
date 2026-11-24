@@ -1,0 +1,89 @@
+{
+ "about": "Review is picked in a session with no changes: the chat and the folder's files are drawn and Changes waits, with no pane saying nothing is uncommitted. Picked again in a second run, a prompt then has the agent run a command that writes a file: Changes takes its Review place with the file's diff.",
+ "serve": [
+  "--yolo"
+ ],
+ "worker": true,
+ "empty": true,
+ "runs": [
+  {
+   "steps": [
+    {
+     "t": 3.0,
+     "type": "key",
+     "name": "2",
+     "cmd": true,
+     "alt": true
+    },
+    {
+     "t": 7.0,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "keys": [
+     "chat-8.pane-frame",
+     "files-1.pane-frame"
+    ],
+    "absent_keys": [
+     "changes-2.pane-frame",
+     "web-4.pane-frame",
+     "remote-5.pane-frame",
+     "report-6.pane-frame",
+     "code-7.pane-frame"
+    ]
+   }
+  },
+  {
+   "steps": [
+    {
+     "t": 3.0,
+     "type": "key",
+     "name": "2",
+     "cmd": true,
+     "alt": true
+    },
+    {
+     "t": 5.0,
+     "type": "tap",
+     "key": "chat-8.composer.input"
+    },
+    {
+     "t": 5.2,
+     "type": "type",
+     "text": "write the file"
+    },
+    {
+     "t": 5.8,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 13.0,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "files": [
+     "one.txt"
+    ],
+    "keys": [
+     "chat-8.pane-frame",
+     "files-1.pane-frame",
+     "changes-2.pane-frame"
+    ],
+    "contains": [
+     "1 file \u00b7 +1 \u22120"
+    ],
+    "absent_keys": [
+     "web-4.pane-frame",
+     "remote-5.pane-frame",
+     "report-6.pane-frame",
+     "code-7.pane-frame"
+    ]
+   }
+  }
+ ]
+}

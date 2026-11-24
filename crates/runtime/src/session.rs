@@ -16,7 +16,7 @@ mod answer;
 mod deadline;
 mod hooks;
 mod prompt;
-mod run;
+pub mod run;
 
 pub(crate) use answer::{AnswerHandle, FINISH, StatusLine, headed};
 use deadline::Deadline;
@@ -196,7 +196,8 @@ pub struct AgentSession {
     wall: Mutex<crate::wall::Wall>,
     spills: Mutex<Option<std::path::PathBuf>>,
     tool_cwd: Mutex<Option<std::path::PathBuf>>,
-    selector: Mutex<Option<Arc<crate::select::Selector>>>,
+    pub(crate) selector: Mutex<Option<Arc<crate::select::Selector>>>,
+    pub(crate) front: crate::show::FrontEnd,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
     on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
 }
@@ -276,6 +277,7 @@ impl AgentSession {
             spills: Mutex::new(None),
             tool_cwd: Mutex::new(None),
             selector: Mutex::new(None),
+            front: crate::show::FrontEnd::default(),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
         };
@@ -465,13 +467,6 @@ impl AgentSession {
         Arc::clone(&self.shared.reclaimed)
     }
 
-    /// The model that picks the lines of a cut bash output, read when tools are installed.
-    pub fn set_selector(&self, selector: Option<crate::select::Selector>) {
-        if let Ok(mut slot) = self.selector.lock() {
-            *slot = selector.map(Arc::new);
-        }
-    }
-
     /// Where cut tool output is kept whole, read when tools are installed; unset keeps nothing.
     pub fn set_spills(&self, dir: std::path::PathBuf) {
         if let Ok(mut slot) = self.spills.lock() {
@@ -651,7 +646,7 @@ impl AgentSession {
             *slot = Some(cwd.clone());
         }
         if let Some(broker) = &permission {
-            broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
+            self.wire_broker(broker);
         }
         let spills = self.spills.lock().ok().and_then(|dir| dir.clone());
         let selector = self.selector.lock().ok().and_then(|slot| slot.clone());

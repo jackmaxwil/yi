@@ -1,0 +1,56 @@
+{
+ "frame": 17,
+ "sizes": [
+  {
+   "part": "top-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".top",
+   "height": 30,
+   "width": 1192,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "table-header",
+   "check": [
+    "height"
+   ],
+   "selector": ".hd",
+   "height": 20,
+   "width": 636,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 12,
+   "line_height": 20
+  },
+  {
+   "part": "code-line",
+   "check": [
+    "height"
+   ],
+   "selector": ".dl",
+   "height": 18,
+   "width": 636,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 11.5,
+   "line_height": 18
+  }
+ ]
+}

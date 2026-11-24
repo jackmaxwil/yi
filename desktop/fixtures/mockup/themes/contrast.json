@@ -1,0 +1,27 @@
+{
+ "id": "contrast",
+ "name": "High contrast",
+ "note": "for bright rooms",
+ "dark": true,
+ "values": {
+  "accent": "#9cc2ff",
+  "needs_you": "#7ff0e0",
+  "ok": "#7fcf9a",
+  "bad": "#f58585",
+  "text.1": "#ffffff",
+  "text.2": "#e4e6ee",
+  "text.3": "#bcc0cc",
+  "code.keyword": "#e3a3bf",
+  "code.type": "#86d6c8",
+  "code.string": "#a9d9a0",
+  "code.number": "#c6b3f7",
+  "code.comment": "#7a8196",
+  "font.text": "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+  "surface.pane": 0.82,
+  "surface.pane_active": 0.92,
+  "surface.window": 0.85,
+  "space.row": 20.0,
+  "space.line": 16.0,
+  "space.gutter": 8.0
+ }
+}

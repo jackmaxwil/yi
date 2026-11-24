@@ -1,0 +1,37 @@
+[
+ [
+  "The handler returns a plain yes or no where the limiter now hands back a result.",
+  "Match on the result and answer 429 when it fails",
+  "rust-analyzer",
+  [
+   "Quick fix",
+   "Ask agent"
+  ]
+ ],
+ [
+  "If the machine clock is set back, this line can crash.",
+  "Use saturating_duration_since",
+  "rust-analyzer · also finding F12",
+  [
+   "Quick fix",
+   "Open finding"
+  ]
+ ],
+ [
+  "A failure here would be dropped without a trace.",
+  "Handle it, or mark it as ignored on purpose",
+  "rust-analyzer",
+  [
+   "Quick fix",
+   "Ask agent"
+  ]
+ ],
+ [
+  "Left over from an earlier edit.",
+  "Remove the line",
+  "rust-analyzer",
+  [
+   "Quick fix"
+  ]
+ ]
+]

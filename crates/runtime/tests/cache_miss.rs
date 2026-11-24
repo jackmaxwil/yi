@@ -678,3 +678,74 @@ fn a_suspended_tail_applies_only_to_the_route_that_earned_it() -> Result<(), Box
     );
     Ok(())
 }
+
+/// Dies with the drill never firing: Anthropic's reply overwrites the record's model with the
+/// provider's own id, so the fold keyed the suspension on a spelling the next request never asks.
+#[test]
+fn a_suspension_is_keyed_on_the_requested_route_not_the_models_reply_name()
+-> Result<(), Box<dyn Error>> {
+    let started = yi_session::now_ms();
+    let mut tracker = MissTracker::default();
+    for n in 0..5u64 {
+        let mut entry = request(CLAUDE, (0, 0, 40_000), started + n * 1000, "Amazon Bedrock")?;
+        if let Entry::Message {
+            message: AgentMessage::Assistant {
+                model, diagnostics, ..
+            },
+            ..
+        } = &mut entry
+        {
+            *model = "claude-sonnet-4-5-20250929".to_owned();
+            diagnostics
+                .get_or_insert_with(Vec::new)
+                .push(serde_json::from_value(
+                    serde_json::json!({"type": "cache", "timestamp": 0,
+                    "details": {"route": format!("{}/{}", CLAUDE.0, CLAUDE.1)}}),
+                )?);
+        }
+        tracker.observe_entry(&entry);
+    }
+    let provider = yi_runtime::provider::ProviderStream::new(None);
+    provider.set_cache_advice(tracker.advice());
+    assert!(!yi_loop::run::StreamFn::cache_tail(
+        &provider,
+        &claude_at(0.05)?
+    ));
+    Ok(())
+}
+
+/// Dies with an hour of uncached tails: a route that reads its entry again must get its mark back
+/// at once, not when the suspension would have run out.
+#[test]
+fn a_read_lifts_a_live_suspension_at_once() -> Result<(), Box<dyn Error>> {
+    let second = 1000;
+    let route = format!("{}/{}", CLAUDE.0, CLAUDE.1);
+    let mut tracker = MissTracker::default();
+    for n in 0..5u64 {
+        tracker.observe_entry(&request(
+            CLAUDE,
+            (0, 0, 40_000),
+            n * second,
+            "Amazon Bedrock",
+        )?);
+    }
+    assert!(
+        !tracker
+            .advice()
+            .ok_or("no advice")?
+            .tail(5 * second, &route)
+    );
+    tracker.observe_entry(&request(
+        CLAUDE,
+        (0, 40_000, 500),
+        4 * second,
+        "Amazon Bedrock",
+    )?);
+    assert!(
+        tracker
+            .advice()
+            .ok_or("no advice")?
+            .tail(6 * second, &route)
+    );
+    Ok(())
+}

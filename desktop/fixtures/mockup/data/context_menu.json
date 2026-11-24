@@ -1,0 +1,92 @@
+{
+ "head": [
+  "rate_limit.rs line 18",
+  "yi://atlas-api/rate-limit-uploads/diff/src/middleware/rate_limit.rs#L18"
+ ],
+ "chips": [
+  "Explain",
+  "Why is this here?",
+  "Is it safe?"
+ ],
+ "items": [
+  {
+   "type": "item",
+   "text": "Attach to chat",
+   "key": "⏎",
+   "act": "attach"
+  },
+  {
+   "type": "item",
+   "text": "Ask Yi about this…",
+   "key": "⌘K",
+   "act": ""
+  },
+  {
+   "type": "item",
+   "text": "Hand it to another agent",
+   "key": "›",
+   "act": ""
+  },
+  {
+   "type": "rule"
+  },
+  {
+   "type": "item",
+   "text": "Find references",
+   "key": "⌃ click",
+   "act": ""
+  },
+  {
+   "type": "item",
+   "text": "Which turn wrote this",
+   "key": "turn 2",
+   "act": ""
+  },
+  {
+   "type": "item",
+   "text": "Put these lines back as they were",
+   "key": "",
+   "act": ""
+  },
+  {
+   "type": "item",
+   "text": "Stop here in the debugger",
+   "key": "",
+   "act": ""
+  },
+  {
+   "type": "rule"
+  },
+  {
+   "type": "item",
+   "text": "Make it a finding",
+   "key": "",
+   "act": ""
+  },
+  {
+   "type": "item",
+   "text": "Watch for this",
+   "key": "",
+   "act": ""
+  },
+  {
+   "type": "rule"
+  },
+  {
+   "type": "item",
+   "text": "Open in a new pane",
+   "key": "›",
+   "act": ""
+  },
+  {
+   "type": "item",
+   "text": "Copy its address",
+   "key": "⌘⇧C",
+   "act": ""
+  },
+  {
+   "type": "foot",
+   "text": "Same menu on anything. Hold ⌥ for the system menu."
+  }
+ ]
+}

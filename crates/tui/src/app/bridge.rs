@@ -84,6 +84,9 @@ pub(crate) fn spawn_runtime_bridge(
     let handle = runtime.handle().clone();
 
     handle.spawn(forward(session.subscribe(), None, ui_tx.clone()));
+    if let Some(rewriter) = session.rewriter() {
+        let _ = ui_tx.send(UiEvent::Reply(Reply::Rewriter(rewriter.start())));
+    }
 
     let ask_tx = ui_tx.clone();
     std::thread::spawn(move || {
@@ -149,6 +152,13 @@ pub(crate) fn spawn_runtime_bridge(
                         tokio::spawn(
                             async move { yi_runtime::summarize_branch(&session, stub).await },
                         );
+                    }
+                    Command::Rewrite { ask, length, draft } => {
+                        let (session, tx) = (Arc::clone(&driver_session), reply_tx.clone());
+                        tokio::spawn(async move {
+                            let outcome = session.rewrite_draft(length, &draft).await;
+                            let _ = tx.send(UiEvent::Reply(Reply::Rewritten { ask, outcome }));
+                        });
                     }
                     Command::Slash(line) => {
                         crate::port::slash_off_thread(&driver_session, line, &reply_tx);

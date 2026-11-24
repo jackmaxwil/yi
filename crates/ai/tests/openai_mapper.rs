@@ -220,7 +220,7 @@ fn an_absent_usage_object_is_unknown_not_free() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn a_present_usage_object_is_known() -> Result<(), Box<dyn Error>> {
+fn a_zero_usage_object_is_unknown() -> Result<(), Box<dyn Error>> {
     let model = model(false);
     let mut mapper = ChunkMapper::new(&model);
     for chunk in [
@@ -236,7 +236,10 @@ fn a_present_usage_object_is_known() -> Result<(), Box<dyn Error>> {
     let AgentMessage::Assistant { usage, .. } = message else {
         return Err("not assistant".into());
     };
-    assert!(!usage.unknown, "a reported zero is a known free turn");
+    assert!(
+        usage.unknown,
+        "a reported zero counts nothing, so it is not a free turn"
+    );
     Ok(())
 }
 

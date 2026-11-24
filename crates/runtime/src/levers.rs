@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use crate::ext::orchestrate as route;
 use crate::plan::loop_coupling::gate as plan_gate;
 use crate::todo::coupling::gate as todo_gate;
-use crate::{auto_review, family, lane, mailbox, plan, subagent};
+use crate::{auto_review, family, lane, mailbox, plan};
 
 /// The one env var the levers own: a path to a JSON object of `{"<key>": <integer>}`.
 pub const ENV: &str = "YI_LEVERS";
@@ -65,7 +65,7 @@ macro_rules! levers {
 }
 
 levers! {
-    plan_width_max: usize = "plan.width_max", plan::ops::WIDTH_MAX, 1..=16, true;
+    plan_width_max: usize = "plan.width_max", plan::ops::WIDTH_MAX, 0..=4096, true;
     plan_spawn_cap: u32 = "plan.spawn_cap", yi_types::plan::doc::SPAWN_CAP.get(), 8..=256, false;
     plan_retry_cap: u8 = "plan.retry_cap", plan::table::RETRY_CAP.0, 1..=16, false;
     plan_stale_turns: u64 = "plan.stale_turns", plan::DEFAULT_STALE_TURNS, 4..=40, true;
@@ -84,8 +84,8 @@ levers! {
     todo_intercept_cap: u32 = "todo.intercept_cap", todo_gate::INTERCEPT_CAP_PER_CYCLE, 0..=12, true;
     todo_empty_stop_cap: u32 = "todo.empty_stop_cap", todo_gate::EMPTY_STOP_CAP, 1..=8, true;
     todo_ladder_top: u8 = "todo.ladder_top", todo_gate::LADDER_TOP, 1..=3, false;
-    family_max_children: usize = "family.max_children", subagent::DEFAULT_MAX_CHILDREN, 2..=128, true;
-    family_cap: usize = "family.cap", subagent::FAMILY_CAP, 4..=129, true;
+    family_max_children: usize = "family.max_children", 0, 0..=4096, true;
+    family_cap: usize = "family.cap", 0, 0..=4097, true;
     family_depth: u8 = "family.depth", yi_types::config::DEFAULT_MAX_DEPTH, 1..=3, false;
     family_stuck_idle_s: u64 = "family.stuck_idle_s", family::STUCK_IDLE_MS / 1000, 60..=1800, true;
     mail_wait_min_ms: u64 = "mail.wait_min_ms", mailbox::WAIT_MIN_MS, 100..=10000, false;
@@ -127,6 +127,10 @@ impl Levers {
             cut_stop_at: self.loop_cut_stop_at,
             reasoning_cap: self.loop_reasoning_cap,
         }
+    }
+
+    pub fn family_cap(&self) -> Option<std::num::NonZeroUsize> {
+        std::num::NonZeroUsize::new(self.family_cap)
     }
 
     /// Invariant: outside an eval run the variable is never asked for, so no file is opened

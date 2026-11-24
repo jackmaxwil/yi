@@ -2,6 +2,7 @@ use crate::scratch;
 use scratch::Scratch;
 
 use crate::faux_model::faux_model;
+use crate::recursion_e2e;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2275,5 +2276,31 @@ fn a_wake_or_follow_up_from_a_plain_thread_spawns_on_the_sessions_runtime()
     .map_err(|_| "follow_up from plain thread panicked")?;
     runtime.block_on(session.wait_idle());
     assert_eq!(session.messages().len(), 4);
+    Ok(())
+}
+
+/// Incident: a prompt sent while the session was between turns started its own turn ahead of
+/// the prompts already queued (`session/prompt` tried to start, then queued on Busy).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prompts_sent_at_any_spacing_start_turns_in_the_order_sent() -> Result<(), Box<dyn Error>> {
+    const ROUNDS: usize = 200;
+    const SENT: usize = 6;
+    for round in 0..ROUNDS {
+        let provider = Arc::new(ProviderStream::new(None));
+        provider.queue_faux(
+            (0..SENT)
+                .map(|_| faux_assistant_message(vec![faux_text("ok")], StopReason::Stop))
+                .collect(),
+        );
+        let session = session(provider);
+        for n in 0..SENT {
+            session.submit_message(yi_runtime::session::user_input(&format!("p{n}")))?;
+            std::thread::sleep(Duration::from_micros(((round + n) % 5 * 150) as u64));
+        }
+        session.wait_idle().await;
+        let order = recursion_e2e::user_texts(&session.messages());
+        let sent: Vec<String> = (0..SENT).map(|n| format!("p{n}")).collect();
+        assert_eq!(order, sent, "round {round}");
+    }
     Ok(())
 }

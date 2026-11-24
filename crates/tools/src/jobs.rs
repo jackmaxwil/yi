@@ -677,9 +677,15 @@ pub fn run_sweep_within(sweep: &str, bound: Option<Duration>) -> SweepOutcome {
     let until = bound.and_then(|bound| std::time::Instant::now().checked_add(bound));
     let past: CancelFlag =
         Arc::new(move || until.is_some_and(|until| std::time::Instant::now() >= until));
-    match crate::process::run_captured(process, None, &past, OUTPUT_CAP) {
-        Ok(capture) if capture.cancelled => SweepOutcome::TimedOut,
+    sweep_outcome(crate::process::run_captured(
+        process, None, &past, OUTPUT_CAP,
+    ))
+}
+
+fn sweep_outcome(run: Result<crate::process::CommandCapture, String>) -> SweepOutcome {
+    match run {
         Ok(capture) if capture.exit_code == Some(0) => SweepOutcome::Completed,
+        Ok(capture) if capture.cancelled => SweepOutcome::TimedOut,
         Ok(capture) => SweepOutcome::Failed(capture.exit_code.map_or_else(
             || "failed without an exit code".to_owned(),
             |code| format!("failed with exit code {code}"),
@@ -713,7 +719,7 @@ pub fn in_container(container: &str, cwd: &Path, command: &str) -> (String, Stri
         quote(command)
     );
     let sweep = format!(
-        "for p in /proc/[0-9]*; do grep -qsF {mark} $p/environ && kill -9 ${{p#/proc/}}; done"
+        "[ -d /proc/self ] || exit 1; for p in /proc/[0-9]*; do grep -qsF {mark} $p/environ || continue; kill -9 ${{p#/proc/}} || test ! -d \"$p\" || exit 1; done"
     );
     (run, format!("docker exec {name} sh -c {}", quote(&sweep)))
 }
@@ -905,17 +911,7 @@ mod tests {
     }
 
     fn exited() -> CommandCapture {
-        CommandCapture {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            cancelled: false,
-            truncated: false,
-            cut: None,
-            spill: None,
-            kill_error: None,
-            rows: Vec::new(),
-        }
+        capture(Some(0), false)
     }
 
     fn poll(id: JobId, cwd: &Path, owner: JobOwner) -> crate::ToolOutput {
@@ -1323,6 +1319,70 @@ mod tests {
         assert_eq!(u64::try_from(chunk.text.len())?, cap);
         registry().release(id)?;
         Ok(())
+    }
+
+    /// Dies with a sweep that ends on its last unmatched pid's grep: that exit is no failure.
+    #[test]
+    fn a_completed_container_sweep_reports_completed() {
+        let fake = r#"docker() { [ "$1" = exec ] || exit 9; shift 2; "$@"; }"#;
+        let (_, sweep) = in_container("c", Path::new("/w"), "true");
+        assert!(matches!(
+            run_sweep_within(&format!("{fake}; {sweep}"), None),
+            SweepOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn a_container_sweep_with_a_gone_process_reports_completed() {
+        let fake = r#"docker() { [ "$1" = exec ] || exit 9; shift 2; sh -c "grep() { return 0; }; kill() { return 1; }; test() { command test \"\$1\" = ! && return 0; command test \"\$@\"; }; $3"; }"#;
+        let (_, sweep) = in_container("c", Path::new("/w"), "true");
+        assert!(matches!(
+            run_sweep_within(&format!("{fake}; {sweep}"), None),
+            SweepOutcome::Completed
+        ));
+    }
+
+    /// Dies with a sweep whose kill fails: the exit of the last grep must not hide that kill.
+    #[test]
+    fn a_container_sweep_whose_kill_fails_reports_failed() {
+        let fake = r#"docker() { [ "$1" = exec ] || exit 9; shift 2; sh -c "grep() { return 0; }; kill() { return 1; }; $3"; }"#;
+        let (_, sweep) = in_container("c", Path::new("/w"), "true");
+        assert!(matches!(
+            run_sweep_within(&format!("{fake}; {sweep}"), None),
+            SweepOutcome::Failed(reason) if reason == "failed with exit code 1"
+        ));
+    }
+
+    fn capture(exit_code: Option<i32>, cancelled: bool) -> crate::process::CommandCapture {
+        crate::process::CommandCapture {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code,
+            cancelled,
+            truncated: false,
+            kill_error: None,
+            spill: None,
+            cut: None,
+            rows: Vec::new(),
+        }
+    }
+
+    /// Dies with the deadline race: the watchdog flags the bound as the sweep exits 0, and a
+    /// finished sweep reads as one that hung.
+    #[test]
+    fn a_sweep_that_exits_zero_at_the_bound_completed() {
+        assert!(matches!(
+            sweep_outcome(Ok(capture(Some(0), true))),
+            SweepOutcome::Completed
+        ));
+        assert!(matches!(
+            sweep_outcome(Ok(capture(None, true))),
+            SweepOutcome::TimedOut
+        ));
+        assert!(matches!(
+            sweep_outcome(Ok(capture(Some(3), false))),
+            SweepOutcome::Failed(reason) if reason == "failed with exit code 3"
+        ));
     }
 
     /// Dies with the quoting cut: a command carrying its own quotes or a spaced working

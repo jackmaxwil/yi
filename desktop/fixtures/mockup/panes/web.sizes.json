@@ -1,0 +1,40 @@
+{
+ "pane": "web",
+ "frame": 1,
+ "sizes": [
+  {
+   "part": "pane-tab-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs",
+   "height": 20,
+   "width": 286,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "pane-tab",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs .pt",
+   "height": 19,
+   "width": 99,
+   "padding": [
+    0,
+    5,
+    0,
+    5
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  }
+ ]
+}

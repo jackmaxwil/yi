@@ -976,7 +976,7 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
 }
 
 /// One assistant message per bash command, then a closing text reply, as `--faux` reads them.
-fn cassette_lines(calls: &[(&str, serde_json::Value)], reply: &str) -> String {
+pub(crate) fn cassette_lines(calls: &[(&str, serde_json::Value)], reply: &str) -> String {
     let message = |content: serde_json::Value, stop: &str| {
         serde_json::json!({
             "role": "assistant", "content": content,

@@ -31,6 +31,9 @@ pub struct Composer {
     assist: crate::assist::Assist,
     recalled: bool,
     group: Option<Group>,
+    foot: Option<ratatui::text::Line<'static>>,
+    foot_at: std::cell::Cell<Option<(u16, u16)>>,
+    pub(crate) rewrite: crate::rewrite::Rewrite,
 }
 
 /// A replacement's textarea steps, whether undo or redo takes them next, the lines they left
@@ -60,6 +63,9 @@ impl Default for Composer {
             assist: crate::assist::Assist::default(),
             recalled: false,
             group: None,
+            foot: None,
+            foot_at: std::cell::Cell::new(None),
+            rewrite: crate::rewrite::Rewrite::default(),
         }
     }
 }
@@ -112,7 +118,14 @@ impl Composer {
         if let Some(title) = self.search_title().map(Into::into).or(title) {
             block = block.title(title);
         }
+        if let Some(foot) = self.foot.clone() {
+            block = block.title_bottom(foot);
+        }
         self.textarea.set_block(block);
+    }
+
+    pub(crate) fn set_foot(&mut self, foot: Option<ratatui::text::Line<'static>>) {
+        self.foot = foot;
     }
 
     pub fn set_typo_style(&mut self, style: ratatui::style::Style) {
@@ -574,6 +587,14 @@ impl Composer {
         self.textarea.delete_char();
     }
 
+    pub(crate) fn foot_at(&self) -> Option<(u16, u16)> {
+        self.foot_at.get()
+    }
+
+    pub(crate) fn has_attachments(&self) -> bool {
+        !self.pastes.is_empty() || !self.images.is_empty()
+    }
+
     pub fn take_submission(&mut self) -> Option<String> {
         self.take_message().map(|(text, _)| text)
     }
@@ -658,6 +679,11 @@ impl Composer {
 
     /// Paints the wrapped text with its cursor and selection; [`Composer::layout`] runs first.
     pub fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let foot = (
+            area.left().saturating_add(1),
+            area.bottom().saturating_sub(1),
+        );
+        self.foot_at.set(Some(foot));
         let inner = match self.textarea.block() {
             Some(block) => {
                 let inner = block.inner(area);
