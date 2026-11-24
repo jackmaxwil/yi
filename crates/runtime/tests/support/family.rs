@@ -66,6 +66,7 @@ pub struct Built {
     pub wall: Wall,
     pub deadline: Option<std::time::Duration>,
     pub tokens: Option<u64>,
+    pub read_timeout_secs: Option<u64>,
 }
 
 pub struct Family {
@@ -120,6 +121,40 @@ pub async fn wait_for_path(path: &Path, message: &str) -> Result<(), Box<dyn std
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     Err(message.into())
+}
+
+/// Runs `test` again in a fresh test-binary process with the supplied environment, echoing its
+/// output.
+pub fn rerun_test(
+    test: &str,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let mut command = yi_tools::command(std::env::current_exe()?);
+    command.args(["--exact", test, "--nocapture"]);
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let output = command.output()?;
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    Ok(output)
+}
+
+pub fn rerun_with_levers(
+    test: &str,
+    child: &str,
+    levers: &str,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let dir = crate::scratch::Scratch::new("yi-levers-rerun")?;
+    let overrides = dir.join("levers.json");
+    std::fs::write(&overrides, levers)?;
+    rerun_test(
+        test,
+        &[
+            (child, std::ffi::OsStr::new("1")),
+            ("YI_LEVERS", overrides.as_os_str()),
+        ],
+    )
 }
 
 /// `hold` makes every child run that shell command first, so its turn stays open; each
@@ -179,6 +214,7 @@ fn family_build(
                     wall: build.wall.clone(),
                     deadline: build.deadline,
                     tokens: build.tokens,
+                    read_timeout_secs: build.model.read_timeout_secs,
                 });
             }
             let provider = Arc::new(ProviderStream::new(None));

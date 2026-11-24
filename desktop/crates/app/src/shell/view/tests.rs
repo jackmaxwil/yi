@@ -11,6 +11,7 @@ use yd_core::command::table::{Run, Target};
 use yd_core::ids::CommandId;
 use yd_core::kind::Kind;
 use yd_core::msg::Effect;
+use yd_core::wire::replay::play;
 use yd_ui::pane::show_scene;
 use yd_ui::win::Win;
 
@@ -81,6 +82,22 @@ fn rest(runtime: &mut Runtime<Win>) {
             break;
         }
     }
+}
+
+fn lines(recording: &str, from: usize, to: usize) -> String {
+    let lines = recording.lines().skip(from).take(to.saturating_sub(from));
+    lines.collect::<Vec<_>>().join("\n")
+}
+
+/// Plays more of the recording into the running window, as its reader thread would.
+fn feed(runtime: &mut Runtime<Win>, recording: &str, from: usize, to: usize) {
+    let part = lines(recording, from, to);
+    runtime.update(move |win, _| {
+        if let Ok(mut hub) = win.hub.try_borrow_mut() {
+            let _ = play(&mut hub.model, &part);
+        }
+    });
+    rest(runtime);
 }
 
 fn centre(runtime: &Runtime<Win>, key: &str) -> Result<(f32, f32), Box<dyn Error>> {

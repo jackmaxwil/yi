@@ -1,18 +1,13 @@
 //! Which kinds of pane have something to show in a window now. The grid rests a pane a
 //! layout seated while its kind is not among them, and gives it its slot back once it is.
 
-use std::io::Write as _;
-
 use rune::Tx;
-use yd_core::command::by_kind::{self, PANE_ALWAYS, PANE_NEVER};
-use yd_core::command::table::Target;
 use yd_core::feed::{FeedStatus, OPEN_FILES, Table};
 use yd_core::grid::step::GridMsg;
-use yd_core::ids::{CommandId, RowId, SettingKey, WindowId};
-use yd_core::msg::{Msg, step};
+use yd_core::ids::WindowId;
+use yd_core::msg::Msg;
 use yd_core::pane::{Opens, PaneKind};
 use yd_core::row::Rows;
-use yd_core::settings::store::{OPENS, SettingsMsg};
 use yd_ui::grid_view::drag::GLIDE;
 use yd_ui::win::{Hub, Win, dispatch};
 
@@ -44,9 +39,8 @@ fn has(hub: &Hub, window: WindowId, kind: PaneKind) -> bool {
         }
         PaneKind::Code => rows(tables.get(OPEN_FILES)),
         PaneKind::Web => {
-            let (feed, table) = (web::pane::FEED, tables.get(web::pane::FEED));
-            let page = RowId::new(format!("page:{}", feed.instance));
-            table.is_some_and(|table| table.find(&page).is_some()) || failing(table)
+            let table = tables.get(web::pane::FEED);
+            web::pane::page_row(table, web::pane::FEED).is_some() || failing(table)
         }
         PaneKind::Remote => remote::pane::has(hub),
         PaneKind::Report => thread.and_then(report::pane::newest).is_some(),
@@ -82,7 +76,7 @@ pub fn tell(win: &mut Win, tx: &mut Tx) -> bool {
         let fresh = yd_ui::shown::fresh(&hub, window);
         let thread = yd_ui::shown::thread(&hub, window).filter(|_| !fresh);
         let thread = thread.map(|thread| thread.id.clone());
-        let told = grid.have.get(&window);
+        let told = grid.have.get(&(window, thread.clone()));
         let same = told.is_some_and(|told| told.iter().eq(now.iter()))
             && grid.shows.get(&window) == thread.as_ref();
         if same || grid.window(window).is_none() {
@@ -97,39 +91,6 @@ pub fn tell(win: &mut Win, tx: &mut Tx) -> bool {
         thread,
     };
     dispatch(win, Msg::Grid(told));
-    true
-}
-
-/// "Always open here" and "Never open by itself" on a pane or its tab: the word is written to
-/// the settings file, or taken back when it was the one in force. True for either command.
-pub fn carry(win: &mut Win, _: &mut Tx, command: CommandId, target: &Target) -> bool {
-    if ![PANE_ALWAYS, PANE_NEVER].contains(&command) {
-        return false;
-    }
-    let (Target::Thing(address), Ok(mut hub)) = (target, win.hub.try_borrow_mut()) else {
-        return true;
-    };
-    let Some((pane, kind, word)) = by_kind::word(&hub.model.grid, command, address) else {
-        return true;
-    };
-    let settings = &hub.model.settings;
-    let word = Some(word).filter(|word| settings.opens().get(&kind) != Some(word));
-    let key = SettingKey::fixed(OPENS);
-    let set = SettingsMsg::Set(key.clone(), Some(settings.with_opens(kind, word)));
-    step(&mut hub.model, Msg::Settings(set));
-    if let Err(why) = crate::settings::pane::file::keep(&mut hub, &key) {
-        let _ = writeln!(
-            std::io::stderr(),
-            "yi-desktop: the word was not kept: {why}"
-        );
-    }
-    // The pane it was said on is the window's own from now: no second one joins it.
-    if matches!(word, Some(Opens::Always(_))) {
-        step(
-            &mut hub.model,
-            Msg::Grid(GridMsg::Across { pane, on: true }),
-        );
-    }
     true
 }
 

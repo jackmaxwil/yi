@@ -4,7 +4,7 @@ use crate::address::uri::Address;
 use crate::grid::layout::{Axis, ChatSide, Edge, GridError, Hole, Layout, Line, Size};
 use std::collections::BTreeSet;
 
-use crate::grid::leave::{close, front, leave, next_tab, rejoin, rest, split, unstack};
+use crate::grid::leave::{close, close_tab, front, leave, next_tab, rejoin, rest, split, unstack};
 use crate::grid::resize::{even, position, resize};
 use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
 use crate::grid::swap::{Spot, land, own, swap};
@@ -138,15 +138,19 @@ pub fn step(grid: &mut Windows, change: GridMsg) -> Vec<Effect> {
             layout.is_some_and(|layout| layout.front(*filled) == layout.front(*pane))
         })
     };
+    let told = match &change {
+        GridMsg::Have { window, .. } => Some(*window),
+        _ => None,
+    };
     let quiet = match &change {
-        GridMsg::Fill(_) | GridMsg::Have { .. } | GridMsg::Moved { .. } => true,
+        GridMsg::Fill(_) | GridMsg::Moved { .. } => true,
         GridMsg::Front(pane) => tab(pane),
         _ => false,
     };
     let Ok(ops) = apply(&mut next, change) else {
         return Vec::new();
     };
-    if !quiet {
+    if !quiet && told.is_none_or(|window| changed(grid, &next, window)) {
         next.filled.clear();
     }
     // A pane that is drawn has been seen: its tab carries no dot once it is behind again.
@@ -209,10 +213,9 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 grid.fronts.insert((window, was), fronts);
             }
             let now: BTreeSet<PaneKind> = kinds.into_iter().collect();
-            let before = grid.had.insert((window, thread.clone()), now.clone());
+            let before = grid.have.insert((window, thread.clone()), now.clone());
             let first = |kind: &PaneKind| before.as_ref().is_none_or(|had| !had.contains(kind));
             let arrived: Vec<PaneKind> = now.iter().copied().filter(first).collect();
-            grid.have.insert(window, now);
             match thread.clone() {
                 Some(thread) => grid.shows.insert(window, thread),
                 None => grid.shows.remove(&window),
@@ -234,11 +237,15 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
         }
         GridMsg::Across { pane, on } => {
             let window = grid.window_of(pane).ok_or(GridError::NoSuchPane(pane))?;
-            let thread = grid.shows.get(&window).cloned().filter(|_| !on);
+            let shown = grid.shows.get(&window).cloned();
             let found = grid.panes.iter_mut().find(|other| other.id == pane);
             let found = found.ok_or(GridError::NoSuchPane(pane))?;
             found.seated = false;
-            found.scope = thread.map_or(Scope::Window, |thread| Scope::Sessions(vec![thread]));
+            match (on, shown) {
+                (true, _) => found.scope = Scope::Window,
+                (false, Some(thread)) => found.scope = Scope::Sessions(vec![thread]),
+                (false, None) => {}
+            }
         }
         GridMsg::Leave(pane) => return pull(grid, pane),
         GridMsg::Rejoin(pane) => return dock(grid, pane),
@@ -359,20 +366,26 @@ fn edit(
     change: impl FnOnce(&mut Layout) -> Result<(), GridError>,
 ) -> Result<(), GridError> {
     let window = find(grid, id)?;
-    // A slot is named by its stack's first tab: which tab is in front is no change of layout.
-    let shape = |layout: &Layout| {
-        let named =
-            |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
-        let areas: Vec<_> = layout.areas.iter().map(named).collect();
-        let tracks = (layout.cols.clone(), layout.rows.clone());
-        (tracks, areas, layout.stacks.clone())
-    };
-    let before = shape(&window.layout);
+    let before = layout_shape(&window.layout);
     change(&mut window.layout)?;
-    if shape(&window.layout) != before {
+    if layout_shape(&window.layout) != before {
         (window.saved, window.own) = (None, None);
     }
     Ok(())
+}
+
+/// A slot is named by its stack's first tab: which tab is in front is no change of layout.
+fn layout_shape(layout: &Layout) -> impl PartialEq + use<> {
+    let named =
+        |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
+    let areas: Vec<_> = layout.areas.iter().map(named).collect();
+    let tracks = (layout.cols.clone(), layout.rows.clone());
+    (tracks, areas, layout.stacks.clone())
+}
+
+fn changed(before: &Windows, after: &Windows, window: WindowId) -> bool {
+    let shape = |grid: &Windows| grid.window(window).map(|found| layout_shape(&found.layout));
+    shape(before) != shape(after)
 }
 
 /// Brings `pane` of `window` in front of its stack and back into the grid if its slot rests.
@@ -384,6 +397,10 @@ fn raise(grid: &mut Windows, window: WindowId, pane: PaneId) -> Result<(), GridE
         rejoin(layout, pane)?;
     }
     Ok(())
+}
+
+fn same_pane(pane: &Pane, kind: PaneKind, thing: Option<&Address>) -> bool {
+    pane.kind == kind && pane.thing.as_ref() == thing
 }
 
 /// The person asked for `pane` in `window` or moved it there: it is theirs, open in the
@@ -398,7 +415,7 @@ fn handled(grid: &mut Windows, window: WindowId, pane: PaneId) {
         (true, _) if pane.kind == PaneKind::Chat => pane.scope = Scope::Window,
         (true, thread) => pane.scope = Scope::new(pane.kind, thread),
         (false, Some(thread)) => pane.scope.open(thread),
-        (false, None) => {}
+        (false, None) => pane.scope = Scope::Window,
     }
     pane.seated = false;
 }
@@ -419,7 +436,8 @@ fn settle(grid: &mut Windows, id: WindowId) -> Result<(), GridError> {
 
 /// [`settle`] for the one slot `only` is in, or for every slot of the window.
 fn settle_in(grid: &mut Windows, id: WindowId, only: Option<PaneId>) -> Result<(), GridError> {
-    if !grid.have.contains_key(&id) {
+    let thread = grid.shows.get(&id).cloned();
+    if !grid.have.contains_key(&(id, thread)) {
         return Ok(());
     }
     let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
@@ -474,6 +492,14 @@ fn add(grid: &mut Windows, kind: PaneKind) -> Result<PaneId, GridError> {
 /// Whether `pane` is in no window and out of none: hidden, for any window to show again.
 fn idle(grid: &Windows, pane: PaneId) -> bool {
     !grid.windows.iter().any(|window| window.layout.holds(pane))
+}
+
+fn hidden_idle(grid: &Windows, kind: PaneKind, thing: Option<&Address>) -> Option<PaneId> {
+    grid.panes
+        .iter()
+        .filter(|pane| same_pane(pane, kind, thing))
+        .map(|pane| pane.id)
+        .find(|pane| idle(grid, *pane))
 }
 
 /// Takes `pane` out of the window it is drawn in, for good. A window left with no pane
@@ -590,7 +616,8 @@ fn wear(
     }
     settle(grid, id)?;
     // A layout sets places only: what the session has that opens by itself comes again.
-    let has = grid.have.get(&id).cloned().unwrap_or_default();
+    let shown = grid.shows.get(&id).cloned();
+    let has = grid.have.get(&(id, shown)).cloned().unwrap_or_default();
     arrivals(grid, id, has.into_iter().collect());
     Ok(ops)
 }
@@ -681,7 +708,7 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
         return Ok(Vec::new());
     }
     // A tab among others: it goes, and the next one that shows here takes the slot.
-    let mate = |grid: &Windows, window| next_tab(&grid.window(window)?.layout, pane);
+    let mate = |grid: &Windows, window| close_tab(&grid.window(window)?.layout, pane);
     if let Some(window) = grid.home_of(pane)
         && let Some(mate) = mate(grid, window)
         && unstack(&mut find(grid, window)?.layout, pane)
