@@ -1,4 +1,5 @@
 ---
+version: 0.1107.0
 issue: Refs #2308
 cut: none desktop/crates/core/src/grid/swap.rs
 cut: none desktop/crates/panes/src/files/pane.rs
