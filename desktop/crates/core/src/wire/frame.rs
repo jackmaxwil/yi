@@ -8,7 +8,7 @@ use std::io::{self, BufRead, Read};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use yi_types::acp::{AcpConfigOption, AcpPermissionParams, AcpShowParams, AcpStopReason};
+use yi_types::acp::{AcpPermissionParams, AcpShowParams};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::goal::Goal;
@@ -22,6 +22,7 @@ use crate::ids::{AgentId, ThreadId};
 use crate::reduce::threads::Run;
 use crate::reduce::todos::Plan;
 use crate::wire::request::RequestId;
+use crate::wire::shapes::{AcpConfigOption, AcpStopReason};
 
 /// The most bytes one frame may hold: what Yi's own console reads. A prompt is one entry
 /// in one frame, and two images of the largest size Yi takes are more than half of this.

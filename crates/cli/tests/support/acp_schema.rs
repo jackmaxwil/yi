@@ -7,8 +7,8 @@ use serde_json::{Map, Value};
 
 /// Invariant: this file is the upstream `schema/v2/schema.json` at the named tag, byte for
 /// byte; a bump adds the next tag's file beside it and changes these two constants.
-const PINNED: &str = "schema-v2.0.0-alpha.5.json";
-const PINNED_SHA256: &str = "3df13661962bf9ed3162a3e50d75fab3d768247995bfb1754b0d844ae139ce4c";
+const PINNED: &str = "schema-v2.1.17.0.json";
+const PINNED_SHA256: &str = "99814f2ca08cd41810284761f1844daa6b47b2882ff495332db25bdccf413a46";
 
 pub struct Schema {
     defs: Map<String, Value>,

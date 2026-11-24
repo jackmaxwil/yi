@@ -1,7 +1,7 @@
 //! The queue of permission asks: kept here, answered by the kept id.
 
 use serde_json::{Value, json};
-use yi_types::acp::{AcpPermissionOptionKind, AcpStopReason};
+use yi_types::acp::AcpPermissionOptionKind;
 use yi_types::message::join_text;
 
 use super::{Check, address, branch, feed, head, played, recording, rows, run, said, sent, thread};
@@ -17,6 +17,7 @@ use crate::reduce::step::commands::{
 use crate::reduce::threads::{Alert, Run, Status, Want};
 use crate::reduce::turns::{CallId, ToolCall, ToolState};
 use crate::wire::event::{Down, WireEvent};
+use crate::wire::shapes::AcpStopReason;
 
 const ALLOWED: &str = "01a1de97-c166-7d2e-9ca8-5dee496589e1";
 const REJECTED: &str = "01a1de97-c223-744c-8afa-018c5c9ad664";

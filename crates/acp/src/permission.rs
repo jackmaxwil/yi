@@ -5,13 +5,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agent_client_protocol_schema::v2 as acp;
 use serde_json::{Value, json};
 use yi_runtime::{AskOutcome, Asker};
-use yi_types::acp::{
-    AcpAsker, AcpDiffChange, AcpDiffOperation, AcpDiffPatch, AcpFrame, AcpMeta, AcpPatchFormat,
-    AcpPermissionOption, AcpPermissionOptionKind, AcpPermissionOutcome, AcpPermissionParams,
-    AcpPermissionSubject, AcpToolCallUpdate, AcpToolContent, AcpYiMeta,
-};
+use yi_types::acp::{AcpAsker, AcpMeta};
 use yi_types::permission::{choices, chosen};
 
 use crate::LineSink;
@@ -67,16 +64,12 @@ where
     response
 }
 
-fn permission_options(grants: &[yi_runtime::Grant]) -> Vec<AcpPermissionOption> {
-    use AcpPermissionOptionKind::{AllowAlways, AllowOnce, RejectOnce};
+fn permission_options(grants: &[yi_runtime::Grant]) -> Vec<acp::PermissionOption> {
+    use acp::PermissionOptionKind::{AllowAlways, AllowOnce, RejectOnce};
     let labels = grants.iter().map(|grant| grant.label.as_str());
     choices(labels, AllowOnce, |_| AllowAlways, RejectOnce)
         .into_iter()
-        .map(|(option_id, name, kind)| AcpPermissionOption {
-            option_id,
-            name,
-            kind,
-        })
+        .map(|(option_id, name, kind)| acp::PermissionOption::new(option_id, name, kind))
         .collect()
 }
 
@@ -93,45 +86,42 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             let n = *counter;
             format!("perm_{session_id}_{n}")
         };
-        let request = AcpPermissionParams {
-            session_id: session_id.clone(),
-            title: ask.title.to_owned(),
-            description: Some(ask.description.to_owned()),
-            options: permission_options(ask.grants),
-            meta: ask.agent.map(|name| AcpMeta {
-                yi: AcpYiMeta {
-                    asker: Some(AcpAsker {
-                        child_id: name.to_owned(),
-                    }),
-                    ..AcpYiMeta::default()
-                },
-            }),
-            subject: ask.patch.map(|patch| AcpPermissionSubject::ToolCall {
-                tool_call: Box::new(AcpToolCallUpdate {
-                    tool_call_id: ask.tool_call_id.unwrap_or_default().to_owned(),
-                    content: Some(vec![AcpToolContent::Diff {
-                        changes: ask.changes.iter().map(|path| diff_change(path)).collect(),
-                        patch: Some(AcpDiffPatch {
-                            format: AcpPatchFormat::GitPatch,
-                            text: patch.to_owned(),
-                        }),
-                    }]),
-                    ..AcpToolCallUpdate::default()
-                }),
-            }),
-        };
-        let request = AcpFrame {
-            jsonrpc: "2.0".to_owned(),
-            id: Some(Value::String(id.clone())),
-            method: "session/request_permission".to_owned(),
-            params: serde_json::to_value(&request).ok(),
-        };
+        let meta = ask.agent.map(|name| {
+            let mut meta = AcpMeta::default();
+            meta.yi.asker = Some(AcpAsker {
+                child_id: name.to_owned(),
+            });
+            crate::meta_map(&meta)
+        });
+        let params = acp::RequestPermissionRequest::new(
+            session_id.as_str(),
+            ask.title,
+            permission_options(ask.grants),
+        )
+        .description(ask.description)
+        .subject(ask.patch.map(|patch| {
+            let diff = acp::Diff::patch(
+                patch,
+                ask.changes.iter().map(|path| diff_change(path)).collect(),
+            );
+            acp::RequestPermissionSubject::from(
+                acp::ToolCallUpdate::new(ask.tool_call_id.unwrap_or_default())
+                    .content(vec![acp::ToolCallContent::from(diff)]),
+            )
+        }))
+        .meta(meta);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/request_permission",
+            "params": params,
+        });
         let stopped = || ask.stop.is_some_and(|stop| stop());
         let response = with_pending_ask(
             &pending,
             &id,
             &sink,
-            &json!(request),
+            &request,
             PendingWait::UntilStopped,
             &stopped,
         );
@@ -140,14 +130,10 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
                 "params": {"sessionId": session_id, "requestId": id}}));
             return AskOutcome::Reject;
         };
-        let outcome = response
-            .get("result")
-            .and_then(|result| result.get("outcome"))
-            .cloned()
-            .unwrap_or(Value::Null);
-        match serde_json::from_value::<AcpPermissionOutcome>(outcome) {
-            Ok(AcpPermissionOutcome::Selected { option_id }) => chosen(
-                &option_id,
+        let result = response.get("result").cloned().unwrap_or(Value::Null);
+        match serde_json::from_value::<acp::RequestPermissionResponse>(result).map(|r| r.outcome) {
+            Ok(acp::RequestPermissionOutcome::Selected(selected)) => chosen(
+                &selected.option_id.0,
                 AskOutcome::AllowOnce,
                 AskOutcome::AllowAlways,
                 AskOutcome::Reject,
@@ -158,14 +144,11 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
 }
 
 /// Invariant: an ask precedes the write it gates, so what is on disk is the pre-image.
-fn diff_change(path: &std::path::Path) -> AcpDiffChange {
-    let operation = if path.exists() {
-        AcpDiffOperation::Modify
+fn diff_change(path: &std::path::Path) -> acp::DiffChange {
+    let path = path.to_string_lossy().into_owned();
+    if std::path::Path::new(&path).exists() {
+        acp::DiffChange::modify(path)
     } else {
-        AcpDiffOperation::Add
-    };
-    AcpDiffChange {
-        operation,
-        path: path.to_string_lossy().into_owned(),
+        acp::DiffChange::add(path)
     }
 }

@@ -1276,11 +1276,18 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   [`config.rs`](../crates/types/src/config.rs)
 
 ### 17.2 ACP and daemon
-`yi-acp` speaks a hand-rolled ACP v2 subset over JSON-RPC 2.0, shapes in `yi-types::acp`,
-measured against the upstream `schema-v2.0.0-alpha.5` schema vendored under
-`crates/cli/tests/fixtures/acp-v2/` (D328): every frame a faux session emits must pass it, with
-no custom root field and no `other` value outside `_`. Yi's own fields on a standard shape ride
-`_meta.yi`. `initialize` advertises `session: {delete: {}}`; below version 2 it fails −32602,
+`yi-acp` and `yi-console` speak ACP v2 over JSON-RPC 2.0 with the upstream
+`agent-client-protocol-schema` crate (1.17.0, feature `unstable_protocol_v2`, module `v2`), the
+types-only half of `agent-client-protocol`: the standard shapes are its structs, built and read
+through its builders. `yi-types::acp` keeps Yi's own (`AcpMeta`, `AcpRoute*`, `AcpForkParams`,
+`AcpCommitted`, `AcpPromptResult`, `AcpPending*`, `AcpShow*`, `DaemonLedger*`) and one standard
+family, the permission request with its options and subject: the daemon's `_yi/pending` list is
+built from it and the desktop client decodes it, and `yi-types` takes no protocol crate (§2). The
+desktop client holds its own config-option and stop-reason shapes. The wire is measured against the crate's own
+schema, upstream `schema/v2/schema.json` at tag v1.17.0, vendored under
+`crates/cli/tests/fixtures/acp-v2/` beside the older `schema-v2.0.0-alpha.5` file (D351, whose
+hand-rolled subset the crate supersedes): every frame a faux session emits must pass it, with no custom root field and no
+`other` value outside `_`. Yi's own fields on a standard shape ride `_meta.yi`. `initialize` advertises `session: {delete: {}}`; below version 2 it fails −32602,
 an unknown method −32601, bad JSON −32700.
 
 | Method | Side | What |
@@ -1299,7 +1306,7 @@ an unknown method −32601, bad JSON −32700.
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
-as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
+as `OtherSessionUpdate`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, at most 512 entries and 8 MiB per frame; a root's
 last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
 `_yi/committed{entry, ancestors, ancestors_notice}` (`AcpCommitted`: each user or assistant message as saved, with
@@ -1505,6 +1512,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 |---|---|---|---|---|
 | `serde` | `derive`, `std` | types | every wire and disk shape (§20) | hand-rolled JSON: compat correctness matters more |
 | `serde_json` | `std`, `preserve_order` | all but orb, permission | JSON with key order kept, so a session file round-trips byte for byte | same |
+| `agent-client-protocol-schema` | `unstable_protocol_v2`; no `schemars` | acp, console | the ACP v2 wire shapes, so Yi stops hand-writing a protocol another team versions (§17.2); pulls `anyhow` (scoped wrapper in `deny.toml`), `serde_with`, `strum`, `derive_more` | the full `agent-client-protocol` crate (96 crates with futures, tracing and uuid, a runtime Yi does not use); keeping `yi-types::acp` (every protocol revision a hand edit) |
 | `tokio` | `rt`, `sync`, `time`, `macros`, `process`, `io-util`, `net`; no `rt-multi-thread` | ai, kernel, loop, runtime, acp, tui, cli | provider streams, kernel sockets, scheduler timers | `smol`: `zeromq` is tokio-shaped |
 | `ureq` | `tls` | ai, oauth, mcp-cli, kernel, cli | blocking HTTP and SSE to providers, OAuth, MCP HTTP, the uv download, the release tarball; bundled webpki roots only, because `native-certs` linked CoreFoundation into every command's startup, a flat ~13.05M instructions per command: 33.8% of `--version`, 8.3% of `ask` | `reqwest` (hyper stack), `native-tls` (openssl on Linux), `native-certs` (keychain CAs, a corporate-proxy CA, at that startup cost) |
 | `h2` | — | ai | HTTP/2 Connect to Cursor's agent `Run` method; the server rejects HTTP/1.1 | `reqwest` / `hyper` (banned); `ureq` (HTTP/1.1) |
@@ -1583,7 +1591,7 @@ covers, and the attribute covers the one item after it, to its matching brace or
   changed shape until `--update`, which lands in its own commit (§21).
 - Unknown data survives where the shape allows it: structs carry `#[serde(flatten)]` maps
   (38 in `crates/types/src`); open wire enums end in `#[serde(untagged)] Other(String)` (e.g.
-  `AcpStopReason`, `SpanKind`) or a `#[serde(other)]` unit variant.
+  `AcpShowOutcome`, `SpanKind`) or a `#[serde(other)]` unit variant.
 - Config structs in [`config.rs`](../crates/types/src/config.rs) and `LanesConfig` in
   [`lane.rs`](../crates/types/src/lane.rs) set `deny_unknown_fields`: an unknown key is an error.
 - Golden fixtures in [`crates/types/tests/fixtures`](../crates/types/tests/fixtures) are added,
