@@ -91,7 +91,7 @@ class Search(unittest.TestCase):
         def run(overrides, tasks):
             self.calls.append(dict(overrides))
             turn = sum(1 for call in self.calls if call == overrides) - 1
-            moved = overrides.get(knob, 8) != 8
+            moved = overrides.get(knob, 0) != 0
             out = []
             for task in tasks:
                 spent = 1000 - (saves(turn, task) if moved else 0)
@@ -138,7 +138,7 @@ class Search(unittest.TestCase):
         with self.assertRaisesRegex(levers.Refused, "'omega' has no class"):
             levers.grid({"plan.width_max": [4]}, ["omega"], run, FLOORS, listed)
         self.assertEqual(self.calls, [], "a refused grid spends nothing")
-        result = levers.grid({"plan.width_max": [4, 8], "todo.nudge_work": [12, 16]}, list(SIX),
+        result = levers.grid({"plan.width_max": [4, 0], "todo.nudge_work": [12, 16]}, list(SIX),
                              run, FLOORS, listed, k=2)
         self.assertEqual(len(result["points"]), 3, "the point that is all defaults is the baseline, not a candidate")
         self.assertEqual((result["spend"]["runs"], len(self.calls)), (8, 8))
@@ -146,12 +146,12 @@ class Search(unittest.TestCase):
 
     def test_a_candidate_outside_its_range_is_refused(self):
         run = self.runner(lambda turn, task: 100)
-        for value, lever in ((17, "plan.width_max"), (0, "plan.width_max"), (True, "plan.width_max"),
+        for value, lever in ((4097, "plan.width_max"), (-1, "plan.width_max"), (True, "plan.width_max"),
                              (4.5, "plan.width_max"), (4, "plan.width_maxx")):
-            with self.assertRaisesRegex(levers.Refused, "integer in 1..16|unknown lever"):
+            with self.assertRaisesRegex(levers.Refused, "integer in 0..4096|unknown lever"):
                 self.compare(run, value=value, lever=lever)
         with self.assertRaisesRegex(levers.Refused, "every point is the defaults"):
-            self.compare(run, value=8)
+            self.compare(run, value=0)
         self.assertEqual(self.calls, [])
 
 

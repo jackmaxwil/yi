@@ -62,7 +62,9 @@ REVIEW_THINKING = "xhigh"
 # fixer's accept, so a fixer could weaken its own judge before the host committed.
 WALL = (".forgejo/", "scripts/guardrails/", "scripts/hooks/", "justfile", ".github/", "skills/yi/pr-review/")
 # Rows every PR adds and baselines every PR moves are unique text, not a sign of a twin.
-DUP_SKIP = re.compile(r"^(docs/CHANGELOG\.md|docs/ARCHITECTURE\.md|docs/solutions/|scripts/guardrails/baselines/)")
+# Incident: #2297's imported Cargo.lock shared 12 package windows with #2239's, and that twin held a 13-PR stack.
+DUP_SKIP = re.compile(r"^(docs/CHANGELOG\.md|docs/ARCHITECTURE\.md|docs/solutions/|scripts/guardrails/baselines/"
+                      r"|(.*/)?([^/]+\.lock|package-lock\.json|pnpm-lock\.yaml)$)")
 DUP_WINDOW = 6
 # Measured on the forge: the four compaction PRs (#159, #170, #172, #174) share 16 to 35
 # windows pairwise, unrelated pairs at most 2.
@@ -490,15 +492,27 @@ def windows(diff):
     return hashes
 
 
+def below(pr, pulls):
+    """The head branches under `pr` in its stack: its base, that PR's base, and on down. Incident: #2321
+    moved code two PRs under it had added, and a one-hop test read #2317 and #2312 as its twins."""
+    by_head = {p["head"]["ref"]: p for p in sorted(pulls, key=lambda p: p.get("state") == "open")}
+    refs, ref = set(), pr["base"]["ref"]
+    while ref in by_head and ref not in refs:
+        refs.add(ref)
+        ref = by_head[ref]["base"]["ref"]
+    return refs
+
+
 def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: False, issue_of=lambda n: None):
     """The same issue closed twice (by an open or a merged PR, or already closed), or added text
     another open PR already adds. A stack's own neighbours are not twins: one is the other's
     base, or one head carries the other's. Incident: #765, stacked on #733 and opened against
     main, was read as #733's twin."""
     mine, closes = windows(diff), {int(n) for kind, _, n in CITE.findall(pr.get("body") or "") if kind.lower() == "closes"}
-    out, reported = [], set()
+    out, reported, chain = [], set(), [*others, pr]
+    under = below(pr, chain)
     for other in others:
-        if other["number"] == pr["number"] or other["head"]["ref"] in (pr["base"]["ref"],) or other["base"]["ref"] == pr["head"]["ref"]:
+        if other["number"] == pr["number"] or other["head"]["ref"] in under or pr["head"]["ref"] in below(other, chain):
             continue
         # Incident: #1415 and #1416 reopened the work of the closed #1411 and #1405 and were blocked
         # as their twins; a PR closed unmerged landed nothing and closes nothing.
@@ -1898,6 +1912,8 @@ def selfcheck():
     other = diff.replace("+++ b/src/a.rs", "+++ b/src/b.rs")
     rows = "+++ b/docs/CHANGELOG.md\n" + "".join(f"+| row {i} |\n" for i in range(20))
     assert len(windows(diff)) == 15 and windows(rows) == set(), "changelog rows never count"
+    assert windows(diff.replace("src/a.rs", "desktop/Cargo.lock")) == set(), "a lockfile's packages are generated, not a twin's text"
+    assert len(windows(diff.replace("src/a.rs", "docs/lock.md"))) == 15, "only a lockfile is skipped by its name"
     pr = {"number": 5, "title": "t", "body": "Closes #4", "head": {"ref": "b5"}, "base": {"ref": "main"}}
     twin = {"number": 6, "title": "u", "state": "open", "body": "", "head": {"ref": "b6"}, "base": {"ref": "main"}}
     same_issue = dict(twin, number=7, body="Closes apex/yi#4")
@@ -1906,6 +1922,12 @@ def selfcheck():
     diffs = {6: other, 7: "", 8: other, 9: ""}
     found = duplicate_findings(pr, diff, [twin, same_issue, stacked, stranger, dict(twin, number=5)], diffs.get, "apex/yi")
     assert [f["claim"].split(" ")[0] for f in found] == ["#6", "#7"], found
+    low, mid = dict(twin, number=14, head={"ref": "b3"}), dict(twin, number=15, head={"ref": "b4"}, base={"ref": "b3"})
+    top = dict(pr, base={"ref": "b4"})
+    assert duplicate_findings(top, diff, [low, mid], {14: other, 15: ""}.get, "apex/yi") == [], "a PR two under this one in its stack is no twin"
+    assert duplicate_findings(dict(low, body=""), other, [mid, top], {15: "", 5: diff}.get, "apex/yi") == [], "nor is one two above it"
+    assert len(duplicate_findings(top, diff, [low, dict(mid, base={"ref": "main"})], {14: other, 15: ""}.get, "apex/yi")) == 1, \
+        "a PR outside the chain of bases is still a twin"
     landed = dict(twin, number=11, state="closed", merged=True)
     assert duplicate_findings(pr, diff, [landed], {11: other}.get, "apex/yi") == [], "a merged PR's text is main's, not a twin"
     abandoned = dict(same_issue, number=13, state="closed", merged=False)

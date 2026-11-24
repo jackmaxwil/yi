@@ -341,8 +341,7 @@ fn filled(grid: &Windows, size: Size) -> Result<(), String> {
         let Some(pane) = grid.fills(*window) else {
             continue;
         };
-        let (x, y, Size { w, h }) = (0.0, 0.0, size);
-        if grid.place(*window, size) != [(pane, Rect { x, y, w, h })] {
+        if grid.place(*window, size) != [(pane, size.whole())] {
             return Err(format!("{pane:?} does not fill {window:?}"));
         }
         if !plain

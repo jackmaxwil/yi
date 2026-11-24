@@ -4,7 +4,7 @@ crates/runtime/tests/fixtures/behavior replays to one BEHAVIOR verdict line and
 the baseline locks it. A locked pass may never go red; a new red case enters
 only through --update, in its own commit. The harness owns the replay, this
 owns the ratchet — same split as request_budget."""
-import json, re, subprocess, sys, pathlib
+import json, os, re, subprocess, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, fail
 
@@ -13,7 +13,8 @@ f = BASE / "behavior_baseline.json"
 # the stack; -p yi-runtime compiled a second copy of 67 crates and relinked every binary.
 out = subprocess.run(
     ["cargo", "test", "-q", "--workspace", "--test", "behavior", "--", "--nocapture"],
-    cwd=ROOT, capture_output=True, text=True)
+    cwd=ROOT, capture_output=True, text=True,
+    env={**os.environ, "YI_ADMISSION_SUSPENDED": "1"})
 if out.returncode != 0:
     fail([f"behavior harness failed:\n{out.stdout}{out.stderr}"], "behavior")
 # Incident: an unanchored parse read a cassette's own assertion text as a verdict,
