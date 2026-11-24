@@ -78,6 +78,13 @@ fn login_logout_round_trip() -> TestResult {
         home.join(".yi/providers/tokens/lonely.json"),
         r#"{"version":1,"kind":"key","access":"x"}"#,
     )?;
+    let claude = home.join(".yi/providers/tokens/anthropic.json");
+    std::fs::write(&claude, r#"{"version":1,"kind":"key","access":"x"}"#)?;
+    assert_eq!(login(&["logout", "claude"], "")?.status.code(), Some(0));
+    assert!(
+        !claude.exists(),
+        "`logout claude` removes the token `login claude` stores"
+    );
     let cleared = login(&["logout"], "")?;
     assert_eq!(cleared.status.code(), Some(0));
     assert!(!token.exists(), "openai token removed");

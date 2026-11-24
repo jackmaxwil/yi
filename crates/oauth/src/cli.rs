@@ -218,7 +218,11 @@ fn logout(args: &[String]) -> i32 {
     if args.len() != 1 {
         return usage();
     }
-    match flow::logout(&args[0]) {
+    let id = match args[0].as_str() {
+        crate::claude::CLAUDE_ID => crate::claude::ANTHROPIC_ID,
+        other => other,
+    };
+    match flow::logout(id) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("error: {error}");
