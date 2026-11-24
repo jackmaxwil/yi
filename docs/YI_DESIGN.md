@@ -1587,7 +1587,7 @@ covers, and the attribute covers the one item after it, to its matching brace or
   changed shape until `--update`, which lands in its own commit (§21).
 - Unknown data survives where the shape allows it: structs carry `#[serde(flatten)]` maps
   (38 in `crates/types/src`); open wire enums end in `#[serde(untagged)] Other(String)` (e.g.
-  `AcpStopReason`, `SpanKind`) or a `#[serde(other)]` unit variant.
+  `AcpShowOutcome`, `SpanKind`) or a `#[serde(other)]` unit variant.
 - Config structs in [`config.rs`](../crates/types/src/config.rs) and `LanesConfig` in
   [`lane.rs`](../crates/types/src/lane.rs) set `deny_unknown_fields`: an unknown key is an error.
 - Golden fixtures in [`crates/types/tests/fixtures`](../crates/types/tests/fixtures) are added,
