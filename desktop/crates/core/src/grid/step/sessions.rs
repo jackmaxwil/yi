@@ -9,7 +9,8 @@ use crate::model::Model;
 use crate::pane::PaneKind::{self, Chat, Containers, Trace, Web};
 
 use super::GridMsg;
-use super::tests::{FRAME_2, MAIN, change, drawn, pane, record};
+use super::resting::kinds_drawn;
+use super::tests::{FRAME_2, MAIN, change, drawn, pane, record, reread};
 
 /// The chat alone, in a window showing session `thread`.
 fn window(thread: &str) -> Model {
@@ -39,14 +40,6 @@ fn open(model: &mut Model, kind: PaneKind) {
     change(model, GridMsg::Open { window, kind });
 }
 
-fn kinds(model: &Model) -> Result<Vec<PaneKind>, String> {
-    let placed = drawn(model)?;
-    let kind = |(pane, _): &(_, _)| model.grid.kind(*pane).ok_or("a pane of no kind");
-    let mut kinds = placed.iter().map(kind).collect::<Result<Vec<_>, _>>()?;
-    kinds.sort();
-    Ok(kinds)
-}
-
 fn tracks(model: &Model) -> Option<(Vec<Track>, Vec<Track>)> {
     let layout = &model.grid.window(MAIN)?.layout;
     Some((layout.cols.clone(), layout.rows.clone()))
@@ -58,13 +51,13 @@ fn tracks(model: &Model) -> Option<(Vec<Track>, Vec<Track>)> {
 fn a_pane_shows_in_the_session_it_was_opened_in_and_the_lines_stay() -> Check {
     let mut model = window("a");
     open(&mut model, Trace);
-    assert_eq!(kinds(&model)?, [Chat, Trace]);
+    assert_eq!(kinds_drawn(&model)?, [Chat, Trace]);
     let (lines, was) = (tracks(&model), drawn(&model)?);
     show(&mut model, "b");
-    assert_eq!(kinds(&model)?, [Chat], "session b never opened it");
+    assert_eq!(kinds_drawn(&model)?, [Chat], "session b never opened it");
     assert_eq!(tracks(&model), lines, "the lines stay with the window");
     show(&mut model, "");
-    assert_eq!(kinds(&model)?, [Chat], "nor did New chat");
+    assert_eq!(kinds_drawn(&model)?, [Chat], "nor did New chat");
     show(&mut model, "a");
     assert_eq!(drawn(&model)?, was, "back as it was");
     Ok(())
@@ -82,11 +75,15 @@ fn a_second_session_opens_the_same_pane_in_its_own_slot() -> Check {
     assert_eq!(find(&drawn(&model)?, web)?, find(&was, web)?);
     assert_eq!(model.grid.panes.len(), 2, "no second web pane was made");
     show(&mut model, "a");
-    assert_eq!(kinds(&model)?, [Chat, Web]);
+    assert_eq!(kinds_drawn(&model)?, [Chat, Web]);
     show(&mut model, "c");
-    assert_eq!(kinds(&model)?, [Chat]);
+    assert_eq!(kinds_drawn(&model)?, [Chat]);
     show(&mut model, "b");
-    assert_eq!(kinds(&model)?, [Chat, Web], "b has it from when it asked");
+    assert_eq!(
+        kinds_drawn(&model)?,
+        [Chat, Web],
+        "b has it from when it asked"
+    );
     Ok(())
 }
 
@@ -100,9 +97,9 @@ fn closing_a_pane_closes_it_in_this_session_only_while_another_has_it() -> Check
     open(&mut model, Web);
     let web = pane(&model, Web)?;
     change(&mut model, GridMsg::Close(web));
-    assert_eq!(kinds(&model)?, [Chat], "closed in b");
+    assert_eq!(kinds_drawn(&model)?, [Chat], "closed in b");
     show(&mut model, "a");
-    assert_eq!(kinds(&model)?, [Chat, Web], "a still has it");
+    assert_eq!(kinds_drawn(&model)?, [Chat, Web], "a still has it");
     change(&mut model, GridMsg::Close(web));
     assert_eq!(
         model.grid.kind(web),
@@ -110,7 +107,7 @@ fn closing_a_pane_closes_it_in_this_session_only_while_another_has_it() -> Check
         "its last session closed it for good"
     );
     show(&mut model, "b");
-    assert_eq!(kinds(&model)?, [Chat]);
+    assert_eq!(kinds_drawn(&model)?, [Chat]);
     Ok(())
 }
 
@@ -122,17 +119,21 @@ fn a_mac_wide_kind_and_a_pane_kept_across_sessions_stay_through_a_switch() -> Ch
     open(&mut model, Containers);
     open(&mut model, Trace);
     show(&mut model, "b");
-    assert_eq!(kinds(&model)?, [Chat, Containers]);
+    assert_eq!(kinds_drawn(&model)?, [Chat, Containers]);
     show(&mut model, "a");
     let trace = pane(&model, Trace)?;
     let (pane, on) = (trace, true);
     change(&mut model, GridMsg::Across { pane, on });
     show(&mut model, "b");
-    assert_eq!(kinds(&model)?, [Chat, Trace, Containers]);
+    assert_eq!(kinds_drawn(&model)?, [Chat, Trace, Containers]);
     let on = false;
     change(&mut model, GridMsg::Across { pane, on });
     show(&mut model, "a");
-    assert_eq!(kinds(&model)?, [Chat, Containers], "it is session b's now");
+    assert_eq!(
+        kinds_drawn(&model)?,
+        [Chat, Containers],
+        "it is session b's now"
+    );
     Ok(())
 }
 
@@ -157,11 +158,7 @@ fn the_grid_file_keeps_each_panes_sessions() -> Check {
         !list.contains(&ThreadId::new("a")),
         "the oldest was forgotten"
     );
-    let text = serde_json::to_string(&model.grid)?;
-    let mut read: Windows = serde_json::from_str(&text)?;
-    (read.have, read.shows) = (model.grid.have.clone(), model.grid.shows.clone());
-    read.fronts = model.grid.fronts.clone();
-    read.had = model.grid.had.clone();
+    let (_, read) = reread(&model)?;
     assert_eq!(read, model.grid);
     Ok(())
 }
@@ -180,7 +177,7 @@ fn the_windows_chat_stays_and_a_split_chat_is_its_sessions() -> Check {
             edge: Edge::Right,
         },
     );
-    assert_eq!(kinds(&model)?, [Chat, Chat]);
+    assert_eq!(kinds_drawn(&model)?, [Chat, Chat]);
     show(&mut model, "b");
     let placed = drawn(&model)?;
     assert_eq!(placed.len(), 1, "the split chat is session a's: {placed:?}");
@@ -190,6 +187,25 @@ fn the_windows_chat_stays_and_a_split_chat_is_its_sessions() -> Check {
         "the first chat stays"
     );
     show(&mut model, "a");
-    assert_eq!(kinds(&model)?, [Chat, Chat]);
+    assert_eq!(kinds_drawn(&model)?, [Chat, Chat]);
+    Ok(())
+}
+
+/// A pane opened while New chat is shown is the window's: it shows in every session after.
+#[test]
+fn a_pane_opened_in_new_chat_is_the_windows() -> Check {
+    let mut model = window("a");
+    open(&mut model, Trace);
+    show(&mut model, "b");
+    assert_eq!(kinds_drawn(&model)?, [Chat]);
+    show(&mut model, "");
+    open(&mut model, Trace);
+    assert_eq!(kinds_drawn(&model)?, [Chat, Trace], "opened in New chat");
+    show(&mut model, "b");
+    assert_eq!(
+        kinds_drawn(&model)?,
+        [Chat, Trace],
+        "the window's, so b has it too"
+    );
     Ok(())
 }

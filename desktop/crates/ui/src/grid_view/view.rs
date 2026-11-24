@@ -148,6 +148,12 @@ pub enum Act {
     Pick,
 }
 
+fn began(phase: GesturePhase, total: &mut f32) {
+    if phase == GesturePhase::Began {
+        *total = 0.0;
+    }
+}
+
 /// How far a pinch goes, as a change in magnification, before it fills or gives back.
 const PINCH: f32 = 0.2;
 
@@ -161,9 +167,7 @@ fn pinch(win: &mut Win, tx: &mut Tx, pane: PaneId, event: MagnifyEvent) -> bool 
         .is_ok_and(|hub| hub.model.grid.fills(window) == Some(pane));
     let mut far = false;
     grip(win, |grip| {
-        if event.phase == GesturePhase::Began {
-            grip.pinch = 0.0;
-        }
+        began(event.phase, &mut grip.pinch);
         grip.pinch += event.delta;
         far = if filled {
             grip.pinch < -PINCH
@@ -186,14 +190,15 @@ pub(crate) fn swipe(win: &mut Win, tx: &mut Tx, pane: PaneId, event: WheelEvent)
     if event.dx.abs() <= event.dy.abs() {
         return false;
     }
-    let mut way = None;
+    if event.momentum {
+        return true;
+    }
+    let mut ways = Vec::new();
     grip(win, |grip| {
-        if event.phase == GesturePhase::Began {
-            grip.swipe = 0.0;
-        }
-        grip.swipe += if event.momentum { 0.0 } else { event.dx };
-        if grip.swipe.abs() >= SWIPE {
-            way = Some(if grip.swipe < 0.0 {
+        began(event.phase, &mut grip.swipe);
+        grip.swipe += event.dx;
+        while grip.swipe.abs() >= SWIPE {
+            ways.push(if grip.swipe < 0.0 {
                 Turn::On
             } else {
                 Turn::Back
@@ -201,7 +206,7 @@ pub(crate) fn swipe(win: &mut Win, tx: &mut Tx, pane: PaneId, event: WheelEvent)
             grip.swipe -= SWIPE.copysign(grip.swipe);
         }
     });
-    if let Some(way) = way {
+    for way in ways {
         act(win, tx, Act::Turn(pane, way));
     }
     true

@@ -1,6 +1,6 @@
 //! Opening a pane where panes of its place go: for the person, and by itself for a rule.
 
-use super::{add, edit, find, fresh, handled, idle, raise};
+use super::{add, edit, find, fresh, handled, hidden_idle, raise, same_pane};
 use crate::address::uri::Address;
 use crate::grid::layout::{ChatSide, Edge, GridError, Layout};
 use crate::grid::leave::{split, stack};
@@ -47,13 +47,11 @@ pub(super) fn open(
     }
     // A thing is shown once: its pane out in a window of its own is where it shows.
     let out = |pane: &&Pane| thing.is_some() && grid.origin_of(pane.id).is_some();
-    let same = |pane: &&Pane| pane.kind == kind && pane.thing == thing;
+    let same = |pane: &&Pane| same_pane(pane, kind, thing.as_ref());
     if grid.panes.iter().filter(same).any(|pane| out(&pane)) {
         return Ok(Vec::new());
     }
-    let hidden = grid.panes.iter();
-    let hidden = hidden.filter(|pane| pane.kind == kind && pane.thing == thing);
-    let hidden = hidden.map(|pane| pane.id).find(|pane| idle(grid, *pane));
+    let hidden = hidden_idle(grid, kind, thing.as_ref());
     let pane = match hidden {
         Some(pane) => pane,
         None => add(grid, kind)?,
@@ -162,11 +160,7 @@ fn arrive(grid: &mut Windows, window: WindowId, kind: PaneKind) -> Result<(), Gr
         }
         return Ok(());
     }
-    let hidden = grid
-        .panes
-        .iter()
-        .filter(|pane| pane.kind == kind && pane.thing.is_none());
-    let hidden = hidden.map(|pane| pane.id).find(|pane| idle(grid, *pane));
+    let hidden = hidden_idle(grid, kind, None);
     let pane = match hidden {
         Some(pane) => pane,
         None => add(grid, kind)?,
