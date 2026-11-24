@@ -17,5 +17,7 @@ cut: desktop/crates/panes/src/code_view/refs.rs | fn shown(hub: &Hub) -> Option<
 cut: none desktop/crates/ui/src/chrome/tabs.rs
 cut: desktop/crates/ui/src/grid_view/view.rs | dispatch(win, Msg::Grid(GridMsg::Split(pane))); | a split goes through beside::split, which puts the viewer's file beside it; a second viewer no longer mirrors the first
 cut: desktop/crates/ui/src/shown.rs | if saved != Some(JUST_CHAT.slug) { | a new thread's panes arrive by the rules; its first words no longer pick a layout
+cut: none desktop/crates/core/src/grid/step/resting.rs
+cut: none desktop/crates/ui/src/overlay/pick.rs
 ---
 In Yi Desktop, point at a file, a line of code, a thread or any other thing and press Space to peek at it: a card over the window shows a file's first lines with their numbers, or the thing's own words, and opens no pane and no tab. Space again, Esc or a click closes it. In a list, with the pointer on nothing, Space peeks the row the arrow keys stand on.
