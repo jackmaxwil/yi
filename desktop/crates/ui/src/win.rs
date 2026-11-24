@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rune::{AppHandle, TextEdit};
+use rune::{AppHandle, El, TextEdit, Tx, el};
 use yd_core::ids::{PaneId, WindowId};
 use yd_core::inbox::Inbox;
 use yd_core::model::Model;
@@ -142,6 +142,15 @@ pub fn dispatch(win: &mut Win, msg: Msg) {
     };
     deliver(&win.hub, effects);
     wake_others(&win.hub, win.window);
+}
+
+/// An element that asks, once, when it is first laid out: the view cannot send.
+pub fn ask(key: String, msg: Msg) -> El {
+    el().key(key)
+        .size(0.0, 0.0)
+        .on_layout_tx(move |win: &mut Win, _, _: &mut Tx| {
+            dispatch(win, msg.clone());
+        })
 }
 
 /// Steps what worker threads sent since the last frame; true when anything changed.

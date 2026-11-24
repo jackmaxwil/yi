@@ -17,7 +17,7 @@ use yd_panes::new_chat::view as new_chat;
 use yd_panes::settings::pane::file;
 use yd_ui::grid_view::view::alone;
 use yd_ui::menu::{command_box, context};
-use yd_ui::overlay::boxes;
+use yd_ui::overlay::{boxes, peek};
 use yd_ui::pane::Stage;
 use yd_ui::slots::SCENE_SLOTS;
 use yd_ui::theme::look::colour;
@@ -136,6 +136,8 @@ pub fn dressed(win: &Win, hub: &Hub, cx: &mut Cx<Win>, key: &'static str, body: 
         .on_drop_files(dropped)
         .accepts_files(Path::is_dir)
         .on_secondary_press_local(context::press)
+        .on_pointer_move_local(peek::moved)
+        .on_key(peek::key)
         .child(body);
     match material(&hub.model.tokens) {
         Some(glass) => root.system_material(glass),
