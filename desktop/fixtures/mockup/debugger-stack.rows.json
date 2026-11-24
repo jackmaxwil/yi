@@ -1,0 +1,130 @@
+[
+ {
+  "id": "0-bucket-take",
+  "cells": {
+   "frame": {
+    "text": "#0"
+   },
+   "function": {
+    "text": "Bucket::take"
+   },
+   "at": {
+    "text": "rate_limit.rs:18"
+   },
+   "current": {
+    "flag": true
+   },
+   "variables": {
+    "text": "4 in view"
+   },
+   "called_with": {
+    "text": "now = 1731.42s"
+   },
+   "actions": {
+    "tags": [
+     "Open line",
+     "Show its variables",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "1-ratelimit-call",
+  "cells": {
+   "frame": {
+    "text": "#1"
+   },
+   "function": {
+    "text": "RateLimit::call"
+   },
+   "at": {
+    "text": "rate_limit.rs:52"
+   },
+   "current": {
+    "flag": false
+   },
+   "variables": {
+    "text": "3 in view"
+   },
+   "actions": {
+    "tags": [
+     "Open line",
+     "Show its variables",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "2-upload",
+  "cells": {
+   "frame": {
+    "text": "#2"
+   },
+   "function": {
+    "text": "upload"
+   },
+   "at": {
+    "text": "upload.rs:31"
+   },
+   "current": {
+    "flag": false
+   },
+   "variables": {
+    "text": "5 in view"
+   },
+   "actions": {
+    "tags": [
+     "Open line",
+     "Show its variables",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "3-axum-serve",
+  "cells": {
+   "frame": {
+    "text": "#3"
+   },
+   "function": {
+    "text": "axum::serve"
+   },
+   "at": {
+    "text": "library"
+   },
+   "current": {
+    "flag": false
+   },
+   "from": {
+    "text": "a library, no source here"
+   },
+   "actions": {
+    "tags": [
+     "Step out to your code",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "thread-2",
+  "dim": true,
+  "cells": {
+   "frame": {
+    "text": "thread 2 · parked3 more threads"
+   },
+   "function": {
+    "text": ""
+   },
+   "at": {
+    "text": ""
+   },
+   "current": {
+    "flag": false
+   }
+  }
+ }
+]

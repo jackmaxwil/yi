@@ -497,7 +497,7 @@ fn control(row: &SettingRow) -> Control<'_> {
         {
             Control::Edit
         }
-        SettingKind::List | SettingKind::Json => Control::Note,
+        SettingKind::List | SettingKind::Json | SettingKind::Other(_) => Control::Note,
     }
 }
 

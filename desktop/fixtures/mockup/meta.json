@@ -1,0 +1,72 @@
+{
+ "agents": {
+  "open": "tests-upload"
+ },
+ "trace": {
+  "open": "cargo-test-waiting-on-you"
+ },
+ "logs": {
+  "open": "17:58:03.412"
+ },
+ "findings": {
+  "open": "bucket-take-can-underflow-when-the-clock-steps-back",
+  "group_notes": {
+   "2 new from agents": "nothing is filed until you say so · Accept all",
+   "Being fixed": "2 · one agent on both",
+   "Open": "3 · nobody on them · Give all Low to one agent",
+   "Being watched": "2 · from standing checks"
+  }
+ },
+ "findings-table": {
+  "open": "bucket-take-can-underflow-when-the-clock-steps-back"
+ },
+ "assets": {
+  "open": "build-01",
+  "group_notes": {
+   "Infra": "4 of 4 reachable",
+   "Network": "1 gap",
+   "VMs": "5 of 6 covered"
+  }
+ },
+ "containers": {
+  "open": "atlas-api",
+  "group_notes": {
+   "atlas": "compose · 4 running",
+   "forge": "compose · 3 running",
+   "stopped": "1 stopped"
+  }
+ },
+ "vms": {
+  "open": "ci-ubuntu"
+ },
+ "daemons": {
+  "open": "mcp-figma"
+ },
+ "lsp": {
+  "open": "rust-analyzer"
+ },
+ "problems": {
+  "open": "rate-limit-rs-20"
+ },
+ "plugins": {
+  "open": "docker"
+ },
+ "themes": {
+  "open": "yi"
+ },
+ "sidebar": {
+  "selected": "rate-limit-the-upload-endpoint",
+  "group_notes": {
+   "atlas-api": "6 threads · main",
+   "storefront": "5 threads · main",
+   "docs": "2 threads",
+   "infra": "2 threads"
+  }
+ },
+ "debugger-variables": {
+  "open": "tokens"
+ },
+ "debugger-stack": {
+  "open": "0-bucket-take"
+ }
+}

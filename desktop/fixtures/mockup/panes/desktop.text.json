@@ -1,0 +1,26 @@
+{
+ "pane": "desktop",
+ "frame": 1,
+ "strings": [
+  "ci-ubuntu",
+  "30 fps · 38 ms",
+  "1920 × 1080 · 38 ms",
+  "Watch",
+  "Control",
+  "Activities",
+  "Sat 14 Nov 17:58",
+  "en · 100%",
+  "Atlas Uploader",
+  "hero-01.png",
+  "Uploaded",
+  "hero-02.png",
+  "detail-front.png",
+  "Retrying in 41 s",
+  "detail-back.png",
+  "Waiting",
+  "Agent",
+  "Terminal",
+  "$ tail -f ~/.atlas/uploader.log 17:58:02 POST /upload 200 hero-01.png 17:58:02 POST /upload 200 hero-02.png 17:58:03 POST /upload 429 retry-after=41 17:58:03 queue paused, 2 files left 17:58:03 will retry detail-front.png"
+ ],
+ "titles": []
+}

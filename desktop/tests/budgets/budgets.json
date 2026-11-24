@@ -1,0 +1,54 @@
+{
+ "note": "budget is the most a number may be; measured is the worst of three rounds when last recorded (python3 tests/budgets/run.py --record). Measured on a machine shared with other builds, so a budget is a ceiling, never a target.",
+ "budgets": {
+  "start_to_first_frame_ms": {
+   "unit": "ms",
+   "budget": 82,
+   "measured": 65.403,
+   "basis": "worst of three plus a quarter",
+   "what": "process start to the first GPU-complete picture, scene shell/everything, headless release build"
+  },
+  "frame_eight_panes_ms": {
+   "unit": "ms",
+   "budget": 8.3,
+   "measured": 0.81,
+   "basis": "docs/rune-notes.md: a frame is 8.3 ms",
+   "what": "p95 frame over ten chat-side flips (layout changes, gliding) with eight panes, scene shell/everything"
+  },
+  "scroll_100k_rows_ms": {
+   "unit": "ms",
+   "budget": 8.3,
+   "measured": 1.609,
+   "basis": "docs/rune-notes.md: a frame is 8.3 ms",
+   "what": "p95 frame of 195 wheel steps over a 100,000-row Assets list, after five warm-up steps"
+  },
+  "open_2000_turns_ms": {
+   "unit": "ms",
+   "budget": 380,
+   "measured": 303.327,
+   "basis": "worst of three plus a quarter",
+   "what": "folding a 2,000-turn replay into the model plus the first frame of its thread"
+  },
+  "type_in_composer_ms": {
+   "unit": "ms",
+   "budget": 8.3,
+   "measured": 1.019,
+   "basis": "docs/rune-notes.md: a frame is 8.3 ms",
+   "what": "worst frame while typing 33 letters into the composer of the 2,000-turn thread"
+  },
+  "idle_commits": {
+   "unit": "commits",
+   "budget": 0,
+   "measured": 0.0,
+   "basis": "an idle window draws nothing: zero",
+   "what": "view commits over 600 frames of an idle chat window"
+  },
+  "idle_busy_frames": {
+   "unit": "frames",
+   "budget": 0,
+   "measured": 0.0,
+   "basis": "an idle window draws nothing: zero",
+   "what": "frames of 600 that report work pending in an idle chat window"
+  }
+ }
+}

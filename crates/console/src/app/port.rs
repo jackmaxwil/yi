@@ -176,6 +176,7 @@ pub struct Config {
     pub model: Option<(String, String)>,
     pub effort: Option<Effort>,
     pub context_window: Option<u64>,
+    pub rewriter: Option<yi_types::config::RewriteLength>,
     /// Every option as the worker sent it, which the settings page's Session tab lists.
     pub options: Vec<acp::SessionConfigOption>,
 }
@@ -343,6 +344,9 @@ pub fn decode(extension: acp::OtherSessionUpdate) -> Result<Decoded, Malformed> 
                 .unwrap_or_default();
             let mut config = config_of(&options);
             config.context_window = fields.get("contextWindow").and_then(Value::as_u64);
+            config.rewriter = fields
+                .remove("rewriter")
+                .and_then(|value| serde_json::from_value(value).ok());
             Ok(Decoded::Config(config))
         }
         "_yi/committed" => serde_json::from_value::<yi_types::acp::AcpCommitted>(Value::Object(

@@ -1,0 +1,50 @@
+[
+ {
+  "id": "self-refill-at-now",
+  "cells": {
+   "expression": {
+    "text": "self.refill_at - now"
+   },
+   "value": {
+    "text": "41.2s"
+   },
+   "type": {
+    "text": "Duration"
+   },
+   "was": {
+    "text": "42.2s, one stop ago"
+   },
+   "actions": {
+    "tags": [
+     "Edit",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "limit",
+  "cells": {
+   "expression": {
+    "text": "LIMIT"
+   },
+   "value": {
+    "text": "20"
+   },
+   "type": {
+    "text": "u32, a constant"
+   },
+   "set_at": {
+    "text": "rate_limit.rs:3"
+   },
+   "actions": {
+    "tags": [
+     "Open line",
+     "Remove",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

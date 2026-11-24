@@ -296,12 +296,14 @@ impl Parent {
             self.forward.emit(update);
         }
         for prompt in self.ids.take_inserted() {
-            let inserted = acp::PromptResponse::new(prompt.message_id);
-            crate::respond(
-                &self.forward.sink,
-                prompt.request,
-                Ok(serde_json::json!(inserted)),
-            );
+            let Some(request) = prompt.request else {
+                continue;
+            };
+            let inserted = yi_types::acp::AcpPromptResult {
+                message_id: prompt.message_id,
+                queue_place: None,
+            };
+            crate::respond(&self.forward.sink, request, Ok(serde_json::json!(inserted)));
         }
         if let AgentEvent::MessageEnd { message } = event
             && matches!(
@@ -344,7 +346,12 @@ pub(crate) async fn forward_parent(
                 parent.forward.gap(gap.dropped);
                 // Invariant: a lag may have dropped an insertion; a refusal beats a success naming it.
                 let lost = "the update stream lagged past this prompt's insertion";
-                crate::resident::refuse(&parent.forward.sink, parent.ids.waiting(), -32603, lost);
+                crate::resident::refuse_requests(
+                    &parent.forward.sink,
+                    parent.ids.waiting(),
+                    -32603,
+                    lost,
+                );
             }
         }
     }

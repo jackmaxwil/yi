@@ -150,9 +150,13 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
 }
 
 pub(crate) fn user_text(content: &UserContent) -> String {
+    user_text_joined(content, " ")
+}
+
+pub(crate) fn user_text_joined(content: &UserContent, sep: &str) -> String {
     match content {
         UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, " "),
+        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, sep),
     }
 }
 

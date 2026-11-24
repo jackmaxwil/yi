@@ -1,0 +1,251 @@
+[
+ {
+  "id": "rate-limit-the-upload-endpoint",
+  "cells": {
+   "agent": {
+    "text": "Rate-limit the upload endpoint"
+   },
+   "state": {
+    "dot": "need"
+   },
+   "doing_now": {
+    "text": "waiting on a child"
+   },
+   "model": {
+    "badge": [
+     "O",
+     "model"
+    ]
+   },
+   "tokens": {
+    "text": "41.2K"
+   },
+   "cost": {
+    "text": "$0.38"
+   },
+   "time": {
+    "text": "14m"
+   },
+   "last_14_min": {
+    "bar": {
+     "start": 0.0,
+     "len": 1.0,
+     "tone": "accent"
+    }
+   }
+  }
+ },
+ {
+  "id": "fork-sliding-window",
+  "parent": "rate-limit-the-upload-endpoint",
+  "cells": {
+   "agent": {
+    "text": "Fork · sliding window"
+   },
+   "state": {
+    "dot": "done"
+   },
+   "doing_now": {
+    "text": "set aside as a branch"
+   },
+   "model": {
+    "badge": [
+     "O",
+     "model"
+    ]
+   },
+   "tokens": {
+    "text": "12.9K"
+   },
+   "cost": {
+    "text": "$0.11"
+   },
+   "time": {
+    "text": "3m"
+   },
+   "last_14_min": {
+    "bar": {
+     "start": 0.1429,
+     "len": 0.2143,
+     "tone": "dim"
+    }
+   }
+  }
+ },
+ {
+  "id": "tests-upload",
+  "parent": "rate-limit-the-upload-endpoint",
+  "cells": {
+   "agent": {
+    "text": "Tests · upload"
+   },
+   "state": {
+    "dot": "need"
+   },
+   "doing_now": {
+    "text": "wants to run cargo test"
+   },
+   "model": {
+    "badge": [
+     "S",
+     "model"
+    ]
+   },
+   "tokens": {
+    "text": "8.4K"
+   },
+   "cost": {
+    "text": "$0.03"
+   },
+   "time": {
+    "text": "6m"
+   },
+   "last_14_min": {
+    "bar": {
+     "start": 0.5714,
+     "len": 0.4286,
+     "tone": "need"
+    }
+   },
+   "asked_to": {
+    "text": "Write tests for the new limiter and run them."
+   },
+   "said_last": {
+    "text": "\"Three tests written. I need to run them to check the 429 answer.\""
+   },
+   "touched": {
+    "tags": [
+     "tests/upload.rs +41",
+     "read rate_limit.rs",
+     "read upload.rs"
+    ]
+   },
+   "budget": {
+    "meter": {
+     "ratio": 0.42,
+     "text": "8.4K of 20K tokens · Sonnet 5.5 · 2 children"
+    }
+   },
+   "actions": {
+    "tags": [
+     "Run its command ↵",
+     "Open thread",
+     "Pause",
+     "More budget",
+     "Stop"
+    ]
+   }
+  }
+ },
+ {
+  "id": "bisect-the-flaky-case",
+  "parent": "tests-upload",
+  "cells": {
+   "agent": {
+    "text": "Bisect the flaky case"
+   },
+   "state": {
+    "dot": "work"
+   },
+   "doing_now": {
+    "text": "run 3 of 7"
+   },
+   "model": {
+    "badge": [
+     "S",
+     "model"
+    ]
+   },
+   "tokens": {
+    "text": "5.0K"
+   },
+   "cost": {
+    "text": "$0.02"
+   },
+   "time": {
+    "text": "1:10"
+   },
+   "last_14_min": {
+    "bar": {
+     "start": 0.9143,
+     "len": 0.0857,
+     "tone": "accent"
+    }
+   }
+  }
+ },
+ {
+  "id": "read-the-ci-logs",
+  "parent": "tests-upload",
+  "cells": {
+   "agent": {
+    "text": "Read the CI logs"
+   },
+   "state": {
+    "dot": "done"
+   },
+   "doing_now": {
+    "text": "found 2 failing lines"
+   },
+   "model": {
+    "badge": [
+     "H",
+     "model"
+    ]
+   },
+   "tokens": {
+    "text": "3.3K"
+   },
+   "cost": {
+    "text": "$0.00"
+   },
+   "time": {
+    "text": "0:40"
+   },
+   "last_14_min": {
+    "bar": {
+     "start": 0.6429,
+     "len": 0.05,
+     "tone": "dim"
+    }
+   }
+  }
+ },
+ {
+  "id": "docs-changelog",
+  "parent": "rate-limit-the-upload-endpoint",
+  "cells": {
+   "agent": {
+    "text": "Docs · changelog"
+   },
+   "state": {
+    "dot": "work"
+   },
+   "doing_now": {
+    "text": "writing CHANGELOG.md"
+   },
+   "model": {
+    "badge": [
+     "H",
+     "model"
+    ]
+   },
+   "tokens": {
+    "text": "2.1K"
+   },
+   "cost": {
+    "text": "$0.00"
+   },
+   "time": {
+    "text": "0:42"
+   },
+   "last_14_min": {
+    "bar": {
+     "start": 0.95,
+     "len": 0.05,
+     "tone": "accent"
+    }
+   }
+  }
+ }
+]

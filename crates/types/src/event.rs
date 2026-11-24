@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::message::{AgentMessage, Content, StopReason};
+use crate::wire::{Unknown, UnknownTag};
 
 /// A delta is a delta (D145): only `Start` carries the message; every other
 /// event carries its own bytes, and [`apply`] folds them into one accumulator.
@@ -366,6 +367,36 @@ pub enum AgentEvent {
     Wait {
         wait: Option<Wait>,
     },
+    /// An event `type` this build does not know, written by a newer build; kept as written.
+    #[serde(untagged)]
+    Other(UnknownEvent),
+}
+
+/// The event object as read; it re-emits as serde_json writes it, and nothing reads inside it.
+pub type UnknownEvent = Unknown<EventTag>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventTag;
+
+impl UnknownTag for EventTag {
+    const TAG: &'static str = "type";
+    const KNOWN: &'static [&'static str] = &[
+        "agent_start",
+        "agent_end",
+        "turn_start",
+        "turn_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "tool_execution_start",
+        "tool_execution_update",
+        "tool_execution_end",
+        "permission_requested",
+        "permission_resolved",
+        "child_update",
+        "landing_state",
+        "wait",
+    ];
 }
 
 /// A stretch the agent spends on neither the model's reply nor a tool's work.

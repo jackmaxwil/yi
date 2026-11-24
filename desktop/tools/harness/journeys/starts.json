@@ -1,0 +1,9 @@
+{
+  "about": "The app starts headless beside a private server, draws its window and exits cleanly. It names no socket, so it connects nowhere: the daily journeys do.",
+  "scene": "shell/empty",
+  "steps": [
+    {"t": 0.2, "type": "move", "x": 600, "y": 375},
+    {"t": 0.5, "type": "mark", "name": "end"}
+  ],
+  "expect": {"keys": ["root"], "texts": []}
+}

@@ -247,40 +247,53 @@ pub(crate) fn body(
         *painter = Painter::new(highlight::lang_for(path));
     };
     for raw in preview {
-        let gutter = |number: &str| Span::styled(format!("{number:>4} "), dim);
+        // Incident: grep marks a hit `:` and the lines around it `-`, so a gutter that drops
+        // the separator paints a block of rows the matched line cannot be found in.
+        let marker = |number: &str, sep: char| {
+            let sep = if sep == ':' { ' ' } else { sep };
+            Span::styled(format!("{number:>4}{sep}"), dim)
+        };
         if searchy && let Some(path) = header_path(raw) {
             open(path, &mut out, &mut painter);
             next = None;
             continue;
         }
-        if searchy && let Some((path, number, row)) = crate::rows::grep_row(raw) {
+        let pathed = searchy
+            .then(|| {
+                crate::rows::grep_row(raw)
+                    .map(|(path, number, row)| (path, number, ':', row))
+                    .or_else(|| {
+                        crate::rows::grep_context_row(raw)
+                            .map(|(path, number, row)| (path, number, '-', row))
+                    })
+            })
+            .flatten();
+        if let Some((path, number, sep, row)) = pathed {
             if file != Some(path) {
                 open(path, &mut out, &mut painter);
                 file = Some(path);
             }
             painter.restart();
-            let mut spans = vec![gutter(number)];
+            let mut spans = vec![marker(number, sep)];
             spans.extend(painter.row(row, theme, text));
             out.push(Line::from(spans));
             continue;
         }
         let numbered = crate::rows::numbered(raw)
             .map(|(number, row)| (number, ':', row))
-            .or_else(|| searchy.then(|| context_row(raw)).flatten());
+            .or_else(|| {
+                searchy
+                    .then(|| crate::rows::context_numbered(raw))
+                    .flatten()
+                    .map(|(number, row)| (number, '-', row))
+            });
         if !streamed && let Some((number, sep, row)) = numbered {
             let at = number.parse::<u64>().ok();
             if at.is_none() || at != next {
                 painter.restart();
             }
             next = at.map(|at| at.saturating_add(1));
-            // Incident: grep marks a hit `:` and the lines around it `-`, so a gutter that
-            // drops the separator paints a block of rows the matched line cannot be found in.
-            let marker = if sep == ':' {
-                gutter(number)
-            } else {
-                Span::styled(format!("{number:>4}{sep} "), dim)
-            };
-            let mut spans = std::vec![marker];
+            let mut spans = std::vec![marker(number, sep)];
             spans.extend(painter.row(row, theme, text));
             out.push(Line::from(spans));
             continue;
@@ -322,9 +335,4 @@ fn header_path(raw: &str) -> Option<&str> {
     let (path, tag) = inner.rsplit_once('#')?;
     (!path.is_empty() && !tag.is_empty() && tag.bytes().all(|b| b.is_ascii_alphanumeric()))
         .then_some(path)
-}
-
-fn context_row(raw: &str) -> Option<(&str, char, &str)> {
-    let (number, row) = raw.split_once('-')?;
-    (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some((number, '-', row))
 }

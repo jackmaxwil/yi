@@ -63,6 +63,14 @@ impl App {
     }
 
     pub(super) fn make_chat(&self, session: &SessionId) -> Box<Chat> {
+        let chat = self.build_chat(session);
+        if let Some(start) = self.state.rewriters.get(session) {
+            let _ = chat.events.0.send(UiEvent::Reply(Reply::Rewriter(*start)));
+        }
+        chat
+    }
+
+    fn build_chat(&self, session: &SessionId) -> Box<Chat> {
         let row = self.state.sessions.get(session);
         let options = TuiOptions {
             model: yi_tui::model::model_or_stub("", ""),
@@ -260,6 +268,9 @@ impl App {
                 let own = RequestKind::SetConfig(id.clone());
                 let in_flight = self.pending.values().filter(|p| p.kind == own).count();
                 self.apply_config(id, &config, in_flight <= 1);
+                if let Some(start) = config.rewriter {
+                    self.learn_rewriter(id, start);
+                }
             }
             Decoded::Child(child) => {
                 let evicted = self.state.children_evicted.entry(id.clone()).or_default();
@@ -403,16 +414,18 @@ impl App {
         else {
             return;
         };
-        if let Some(name) = result
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.get("yi")?.get("name")?.as_str())
+        let meta = (result.meta.map(Value::Object))
+            .and_then(|meta| serde_json::from_value::<yi_types::acp::AcpMeta>(meta).ok());
+        if let Some(name) = meta.as_ref().and_then(|meta| meta.yi.name.as_ref())
             && let Some(row) = self.state.sessions.get_mut(id)
         {
-            row.name = Some(name.to_owned());
+            row.name = Some(name.clone());
         }
         let config = config_of(&result.config_options);
         self.apply_config(id, &config, false);
+        if let Some(start) = meta.and_then(|meta| meta.yi.rewriter) {
+            self.learn_rewriter(id, start);
+        }
     }
 
     /// The ask lands in one pane per session: the focused one if it shows the session,
@@ -610,7 +623,7 @@ impl App {
                 "sessionId": session.0,
                 "cwd": root,
                 "replayFrom": offset.unwrap_or(0),
-                "_meta": {"yi": {"replayUpdates": false}},
+                "_meta": {"yi": {"replayUpdates": false, "shows": true}},
             }),
         );
     }
@@ -731,6 +744,9 @@ impl App {
                 "_yi/child_replay",
                 json!({"sessionId": id, "childId": child}),
             ),
+            Command::Rewrite { ask, length, draft } => {
+                self.send_rewrite(outbound, session, (ask, length, draft));
+            }
             Command::Slash(line) => self.send_request(
                 outbound,
                 RequestKind::Slash(session.clone()),

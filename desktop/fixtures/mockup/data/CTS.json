@@ -1,0 +1,87 @@
+[
+ [
+  "atlas",
+  "compose · 4 running"
+ ],
+ [
+  "run",
+  "atlas-api",
+  "atlas/api:rate-limit",
+  34,
+  "212 MB",
+  "8080→8080",
+  "14m",
+  1
+ ],
+ [
+  "run",
+  "atlas-db",
+  "postgres:16",
+  12,
+  "388 MB",
+  "5432",
+  "3d"
+ ],
+ [
+  "run",
+  "atlas-redis",
+  "redis:7",
+  2,
+  "24 MB",
+  "6379",
+  "3d"
+ ],
+ [
+  "run",
+  "atlas-worker",
+  "atlas/worker:main",
+  71,
+  "540 MB",
+  "–",
+  "3d"
+ ],
+ [
+  "forge",
+  "compose · 3 running"
+ ],
+ [
+  "run",
+  "git",
+  "forgejo:9",
+  6,
+  "310 MB",
+  "3000, 222",
+  "12d"
+ ],
+ [
+  "run",
+  "runner-a",
+  "act-runner:5",
+  88,
+  "1.9 GB",
+  "–",
+  "2h"
+ ],
+ [
+  "run",
+  "runner-b",
+  "act-runner:5",
+  4,
+  "120 MB",
+  "–",
+  "2h"
+ ],
+ [
+  "",
+  "1 stopped"
+ ],
+ [
+  "fail",
+  "registry",
+  "registry:2",
+  0,
+  "–",
+  "5000",
+  "exit 137"
+ ]
+]

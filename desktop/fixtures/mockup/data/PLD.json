@@ -1,0 +1,174 @@
+{
+ "docker": [
+  "Manage containers on any Docker host an agent can reach.",
+  [
+   [
+    "Run docker commands",
+    "y"
+   ],
+   [
+    "Read container logs",
+    "y"
+   ],
+   [
+    "Reach the network, hv-01 only",
+    "y"
+   ],
+   [
+    "Write to your files",
+    "n"
+   ]
+  ],
+  [
+   "Update to 1.5.0",
+   "Disable",
+   "Remove"
+  ]
+ ],
+ "vm-host": [
+  "Start, stop and snapshot virtual machines.",
+  [
+   [
+    "Reach the VM host",
+    "y"
+   ],
+   [
+    "Start and stop machines",
+    "y"
+   ],
+   [
+    "Delete machines",
+    "n"
+   ]
+  ],
+  [
+   "Disable",
+   "Remove"
+  ]
+ ],
+ "debugger": [
+  "Drive LLDB and GDB from the Debugger pane.",
+  [
+   [
+    "Attach to your programs",
+    "y"
+   ],
+   [
+    "Let agents read a paused program",
+    "y"
+   ],
+   [
+    "Let agents step",
+    "n"
+   ]
+  ],
+  [
+   "Disable",
+   "Remove"
+  ]
+ ],
+ "rust": [
+  "The Rust language server, and three skills for agents.",
+  [
+   [
+    "Read the project",
+    "y"
+   ],
+   [
+    "Run cargo check",
+    "y"
+   ],
+   [
+    "Reach the network",
+    "n"
+   ]
+  ],
+  [
+   "Update to 2.2.0",
+   "Disable",
+   "Remove"
+  ]
+ ],
+ "typescript": [
+  "The TypeScript language server.",
+  [
+   [
+    "Read the project",
+    "y"
+   ],
+   [
+    "Reach the network",
+    "n"
+   ]
+  ],
+  [
+   "Disable",
+   "Remove"
+  ]
+ ],
+ "github": [
+  "Pull requests, issues and checks as tools for agents.",
+  [
+   [
+    "Read your repositories",
+    "y"
+   ],
+   [
+    "Open pull requests",
+    "y"
+   ],
+   [
+    "Merge",
+    "n"
+   ]
+  ],
+  [
+   "Disable",
+   "Remove"
+  ]
+ ],
+ "figma": [
+  "Read designs and their comments. Signed out 56 minutes ago.",
+  [
+   [
+    "Read files you can open",
+    "y"
+   ]
+  ],
+  [
+   "Sign in",
+   "Disable",
+   "Remove"
+  ]
+ ],
+ "kubernetes": [
+  "A Clusters pane, and commands to look at pods and logs.",
+  [
+   [
+    "Read cluster state",
+    "y"
+   ],
+   [
+    "Change cluster state",
+    "n"
+   ]
+  ],
+  [
+   "Disable",
+   "Remove"
+  ]
+ ],
+ "code-search": [
+  "Search across every project on this Mac. Off.",
+  [
+   [
+    "Read all your projects",
+    "n"
+   ]
+  ],
+  [
+   "Enable",
+   "Remove"
+  ]
+ ]
+}

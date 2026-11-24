@@ -220,6 +220,10 @@ impl App {
                 return self.review_pick(pane, pick);
             }
             Some((_, crate::render::Hit::Search)) => return self.begin_search(),
+            Some((_, crate::render::Hit::Improve(pane, position))) => {
+                self.pending_close = None;
+                return self.pick_rewrite(pane, position);
+            }
             Some((_, crate::render::Hit::FilesRefresh)) => {
                 if let Some(files) = &mut self.state.files {
                     files.refresh();

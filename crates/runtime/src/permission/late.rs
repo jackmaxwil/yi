@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use yi_tools::CancelFlag;
 use yi_types::event::AgentEvent;
 
 use super::{Answerer, AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
@@ -16,6 +17,8 @@ struct OwnedAsk {
     changes: Vec<PathBuf>,
     grants: Vec<yi_permission::Grant>,
     tool_call_id: Option<String>,
+    stop: Option<CancelFlag>,
+    agent: Option<String>,
 }
 
 impl OwnedAsk {
@@ -27,6 +30,8 @@ impl OwnedAsk {
             changes: ask.changes.to_vec(),
             grants: ask.grants.to_vec(),
             tool_call_id: ask.tool_call_id.map(str::to_owned),
+            stop: ask.stop.cloned(),
+            agent: ask.agent.map(str::to_owned),
         }
     }
 
@@ -38,6 +43,8 @@ impl OwnedAsk {
             changes: &self.changes,
             grants: &self.grants,
             tool_call_id: self.tool_call_id.as_deref(),
+            stop: self.stop.as_ref(),
+            agent: self.agent.as_deref(),
         }
     }
 }
@@ -66,8 +73,12 @@ impl<'a> Late<'a> {
 }
 
 pub(super) enum Answered {
-    Person(AskOutcome),
+    Person { outcome: AskOutcome, stopped: bool },
     Classifier(f64),
+}
+
+pub(super) fn stop_released(ask: &PermissionAsk<'_>) -> bool {
+    ask.stop.is_some_and(|stop| stop())
 }
 
 /// Invariant: only a confident allow answers for the person; anything else keeps the ask open
@@ -78,20 +89,25 @@ pub(super) fn ask_or_judge(
     late: &Late<'_>,
 ) -> Answered {
     let Some(asker) = asker else {
-        return Answered::Person(AskOutcome::Reject);
+        return Answered::Person {
+            outcome: AskOutcome::Reject,
+            stopped: stop_released(ask),
+        };
     };
     let (owned, asker) = (OwnedAsk::of(ask), Arc::clone(asker));
     let (sender, receiver) = std::sync::mpsc::channel();
     let claimed = Arc::new(AtomicBool::new(false));
     let theirs = Arc::clone(&claimed);
     std::thread::spawn(move || {
-        let outcome = asker(&owned.ask());
+        let ask = owned.ask();
+        let outcome = asker(&ask);
+        let stopped = stop_released(&ask);
         if !theirs.swap(true, Ordering::AcqRel) {
-            let _ = sender.send(outcome);
+            let _ = sender.send((outcome, stopped));
         }
     });
-    if let Ok(outcome) = receiver.recv_timeout(late.delay) {
-        return Answered::Person(outcome);
+    if let Ok((outcome, stopped)) = receiver.recv_timeout(late.delay) {
+        return Answered::Person { outcome, stopped };
     }
     let judged = late.approver.judge(late.call);
     if let crate::classifier::Judgement::Allow(safe) = judged {
@@ -101,7 +117,10 @@ pub(super) fn ask_or_judge(
             return Answered::Classifier(safe);
         }
     }
-    Answered::Person(receiver.recv().unwrap_or(AskOutcome::Reject))
+    let (outcome, stopped) = receiver
+        .recv()
+        .unwrap_or((AskOutcome::Reject, stop_released(ask)));
+    Answered::Person { outcome, stopped }
 }
 
 impl PermissionBroker {
@@ -119,6 +138,8 @@ impl PermissionBroker {
         // The asker's prompt carries the id it settles under, so a front end can close it.
         let ask = &PermissionAsk {
             tool_call_id: Some(&tool_call_id),
+            stop: self.stop.get(),
+            agent: self.agent.get().map(String::as_str),
             ..*ask
         };
         let _ = self.events.send(AgentEvent::PermissionRequested {
@@ -158,8 +179,10 @@ impl PermissionBroker {
                 self.settle(tool_call_id, ask, true, Answerer::Classifier);
                 (AskOutcome::AllowOnce, Some(safe))
             }
-            Answered::Person(outcome) => {
-                let by = if self.asker.is_some() {
+            Answered::Person { outcome, stopped } => {
+                let by = if stopped && matches!(outcome, AskOutcome::Reject) {
+                    Answerer::Stopped
+                } else if self.asker.is_some() {
                     Answerer::User
                 } else {
                     Answerer::Nobody

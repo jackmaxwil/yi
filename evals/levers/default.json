@@ -1,5 +1,5 @@
 {
- "plan.width_max": 8,
+ "plan.width_max": 0,
  "plan.spawn_cap": 64,
  "plan.retry_cap": 8,
  "plan.stale_turns": 12,
@@ -18,8 +18,8 @@
  "todo.intercept_cap": 6,
  "todo.empty_stop_cap": 3,
  "todo.ladder_top": 3,
- "family.max_children": 8,
- "family.cap": 16,
+ "family.max_children": 0,
+ "family.cap": 0,
  "family.depth": 1,
  "family.stuck_idle_s": 300,
  "mail.wait_min_ms": 1000,

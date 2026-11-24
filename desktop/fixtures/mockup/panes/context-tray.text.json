@@ -1,0 +1,21 @@
+{
+ "pane": "context-tray",
+ "frame": 23,
+ "strings": [
+  "4 attached",
+  "Copy links",
+  "Clear",
+  "1",
+  "rate_limit.rs lines 13–20",
+  "×",
+  "2",
+  "div.alert",
+  "3",
+  "ci-ubuntu · Terminal window",
+  "4",
+  "thread · Fork · sliding window",
+  "yi://atlas-api/rate-limit-uploads/thread/fork-sliding-window",
+  "copy"
+ ],
+ "titles": []
+}

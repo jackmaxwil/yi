@@ -1,0 +1,2 @@
+{"dir": "send", "msg": {"seq": 1, "type": "request", "command": "initialize", "arguments": {"clientID": "yi-desktop", "clientName": "Yi Desktop", "adapterID": "lldb-dap", "linesStartAt1": true, "columnsStartAt1": true, "pathFormat": "path", "supportsVariableType": true}}}
+{"dir": "raw", "text": "Content-Length: 16777217\r\n\r\n"}

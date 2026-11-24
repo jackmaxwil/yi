@@ -1,0 +1,68 @@
+{
+ "about": "The server is stopped on purpose while the app is open: Chat, Agents and Trace say Yi is not running, Chat offers Reconnect, and the status bar says offline.",
+ "seed": [
+  "hello"
+ ],
+ "runs": [
+  {
+   "server": [
+    {
+     "after": "connected",
+     "settle": 2,
+     "do": "stop"
+    }
+   ],
+   "steps": [
+    {
+     "t": 5,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 5.3,
+     "type": "type",
+     "text": "Show Agents"
+    },
+    {
+     "t": 5.9,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 6.6,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 6.8999999999999995,
+     "type": "type",
+     "text": "Show Trace"
+    },
+    {
+     "t": 7.5,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 10,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "keys": [
+     "chat-8.state.server.reconnect",
+     "agents-9.state",
+     "trace-10.pane-frame"
+    ],
+    "texts": [
+     "Yi is not running",
+     "hello"
+    ],
+    "contains": [
+     "offline"
+    ]
+   }
+  }
+ ]
+}

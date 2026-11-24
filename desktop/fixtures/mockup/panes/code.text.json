@@ -1,0 +1,30 @@
+{
+ "pane": "code",
+ "frame": 1,
+ "strings": [
+  "rate_limit.rs",
+  "upload.rs",
+  "Rust · 48 lines · new",
+  "src / middleware /",
+  "1",
+  "+",
+  "use std::time::{Duration, Instant};",
+  "2",
+  "3",
+  "const LIMIT: u32 = 20;",
+  "4",
+  "const WINDOW: Duration = Duration::from_secs(60);",
+  "5",
+  "6",
+  "/// Twenty uploads a minute for each user.",
+  "7",
+  "pub struct Bucket {",
+  "8",
+  "tokens: u32,",
+  "9",
+  "refill_at: Instant,",
+  "10",
+  "}"
+ ],
+ "titles": []
+}

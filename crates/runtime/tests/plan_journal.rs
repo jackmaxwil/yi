@@ -1058,10 +1058,8 @@ fn traced(test: &str) -> Result<Option<PathBuf>, Box<dyn Error>> {
         return Ok(Some(trace));
     }
     let dir = Scratch::new("yi-plan-journal-trace")?;
-    let child = yi_tools::command(std::env::current_exe()?)
-        .args(["--exact", test, "--nocapture"])
-        .env("YI_TRACE", &*dir)
-        .output()?;
+    let trace_dir = dir.to_path_buf();
+    let child = crate::support::rerun_test(test, &[("YI_TRACE", trace_dir.as_os_str())])?;
     let stdout = String::from_utf8_lossy(&child.stdout);
     assert!(
         child.status.success() && stdout.contains("1 passed"),
