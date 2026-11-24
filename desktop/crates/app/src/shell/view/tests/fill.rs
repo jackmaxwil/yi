@@ -39,7 +39,11 @@ fn fills(runtime: &Runtime<Win>, slug: &str, grid: [f32; 4]) -> Check {
 
 /// The room the grid's panes cover between them.
 fn grid(frames: &[(String, [f32; 4])]) -> [f32; 4] {
-    frames.iter().map(|(_, r)| *r).reduce(union).unwrap_or_default()
+    frames
+        .iter()
+        .map(|(_, r)| *r)
+        .reduce(union)
+        .unwrap_or_default()
 }
 
 fn pinch(runtime: &mut Runtime<Win>, at: (f32, f32), deltas: &[f32]) {
