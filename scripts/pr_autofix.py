@@ -84,7 +84,8 @@ FINDINGS_SCHEMA = {
 # A file the findings fixer creates is kept when it is source, a test or a test's fixture, never a
 # build dir's output. Not skills/: a skill is instructions later sessions load, never a fixer's file.
 # Incident: #1025's fix wrote a test and its callers-shape.json fixture, and only the test landed.
-NEW_FILE = re.compile(r"^(crates|python|docs|evals)/(?!.*(^|/)target[^/]*/).+\.(rs|py|md|toml|txt|json|jsonl|xml)$")
+# Incident: #2316's fix declared a module under desktop/ and its file was left out, so no round could pass.
+NEW_FILE = re.compile(r"^(?!.*(^|/)target[^/]*/)(crates|desktop|python|docs|evals)/.+\.(rs|py|md|toml|txt|json|jsonl|xml)$")
 SIGNED = "The fixer's answer to review round"
 GATE_SIGNED = "The fixer's answer to the gate on"
 # A lane run in the clone: the test lane builds every test binary, and a hung test must not eat the pass.
@@ -2650,7 +2651,7 @@ def selfcheck():
                   "failed", "the lane stayed red", status)
     if hourly(now + RETRY_AFTER) not in lost or "clears itself" not in lost:
         errs.append(f"a failure's comment does not say when its label clears itself: {lost!r}")
-    if not NEW_FILE.match("crates/tools/tests/fixtures/ripwire/callers-shape.json") or not NEW_FILE.match("crates/a/tests/new.rs") or NEW_FILE.match("target-check/x.d") or NEW_FILE.match("crates/a/target/x.rs") or NEW_FILE.match("skills/x/SKILL.md"):
+    if not NEW_FILE.match("crates/tools/tests/fixtures/ripwire/callers-shape.json") or not NEW_FILE.match("crates/a/tests/new.rs") or not NEW_FILE.match("desktop/crates/panes/src/test_support.rs") or NEW_FILE.match("desktop/target/x.rs") or NEW_FILE.match("target-check/x.d") or NEW_FILE.match("crates/a/target/x.rs") or NEW_FILE.match("skills/x/SKILL.md"):
         errs.append("the new-file rule keeps a build output or drops a new test")
     if not MARKER.search("a\n<<<<<<< HEAD\nb\n") or MARKER.search("a\n<<<<<<<< not one\n"):
         errs.append("the marker check misreads a conflict marker")
