@@ -94,7 +94,8 @@ LANE_SECS = 900
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
 # Incident: #1111's pass met a full /tmp, and #1779's was labelled for a git `index.lock` a dead
 # pass left behind: a disk or a lock that frees itself is a blip, never the PR's fault.
-TRANSIENT = re.compile(r"No space left|Out of diskspace|Unable to create .*\.lock", re.I)
+DISK_FULL = re.compile(r"No space left|ENOSPC|Out of diskspace", re.I)
+TRANSIENT = re.compile(DISK_FULL.pattern + r"|Unable to create .*\.lock", re.I)
 # Incident: 645 deferrals reran 14 PRs' sandboxes every 15 minutes for two days with no label. The
 # longest real provider loss on record is #1025's three passes, so eight passes (two hours) is a stop.
 DEFERS = 8
@@ -744,12 +745,11 @@ def red_lanes(repo, sha):
 # The test lane as `just lane test` runs it, without stopping at the first failure, so one run
 # names every failing test and the base can be asked about all of them at once.
 TEST_LANE = ["cargo", "nextest", "run", "--workspace", "--no-fail-fast"]
-NEXTEST_FAIL = re.compile(r"\bFAIL \[[^\]]*\] \([^)]*\) (\S+) (\S+)\s*$")
 
 
 def failed_tests(output):
     """The (binary, test) pairs nextest reported failing."""
-    return {m.groups() for line in output.splitlines() if (m := NEXTEST_FAIL.search(line))}
+    return {m.groups() for line in output.splitlines() if (m := pr_review.NEXTEST_FAIL.search(line))}
 
 
 def run_filtered(cwd, expr):
@@ -812,7 +812,7 @@ def lane_failures(clone, lanes, base_ref="main"):
         lines = output.splitlines()
         # nextest indents its FAIL rows and panics, which failures() reads as detail of nothing.
         tests = [row for i, line in enumerate(lines)
-                 if (m := NEXTEST_FAIL.search(line)) and m.group(2) in mine
+                 if (m := pr_review.NEXTEST_FAIL.search(line)) and m.group(2) in mine
                  or "panicked at" in line and any(f"'{t}'" in line for t in mine)
                  for row in (lines[i:i + 8] if "panicked at" in line else [line])]
         rows = list(dict.fromkeys(tests))
@@ -2572,7 +2572,7 @@ def selfcheck():
         if verdict_of(err, notes) != want:
             errs.append(f"{err!r} after {len(notes)} miss(es) read {verdict_of(err, notes)}, not {want}")
     # Incident: 645 rows deferred 14 PRs for two days on "line 503" in a traceback and 512 in a test list.
-    for row in json.loads((ROOT / "scripts/fixtures/failure-sorter/errors.json").read_text()):
+    for row in pr_review.recorded_errors():
         said = verdict_of(RuntimeError(row["text"]), tried())
         if (said == "deferred") != (row["reads"] in ("provider", "disk")):
             errs.append(f"a recorded {row['reads']} error ({row['count']}x, {row['source']}) read {said}: {row['text'][-90:]!r}")

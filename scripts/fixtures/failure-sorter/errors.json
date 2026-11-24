@@ -407,5 +407,17 @@
   "count": 1,
   "source": "hand-made: crates/ai/src/anthropic.rs passes an SSE `event: error` data body raw as the run's error, behind ask.rs's `error: ` prefix",
   "text": "yi ask exited 1: error: {\"type\":\"error\",\"error\":{\"code\":502,\"message\":\"Upstream returned an invalid response\"}}"
+ },
+ {
+  "reads": "disk",
+  "count": 1,
+  "source": "hand-made: ENOSPC alone, which runner_retry's disk-full pattern matched and the fixer's did not",
+  "text": "cargo build -q -p yi-cli failed: failed to write /workspace/apex/autofix-tmp/yi-autofix-x/work/target/debug/deps/libyi_cli.rlib: ENOSPC"
+ },
+ {
+  "reads": "disk",
+  "count": 1,
+  "source": "hand-made: `No space left` without `on device`, which the fixer's pattern matched and runner_retry's did not",
+  "text": "zstd: error 70 : Write error : cannot write block : No space left"
  }
 ]

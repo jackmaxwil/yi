@@ -721,14 +721,20 @@ THROTTLE_RETRIES, THROTTLE_DELAY = 2, 20
 # where it is one: yi's `HTTP 503:`, OpenRouter's `code 503`, or a reason phrase after it.
 THROTTLED = re.compile(r"overloaded|rate.?limit|too many requests|temporarily|" r'\b(?:HTTP|code|status)"?[ :]+"?(?:429|5\d\d)\b'
                        r"|\b(?:429|5\d\d) (?:Too Many|Service Unavailable|Bad Gateway|Gateway Time)", re.I)
+NEXTEST_FAIL = re.compile(r"\bFAIL \[[^\]]*\] \([^)]*\) (\S+) (\S+)\s*$")
 # Invariant: a traceback, a missing file or module, or a nextest FAIL row is the bot's own run failing.
-OWN_FAILURE = re.compile(r'Traceback \(most recent|^\s*File "[^"]+", line \d+|\b(?:FileNotFound|ModuleNotFound)Error\b'
-                         r"|^\s*(?:TRY \d+ )?FAIL \[", re.M)
+OWN_FAILURE = re.compile(r'Traceback \(most recent|^\s*File "[^"]+", line \d+|\b(?:FileNotFound|ModuleNotFound)Error\b|'
+                         + NEXTEST_FAIL.pattern, re.M)
 
 
 def throttled(text):
     """Whether `text` says a provider is busy, never the run itself."""
     return bool(THROTTLED.search(text)) and not OWN_FAILURE.search(text)
+
+
+def recorded_errors():
+    """The sorters' recorded error texts, each with what it reads as, which every bot's selfcheck replays."""
+    return json.loads((ROOT / "scripts/fixtures/failure-sorter/errors.json").read_text())
 
 
 class Unanswered(Exception):
@@ -2219,7 +2225,7 @@ def selfcheck():
         "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]
     assert walled(["scripts/hooks/pre-commit", "justfile"]) == ["scripts/hooks/pre-commit", "justfile"], "the fixer's accept is walled"
     assert '{"refuted": true or false' in refute_prompt(finding), "a refuter is shown the JSON it must answer with"
-    for row in json.loads((ROOT / "scripts/fixtures/failure-sorter/errors.json").read_text()):
+    for row in recorded_errors():
         assert throttled(row["text"]) == (row["reads"] == "provider"), f"a recorded {row['reads']} error read wrong: {row['text'][-90:]!r}"
     print("ok   pr_review selfcheck")
 
