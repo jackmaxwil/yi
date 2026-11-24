@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use serde_json::{Value, json};
-use yi_types::acp::{AcpPendingRequest, AcpPendingResult, AcpPermissionParams};
+use yi_types::acp::{AcpPendingRequest, AcpPendingResult, AcpPermissionParams, SHOW_METHOD};
 
 use super::{ClientId, Supervisor, now_ms};
 
@@ -23,6 +23,11 @@ impl Held {
             at_ms: now_ms(),
             sent: HashSet::new(),
         }
+    }
+
+    /// A show is for whoever watches now: it is never sent again to a client that attaches later.
+    fn shown(&self) -> bool {
+        self.frame.get("method").and_then(Value::as_str) == Some(SHOW_METHOD)
     }
 
     fn session(&self) -> Option<&str> {
@@ -99,7 +104,7 @@ impl Supervisor {
         let mut held: Vec<&mut Held> = self
             .worker_requests
             .values_mut()
-            .filter(|held| held.session() == Some(session_id))
+            .filter(|held| held.session() == Some(session_id) && !held.shown())
             .collect();
         held.sort_by_key(|held| held.at_ms);
         let lines: Vec<String> = held

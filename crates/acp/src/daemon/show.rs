@@ -140,6 +140,29 @@ mod tests {
         Ok(())
     }
 
+    /// A permission ask waits for whoever attaches next. A show does not: sent again to a late
+    /// client, it would open a file after the moment it pointed at.
+    #[tokio::test]
+    async fn a_show_waiting_for_its_answer_is_not_sent_again_to_a_late_client() -> Result<(), String>
+    {
+        let mut supervisor = supervisor_with_rows();
+        let (late, mut sent) = mpsc::channel(8);
+        supervisor.clients.insert(9, late);
+        let frame = show("pinned");
+        assert!(supervisor.worker_asked("/repo", &frame, &frame.to_string()));
+        let ask = json!({"jsonrpc": "2.0", "id": "perm_pinned_1",
+            "method": "session/request_permission", "params": {"sessionId": "pinned"}});
+        supervisor.hold_request("/repo", "session/request_permission", &ask);
+        supervisor.flush_parked("pinned", 9);
+        assert_eq!(
+            sent.try_recv().ok(),
+            Some(ask.to_string()),
+            "the ask, again"
+        );
+        assert!(sent.try_recv().is_err(), "and not the show");
+        Ok(())
+    }
+
     /// Watched shows own a response id until a result arrives. A client error leaves it for the
     /// next client, while a detached show does not leave an id behind.
     #[tokio::test]
