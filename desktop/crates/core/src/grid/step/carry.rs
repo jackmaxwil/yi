@@ -7,8 +7,8 @@ use crate::model::Model;
 use crate::pane::PaneKind::{self, Changes, Chat, Code, Terminal, Web};
 
 use super::GridMsg;
-use super::stacks::{kinds, open, show, tabs, window};
-use super::tests::{MAIN, change, drawn, pane};
+use super::stacks::{show, tabs, window};
+use super::tests::{MAIN, change, drawn, kinds, open, pane};
 
 fn carry(model: &mut Model, kind: PaneKind, at: Spot) -> Check {
     let (window, pane, size) = (MAIN, pane(model, kind)?, FRAME_1);
