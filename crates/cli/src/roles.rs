@@ -18,12 +18,6 @@ pub(crate) fn advisor_model() -> Option<Model> {
     role_model("advisor", spec, "the advisor stays silent")
 }
 
-/// Naming `models.autoReview` is the switch for the §8 permission reviewer (D81).
-pub(crate) fn auto_review_model() -> Option<Model> {
-    let spec = crate::configured_roles().auto_review;
-    role_model("autoReview", spec, "the auto reviewer stays off")
-}
-
 pub(crate) fn summarizer_model(args: &crate::Args) -> Option<Model> {
     let spec = crate::configured_roles().summarizer;
     role_model("summarizer", spec, &format!("using {}", args.model))

@@ -67,6 +67,29 @@ fn a_config_naming_gates_migrates_to_the_current_shape_once() -> TestResult {
     Ok(())
 }
 
+/// A config written while `models.autoReview` named a model still loads, minus that one key.
+#[test]
+fn a_config_naming_the_removed_auto_review_model_loads_without_it() -> TestResult {
+    let before = include_str!("fixtures/config-autoreview-before.json");
+    let after = include_str!("fixtures/config-autoreview-after.json");
+    let mut config: Value = serde_json::from_str(before)?;
+    let said: Vec<String> = migrate(&mut config)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "the config's `models.autoReview` key is ignored: the model auto-reviewer was removed; an ask the classifier does not settle goes to you; delete it"
+        ]
+    );
+    assert_eq!(config, serde_json::from_str::<Value>(after)?);
+    let (loaded, migrations) = parse(before)?;
+    assert_eq!(loaded, parse(after)?.0);
+    assert_eq!(migrations.len(), 1);
+    Ok(())
+}
+
 /// A host the proxy could never match must fail at load, naming itself, not ask forever.
 #[test]
 fn a_sandbox_egress_entry_that_is_no_host_name_is_refused_by_name()

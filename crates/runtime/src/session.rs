@@ -354,7 +354,7 @@ impl AgentSession {
         self.shared.deadline.get().copied()
     }
 
-    /// A session whose one prompt is never continued (the auto-reviewer) says so, and its
+    /// A session whose one prompt is never continued (a summarizer, a title) says so, and its
     /// tail is never marked (D295).
     pub fn reuse(&self) -> yi_types::model::Reuse {
         self.shared

@@ -73,13 +73,6 @@ impl Report {
 
 pub(crate) const MODEL_REMEDIES: &str = "Split the command, keep the writes inside the working tree, or ask the user to approve this call.";
 
-/// The model got here by asking the user, so it is not told to ask again.
-pub(crate) fn unaskable(request: impl std::fmt::Display, description: &str) -> String {
-    format!(
-        "Request {request} cannot be put to anyone: no interactive surface is available. {description} Split the command, keep the writes inside the working tree, or report in your final answer that this call needs the user's approval."
-    )
-}
-
 /// Holds compile down (plan section 7.6): a child with no interactive surface cannot ask, so
 /// its `Ask` is a deny naming the hazard; an attached one's stands on its family's broker.
 pub fn compile_ask(decision: Decision, attached: bool) -> Decision {
@@ -298,7 +291,7 @@ pub fn render(report: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Report, compile_ask, headless_refusal, headless_split, named_rule, unaskable};
+    use super::{Report, compile_ask, headless_refusal, headless_split, named_rule};
     use crate::permission::{CallOutcome, Containment};
     use yi_permission::Decision;
 
@@ -363,13 +356,5 @@ mod tests {
         assert!(text.contains("working tree"), "{text}");
         assert!(!text.contains("ask the user"), "{text}");
         Ok(())
-    }
-
-    /// `ask_user` must not answer a model that already asked the user with "ask the user".
-    #[test]
-    fn ask_user_does_not_loop() {
-        let answer = unaskable(7, "writes outside the workspace").to_lowercase();
-        assert!(!answer.contains("ask the user"), "{answer}");
-        assert!(answer.contains("final answer"), "{answer}");
     }
 }

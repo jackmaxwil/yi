@@ -11,7 +11,7 @@ use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionRule};
 use super::{Journal, PermissionBroker};
 
 impl PermissionBroker {
-    /// A child's broker: the family's mode, holds, asker and reviewers, and a copy of the kept
+    /// A child's broker: the family's mode, holds, asker, and a copy of the kept
     /// rules its wall and `cwd` admit. What it keeps stays its own, so nothing flows back up.
     #[must_use]
     pub fn for_child(&self, wall: &crate::wall::Wall, cwd: &Path) -> Self {
@@ -27,7 +27,6 @@ impl PermissionBroker {
             config_rules: self.config_rules.clone(),
             session_rules: Mutex::new(SessionRules::load(rules).unwrap_or_default()),
             holds: Arc::clone(&self.holds),
-            reviewer: self.reviewer.clone(),
             journal: self.journal.clone(),
             approver: self.approver.clone(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(

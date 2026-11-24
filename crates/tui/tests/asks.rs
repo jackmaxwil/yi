@@ -314,7 +314,7 @@ fn asking_host(dir: &Scratch, parent: &Arc<AgentSession>) -> Arc<SubagentHost> {
                 yi_runtime::faux::faux_assistant_message(vec![call], StopReason::ToolUse),
                 said("wrote the file the parent named"),
             ]);
-            let ask = yi_runtime::auto_review::AskUserTool::new(None).asking(Some(build.link));
+            let ask = yi_runtime::ask_user::AskUserTool::default().asking(Some(build.link));
             child.use_tools(vec![Arc::new(ask)], std::env::temp_dir(), None);
             Ok(child)
         }),
