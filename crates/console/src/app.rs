@@ -103,6 +103,7 @@ pub struct App {
     pub selection: Option<crate::select::Drag>,
     pub selected: String,
     pub flash: Option<(String, Instant)>,
+    pub(crate) last_input: Option<Instant>,
     /// What animations and the copy flash read; deadlines and polls stay on real time.
     pub clock: yi_tui::motion::Clock,
     pub avatars: crate::avatar::Avatars,
@@ -169,6 +170,7 @@ impl App {
             selection: None,
             selected: String::new(),
             flash: None,
+            last_input: None,
             clock: yi_tui::motion::Clock::Real,
             hits: None,
             avatars: crate::avatar::Avatars::default(),
@@ -448,9 +450,7 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Some(_) => {
-                self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
-            }
+            Some(method) => self.asked(outbound, method, &value),
         }
     }
 
@@ -700,7 +700,7 @@ impl App {
             return;
         }
         self.state.focus_panes();
-        let params = json!({"cwd": root});
+        let params = json!({"cwd": root, "_meta": {"yi": {"shows": true}}});
         self.send_request(
             outbound,
             RequestKind::NewSession(pane_id, root),
@@ -839,6 +839,7 @@ impl App {
     }
 
     pub fn handle_event(&mut self, outbound: &Outbound, event: CtEvent) {
+        self.touched(&event);
         match event {
             CtEvent::Key(key) if yi_tui::keymap::is_pasted_control(&key) => {}
             CtEvent::Key(key) => {
@@ -990,6 +991,7 @@ mod review;
 mod rewrite;
 mod rows;
 mod settings;
+mod show;
 pub(crate) mod snap;
 mod terminal;
 

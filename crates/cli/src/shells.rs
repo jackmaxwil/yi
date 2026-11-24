@@ -44,7 +44,13 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
     let target = session_target(args);
     let (session, host) = {
         let _guard = runtime.enter();
-        match build_session(args, Some(asker), Some(&target.id), true, [false; 2]) {
+        match build_session(
+            args,
+            (Some(asker), None),
+            Some(&target.id),
+            true,
+            [false; 2],
+        ) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }

@@ -15,6 +15,7 @@ use crate::negotiate;
 
 mod mail;
 mod settings;
+mod show;
 use mail::SUPERVISOR;
 
 pub struct DaemonOptions {
@@ -386,10 +387,11 @@ impl Supervisor {
         // A frame with an id and no method is a response to a
         // worker-originated request (the permission bridge).
         if method.is_empty() {
-            if let Some(request_id) = id.as_ref().and_then(Value::as_str)
-                && let Some(root) = self.worker_requests.remove(request_id)
-            {
-                self.forward_response_to_worker(&root, frame).await;
+            if let Some(request_id) = id.as_ref().and_then(Value::as_str) {
+                let asked = self.worker_requests.remove(request_id);
+                if let Some(root) = asked.or_else(|| self.show_root(request_id, &frame)) {
+                    self.forward_response_to_worker(&root, frame).await;
+                }
             }
             return;
         }
@@ -647,10 +649,10 @@ impl Supervisor {
             self.send_client(client, frame.to_string());
             return;
         }
-        // Worker-originated request (permission bridge): remember the id so
-        // the client's response routes back.
-        if let Some(id) = frame.get("id").and_then(Value::as_str) {
-            self.worker_requests.insert(id.to_owned(), root.clone());
+        // Worker-originated request: a show is relayed or refused here and now; any other
+        // (the permission bridge) has its id remembered so the client's response routes back.
+        if self.worker_asked(&root, &frame, &line) {
+            return;
         }
         // With no client attached the frame is dropped but the ledger records that something
         // happened, so a reattaching console still sees the unseen work.
@@ -1015,7 +1017,7 @@ mod tests {
     }
 
     /// A supervisor with no worker, its pinned and unpinned `/repo` rows mid-turn for client 7.
-    fn supervisor_with_rows() -> Supervisor {
+    pub(super) fn supervisor_with_rows() -> Supervisor {
         let (ledger, _stored) = std::sync::mpsc::channel();
         let (input, _inputs) = mpsc::unbounded_channel();
         let mut supervisor = Supervisor {

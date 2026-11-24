@@ -95,7 +95,7 @@ fn exit_refused(refused: Refused) -> i32 {
 
 fn build_session(
     args: &Args,
-    asker: Option<yi_runtime::Asker>,
+    (asker, shower): (Option<yi_runtime::Asker>, Option<yi_runtime::Shower>),
     session_id: Option<&str>,
     prompts_close: bool,
     [unattended, exits_idle]: [bool; 2],
@@ -296,6 +296,7 @@ fn build_session(
         .map(|model| yi_runtime::select::Selector::new(std::sync::Arc::clone(&provider), model));
     session.set_selector(selector);
     session.set_rewriter(roles::rewriter(&provider, &work, &home));
+    session.set_shower(shower);
     let search = roles::web_search_provider(proxy.clone()).map_err(|reason| Refused {
         code: 2,
         reason,
@@ -898,7 +899,7 @@ fn run_rpc(args: &Args) -> i32 {
     };
     let (session, host) = {
         let _guard = runtime.enter();
-        match build_session(args, None, None, false, [false; 2]) {
+        match build_session(args, (None, None), None, false, [false; 2]) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
@@ -924,9 +925,10 @@ fn run_acp(args: &Args) -> i32 {
     let defaults_args = args.clone();
     let build: yi_acp::SessionBuilder = {
         let runtime_handle = runtime.handle().clone();
-        std::sync::Arc::new(move |asker, session| {
+        std::sync::Arc::new(move |asker, shower, session| {
             let _guard = runtime_handle.enter();
-            build_session(&build_args, asker, session, false, [false; 2])
+            let wired = (asker, shower);
+            build_session(&build_args, wired, session, false, [false; 2])
                 .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
         })
     };

@@ -1258,6 +1258,90 @@ fn permission_request_blocks_then_answers() -> TestResult {
     )
 }
 
+/// A resume from a console that says it can show things; any other gets no replay.
+fn resume_showing(frame: &Value) -> Vec<Value> {
+    let shows = frame
+        .pointer("/params/_meta/yi/shows")
+        .and_then(Value::as_bool);
+    if shows == Some(true) {
+        resume_alpha(frame)
+    } else {
+        Vec::new()
+    }
+}
+
+/// The agent asks for line 2 of this crate's own manifest in front, a moment after a key.
+fn show_request() -> Vec<Value> {
+    vec![json!({
+        "jsonrpc": "2.0", "id": "show_s-alpha_0", "method": "_yi/show",
+        "params": {"sessionId": "s-alpha", "address": "Cargo.toml:2",
+                   "cwd": env!("CARGO_MANIFEST_DIR"), "strength": "front"},
+    })]
+}
+
+/// A line the console draws only when its answer was the one named.
+fn marked(session: &str, seq: u64, words: &str) -> Vec<Value> {
+    let running = json!({"sessionUpdate": "state_update", "state": "running"});
+    let mut frames = vec![update(session, running)];
+    frames.extend(stream(session, seq, &assistant(words)));
+    let idle = json!({"sessionUpdate": "state_update", "state": "idle"});
+    frames.push(update(session, idle));
+    frames
+}
+
+fn show_answer(frame: &Value) -> Vec<Value> {
+    let outcome = frame.pointer("/result/outcome").and_then(Value::as_str);
+    let ours = frame.get("id").and_then(Value::as_str) == Some("show_s-alpha_0");
+    let note = frame.pointer("/result/note").and_then(Value::as_str);
+    let busy = note == Some("The user is busy; it waits as a tab.");
+    if outcome != Some("tab") || !ours || !busy {
+        return Vec::new();
+    }
+    marked("s-alpha", 20, "the display said tab")
+}
+
+fn unheard_request() -> Vec<Value> {
+    let params = json!({"sessionId": "s-alpha"});
+    vec![json!({"jsonrpc": "2.0", "id": "x_1", "method": "_yi/unheard", "params": params})]
+}
+
+fn unheard_answer(frame: &Value) -> Vec<Value> {
+    let code = frame.pointer("/error/code").and_then(Value::as_i64);
+    if code != Some(-32601) {
+        return Vec::new();
+    }
+    marked("s-alpha", 30, "refused as unknown")
+}
+
+/// The console says it can show things when it opens a session. A `front` that comes just
+/// after a key opens the file beside the chat as a tab, keys untaken, and answers so.
+/// A request it has never heard of is refused, where it used to be left unanswered.
+#[test]
+fn a_show_opens_the_file_beside_the_chat_and_is_answered() -> TestResult {
+    run(
+        "show",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_showing),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(show_request),
+            Step::Expect("<response>", show_answer),
+            Step::Push(unheard_request),
+            Step::Expect("<response>", unheard_answer),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 the agent added Cargo.toml as a tab\n\
+         wait-frame 5000 name = \"yi-console\"\n\
+         wait-frame 5000 the display said tab\n\
+         wait-frame 5000 refused as unknown\n\
+         quit\n",
+    )
+}
+
 #[test]
 fn rejecting_an_ask_closes_it_and_the_next_ask_opens() -> TestResult {
     let mut fixture = session_fixture();

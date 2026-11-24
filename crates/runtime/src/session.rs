@@ -197,7 +197,7 @@ pub struct AgentSession {
     spills: Mutex<Option<std::path::PathBuf>>,
     tool_cwd: Mutex<Option<std::path::PathBuf>>,
     pub(crate) selector: Mutex<Option<Arc<crate::select::Selector>>>,
-    pub(crate) rewriter: Mutex<Option<Arc<crate::rewrite::Rewriter>>>,
+    pub(crate) front: crate::show::FrontEnd,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
     on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
 }
@@ -277,7 +277,7 @@ impl AgentSession {
             spills: Mutex::new(None),
             tool_cwd: Mutex::new(None),
             selector: Mutex::new(None),
-            rewriter: Mutex::new(None),
+            front: crate::show::FrontEnd::default(),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
         };

@@ -226,13 +226,17 @@ impl Rewriter {
 
 impl crate::session::AgentSession {
     pub fn set_rewriter(&self, rewriter: Option<Rewriter>) {
-        if let Ok(mut slot) = self.rewriter.lock() {
+        if let Ok(mut slot) = self.front.rewriter.lock() {
             *slot = rewriter.map(Arc::new);
         }
     }
 
     pub fn rewriter(&self) -> Option<Arc<Rewriter>> {
-        self.rewriter.lock().ok().and_then(|slot| slot.clone())
+        self.front
+            .rewriter
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
     }
 
     pub async fn rewrite_draft(

@@ -48,7 +48,13 @@ pub(super) fn run(args: &Args) -> i32 {
         let asker: Option<yi_runtime::Asker> =
             interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
         // Every spelling of a headless ask (`ask`, bare prompt words) lands here: no tty, no asker.
-        match build_session(args, asker, Some(&target.id), false, [!interactive, true]) {
+        match build_session(
+            args,
+            (asker, None),
+            Some(&target.id),
+            false,
+            [!interactive, true],
+        ) {
             Ok(built) => built,
             Err(refused) => {
                 let (class, reason) = (refused.class.clone(), refused.reason.clone());

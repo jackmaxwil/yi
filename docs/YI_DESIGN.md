@@ -31,7 +31,7 @@ semantic search · resident LSP or DAP servers · a JavaScript runtime or Node s
 `yi-runtime` through N-API or WASM · document converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
 §17.1) · a GUI that is not `desktop/`, the Mac client of `yi serve` (§17.5) · a model tool for the console's browser pane, which shows the user a page and gives
-the model nothing (driving the desktop is the `agent-desktop` plugin's, and a web page the
+the model nothing (`show`, §7.1, points at a file and is answered; driving the desktop is the `agent-desktop` plugin's, and a web page the
 `agent-browser` plugin's, §17.1) · email, or any capability that is not a coding agent other
 than those plugins ·
 server-side terminal-frame streaming or blit
@@ -418,6 +418,10 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `annotate`, `plan`, `todo`, and `ask_user`, and `wire_search` adds `web_search` when
   its provider is registered and gates its skill catalog entry on the same availability.
+  `show` (address, strength `peek`/`tab`/`front`) is pushed only for a session whose client set
+  `_meta.yi.shows` on `session/new` or `session/resume`: it sends that client `_yi/show`
+  (§17.2) and tells the model what the client answered, or that no display did within five
+  seconds; a session of a client that cannot show never carries its text.
   `check_request_budget.py` prices system block plus tool table against a shrink-only baseline
   and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
@@ -1284,6 +1288,7 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
 | `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, and only an app named in config.json runs; saved files are kept 7 days |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch`; a client that closes the pane holding an ask, or quits, answers `cancelled`, which the worker takes as a refusal |
+| `_yi/show{sessionId, address, cwd, strength}` | worker → client | Sent only to a session opened with `_meta.yi.shows`; `address` is a path, `path:LINE` or a `yi://` address as the model wrote it and `cwd` what a relative path is under. The client answers `{outcome, note?}`, `outcome` one of `peek`, `tab`, `front`, `refused`: the console opens the file in its editor panel, in front with the keys only for `front` after ten seconds with no key or mouse, else as a tab that waits. The daemon never parks one, answers it at once when no client is attached, and drops a client's error so another client's answer can win; the worker waits five seconds |
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through

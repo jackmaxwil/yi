@@ -619,7 +619,7 @@ impl App {
                 "sessionId": session.0,
                 "cwd": root,
                 "replayFrom": offset.unwrap_or(0),
-                "_meta": {"yi": {"replayUpdates": false}},
+                "_meta": {"yi": {"replayUpdates": false, "shows": true}},
             }),
         );
     }
