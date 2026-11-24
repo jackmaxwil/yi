@@ -112,10 +112,8 @@ pub(in crate::grid) fn point(
     thing: &Address,
     front: bool,
 ) -> Result<(), GridError> {
-    let same = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
     let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
-    let known = grid.panes.iter().filter(same).map(|pane| pane.id);
-    let known: Vec<PaneId> = known.collect();
+    let known: Vec<PaneId> = grid.panes_about(kind, thing).collect();
     let pane = match known.iter().copied().find(|pane| layout.holds(*pane)) {
         Some(pane) => {
             handled(grid, id, pane);
@@ -145,14 +143,24 @@ pub(in crate::grid) fn point(
     Ok(())
 }
 
-/// The pane of `kind` about `thing` that `id` draws.
-fn about(grid: &Windows, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
-    let is = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
-    let mut found = grid.panes.iter().filter(is).map(|pane| pane.id);
-    found.find(|pane| grid.window_of(*pane) == Some(id))
-}
-
 impl Windows {
+    /// The panes of `kind` about `thing`, in every window.
+    pub fn panes_about<'a>(
+        &'a self,
+        kind: PaneKind,
+        thing: &'a Address,
+    ) -> impl Iterator<Item = PaneId> + 'a {
+        let is = move |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
+        self.panes.iter().filter(is).map(|pane| pane.id)
+    }
+
+    /// The pane of `kind` about `thing` that `id` draws.
+    #[must_use]
+    pub fn about_in(&self, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
+        let layout = &self.window(id)?.layout;
+        self.panes_about(kind, thing).find(|pane| layout.holds(*pane))
+    }
+
     /// The drop zone under `at` while `thing` is carried from pane `from` over `window`: where
     /// its pane of `kind` would land. None off the grid and over the pane it came from.
     #[must_use]
@@ -183,6 +191,13 @@ impl Windows {
         });
         Some(Zone { spot, band, lands })
     }
+}
+
+/// The pane of `kind` about `thing` that `id` draws.
+fn about(grid: &Windows, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
+    let is = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
+    let mut found = grid.panes.iter().filter(is).map(|pane| pane.id);
+    found.find(|pane| grid.window_of(*pane) == Some(id))
 }
 
 /// Puts `pane`, which `id` does not hold, where panes of its place go: a tab of that place's

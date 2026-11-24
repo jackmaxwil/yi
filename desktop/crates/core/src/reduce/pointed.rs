@@ -3,6 +3,7 @@
 use serde_json::Value;
 use yi_types::acp::{AcpShowOutcome, AcpShowParams, AcpShowResult, AcpShowStrength};
 
+use crate::address::in_folder;
 use crate::address::thing::lines;
 use crate::address::uri::Address;
 use crate::grid::step::{GridMsg, step};
@@ -34,10 +35,7 @@ pub fn target(address: &str, cwd: &str) -> Option<(String, Option<u32>)> {
             _ => (address.to_owned(), None),
         },
     };
-    let inside = path
-        .strip_prefix(cwd)
-        .and_then(|rest| rest.strip_prefix('/'));
-    let path = inside.filter(|_| !cwd.is_empty()).unwrap_or(&path);
+    let path = in_folder(&path, cwd);
     (!path.is_empty()).then(|| (path.to_owned(), line))
 }
 
@@ -83,10 +81,7 @@ fn shown(model: &mut Model, params: &AcpShowParams, effects: &mut Vec<Effect>) -
         front,
     };
     effects.extend(step(&mut model.grid, point));
-    let about = |pane: &&crate::grid::windows::Pane| {
-        pane.kind == kind && pane.thing.as_ref() == Some(&thing)
-    };
-    let Some(pane) = model.grid.panes.iter().find(about).map(|pane| pane.id) else {
+    let Some(pane) = model.grid.about_in(window, kind, &thing) else {
         return refused("There is no room for another pane.");
     };
     if let Some(line) = line {

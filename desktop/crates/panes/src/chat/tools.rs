@@ -1,6 +1,7 @@
 //! Tool rows and the receipt an answered ask leaves under its step.
 
 use rune::{Cursor, El, Icon, ScrollSpec, Span, TextStyle, Tx, col, rich, row, text};
+use yd_core::address::in_folder;
 use yd_core::address::uri::Address;
 use yd_core::grid::step::GridMsg;
 use yd_core::ids::Millis;
@@ -152,11 +153,7 @@ fn placed(win: &Win, path: &str) -> Option<Address> {
         let thread = yd_ui::shown::thread(&hub, win.window)?;
         Some(yd_ui::shown::works_in(&hub, thread).to_owned())
     });
-    let inside = folder.as_deref().and_then(|folder| {
-        let rest = path.strip_prefix(folder)?;
-        rest.strip_prefix('/')
-    });
-    Address::new(Kind::File, inside.unwrap_or(path)).ok()
+    Address::new(Kind::File, in_folder(path, folder.as_deref().unwrap_or(""))).ok()
 }
 
 /// Opens the file a step touched in the code viewer.
@@ -186,9 +183,7 @@ fn show_me(win: &mut Win, tx: &mut Tx, path: &str, line: Option<u32>) {
     };
     dispatch(win, Msg::Grid(about));
     let pane = win.hub.try_borrow_mut().ok().and_then(|mut hub| {
-        let mut panes = hub.model.grid.panes.iter();
-        let found = panes.find(|pane| pane.kind == kind && pane.thing.as_ref() == Some(&thing));
-        let pane = found?.id;
+        let pane = hub.model.grid.about_in(window, kind, &thing)?;
         if let Some(line) = line {
             hub.model.reveal(pane, line);
         }
