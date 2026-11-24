@@ -478,10 +478,14 @@ impl AcpState {
         self.initialized = true;
         let info = acp::Implementation::new("yi", self.agent_version.clone());
         let session = acp::SessionCapabilities::new().delete(acp::SessionDeleteCapabilities::new());
-        Ok(json!(
+        let mut result = json!(
             acp::InitializeResponse::new(agent_client_protocol_schema::ProtocolVersion::V2, info)
                 .capabilities(acp::AgentCapabilities::new().session(session))
-        ))
+        );
+        if let Some(result) = result.as_object_mut() {
+            result.insert("authMethods".to_owned(), json!([]));
+        }
+        Ok(result)
     }
 
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {

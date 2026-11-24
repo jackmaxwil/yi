@@ -132,6 +132,7 @@ fn v2_client_drives_a_session_end_to_end() -> TestResult {
     let init = init.last().ok_or("no initialize response")?;
     assert_eq!(init["result"]["protocolVersion"], 2);
     assert_eq!(init["result"]["info"]["name"], "yi");
+    assert_eq!(init["result"]["authMethods"], json!([]), "{init}");
 
     let new = client.request(
         "2",
