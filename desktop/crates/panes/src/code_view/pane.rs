@@ -7,7 +7,7 @@ use std::sync::Arc;
 use rune::{Cx, El, Tx, col, el, row, text};
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
-use yd_core::command::run::{PREVIEW, opened, previewed, shown_path};
+use yd_core::command::run::{PREVIEW, opened_last, previewed, shown_path};
 use yd_core::command::table::{Command, OPEN_FILE, Route, Run, Target};
 use yd_core::command::tools::lsp::REFERENCES;
 use yd_core::feed::{FILES, FeedEvent, FeedStatus, LSP, OPEN_FILES, SourceCmd, Table};
@@ -102,7 +102,7 @@ fn tabs(table: &Table) -> impl Iterator<Item = &Row> {
 
 /// The tab that shows: the one opened last.
 fn current(table: &Table) -> Option<&Row> {
-    tabs(table).max_by_key(|tab| opened(tab))
+    opened_last(table)
 }
 
 /// Opens `file` from a handler: runs `code.open`, which makes its tab the one that shows

@@ -770,13 +770,10 @@ fn the_ripwire_card_attaches_only_when_ripwire_is_found() -> TestResult {
         if present {
             std::fs::write(dir.join("ripwire"), "#!/bin/sh\n")?;
         }
-        let rerun = yi_tools::command(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "ext_e2e::the_ripwire_card_attaches_only_when_ripwire_is_found",
-            ])
-            .env("PATH", &*dir)
-            .output()?;
+        let rerun = crate::support::rerun_test(
+            "ext_e2e::the_ripwire_card_attaches_only_when_ripwire_is_found",
+            &[("PATH", dir.as_os_str())],
+        )?;
         let stdout = String::from_utf8_lossy(&rerun.stdout);
         assert!(
             rerun.status.success() && stdout.contains("1 passed"),

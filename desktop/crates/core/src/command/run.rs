@@ -54,13 +54,18 @@ pub fn shown_path(model: &Model, pane: PaneId) -> Option<&str> {
         return Some(file.id());
     }
     let table = model.tables.get(OPEN_FILES)?;
-    let tabs = (0..table.len()).filter_map(|at| table.get(at));
-    tabs.max_by_key(|tab| opened(tab))?.words("path")
+    opened_last(table)?.words("path")
+}
+
+/// The open file opened last: the tab a code pane about no file shows.
+pub fn opened_last(table: &Table) -> Option<&Row> {
+    (0..table.len())
+        .filter_map(|at| table.get(at))
+        .max_by_key(|tab| opened(tab))
 }
 
 fn newest(table: &Table) -> u64 {
-    let tabs = (0..table.len()).filter_map(|at| table.get(at));
-    tabs.map(opened).max().unwrap_or(0)
+    opened_last(table).map_or(0, opened)
 }
 
 /// The text of a `code.open` that only looks: a file not open yet opens as the one preview tab.

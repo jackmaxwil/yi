@@ -3,29 +3,18 @@
 
 use crate::grid::place::probe::{Check, FRAME_1};
 use crate::grid::windows::Windows;
-use crate::ids::{PaneId, ThreadId};
+use crate::ids::PaneId;
 use crate::model::Model;
 use crate::pane::PaneKind::{Changes, Chat, Code, Debugger, Files, IPython, Terminal, Web};
 use crate::pane::Place;
 
 use super::GridMsg;
-use super::tests::{MAIN, change, drawn, pane, record};
+use super::tests::{self, HAVE_KINDS, MAIN, change, drawn, have, pane};
 
 fn showing(saved: &'static str) -> Model {
-    let mut model = record();
-    let window = MAIN;
-    change(&mut model, GridMsg::Show { window, saved });
+    let mut model = tests::showing(saved);
     // Every kind the tests move has something to show, so none rests out of the grid.
-    let kinds = vec![Chat, Code, Changes, Files, Terminal, Web];
-    let thread = Some(ThreadId::new("a"));
-    change(
-        &mut model,
-        GridMsg::Have {
-            window,
-            kinds,
-            thread,
-        },
-    );
+    have(&mut model, &HAVE_KINDS, Some("a"));
     model
 }
 
@@ -142,16 +131,7 @@ fn the_slot_a_moved_tab_left_shows_a_tab_of_the_session_shown() -> Check {
     let window = MAIN;
     let open = |model: &mut Model, kind| change(model, GridMsg::Open { window, kind });
     open(&mut model, Debugger);
-    let kinds = vec![Chat, Code, Changes, Files, Terminal, Web];
-    let thread = Some(ThreadId::new("b"));
-    change(
-        &mut model,
-        GridMsg::Have {
-            window,
-            kinds,
-            thread,
-        },
-    );
+    have(&mut model, &HAVE_KINDS, Some("b"));
     open(&mut model, IPython);
     let (changes, debugger) = (pane(&model, Changes)?, pane(&model, Debugger)?);
     let ipython = pane(&model, IPython)?;

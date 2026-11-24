@@ -117,7 +117,9 @@ A table the app reads. Each row: when, what to show, where, and when it ends.
 | A command prints a local web address | Web app, that address | Work | The page is closed or the server is gone |
 | A kernel cell returns a display | IPython, that kernel | Work | The kernel is gone (as built: a cell shows a picture, and the tab stays for the session) |
 
-Four rows to start. An untouched tab a rule opened closes when its thing ends. A tab the user clicked or kept stays. Everything that was ever shown stays listed in the Environment column (✓ DF16), one click to bring back.
+Four rows to start, and this change builds three: the IPython row waits until its kind has a test for something to show (row 118). An untouched tab a rule opened closes when its thing ends. A tab the user clicked or kept stays. Everything that was ever shown stays listed in the Environment column (✓ DF16), one click to bring back.
+
+The rules are checked against recorded sessions, not against what the app drew: `a_recorded_session_ends_with_the_panes_the_rules_say` replays six recordings through the reducer and reads the tabs the rules give.
 
 A right-click on any pane bar offers "Always open here" and "Never open by itself". Each writes a row to the settings file (✓ settings store). That is the whole of the user's control over the automatic part.
 
@@ -223,14 +225,6 @@ Each stage is a demo and a gate. The first needs no new idea and removes the wor
 | Stage | What | Demo | Gate |
 |---|---|---|---|
 | 1 | **No blank panes.** A layout seats only the panes that have a thing; the others are out until their thing appears. | Pick Everything in a new session: chat alone. The agent edits a file: Changes appears in Everything's own slot. | Every saved layout, on an empty session, draws chat only; the tiling property tests still pass. |
-| 2 | **Panes per session.** Scope on a pane; switching sessions swaps panes, lines stay. Shells and child chats move onto it. | Two sessions with different panes; switch; quit and reopen. | A kept file from today's app still opens; a journey switches sessions and reads the panes. |
-| 3 | **Stacks and Show.** Tabs across kinds; the arbiter; preview tabs; the dot. | Click three files: one preview tab. ⌘-click: beside. | A property test: no `Show` from a rule or the model ever moves focus, or changes the front tab of a stack touched in the idle window. |
-| 4 | **Rules.** The four rows, auto-close, "Always open here", "Never open by itself". | A long offline session: tabs arrive with dots and leave when their thing ends. | Recorded sessions replayed through the reducer give the tab set the rules say, not what the app drew. As built: `a_recorded_session_ends_with_the_panes_the_rules_say`, six recordings. |
-| 5 | **Mac controls.** Pinch, double-tap, tab swipe, Space, drag a thing to an edge, the right-click menu, the keys. | The owner drives it on a trackpad. | Real pointer events on the dogfood harness; every drawn key is in the key map. |
-| 6 | **The model's `show`.** The Yi tool and the request. | The model shows a file at a line: front when idle, else a dot and "Show me". | An offline end-to-end test; the tool's text measured against the prompt budget. |
-| 7 | **Overview.** Pinch in on the grid: every thing in the session as cards. | | Deferred until the first six are used. |
-
-Stages 1 to 5 are app work, one issue each (#2304 to #2308). Stage 6 is a Yi server change (#2309).
 
 ## 11. Decisions, verbatim
 
@@ -250,44 +244,6 @@ Round 2:
 | "When should a tab the app opened by itself go away?" | "When its thing ends, if untouched (Recommended)" |
 | "What may the model's 'front' do?" | "Front only if you are idle there (Recommended)" |
 | "Where should those [Mac-wide panes] live?" | "Stay with the window (Recommended)" |
-
-## 12. Verdicts on every idea considered
-
-| Idea | Verdict |
-|---|---|
-| A pane is a kind plus a thing | KEEP |
-| Panes per session | KEEP |
-| Stacks | KEEP |
-| One Show action | KEEP |
-| Rule table | KEEP |
-| The four places | MERGE: a column of the kind table |
-| Preview tab | MERGE: a strength of Show |
-| Auto-close | MERGE: a column of a rule |
-| Keep across sessions | MERGE: the scope field |
-| Layouts as places | FREE: an absent pane is a pane that is out |
-| Own saved layouts | EXISTS (DF18) |
-| A session as a Space | FREE |
-| Pinch and double-tap to fill | KEEP |
-| Tab swipe, Space to peek, drag a thing to an edge | KEEP |
-| Overview on pinch-in | DEFER |
-| Force-click to peek | DEFER: Rune reports no pressure; Space does the job |
-| Two sessions side by side in one window | DEFER: two windows do it today |
-| Follow the agent | CUT: the owner chose the quiet tab |
-| Model reads or rearranges the layout | CUT: the owner chose "says what, not where" |
-| Re-tiling the whole grid from a formula on every change | CUT: places and stacks are already deterministic, and the user's own docking survives |
-| Learned placement | CUT: a table can be read; a model of habits cannot |
-| Three-finger gestures | CUT: macOS owns them |
-| Rotate gesture | CUT: nothing to rotate |
-| Keep the newest few tabs | CUT: the owner chose end-of-thing; overflow is a "+N" menu |
-
-## 13. Open questions
-
-1. **The first thing for a place that is not there.** Proposed: the place opens at its layout size and chat narrows, with chat keeping focus. The alternative is a thin strip of tab names that opens on a click. The first is less to build; the owner should see it before it is settled.
-2. **The idle window for "front".** Ten seconds is a guess. It is one constant, to be tuned by use.
-3. **A child agent's own things.** Proposed: they open in the parent session's work stack, labelled with the child. A child is not a second session in the window.
-4. **Files.** It always has a thing, so no rule needs to open it. Proposed: the user opens it and each session remembers.
-5. **Today's kept window file.** Proposed: it is read as the arrangement of the session last shown; nothing is lost.
-6. **The cost of the `show` tool** in prompt text, and whether Yi's one-in-one-out rule applies to a tool offered only to a client that asks for it. Measured in stage 6, decided by the owner.
 
 ## 14. Records owed
 
