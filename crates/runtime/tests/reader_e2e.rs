@@ -176,10 +176,10 @@ pub(crate) fn family_with(
         plans_dir: root.join("plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     });
-    let host = Arc::new(match admission {
-        Some(admission) => host.with_admission(admission),
-        None => host,
-    });
+    let host = Arc::new(host);
+    if let Some(admission) = admission {
+        host.admit_with(admission);
+    }
     host.set_resolver(resolver.unwrap_or_else(|| {
         Arc::new(yi_runtime::fetch::Resolver::new(
             workspace,
