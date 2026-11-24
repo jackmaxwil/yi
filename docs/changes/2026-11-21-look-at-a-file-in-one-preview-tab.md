@@ -1,4 +1,5 @@
 ---
+version: 0.1094.0
 issue: Refs #2306
 cut: none desktop/crates/panes/src/code_view/pane.rs
 cut: desktop/crates/panes/src/design/pane/tests.rs | fn tap(rt: &mut Runtime<Win>, key: &str) -> Check { | the design and code viewer tests share one tap helper in test_support.rs
