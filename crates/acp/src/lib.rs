@@ -863,7 +863,7 @@ pub(crate) fn meta_map(meta: &AcpMeta) -> acp::Meta {
 
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
     let frame = match outcome {
-        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Ok(result) => update::result_envelope(id, result),
         Err((code, message)) => {
             let code = i32::try_from(code).unwrap_or(-32603);
             json!({"jsonrpc": "2.0", "id": id, "error": acp::Error::new(code, message)})

@@ -61,6 +61,10 @@ pub fn update_notification(session_id: &str, update: acp::SessionUpdate) -> Valu
     ])
 }
 
+pub(crate) fn result_envelope(id: Value, result: Value) -> Value {
+    object([("jsonrpc", "2.0".into()), ("id", id), ("result", result)])
+}
+
 fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     Value::Object(
         pairs
@@ -511,14 +515,11 @@ fn tool_progress(tool_call_id: &str, partial: &yi_types::event::ToolResult) -> a
 }
 
 fn object_extension(name: &str, value: serde_json::Result<Value>) -> Vec<acp::SessionUpdate> {
-    let fields = value
-        .ok()
-        .and_then(|value| value.as_object().cloned())
-        .map(|map| map.into_iter().collect())
-        .unwrap_or_default();
-    vec![acp::SessionUpdate::Other(acp::OtherSessionUpdate::new(
-        name, fields,
-    ))]
+    let fields = match value {
+        Ok(Value::Object(fields)) => fields,
+        _ => serde_json::Map::new(),
+    };
+    vec![extension(name, fields)]
 }
 
 /// Replay (design §17.2): a stored branch walked into full-message updates.

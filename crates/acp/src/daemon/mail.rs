@@ -113,7 +113,7 @@ impl Supervisor {
             acp::CancelledPermissionOutcome::new().into()
         ));
         let id = frame.get("id").cloned().unwrap_or(Value::Null);
-        let reply = json!({"jsonrpc": "2.0", "id": id, "result": result});
+        let reply = crate::update::result_envelope(id, result);
         let _ = self.input.send(Input::WorkerReply(root, reply));
         let title = frame
             .pointer("/params/title")
