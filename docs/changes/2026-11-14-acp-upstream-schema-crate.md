@@ -1,4 +1,6 @@
 ---
+version: 0.1115.0
+decisions: D616
 issue: #2224
 raise: crate console +20
 decision: ACP v2 wire shapes are the upstream `agent-client-protocol-schema` crate, not hand-rolled in yi-types, superseding D351's hand-rolled subset; yi-acp and yi-console depend on it directly and yi-types keeps Yi's own shapes plus the permission request family, which the daemon's pending list is built from and the desktop client decodes, since yi-types takes no protocol crate | the hand-rolled subset tracked a pre-release schema (alpha.5) by hand while the crate is versioned by the protocol's authors and 77 of its 121 shared definitions had already moved; the types-only half pulls 40 crates (anyhow behind a scoped deny.toml wrapper, strum skipped as a duplicate) against 96 for the full runtime crate | revert this change: the old `yi-types::acp` module is in git history and every call site is a mechanical builder-to-struct swap
