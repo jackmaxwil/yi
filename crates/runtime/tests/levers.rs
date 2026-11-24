@@ -125,14 +125,23 @@ fn an_override_is_applied_whole_or_refused_with_its_reason() -> Result<(), Box<d
     for (text, reason) in [
         (r#"{"plan.width_maxx": 4}"#, "unknown lever plan.width_maxx"),
         (r#"{"plan.spawn_cap": 64}"#, "plan.spawn_cap is not tunable"),
-        (r#"{"plan.width_max": 17}"#, "integer in 1..=16, not 17"),
-        (r#"{"plan.width_max": 0}"#, "integer in 1..=16, not 0"),
-        (r#"{"plan.width_max": 4.5}"#, "integer in 1..=16, not 4.5"),
-        (r#"{"plan.width_max": "4"}"#, "integer in 1..=16, not \"4\""),
-        (r#"{"plan.width_max": null}"#, "integer in 1..=16, not null"),
+        (
+            r#"{"plan.width_max": 4097}"#,
+            "integer in 0..=4096, not 4097",
+        ),
+        (r#"{"plan.width_max": -1}"#, "integer in 0..=4096, not -1"),
+        (r#"{"plan.width_max": 4.5}"#, "integer in 0..=4096, not 4.5"),
+        (
+            r#"{"plan.width_max": "4"}"#,
+            "integer in 0..=4096, not \"4\"",
+        ),
+        (
+            r#"{"plan.width_max": null}"#,
+            "integer in 0..=4096, not null",
+        ),
         (
             r#"{"plan.width_max": 99999999999999999999}"#,
-            "integer in 1..=16, not 1e+20",
+            "integer in 0..=4096, not 1e+20",
         ),
         ("[]", "invalid type"),
         ("", "EOF while parsing"),
@@ -155,10 +164,10 @@ fn an_override_is_applied_whole_or_refused_with_its_reason() -> Result<(), Box<d
     Ok(())
 }
 
-/// A swarm run may hold 128 children under one parent and not one more: the root's own kernel counts
-/// as a live session, so the family's cap is one higher. The defaults stay the everyday fuses.
+/// The family and child ceilings are optional: 0 is the default and means adaptive admission
+/// alone, and a run may still set one up to its lever's top and not one more.
 #[test]
-fn a_swarm_run_raises_the_family_to_128_and_no_further() -> Result<(), Box<dyn Error>> {
+fn the_family_ceilings_default_to_none_and_a_run_may_still_set_one() -> Result<(), Box<dyn Error>> {
     let path = overrides(
         "swarm",
         r#"{"family.cap": 129, "family.max_children": 128}"#,
@@ -166,7 +175,7 @@ fn a_swarm_run_raises_the_family_to_128_and_no_further() -> Result<(), Box<dyn E
     let raised = load(&path)?;
     std::fs::remove_file(&path)?;
     assert_eq!((raised.family_cap, raised.family_max_children), (129, 128));
-    for (key, past) in [("family.cap", 130), ("family.max_children", 129)] {
+    for (key, past) in [("family.cap", 4098), ("family.max_children", 4097)] {
         let path = overrides("over", &format!(r#"{{"{key}": {past}}}"#))?;
         let refused = load(&path);
         std::fs::remove_file(&path)?;
@@ -179,7 +188,7 @@ fn a_swarm_run_raises_the_family_to_128_and_no_further() -> Result<(), Box<dyn E
             Levers::DEFAULT.family_cap,
             Levers::DEFAULT.family_max_children
         ),
-        (16, 8)
+        (0, 0)
     );
     Ok(())
 }

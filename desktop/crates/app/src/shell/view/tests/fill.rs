@@ -2,6 +2,7 @@
 //! bar, a pinch, and a two-finger double tap. Each said again gives the grid back.
 
 use rune::{GesturePhase, MagnifyEvent};
+use yd_ui::overlay::boxes::union;
 
 use super::*;
 
@@ -42,12 +43,11 @@ fn fills(runtime: &Runtime<Win>, slug: &str, grid: [f32; 4]) -> Check {
 
 /// The room the grid's panes cover between them.
 fn grid(frames: &[(String, [f32; 4])]) -> [f32; 4] {
-    let low = |at: usize| frames.iter().map(|(_, r)| r[at]).fold(f32::MAX, f32::min);
-    let high = |at: usize| {
-        let far = frames.iter().map(|(_, r)| r[at] + r[at + 2]);
-        far.fold(f32::MIN, f32::max)
-    };
-    [low(0), low(1), high(0) - low(0), high(1) - low(1)]
+    frames
+        .iter()
+        .map(|(_, r)| *r)
+        .reduce(union)
+        .unwrap_or_default()
 }
 
 fn pinch(runtime: &mut Runtime<Win>, at: (f32, f32), deltas: &[f32]) {

@@ -172,7 +172,8 @@ fn with_plan(options: &Options, id: Option<&str>, run: impl FnOnce(&Plan) -> i32
 }
 
 fn lint(plan: &Plan, options: &Options) -> i32 {
-    let findings = ledger::lint(plan, dispatch_width().get());
+    let width = dispatch_width(yi_runtime::levers::get()).map_or(usize::MAX, |w| w.get());
+    let findings = ledger::lint(plan, width);
     if options.json {
         let rows: Vec<serde_json::Value> = findings
             .iter()

@@ -9,8 +9,8 @@ use crate::model::Model;
 use crate::pane::PaneKind::{Changes, Chat};
 
 use super::GridMsg;
-use super::stacks::{open, show, window};
-use super::tests::{MAIN, change, drawn, pane};
+use super::stacks::{show, window};
+use super::tests::{MAIN, change, drawn, open, pane};
 
 fn child(name: &str) -> Result<Address, String> {
     Address::new(Kind::Agent, format!("a/{name}")).map_err(|error| error.to_string())
