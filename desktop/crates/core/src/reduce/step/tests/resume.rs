@@ -167,7 +167,7 @@ fn a_hole_in_the_event_numbers_asks_for_the_branch_again_once() -> Check {
     assert_eq!(
         resumes(&effects)?,
         [json!({"sessionId": TURN, "cwd": "$OTHER", "replayFrom": 0,
-            "_meta": {"yi": {"replayUpdates": false}}})],
+            "_meta": {"yi": {"replayUpdates": false, "shows": true}}})],
         "one resume, however many events follow the hole"
     );
     assert_eq!(thread(&model, TURN)?.sync, Sync::Resuming);
@@ -222,7 +222,7 @@ fn a_reconnect_resumes_the_threads_a_view_shows_and_no_other() -> Check {
     assert_eq!(
         resumes(&effects)?,
         [json!({"sessionId": shown, "cwd": "$OTHER", "replayFrom": 0,
-            "_meta": {"yi": {"replayUpdates": false}}})]
+            "_meta": {"yi": {"replayUpdates": false, "shows": true}}})]
     );
     Ok(())
 }
@@ -262,7 +262,7 @@ fn two_views_of_one_thread_make_one_resume() -> Check {
         resumes(&first)?,
         [
             json!({"sessionId": listed, "cwd": "$PROJECT", "replayFrom": 0,
-            "_meta": {"yi": {"replayUpdates": false}}})
+            "_meta": {"yi": {"replayUpdates": false, "shows": true}}})
         ]
     );
     let second = run(&mut model, OPEN, address(Kind::Thread, listed)?, None);

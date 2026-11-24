@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod approvals;
 pub mod cells;
+pub mod pointed;
 pub mod state;
 pub mod step;
 pub mod threads;

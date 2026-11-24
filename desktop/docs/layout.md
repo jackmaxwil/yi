@@ -185,6 +185,8 @@ The owner chose "Says what, not where".
 - **It is an ordinary tool call in the session file.** A session opened on another machine can rebuild its quiet tabs from the record. The layout stays a view; the session stays the ledger.
 - **The app works without it.** Stages 1 to 5 need no server change. The rules give the automatic half; the tool adds pointing.
 
+As built (#2309): the app says it can show things when it opens or resumes a session (`_meta.yi.shows`), and answers the server's `_yi/show` in `reduce::pointed`. It shows files: a path, a path and a line, or a `yi://file` or `yi://lines` address; anything else is refused in words. The file's code pane joins the tabs of its place. `peek` and `tab` leave whatever is in front in front and put a dot on the new tab. `front` comes forward only when the person has done nothing in the app for ten seconds (`pointed::IDLE`): a command, a pane moved, keys in a shell or in the composer all count, anywhere in the app, not only in that place. The answer says what happened: `front` when the pane is drawn, `tab` when it waits, with a note when a `front` had to wait. Focus never moves. The step in chat reads "Showed", and its "Show me" brings the pane in front with the keys, at the line. The console answers the same request its own way (a file beside the chat), so a session behaves alike in both.
+
 Precedent, by name: Zed's "follow the agent" reads the locations a tool call reports. The deliberate difference: Yi's tool is a request, not a side effect, so the model learns whether the user saw it.
 
 ## 8. Precedents

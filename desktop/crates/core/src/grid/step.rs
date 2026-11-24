@@ -97,6 +97,14 @@ pub enum GridMsg {
         at: Spot,
         size: Size,
     },
+    /// The model points at `thing`: its pane of `kind` joins its place as a tab, in front
+    /// only with `front`. Behind, it carries a dot; whatever the person has in front stays.
+    Point {
+        window: WindowId,
+        kind: PaneKind,
+        thing: Address,
+        front: bool,
+    },
     /// The session a window shows and the kinds with something to show in it. A pane a
     /// layout seated follows its kind; one the person has follows the sessions it is open in.
     Have {
@@ -152,7 +160,7 @@ pub fn step(grid: &mut Windows, change: GridMsg) -> Vec<Effect> {
         _ => None,
     };
     let quiet = match &change {
-        GridMsg::Fill(_) | GridMsg::Moved { .. } => true,
+        GridMsg::Fill(_) | GridMsg::Moved { .. } | GridMsg::Point { .. } => true,
         GridMsg::Front(pane) => tab(pane),
         _ => false,
     };
@@ -322,6 +330,12 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             at,
             size,
         } => return put(grid, window, kind, &thing, at, size),
+        GridMsg::Point {
+            window,
+            kind,
+            thing,
+            front,
+        } => point(grid, window, kind, &thing, front)?,
         GridMsg::Resize {
             window,
             line,
@@ -745,7 +759,7 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
 }
 
 mod opening;
-use opening::{arrivals, open, put, seat};
+use opening::{arrivals, open, point, put, seat};
 
 #[cfg(test)]
 mod about;

@@ -206,6 +206,7 @@ pub fn poll(win: &mut Win, seconds: f64, tx: &mut Tx) -> bool {
     let told = notify::poll(win);
     let hover = yd_ui::code::state::tick(win, tx);
     let followed = yd_panes::lsp::marks::follow(win, tx);
+    let pointed = yd_panes::code_view::refs::follow(win, tx);
     // Invariant: one window looks at the themes folder and asks for the next look's wake;
     // the main one, which polls even while it is closed.
     let themed = win.window == MAIN && yd_ui::theme::files::tick(win, seconds, tx);
@@ -219,6 +220,7 @@ pub fn poll(win: &mut Win, seconds: f64, tx: &mut Tx) -> bool {
     seen::poll(win);
     start::keep(win);
     let heard = windows || settled || drained || shown || rested || told || hover || followed;
+    let heard = heard || pointed;
     heard || themed || scripted || bound || asked
 }
 

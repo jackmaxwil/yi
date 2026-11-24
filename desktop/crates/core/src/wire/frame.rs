@@ -8,7 +8,7 @@ use std::io::{self, BufRead, Read};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use yi_types::acp::{AcpConfigOption, AcpPermissionParams, AcpStopReason};
+use yi_types::acp::{AcpConfigOption, AcpPermissionParams, AcpShowParams, AcpStopReason};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::goal::Goal;
@@ -112,7 +112,12 @@ pub enum Frame {
         id: RequestId,
         result: Result<Value, Refusal>,
     },
-    /// The server calls a method this app does not have.
+    /// The model asks for a thing in front of the person; `id` is echoed in the answer.
+    Show {
+        id: Value,
+        params: Box<AcpShowParams>,
+    },
+    /// The server calls a method this app does not have, or one it could not read.
     Request { id: Value, method: String },
     /// A frame that is none of these, as written.
     Other(Value),
@@ -216,10 +221,19 @@ impl Frame {
                 id: frame.remove("id").unwrap_or_default(),
                 params: Box::new(Kept::read(frame.remove("params").unwrap_or_default())),
             },
-            (Some(method), true) => Self::Request {
-                method: method.to_owned(),
-                id: frame.remove("id").unwrap_or_default(),
-            },
+            (Some(method), true) => {
+                let show = (method == crate::wire::request::SHOW)
+                    .then(|| read::<AcpShowParams>(frame.get("params")))
+                    .flatten();
+                let (method, id) = (method.to_owned(), frame.remove("id").unwrap_or_default());
+                match show {
+                    Some(params) => Self::Show {
+                        id,
+                        params: Box::new(params),
+                    },
+                    None => Self::Request { id, method },
+                }
+            }
             (None, true) => Self::Reply {
                 id: RequestId::of(frame.get("id").unwrap_or(&Value::Null)),
                 result: match frame.remove("error") {

@@ -103,11 +103,67 @@ pub(in crate::grid) fn put(
     Ok(ops)
 }
 
+/// The model's pane about `thing`: the one `id` holds, else a new tab where its place's go.
+/// It comes in front only with `front`; behind, it carries a dot. No slot changes hands.
+pub(in crate::grid) fn point(
+    grid: &mut Windows,
+    id: WindowId,
+    kind: PaneKind,
+    thing: &Address,
+    front: bool,
+) -> Result<(), GridError> {
+    grid.window(id).ok_or(GridError::NoSuchWindow(id))?;
+    let pane = match grid.about_in(id, kind, thing) {
+        Some(pane) => {
+            handled(grid, id, pane);
+            pane
+        }
+        None => {
+            let pane = match hidden_idle(grid, kind, Some(thing)) {
+                Some(pane) => pane,
+                None => add(grid, kind)?,
+            };
+            if let Some(made) = grid.panes.iter_mut().find(|other| other.id == pane) {
+                made.thing = Some(thing.clone());
+            }
+            fresh(grid, id, pane);
+            seat(grid, id, pane)?;
+            pane
+        }
+    };
+    if front {
+        return raise(grid, id, pane);
+    }
+    // The step that made this change takes the dot off a pane that is drawn.
+    if let Some(pane) = grid.panes.iter_mut().find(|other| other.id == pane) {
+        pane.unseen = true;
+    }
+    Ok(())
+}
+
 impl Windows {
+    /// The panes of `kind` about `thing`, in every window.
+    pub fn panes_about<'a>(
+        &'a self,
+        kind: PaneKind,
+        thing: &'a Address,
+    ) -> impl Iterator<Item = PaneId> + 'a {
+        let is = move |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
+        self.panes.iter().filter(is).map(|pane| pane.id)
+    }
+
+    /// The pane of `kind` about `thing` that `id` holds: drawn, a tab behind, or resting.
+    #[must_use]
+    pub fn about_in(&self, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
+        let layout = &self.window(id)?.layout;
+        self.panes_about(kind, thing)
+            .find(|pane| layout.holds(*pane))
+    }
+
     /// The pane of `kind` about `thing` that `id` draws.
+    #[must_use]
     pub fn drawn_about(&self, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
-        let is = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
-        let mut found = self.panes.iter().filter(is).map(|pane| pane.id);
+        let mut found = self.panes_about(kind, thing);
         found.find(|pane| self.window_of(*pane) == Some(id))
     }
 

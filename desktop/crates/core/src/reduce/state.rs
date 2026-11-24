@@ -46,6 +46,8 @@ pub struct Wire {
     pub(crate) folders: Vec<String>,
     /// The latest time any wire event carried.
     pub(crate) seen: Millis,
+    /// The model's asks to show a thing, read off the wire and not yet answered.
+    pub(crate) shows: Vec<(Value, yi_types::acp::AcpShowParams)>,
 }
 
 /// Where the socket to the server stands.

@@ -426,11 +426,8 @@ impl Card<'_> {
                 let (_, rest) = rest.split_once('/')?;
                 Some(rest.split_once('/')?.1)
             });
-            let inside = path
-                .strip_prefix(folder)
-                .and_then(|rest| rest.strip_prefix('/'));
-            let inside = lane.or(inside);
-            let mut words = line(inside.unwrap_or(path), MAX_LINE);
+            let inside = lane.unwrap_or_else(|| yd_core::address::in_folder(path, folder));
+            let mut words = line(inside, MAX_LINE);
             words.push_str(&format!(" +{}", change.added));
             if change.removed > 0 {
                 words.push_str(&format!(" −{}", change.removed));

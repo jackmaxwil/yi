@@ -27,7 +27,7 @@ fn unread(frame: &Frame) -> Option<String> {
         Frame::Other(raw) => Some(format!("a frame of no kind: {raw}")),
         Frame::Request { method, .. } => Some(format!("a call to {method}")),
         Frame::Ask { params, .. } => params.known().is_none().then(|| "an ask".to_owned()),
-        Frame::Reply { .. } => None,
+        Frame::Reply { .. } | Frame::Show { .. } => None,
         Frame::Update { update, .. } => match update {
             Update::Other { kind, .. } => Some(format!("an update of kind {kind}")),
             Update::Event { event, .. } => event.known().is_none().then(|| "an event".to_owned()),

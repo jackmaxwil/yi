@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use super::{Check, address, branch, feed, head, played, recording, rows, run, said, sent};
-use super::{thread, update};
+use super::{showing, thread, update};
 use crate::address::thing::Thing;
 use crate::address::uri::Address;
 use crate::command::table::Target;
@@ -51,7 +51,8 @@ fn each_command_sends_what_the_recorded_client_sent() -> Check {
     let place = address(Kind::Place, "$OTHER")?;
     let enabled = address(Kind::Setting, "catalog.enabled")?;
     let m = &mut model;
-    assert_eq!(call(m, NEW, place, None)?, recorded(2)?);
+    let (method, params) = recorded(2)?;
+    assert_eq!(call(m, NEW, place, None)?, (method, showing(params)));
     assert_eq!(
         call(m, PROMPT, live.clone(), Some("something to fork"))?,
         recorded(4)?

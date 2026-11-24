@@ -1,20 +1,25 @@
 //! Tool rows and the receipt an answered ask leaves under its step.
 
 use rune::{Cursor, El, Icon, ScrollSpec, Span, TextStyle, Tx, col, rich, row, text};
+use yd_core::address::in_folder;
 use yd_core::address::uri::Address;
+use yd_core::grid::step::GridMsg;
 use yd_core::ids::Millis;
 use yd_core::kind::Kind;
+use yd_core::msg::Msg;
+use yd_core::pane::PaneKind;
+use yd_core::reduce::pointed;
 use yd_core::reduce::turns::{ToolCall, ToolState};
 use yd_core::tokens::Tokens;
 use yd_ui::code::doc::Lang;
 use yd_ui::code::paint::{Read, paint};
-use yd_ui::grid_view::view::open_file;
+use yd_ui::grid_view::view::{Act, act, open_file};
 use yd_ui::kit::button::{Button, button};
 use yd_ui::kit::icons::{SEARCH, glyph};
 use yd_ui::line_icon;
 use yd_ui::theme::look::{BODY, CODE, CODE_LINE, LABEL, META, colour};
 use yd_ui::theme::scale::{CONSOLE, RADIUS_CHIP};
-use yd_ui::win::Win;
+use yd_ui::win::{Win, dispatch};
 
 use crate::chat::messages::{Frame, clean, line, plain};
 use crate::chat::pane::chat_mut;
@@ -41,6 +46,7 @@ pub const OPEN_CAP: f32 = 12.0 * 16.0;
 fn verb(name: &str) -> (&'static Icon, String) {
     match name {
         "read" => (&EYE, "Read".to_owned()),
+        "show" => (&EYE, "Showed".to_owned()),
         "grep" | "find" | "glob" | "search" => (&SEARCH, "Searched".to_owned()),
         "edit" | "write" => (&EDIT, "Edited".to_owned()),
         "bash" => (&SHELL, "Ran".to_owned()),
@@ -71,6 +77,7 @@ fn aimed(call: &ToolCall) -> Option<(&'static str, String)> {
         .or_else(|| arg("command"))
         .or_else(|| arg("query"))
         .or_else(|| arg("code"))
+        .or_else(|| arg("address"))
 }
 
 /// The whole call as an ask shows it: its aim (else its arguments as JSON), how that reads,
@@ -139,19 +146,51 @@ fn file(call: &ToolCall) -> Option<&str> {
     arg("path").or_else(|| arg("file_path"))
 }
 
-/// Opens the file a step touched in the code viewer. A path inside the shown thread's folder
-/// is opened by its place in it, which is how the files source names a file.
-pub(crate) fn open(win: &mut Win, tx: &mut Tx, path: &str) {
+/// The file at `path` as the files source names it: a path inside the shown thread's folder
+/// by its place in it, any other as written.
+fn placed(win: &Win, path: &str) -> Option<Address> {
     let folder = win.hub.try_borrow().ok().and_then(|hub| {
         let thread = yd_ui::shown::thread(&hub, win.window)?;
         Some(yd_ui::shown::works_in(&hub, thread).to_owned())
     });
-    let inside = folder.as_deref().and_then(|folder| {
-        let rest = path.strip_prefix(folder)?;
-        rest.strip_prefix('/')
-    });
-    if let Ok(file) = Address::new(Kind::File, inside.unwrap_or(path)) {
+    Address::new(Kind::File, in_folder(path, folder.as_deref().unwrap_or(""))).ok()
+}
+
+/// Opens the file a step touched in the code viewer.
+pub(crate) fn open(win: &mut Win, tx: &mut Tx, path: &str) {
+    if let Some(file) = placed(win, path) {
         open_file(win, tx, file);
+    }
+}
+
+/// The file a `show` pointed at and its line, as the model wrote the address.
+fn pointed(call: &ToolCall) -> Option<(String, Option<u32>)> {
+    let address = call.args.get("address").and_then(|v| v.as_str())?;
+    (call.name == "show").then(|| pointed::target(address.trim(), ""))?
+}
+
+/// Brings the pane about the file the model pointed at in front, at its line, with the keys:
+/// the person's own word, where the model's waited as a tab.
+fn show_me(win: &mut Win, tx: &mut Tx, path: &str, line: Option<u32>) {
+    let Some(thing) = placed(win, path) else {
+        return;
+    };
+    let (window, kind) = (win.window, PaneKind::Code);
+    let about = GridMsg::About {
+        window,
+        kind,
+        thing: thing.clone(),
+    };
+    dispatch(win, Msg::Grid(about));
+    let pane = win.hub.try_borrow_mut().ok().and_then(|mut hub| {
+        let pane = hub.model.grid.about_in(window, kind, &thing)?;
+        if let Some(line) = line {
+            hub.model.reveal(pane, line);
+        }
+        Some(pane)
+    });
+    if let Some(pane) = pane {
+        act(win, tx, Act::Focus(pane));
     }
 }
 
@@ -194,6 +233,8 @@ fn result(tokens: &Tokens, call: &ToolCall) -> El {
         (ToolState::Queued, _) => "queued".to_owned(),
         (ToolState::Running, _) => line(printed.lines().last().unwrap_or("running"), MAX_LINE),
         (_, "read") => format!("{} lines", printed.lines().count()),
+        // The answer's first clause says where it landed; the rest is for the model.
+        (_, "show") => line(printed.split([';', '.']).next().unwrap_or(""), MAX_LINE),
         (_, "grep" | "find" | "glob" | "search") => {
             let found = printed.lines().filter(|l| !l.trim().is_empty()).count();
             format!("{found} matches")
@@ -383,12 +424,16 @@ pub fn step(frame: &Frame, call: &ToolCall) -> El {
                 .shrink()
                 .min_w(0.0);
             // A step that names a file opens it; a pattern or a command is only words.
-            let words = match file(call).map(str::to_owned) {
-                Some(path) => words
+            let words = match (file(call).map(str::to_owned), pointed(call)) {
+                (Some(path), _) => words
                     .key(format!("{key}.path"))
                     .cursor(Cursor::Pointer)
                     .on_press_tx(move |win: &mut Win, tx: &mut Tx| open(win, tx, &path)),
-                None => words,
+                (None, Some((path, at))) => words
+                    .key(format!("{key}.path"))
+                    .cursor(Cursor::Pointer)
+                    .on_press_tx(move |win: &mut Win, tx: &mut Tx| show_me(win, tx, &path, at)),
+                (None, None) => words,
             };
             let more = more(call).map(|n| {
                 let said = format!("+{n} {}", if n == 1 { "line" } else { "lines" });
@@ -398,6 +443,19 @@ pub fn step(frame: &Frame, call: &ToolCall) -> El {
             let aimed = row().grow(1.0).min_w(60.0).gap(6.0).center_y();
             aimed.child(words).children(more)
         }))
+        .children(
+            pointed(call)
+                .filter(|_| call.state == ToolState::Done)
+                .map(|(path, at)| {
+                    text("Show me")
+                        .key(format!("{key}.show"))
+                        .label("Show me")
+                        .font(LABEL)
+                        .color(colour(tokens.accent))
+                        .cursor(Cursor::Pointer)
+                        .on_press_tx(move |win: &mut Win, tx: &mut Tx| show_me(win, tx, &path, at))
+                }),
+        )
         .child(result(tokens, call));
     if let Some(ms) = call.duration().map(|d| d.0).filter(|ms| *ms >= 1_000) {
         let words = crate::chat::messages::span(ms);
