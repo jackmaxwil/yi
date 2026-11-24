@@ -452,7 +452,7 @@ def selfcheck():
 
     try:
         shutil.copytree(ROOT / "scripts/guardrails", tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))
-        for script in ("record_changes.py", "adr.py", "pr_body.py"):
+        for script in ("record_changes.py", "adr.py", "pr_body.py", "forge_tracking.py", "forgejo_pr_comment.py"):
             shutil.copy(ROOT / "scripts" / script, tmp / "scripts" / script)
         for path in (ARCH, LOG, INDEX):
             (tmp / path).parent.mkdir(parents=True, exist_ok=True)
