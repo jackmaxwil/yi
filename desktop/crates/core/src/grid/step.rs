@@ -678,7 +678,8 @@ fn wear(
     }
     settle(grid, id)?;
     // A layout sets places only: what the session has that opens by itself comes again.
-    let has = grid.have.get(&id).cloned().unwrap_or_default();
+    let shown = grid.shows.get(&id).cloned();
+    let has = grid.have.get(&(id, shown)).cloned().unwrap_or_default();
     arrivals(grid, id, has.into_iter().collect());
     Ok(ops)
 }
