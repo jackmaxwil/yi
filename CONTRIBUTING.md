@@ -27,8 +27,8 @@ stops them all.
 Optional, never used by CI. `just dev-fast` builds `yi-cli` with nightly's Cranelift backend into
 `target/dev-fast` (run `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`
 once). It uses sccache as the rustc wrapper when installed, and on Linux the mold linker when
-installed. mold does not support macOS, which keeps its default linker. `bacon` reads `bacon.toml`
-for check, clippy, test and nextest jobs. `experiments/subsecond/` holds an unwired hot-patching trial.
+installed. mold does not support macOS, which keeps its default linker. `bacon` reads `bacon.toml`,
+whose clippy and test jobs run `just clippy` and `just test`. `experiments/subsecond/` holds an unwired hot-patching trial.
 
 ## From a GitHub fork
 

@@ -21,7 +21,7 @@ dev-fast *args='-p yi-cli':
     if [ "$(uname -s)" = Linux ] && command -v mold >/dev/null; then
       export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
     fi
-    CARGO_TARGET_DIR=target/dev-fast exec cargo +nightly --config .cargo/dev-fast.toml build {{args}}
+    CARGO_TARGET_DIR=target/dev-fast CARGO_PROFILE_DEV_CODEGEN_BACKEND=cranelift exec cargo +nightly -Zcodegen-backend build {{args}}
 
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
