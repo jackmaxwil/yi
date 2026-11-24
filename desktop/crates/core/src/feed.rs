@@ -32,6 +32,11 @@ pub const DAEMONS: FeedId = FeedId::new("daemons");
 pub const WEB: FeedId = FeedId::new("web");
 /// The page the Report pane shows: the `browser` source's second page.
 pub const REPORT: FeedId = WEB.instance(1);
+
+/// The browser source's page row for `feed`.
+pub fn page_row_id(feed: FeedId) -> RowId {
+    RowId::new(format!("page:{}", feed.instance))
+}
 /// Answers to a script pane's web requests; the `fetch` source fills it.
 pub const FETCH: FeedId = FeedId::new("fetch");
 /// Virtual machines; the `machines` source fills it.

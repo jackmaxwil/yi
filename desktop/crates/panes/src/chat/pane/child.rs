@@ -112,6 +112,11 @@ fn open(win: &mut Win, tx: &mut Tx, child: Child) {
         kind,
         thing: thing.clone(),
     };
+    let known: Vec<PaneId> = win
+        .hub
+        .try_borrow()
+        .map(|hub| hub.model.grid.panes.iter().map(|pane| pane.id).collect())
+        .unwrap_or_default();
     dispatch(win, Msg::Grid(about));
     let made = win.hub.try_borrow().ok().and_then(|hub| {
         let mut panes = hub.model.grid.panes.iter();
@@ -119,6 +124,12 @@ fn open(win: &mut Win, tx: &mut Tx, child: Child) {
         found.map(|pane| pane.id)
     });
     if let Some(made) = made {
+        if !known.contains(&made)
+            && let Ok(mut hub) = win.hub.try_borrow_mut()
+            && let Some(chat) = hub.panes.get_mut::<super::Chat>(Some(made))
+        {
+            *chat = super::Chat::default();
+        }
         act(win, tx, Act::Focus(made));
     }
 }

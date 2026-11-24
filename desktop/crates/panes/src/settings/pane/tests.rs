@@ -58,13 +58,7 @@ fn find<'a>(tree: &'a [ElementInfo], key: &str) -> Result<&'a ElementInfo, Box<d
 }
 
 fn tap(rt: &mut Runtime<Win>, key: &str) -> Check {
-    let [x, y, w, h] = find(&rt.elements(), key)?.rect;
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    rt.pointer_move(x, y);
-    rt.pointer_down(x, y);
-    rt.pointer_up(x, y);
-    settle(rt);
-    Ok(())
+    crate::test_support::tap(rt, key, settle)
 }
 
 fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {
