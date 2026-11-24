@@ -115,7 +115,7 @@ A table the app reads. Each row: when, what to show, where, and when it ends.
 | The agent's first file edit | Changes, the session's diff | Work | The diff is empty |
 | A child agent starts | Agents | Side | Every child has finished and been seen (as built: while the session has a child at all) |
 | A command prints a local web address | Web app, that address | Work | The page is closed or the server is gone |
-| A kernel cell returns a display | IPython, that kernel | Work | The kernel is gone (not built: the kind has no test for something to show) |
+| A kernel cell returns a display | IPython, that kernel | Work | The kernel is gone (as built: a cell shows a picture, and the tab stays for the session) |
 
 Four rows to start, and this change builds three: the IPython row waits until its kind has a test for something to show (row 118). An untouched tab a rule opened closes when its thing ends. A tab the user clicked or kept stays. Everything that was ever shown stays listed in the Environment column (✓ DF16), one click to bring back.
 

@@ -15,11 +15,8 @@ const PLAIN: &str = include_str!("../../../../../../fixtures/wire/turn.jsonl");
 /// The recording's lines up to the third cell's start, and up to its end.
 const THIRD_STARTED: usize = 87;
 const THIRD_ENDED: usize = 93;
-
-fn lines(recording: &str, from: usize, to: usize) -> String {
-    let lines = recording.lines().skip(from).take(to.saturating_sub(from));
-    lines.collect::<Vec<_>>().join("\n")
-}
+/// Up to the fourth cell's end, its chart.
+const CHART: usize = 160;
 
 /// The thread a recording made: what its `session/new` answered.
 fn made(recording: &str) -> Result<ThreadId, Box<dyn Error>> {
@@ -200,13 +197,7 @@ fn a_running_cell_says_so_until_its_outputs_arrive() -> Check {
         words(&runtime, &input)
     );
     assert_eq!(words(&runtime, &format!("{key}.cell.k3.state"))?, "Running");
-    let rest_of_it = lines(TURN, THIRD_STARTED, THIRD_ENDED);
-    runtime.update(move |win, _| {
-        if let Ok(mut hub) = win.hub.try_borrow_mut() {
-            let _ = play(&mut hub.model, &rest_of_it);
-        }
-    });
-    rest(&mut runtime);
+    feed(&mut runtime, TURN, THIRD_STARTED, THIRD_ENDED);
     assert!(
         !live(&runtime, &format!("{key}.cell.k3.state")),
         "no longer running"
@@ -246,5 +237,18 @@ fn a_thread_with_no_cells_says_its_kernel_is_not_booted() -> Check {
     let said = words(&runtime, &format!("{key}.state"))?;
     assert!(said.contains("No cells in this thread yet"), "{said:?}");
     assert!(said.contains("kernel is not booted"), "{said:?}");
+    Ok(())
+}
+
+/// The pane opens by itself for a picture and for nothing less: three cells of text leave the
+/// chat alone, and the fourth cell's chart brings the pane beside it.
+#[test]
+fn the_pane_opens_by_itself_when_a_cell_draws_a_picture() -> Check {
+    let mut runtime = window(TURN, THIRD_ENDED)?;
+    assert!(pane(&runtime).is_err(), "text alone opens no pane");
+    feed(&mut runtime, TURN, THIRD_ENDED, CHART);
+    let key = pane(&runtime)?;
+    let head = words(&runtime, &format!("{key}.pane-header"))?;
+    assert!(head.ends_with("cells"), "the thread's notebook: {head:?}");
     Ok(())
 }

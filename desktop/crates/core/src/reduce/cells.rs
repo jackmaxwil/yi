@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 use yi_types::image::image_side;
+use yi_types::message::Content;
 
 use crate::reduce::turns::{Message, ToolCall, Transcript};
 
@@ -50,6 +51,12 @@ impl Transcript {
         let found = calls.filter_map(|id| self.tools.get(id));
         found.filter(|call| call.name == TOOL)
     }
+
+    /// Whether a kernel cell has shown a picture: what brings the IPython pane by itself.
+    pub fn pictured(&self) -> bool {
+        let picture = |block: &Content| matches!(block, Content::Image { .. });
+        self.cells().any(|cell| cell.output.iter().any(picture))
+    }
 }
 
 impl ToolCall {
@@ -69,7 +76,7 @@ impl ToolCall {
         outputs.extend(text("stdout").map(Output::Stdout));
         outputs.extend(text("stderr").map(Output::Stderr));
         let pictures = self.output.iter().filter_map(|block| match block {
-            yi_types::message::Content::Image { data, mime_type } => Some(Picture {
+            Content::Image { data, mime_type } => Some(Picture {
                 mime: mime_type,
                 data,
             }),

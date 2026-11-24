@@ -21,28 +21,12 @@ const ASKER: &str = "sub-655c3f0b";
 /// What only the child's own conversation holds: the brief Yi hands it.
 const BRIEF: &str = "[task from parent]";
 
-fn lines(recording: &str, from: usize, to: usize) -> String {
-    let lines = recording.lines().skip(from).take(to.saturating_sub(from));
-    lines.collect::<Vec<_>>().join("\n")
-}
-
 /// The thread a recording made: what its `session/new` answered.
 fn made(recording: &str) -> Result<ThreadId, Box<dyn Error>> {
     let answer = recording.lines().nth(3).ok_or("short recording")?;
     let at = answer.find("\"sessionId\":\"").ok_or("no session")? + 13;
     let id = answer.get(at..at + 36).ok_or("short id")?;
     Ok(ThreadId::new(id))
-}
-
-/// Plays more of the recording into the running window, as its reader thread would.
-fn feed(runtime: &mut Runtime<Win>, recording: &str, from: usize, to: usize) {
-    let part = lines(recording, from, to);
-    runtime.update(move |win, _| {
-        if let Ok(mut hub) = win.hub.try_borrow_mut() {
-            let _ = play(&mut hub.model, &part);
-        }
-    });
-    rest(runtime);
 }
 
 /// The app's window, wide enough for a chat split in two, over the first `to` recorded lines

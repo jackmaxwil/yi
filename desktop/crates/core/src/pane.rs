@@ -28,7 +28,8 @@ macro_rules! panes {
             /// Whether a window opens a pane of the kind by itself, as a quiet tab, the first
             /// time a session has something of it to show: the rules of what arrives.
             pub const fn arrives(self) -> bool {
-                matches!(self, PaneKind::Changes | PaneKind::Agents | PaneKind::Web)
+                use PaneKind::{Agents, Changes, IPython, Web};
+                matches!(self, Changes | Agents | Web | IPython)
             }
 
             /// [`PaneKind::place`] for a pane about one thing or about none: a chat about
