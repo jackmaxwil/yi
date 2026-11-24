@@ -159,8 +159,8 @@ fn options_for(
 ) -> Vec<acp::SessionConfigOption> {
     let choice = |value: String, name: String| acp::SessionConfigSelectOption::new(value, name);
     let mut offered = pickable_models(model);
-    if !(offered.iter()).any(|other| other.provider == model.provider && other.id == model.id) {
-        offered.insert(0, model.clone());
+    if offered.is_empty() {
+        offered.push(model.clone());
     }
     let models: Vec<_> = offered
         .iter()
