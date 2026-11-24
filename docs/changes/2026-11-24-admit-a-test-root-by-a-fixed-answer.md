@@ -1,4 +1,5 @@
 ---
+version: 0.1117.0
 issue: Closes #2346
 raise: comments +3, crate runtime +6, tests +2
 cut: crates/runtime/src/subagent.rs | pub fn with_admission(mut self, admission: Arc<AdmissionFn>) -> Self { | `admit_with` replaces it: a builder cannot reach a host `attach_runtime` has already shared
