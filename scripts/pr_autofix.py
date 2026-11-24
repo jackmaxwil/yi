@@ -94,7 +94,7 @@ LANE_SECS = 900
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
 # Incident: #1111's pass met a full /tmp, and #1779's was labelled for a git `index.lock` a dead
 # pass left behind: a disk or a lock that frees itself is a blip, never the PR's fault.
-TRANSIENT = re.compile(pr_review.THROTTLED.pattern + r"|No space left|Out of diskspace|Unable to create .*\.lock", re.I)
+TRANSIENT = re.compile(r"No space left|Out of diskspace|Unable to create .*\.lock", re.I)
 # Incident: 645 deferrals reran 14 PRs' sandboxes every 15 minutes for two days with no label. The
 # longest real provider loss on record is #1025's three passes, so eight passes (two hours) is a stop.
 DEFERS = 8
@@ -130,7 +130,7 @@ class BaseRed(RuntimeError):
 
 def verdict_of(err, notes):
     """A miss retries one tier up until the top tier has missed too; a disk or provider blip waits."""
-    if pr_review.throttled(str(err), TRANSIENT):
+    if pr_review.throttled(str(err)) or TRANSIENT.search(str(err)):
         return "deferred"
     if isinstance(err, (Missed, pr_review.Unanswered, subprocess.TimeoutExpired)) and misses(notes) + 1 < len(TIERS):
         return "missed"

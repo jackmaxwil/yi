@@ -389,5 +389,23 @@
    2303
   ],
   "text": "the lanes still fail after the fix and one more turn:\n`just lane test` failed:\n  TRY 1 FAIL [   3.921s] (\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500) yi-ai::integration quota::a_quota_429_is_final_and_a_rate_limit_429_still_retries"
+ },
+ {
+  "reads": "disk",
+  "count": 1,
+  "source": "hand-made: the recorded 639x worker-death frames ending on an ENOSPC; no traceback-wrapped full disk is in the record or the history (#1111's real str(err) was the plain git line above)",
+  "text": "the fixer's worker died: \"--schema\", json.dumps(schema)]\n  File \"/workspace/apex/yi/scripts/pr_review.py\", line 685, in yi_bin\n    _REFRESHED.append(subprocess.run([found, \"catalog\", \"refresh\", \"openrouter\"], capture_output=True, check=False))  # nosemgrep: dangerous-subprocess-use-tainted-env-args Direct argv exec of the selected Yi binary, no shell.\n  File \"/usr/lib/python3.10/subprocess.py\", line 503, in run\n    with Popen(*popenargs, **kwargs) as process:\n  File \"/usr/lib/python3.10/subprocess.py\", line 971, in __init__\n    self._execute_child(args, executable, preexec_fn, close_fds,\n  File \"/usr/lib/python3.10/subprocess.py\", line 1863, in _execute_child\n    raise child_exception_type(errno_num, err_msg, err_filename)\nOSError: [Errno 28] No space left on device"
+ },
+ {
+  "reads": "disk",
+  "count": 1,
+  "source": "hand-made: the recorded 639x worker-death frames ending on #1779's real git lock line; #1779's real str(err) carried no traceback",
+  "text": "the fixer's worker died: \"--schema\", json.dumps(schema)]\n  File \"/workspace/apex/yi/scripts/pr_review.py\", line 685, in yi_bin\n    _REFRESHED.append(subprocess.run([found, \"catalog\", \"refresh\", \"openrouter\"], capture_output=True, check=False))  # nosemgrep: dangerous-subprocess-use-tainted-env-args Direct argv exec of the selected Yi binary, no shell.\n  File \"/usr/lib/python3.10/subprocess.py\", line 503, in run\n    with Popen(*popenargs, **kwargs) as process:\n  File \"/usr/lib/python3.10/subprocess.py\", line 971, in __init__\n    self._execute_child(args, executable, preexec_fn, close_fds,\n  File \"/usr/lib/python3.10/subprocess.py\", line 1863, in _execute_child\n    raise child_exception_type(errno_num, err_msg, err_filename)\nRuntimeError: git add -u failed: fatal: Unable to create '/workspace/apex/autofix-tmp/yi-autofix-0if9htiv/.git/index.lock': File exists."
+ },
+ {
+  "reads": "provider",
+  "count": 1,
+  "source": "hand-made: crates/ai/src/anthropic.rs passes an SSE `event: error` data body raw as the run's error, behind ask.rs's `error: ` prefix",
+  "text": "yi ask exited 1: error: {\"type\":\"error\",\"error\":{\"code\":502,\"message\":\"Upstream returned an invalid response\"}}"
  }
 ]

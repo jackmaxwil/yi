@@ -715,20 +715,20 @@ JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS - JOB_SPEN
 
 # Incident: rounds lost a lens or refuter answer to a provider 429 or an overload and posted the
 # loss, leaving the head on a red check until a person ran `--again`. One classifier for a provider
-# limit, which the autofixer's TRANSIENT builds on with the disk and lock clauses a round never needs.
+# limit, beside which the autofixer's TRANSIENT adds the disk and lock clauses a round never needs.
 THROTTLE_RETRIES, THROTTLE_DELAY = 2, 20
 # Incident: a bare `\b5\d\d\b` read "line 503" of a traceback as busy 639 times; a status counts only
 # where it is one: yi's `HTTP 503:`, OpenRouter's `code 503`, or a reason phrase after it.
-THROTTLED = re.compile(r"overloaded|rate.?limit|too many requests|temporarily|\b(?:HTTP|code|status)[ :]+(?:429|5\d\d)\b"
+THROTTLED = re.compile(r"overloaded|rate.?limit|too many requests|temporarily|" r'\b(?:HTTP|code|status)"?[ :]+"?(?:429|5\d\d)\b'
                        r"|\b(?:429|5\d\d) (?:Too Many|Service Unavailable|Bad Gateway|Gateway Time)", re.I)
 # Invariant: a traceback, a missing file or module, or a nextest FAIL row is the bot's own run failing.
 OWN_FAILURE = re.compile(r'Traceback \(most recent|^\s*File "[^"]+", line \d+|\b(?:FileNotFound|ModuleNotFound)Error\b'
                          r"|^\s*(?:TRY \d+ )?FAIL \[", re.M)
 
 
-def throttled(text, pattern=THROTTLED):
-    """Whether `text` says a provider (or, with the fixer's `pattern`, a disk or a lock) is busy, never the run itself."""
-    return bool(pattern.search(text)) and not OWN_FAILURE.search(text)
+def throttled(text):
+    """Whether `text` says a provider is busy, never the run itself."""
+    return bool(THROTTLED.search(text)) and not OWN_FAILURE.search(text)
 
 
 class Unanswered(Exception):
