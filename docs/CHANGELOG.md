@@ -6,6 +6,7 @@ there and writes its row here, in the order main landed the files.
 
 | ver | date | change |
 |---|---|---|
+| 0.1102.0 | 2026-11-24 | Yi Desktop's right-click menu on a pane's bar or tab now does what its rows say, on the pane under the pointer: Split right, Split down, Pull out as a window, Keep, Keep across sessions and Close others. The three rows it already drew answered "not available yet". (Refs #2308) |
 | 0.1101.0 | 2026-11-24 | Yi Desktop's two journeys that stop the server while the app is open now wait until the app has really connected. The runner's count of the server's connections was never zero, so the server was stopped two seconds after the app was launched whether it had connected or not, and on a slow start the app never drew Reconnect. (Refs #2257) |
 | 0.1100.0 | 2026-11-24 | Yi Desktop's pane bars now answer the trackpad and the middle button: two fingers sideways along a bar turn its tabs, one for each short stretch, and a middle-click on a tab closes it. A flick does not run through the tabs after the fingers lift, and a tab with no close cross is left alone. (Refs #2308) |
 | 0.1099.0 | 2026-11-24 | Yi Desktop can now give one pane the whole window: pinch out on it, tap it twice with two fingers, double-click the empty part of its bar, or press ⌘⇧↩. The same again brings every pane back exactly where it was. Tabs of the filled pane still switch in place; opening, closing, splitting or showing another pane ends the fill. (Refs #2308) |

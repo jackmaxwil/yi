@@ -1,4 +1,5 @@
 ---
+version: 0.1102.0
 issue: Refs #2308
 cut: none desktop/crates/core/src/grid/step/sessions.rs
 cut: none desktop/crates/ui/src/chrome/tabs.rs
