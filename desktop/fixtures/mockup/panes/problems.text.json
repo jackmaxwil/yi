@@ -1,0 +1,28 @@
+{
+ "pane": "problems",
+ "frame": 9,
+ "strings": [
+  "Error",
+  "mismatched types: expected Result<(), Duration>, found bool",
+  "upload.rs:31",
+  "Warn",
+  "subtracting two Instants can panic if the clock steps back",
+  "rate_limit.rs:20",
+  "Why",
+  "If the machine clock is set back, this line can crash.",
+  "Fix",
+  "Use saturating_duration_since",
+  "From",
+  "rust-analyzer · also finding F12",
+  "Quick fix",
+  "Open finding",
+  "Attach",
+  "Ignore here",
+  "unused Result that must be used",
+  "upload.rs:58",
+  "Hint",
+  "this import is never used",
+  "tests/upload.rs:3"
+ ],
+ "titles": []
+}

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+pub mod admission;
 pub mod advisor;
 pub mod affordance;
 mod annotate;
@@ -59,6 +60,7 @@ mod scratch;
 pub mod select;
 pub mod session;
 pub mod settings;
+mod show;
 pub mod skills;
 pub mod slash;
 pub mod spec;
@@ -99,6 +101,7 @@ pub use provider::{
 };
 pub use rewind::{BranchStub, Rewound, ensure_idle, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status, next_event};
+pub use show::{ShowAsk, Shower, tool as show_tool};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
     ChildBuild, ChildFeed, ChildStatus, ChildUpdate, ChildView, PARENT_CLOSED, SubagentHost,

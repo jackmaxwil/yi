@@ -205,6 +205,10 @@ fn surface_lines() -> Result<Vec<String>, Box<dyn Error>> {
         let text = format!("{}\n{schema}", def.description);
         lines.push(json!({"key": format!("tool:{}", def.name), "text": text}).to_string());
     }
+    // No default session carries `show`: its text is locked here and priced in no prefix.
+    let show = yi_runtime::show_tool(std::sync::Arc::new(|_| None));
+    let text = format!("{}\n{}", show.description(), show.schema());
+    lines.push(json!({"key": "tool:show", "text": text}).to_string());
     for arg in yi_kernel::bootstrap::DEFAULT_RLM_EXTRA_UV_ARGS {
         let package = arg.split(['<', '>', '=', '!', ' ']).next().unwrap_or(arg);
         lines.push(json!({"key": format!("extra:{package}"), "text": package}).to_string());

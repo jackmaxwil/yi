@@ -15,6 +15,8 @@ pub enum AskOutcome {
 pub struct PermissionAsk<'a> {
     /// True once the asking session is aborted: the asker releases the wait as a rejection.
     pub stop: Option<&'a yi_tools::CancelFlag>,
+    /// The child that asks (its `ChildId`), absent for the root session.
+    pub agent: Option<&'a str>,
     pub title: &'a str,
     pub description: &'a str,
     pub patch: Option<&'a str>,
@@ -37,3 +39,9 @@ impl PermissionAsk<'_> {
 }
 
 pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
+
+impl PermissionBroker {
+    pub fn set_agent(&self, name: String) {
+        let _first_wiring_wins = self.agent.set(name);
+    }
+}

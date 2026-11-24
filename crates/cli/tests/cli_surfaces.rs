@@ -1157,7 +1157,7 @@ fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
 fn yi_levers_is_read_only_under_the_eval_flag() -> TestResult {
     let workspace = Workspace::new("levers")?;
     let out_of_range = workspace.project().join("wide.json");
-    std::fs::write(&out_of_range, r#"{"plan.width_max": 99}"#)?;
+    std::fs::write(&out_of_range, r#"{"plan.width_max": 4097}"#)?;
     let wide = out_of_range.display().to_string();
     let refused = workspace.yi_env(
         &["ask", "--model", "faux/faux-1", "--eval", "hi"],
@@ -1166,7 +1166,7 @@ fn yi_levers_is_read_only_under_the_eval_flag() -> TestResult {
     assert_eq!(refused.status.code(), Some(1));
     let reason = String::from_utf8_lossy(&refused.stderr).into_owned();
     assert!(
-        reason.contains("plan.width_max wants an integer in 1..=16, not 99")
+        reason.contains("plan.width_max wants an integer in 0..=4096, not 4097")
             && reason.contains("refusal:config"),
         "{reason}"
     );

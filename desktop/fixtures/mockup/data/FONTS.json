@@ -1,0 +1,57 @@
+[
+ {
+  "n": "Inter + IBM Plex Mono",
+  "s": "Inter,system-ui,sans-serif",
+  "m": "\"IBM Plex Mono\",ui-monospace,monospace",
+  "w": "What every mockup so far used. Rune's ready-made theme already ships this pair."
+ },
+ {
+  "n": "System: SF Pro + SF Mono",
+  "s": "-apple-system,BlinkMacSystemFont,system-ui,sans-serif",
+  "m": "ui-monospace,\"SF Mono\",Menlo,monospace",
+  "w": "The Mac's own fonts. Nothing to ship and it feels native, but it looks different on Windows and Linux."
+ },
+ {
+  "n": "Geist + Geist Mono",
+  "s": "Geist,system-ui,sans-serif",
+  "m": "\"Geist Mono\",ui-monospace,monospace",
+  "w": "One family drawn as a pair. Clean and a little wider, so slightly less fits."
+ },
+ {
+  "n": "IBM Plex Sans + IBM Plex Mono",
+  "s": "\"IBM Plex Sans\",system-ui,sans-serif",
+  "m": "\"IBM Plex Mono\",ui-monospace,monospace",
+  "w": "One family with more character. Narrower letters, so more fits in a pane."
+ },
+ {
+  "n": "Instrument Sans + JetBrains Mono",
+  "s": "\"Instrument Sans\",system-ui,sans-serif",
+  "m": "\"JetBrains Mono\",ui-monospace,monospace",
+  "w": "A tighter, sharper sans beside a tall code font made for long reading."
+ },
+ {
+  "n": "Atkinson Hyperlegible + its Mono",
+  "s": "\"Atkinson Hyperlegible Next\",system-ui,sans-serif",
+  "m": "\"Atkinson Hyperlegible Mono\",ui-monospace,monospace",
+  "w": "Drawn so look-alike letters cannot be confused. Made for small sizes like ours."
+ },
+ {
+  "n": "JetBrains Mono everywhere",
+  "s": "\"JetBrains Mono\",ui-monospace,monospace",
+  "m": "\"JetBrains Mono\",ui-monospace,monospace",
+  "w": "Everything in the code font. Terminal feel, but prose and labels take more room: on the seven-pane frame the chat no longer fits its pane."
+ },
+ {
+  "n": "Inter, with Newsreader for answers",
+  "s": "Inter,system-ui,sans-serif",
+  "m": "\"IBM Plex Mono\",ui-monospace,monospace",
+  "p": "Newsreader,Georgia,serif",
+  "w": "The agent's answers in a reading serif, everything else unchanged. Not asked for."
+ },
+ {
+  "n": "Your mix: SF Pro + Geist Mono",
+  "s": "-apple-system,BlinkMacSystemFont,system-ui,sans-serif",
+  "m": "\"Geist Mono\",ui-monospace,monospace",
+  "w": "What you picked: the chat font from F2 and the code font from F3. Now the default on the frames below."
+ }
+]

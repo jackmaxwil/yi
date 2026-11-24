@@ -1,0 +1,116 @@
+{
+ "yi": {
+  "n": "Yi Dark",
+  "d": "yours · the default",
+  "sw": [
+   "#14161d",
+   "#dcdfe6",
+   "#8fb4ff",
+   "#78d2c6",
+   "#e3a3bf"
+  ],
+  "v": {}
+ },
+ "graphite": {
+  "n": "Graphite",
+  "d": "grey, nearly solid panes",
+  "sw": [
+   "#1b1c1f",
+   "#d5d6da",
+   "#a9b0bd",
+   "#c9cdd6",
+   "#c3c6ce"
+  ],
+  "v": {
+   "--fg": "#d5d6da",
+   "--dim": "#a7a9b0",
+   "--faint": "#82858d",
+   "--accent": "#a9b0bd",
+   "--need": "#c9cdd6",
+   "--nr": "201 205 214",
+   "--ok": "#9fc7a8",
+   "--kw": "#c3c6ce",
+   "--ty": "#a9b0bd",
+   "--lit": "#b9c4b0",
+   "--nu": "#c9b9c4",
+   "--pa": ".62",
+   "--pf": ".74",
+   "--ga": ".7"
+  }
+ },
+ "ink": {
+  "n": "Ink",
+  "d": "deep blue with violet",
+  "sw": [
+   "#0f1224",
+   "#d9dbef",
+   "#a79cf0",
+   "#7fb8f0",
+   "#c9a7f2"
+  ],
+  "v": {
+   "--fg": "#d9dbef",
+   "--dim": "#aeb2d0",
+   "--faint": "#8387a8",
+   "--accent": "#a79cf0",
+   "--need": "#7fb8f0",
+   "--nr": "127 184 240",
+   "--kw": "#c9a7f2",
+   "--ty": "#8fb8f5",
+   "--lit": "#9fd8c0",
+   "--nu": "#f0a8c8",
+   "--pa": ".34",
+   "--pf": ".46",
+   "--ga": ".3"
+  }
+ },
+ "terminal": {
+  "n": "Terminal",
+  "d": "code font everywhere",
+  "sw": [
+   "#0d120f",
+   "#cfe0d0",
+   "#8fd3a6",
+   "#e3d08a",
+   "#9fd8c0"
+  ],
+  "v": {
+   "--fg": "#cfe0d0",
+   "--dim": "#a3b8a6",
+   "--faint": "#7b8f7f",
+   "--accent": "#8fd3a6",
+   "--need": "#d8dfa0",
+   "--nr": "216 223 160",
+   "--kw": "#9fd8c0",
+   "--ty": "#cfe0d0",
+   "--lit": "#b8d99a",
+   "--nu": "#d8c0e0",
+   "--sans": "\"Geist Mono\",ui-monospace,monospace",
+   "--pa": ".5",
+   "--pf": ".62",
+   "--ga": ".5"
+  }
+ },
+ "contrast": {
+  "n": "High contrast",
+  "d": "for bright rooms",
+  "sw": [
+   "#000000",
+   "#ffffff",
+   "#9cc2ff",
+   "#7ff0e0",
+   "#ffb3d0"
+  ],
+  "v": {
+   "--fg": "#ffffff",
+   "--dim": "#e4e6ee",
+   "--faint": "#bcc0cc",
+   "--accent": "#9cc2ff",
+   "--need": "#7ff0e0",
+   "--nr": "127 240 224",
+   "--pa": ".82",
+   "--pf": ".92",
+   "--ga": ".85"
+  }
+ }
+}

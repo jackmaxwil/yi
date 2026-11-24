@@ -1,0 +1,1 @@
+"Uploads can be hammered. Add a per-user rate limit to POST /upload, 20 a minute, and answer 429 with Retry-After."

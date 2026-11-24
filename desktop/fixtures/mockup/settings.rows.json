@@ -1,0 +1,235 @@
+[
+ {
+  "id": "appearance.theme",
+  "cells": {
+   "setting": {
+    "text": "Theme"
+   },
+   "description": {
+    "text": "The whole look. Edit it, or make your own, in Themes."
+   },
+   "key": {
+    "text": "appearance.theme"
+   },
+   "value": {
+    "text": "Yi Dark"
+   },
+   "set_by": {
+    "text": "you"
+   },
+   "changed": {
+    "flag": false
+   }
+  }
+ },
+ {
+  "id": "appearance.density",
+  "cells": {
+   "setting": {
+    "text": "Density"
+   },
+   "description": {
+    "text": "Row height and padding, everywhere at once."
+   },
+   "key": {
+    "text": "appearance.density"
+   },
+   "value": {
+    "text": "Compact"
+   },
+   "set_by": {
+    "text": "you · changed"
+   },
+   "changed": {
+    "flag": true
+   }
+  }
+ },
+ {
+  "id": "appearance.text_font",
+  "cells": {
+   "setting": {
+    "text": "Text font"
+   },
+   "description": {
+    "text": "Chat, labels and names."
+   },
+   "key": {
+    "text": "appearance.text_font"
+   },
+   "value": {
+    "text": "System"
+   },
+   "set_by": {
+    "text": "you · changed"
+   },
+   "changed": {
+    "flag": true
+   }
+  }
+ },
+ {
+  "id": "appearance.code_font",
+  "cells": {
+   "setting": {
+    "text": "Code font"
+   },
+   "description": {
+    "text": "Code, logs, addresses."
+   },
+   "key": {
+    "text": "appearance.code_font"
+   },
+   "value": {
+    "text": "Geist Mono"
+   },
+   "set_by": {
+    "text": "you · changed"
+   },
+   "changed": {
+    "flag": true
+   }
+  }
+ },
+ {
+  "id": "appearance.glass",
+  "cells": {
+   "setting": {
+    "text": "See-through"
+   },
+   "description": {
+    "text": "How much of the desktop shows through the window."
+   },
+   "key": {
+    "text": "appearance.glass"
+   },
+   "value": {
+    "meter": {
+     "ratio": 0.6,
+     "text": "60%"
+    }
+   },
+   "set_by": {
+    "text": "you · changed"
+   },
+   "changed": {
+    "flag": true
+   }
+  }
+ },
+ {
+  "id": "layout.chat_side",
+  "cells": {
+   "setting": {
+    "text": "Chat side"
+   },
+   "description": {
+    "text": "Which side the chat pane opens on."
+   },
+   "key": {
+    "text": "layout.chat_side"
+   },
+   "value": {
+    "text": "Right"
+   },
+   "set_by": {
+    "text": "you"
+   },
+   "changed": {
+    "flag": false
+   }
+  }
+ },
+ {
+  "id": "layout.sidebar_folded",
+  "cells": {
+   "setting": {
+    "text": "Folded sidebar"
+   },
+   "description": {
+    "text": "What a folded sidebar shows for each session."
+   },
+   "key": {
+    "text": "layout.sidebar_folded"
+   },
+   "value": {
+    "text": "Full titles"
+   },
+   "set_by": {
+    "text": "you · changed"
+   },
+   "changed": {
+    "flag": true
+   }
+  }
+ },
+ {
+  "id": "appearance.needs_you",
+  "cells": {
+   "setting": {
+    "text": "\"Needs you\" colour"
+   },
+   "description": {
+    "text": "Dots, the approval card, counts."
+   },
+   "key": {
+    "text": "appearance.needs_you"
+   },
+   "value": {
+    "text": "#78d2c6"
+   },
+   "set_by": {
+    "text": "project overrides yours"
+   },
+   "changed": {
+    "flag": true
+   }
+  }
+ },
+ {
+  "id": "motion.springs",
+  "cells": {
+   "setting": {
+    "text": "Springs"
+   },
+   "description": {
+    "text": "Buttons press in, dragged panes lag and settle."
+   },
+   "key": {
+    "text": "motion.springs"
+   },
+   "value": {
+    "flag": true
+   },
+   "set_by": {
+    "text": "you"
+   },
+   "changed": {
+    "flag": false
+   }
+  }
+ },
+ {
+  "id": "motion.moving_light",
+  "cells": {
+   "setting": {
+    "text": "Moving light"
+   },
+   "description": {
+    "text": "A light that drifts and follows state."
+   },
+   "key": {
+    "text": "motion.moving_light"
+   },
+   "value": {
+    "flag": false
+   },
+   "set_by": {
+    "text": "you · changed"
+   },
+   "changed": {
+    "flag": true
+   }
+  }
+ }
+]

@@ -1,0 +1,7 @@
+"list" group [0.00 0.00 400.00 120.00] #00000000 key="list"
+"list/list.row.a" group [0.00 0.00 400.00 20.00] #00000000 key="list.row.a"
+"list/list.row.a/#0" text [300.00 0.00 60.00 20.00] #00000000 text="pid 41" colour=#ffffffff
+"list/list.row.a/#1" text [0.00 0.00 94.27 20.00] #00000000 text="com.yi.daemon" colour=#ffffffff
+"list/list.row.a/#2" text [102.27 0.00 82.03 20.00] #00000000 text="Running — ✓" colour=#ffffffff
+"list/list.row.b" group [0.00 20.00 400.00 20.00] #00000000 key="list.row.b"
+"list/list.row.b/#0" text [0.00 20.00 191.22 20.00] #00000000 text="homebrew.mxcl.postgresql@16" colour=#ffffffff

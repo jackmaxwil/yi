@@ -1,0 +1,61 @@
+{
+ "about": "The server is stopped, Reconnect is pressed while it is down, and the server starts again: the app reconnects by itself and the thread is shown as it was, with the offline words gone.",
+ "seed": [
+  "hello"
+ ],
+ "runs": [
+  {
+   "server": [
+    {
+     "after": "connected",
+     "settle": 2,
+     "do": "stop"
+    },
+    {
+     "after": "stopped",
+     "settle": 8,
+     "do": "start"
+    }
+   ],
+   "steps": [
+    {
+     "t": 5,
+     "type": "tap",
+     "key": "shell.command-box"
+    },
+    {
+     "t": 5.3,
+     "type": "type",
+     "text": "Show Agents"
+    },
+    {
+     "t": 5.9,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 8,
+     "type": "tap",
+     "key": "chat-8.state.server.reconnect"
+    },
+    {
+     "t": 17,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "keys": [
+     "agents-9.pane-frame"
+    ],
+    "texts": [
+     "hello",
+     "faux:"
+    ],
+    "absent_keys": [
+     "chat-8.state.server.reconnect"
+    ]
+   }
+  }
+ ]
+}

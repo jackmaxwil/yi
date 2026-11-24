@@ -1,6 +1,6 @@
 {
  "levers": [
-  {"name": "plan.width_max", "home": "crates/runtime/src/plan/ops.rs", "symbol": "WIDTH_MAX", "kind": "admission", "default": 8, "min": 1, "max": 16, "tunable": true},
+  {"name": "plan.width_max", "home": "crates/runtime/src/plan/ops.rs", "symbol": "WIDTH_MAX", "kind": "admission", "default": 0, "min": 0, "max": 4096, "tunable": true},
   {"name": "plan.spawn_cap", "home": "crates/types/src/plan/ids.rs", "symbol": "SPAWN_CAP", "kind": "fuse", "default": 64, "min": 8, "max": 256, "tunable": false, "why": "a fuse against a control-flow bug, not a policy"},
   {"name": "plan.retry_cap", "home": "crates/runtime/src/plan/table.rs", "symbol": "RETRY_CAP", "kind": "fuse", "default": 8, "min": 1, "max": 16, "tunable": false, "why": "a fuse against a control-flow bug, not a policy"},
   {"name": "plan.stale_turns", "home": "crates/runtime/src/plan/mod.rs", "symbol": "DEFAULT_STALE_TURNS", "kind": "nudge", "default": 12, "min": 4, "max": 40, "tunable": true},
@@ -19,8 +19,8 @@
   {"name": "todo.intercept_cap", "home": "crates/runtime/src/todo/coupling.rs", "symbol": "gate::INTERCEPT_CAP_PER_CYCLE", "kind": "loop", "default": 6, "min": 0, "max": 12, "tunable": true},
   {"name": "todo.empty_stop_cap", "home": "crates/runtime/src/todo/coupling.rs", "symbol": "gate::EMPTY_STOP_CAP", "kind": "loop", "default": 3, "min": 1, "max": 8, "tunable": true},
   {"name": "todo.ladder_top", "home": "crates/runtime/src/todo/coupling.rs", "symbol": "gate::LADDER_TOP", "kind": "loop", "default": 3, "min": 1, "max": 3, "tunable": false, "why": "the ladder has three rung texts; a fourth rung has nothing to say"},
-  {"name": "family.max_children", "home": "crates/runtime/src/subagent.rs", "symbol": "DEFAULT_MAX_CHILDREN", "kind": "admission", "default": 8, "min": 2, "max": 128, "tunable": true},
-  {"name": "family.cap", "home": "crates/runtime/src/subagent.rs", "symbol": "FAMILY_CAP", "kind": "admission", "default": 16, "min": 4, "max": 129, "tunable": true},
+  {"name": "family.max_children", "home": "crates/runtime/src/subagent.rs", "symbol": "family_max_children", "kind": "admission", "default": 0, "min": 0, "max": 4096, "tunable": true},
+  {"name": "family.cap", "home": "crates/runtime/src/subagent.rs", "symbol": "family_cap", "kind": "admission", "default": 0, "min": 0, "max": 4097, "tunable": true},
   {"name": "family.depth", "home": "crates/types/src/config.rs", "symbol": "DEFAULT_MAX_DEPTH", "kind": "admission", "default": 1, "min": 1, "max": 3, "tunable": false, "why": "already the config key rlm.maxDepth; a trial sets it there"},
   {"name": "family.stuck_idle_s", "home": "crates/runtime/src/family.rs", "symbol": "STUCK_IDLE_MS", "kind": "timer", "default": 300, "min": 60, "max": 1800, "tunable": true},
   {"name": "mail.wait_min_ms", "home": "crates/runtime/src/mailbox.rs", "symbol": "WAIT_MIN_MS", "kind": "caps", "default": 1000, "min": 100, "max": 10000, "tunable": false, "why": "a size cap on what one message may carry, not a policy"},

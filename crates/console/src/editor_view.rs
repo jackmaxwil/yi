@@ -123,6 +123,14 @@ impl Tabs {
         self.before.push(old);
     }
 
+    /// A file joins the strip just right of the showing one and waits there; one already open
+    /// stays where it is.
+    pub fn open_behind(&mut self, file: Editor) {
+        if self.find(&file.path).is_none() {
+            self.after.insert(0, file);
+        }
+    }
+
     /// Take tab `index` out of the strip; `None` when it is the only one.
     pub fn take(&mut self, index: usize) -> Option<Editor> {
         let here = self.before.len();

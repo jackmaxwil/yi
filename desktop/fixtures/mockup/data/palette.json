@@ -1,0 +1,54 @@
+{
+ "AM": "var(--need)",
+ "BL": "#8fb4ff",
+ "GR": "#6fd697",
+ "STATES": {
+  "need": {
+   "lab": "Needs you",
+   "c": [
+    120,
+    210,
+    198
+   ],
+   "sel": ".appr",
+   "beat": 1.5
+  },
+  "work": {
+   "lab": "Working",
+   "c": [
+    143,
+    180,
+    255
+   ],
+   "sel": ".chat .at .caret"
+  },
+  "done": {
+   "lab": "Done",
+   "c": [
+    111,
+    214,
+    151
+   ],
+   "sel": ".cbar"
+  },
+  "fail": {
+   "lab": "Failed",
+   "c": [
+    245,
+    133,
+    133
+   ],
+   "sel": ".trm",
+   "beat": 2.4
+  },
+  "idle": {
+   "lab": "Idle",
+   "c": [
+    235,
+    240,
+    255
+   ],
+   "sel": null
+  }
+ }
+}

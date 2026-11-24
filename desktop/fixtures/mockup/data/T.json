@@ -1,0 +1,106 @@
+[
+ {
+  "id": 1,
+  "t": "Rate-limit the upload endpoint",
+  "p": "atlas-api",
+  "s": "need",
+  "note": "Wants to run <span class=\"mono\">cargo test</span>",
+  "br": "rate-limit-uploads",
+  "ch": [
+   54,
+   1
+  ],
+  "ago": "now"
+ },
+ {
+  "id": 2,
+  "t": "Why is cold start 900 ms?",
+  "p": "atlas-api",
+  "s": "ask",
+  "note": "Asks: profile the release build?",
+  "br": "main",
+  "ch": [
+   0,
+   0
+  ],
+  "ago": "11m"
+ },
+ {
+  "id": 3,
+  "t": "Migrate sessions table to UUIDs",
+  "p": "atlas-api",
+  "s": "work",
+  "note": "Editing 0042_sessions.sql",
+  "br": "sessions-uuid",
+  "ch": [
+   112,
+   37
+  ],
+  "ago": "3m"
+ },
+ {
+  "id": 4,
+  "t": "Flaky test in cart totals",
+  "p": "storefront",
+  "s": "work",
+  "note": "Running the suite a fourth time",
+  "br": "fix-cart-flake",
+  "ch": [
+   9,
+   4
+  ],
+  "ago": "6m"
+ },
+ {
+  "id": 5,
+  "t": "Checkout button overlaps on narrow screens",
+  "p": "storefront",
+  "s": "done",
+  "note": "Done. Two files changed",
+  "br": "checkout-narrow",
+  "ch": [
+   18,
+   6
+  ],
+  "ago": "24m"
+ },
+ {
+  "id": 6,
+  "t": "Write the 2.4 release notes",
+  "p": "docs",
+  "s": "idle",
+  "note": "Draft is in notes/2.4.md",
+  "br": "main",
+  "ch": [
+   61,
+   0
+  ],
+  "ago": "2h"
+ },
+ {
+  "id": 7,
+  "t": "Swap the date library",
+  "p": "storefront",
+  "s": "idle",
+  "note": "Merged yesterday",
+  "br": "main",
+  "ch": [
+   0,
+   0
+  ],
+  "ago": "1d"
+ },
+ {
+  "id": 8,
+  "t": "Tidy CI cache keys",
+  "p": "atlas-api",
+  "s": "idle",
+  "note": "Merged",
+  "br": "main",
+  "ch": [
+   0,
+   0
+  ],
+  "ago": "2d"
+ }
+]

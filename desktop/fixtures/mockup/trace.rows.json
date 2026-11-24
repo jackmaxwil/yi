@@ -1,0 +1,476 @@
+[
+ {
+  "id": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "Turn 2 · add the limit"
+   },
+   "start": {
+    "text": "0"
+   },
+   "took": {
+    "text": "14.8 s"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.0,
+     "len": 0.9867,
+     "tone": "dim"
+    }
+   },
+   "asked": {
+    "text": "add a per-user rate limit"
+   },
+   "steps": {
+    "text": "11"
+   },
+   "agents": {
+    "text": "3"
+   },
+   "cost": {
+    "text": "$0.31"
+   },
+   "tokens": {
+    "text": "14.9K"
+   },
+   "changed": {
+    "text": "2 files, +54 −1"
+   },
+   "actions": {
+    "tags": [
+     "Show its logs",
+     "Open the changes",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "model-plan",
+  "parent": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "model · plan"
+   },
+   "start": {
+    "text": "0"
+   },
+   "took": {
+    "text": "2.1 s"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.0,
+     "len": 0.14,
+     "tone": "model"
+    }
+   },
+   "model": {
+    "text": "Opus 5.5 · High"
+   },
+   "read": {
+    "text": "3.1K tokens"
+   },
+   "wrote": {
+    "text": "212 tokens"
+   },
+   "first_word": {
+    "text": "420 ms"
+   },
+   "cost": {
+    "text": "$0.05"
+   },
+   "decided": {
+    "text": "read, search, edit"
+   },
+   "actions": {
+    "tags": [
+     "Show what it wrote",
+     "Show its logs",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "read-upload-rs",
+  "parent": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "read upload.rs"
+   },
+   "start": {
+    "text": "+2.1"
+   },
+   "took": {
+    "text": "250 ms"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.14,
+     "len": 0.0167,
+     "tone": "ok"
+    }
+   },
+   "tool": {
+    "text": "read"
+   },
+   "file": {
+    "text": "src/routes/upload.rs"
+   },
+   "got": {
+    "text": "84 lines"
+   },
+   "actions": {
+    "tags": [
+     "Open the file",
+     "Run it again",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "search-ratelimit",
+  "parent": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "search \"RateLimit\""
+   },
+   "start": {
+    "text": "+2.4"
+   },
+   "took": {
+    "text": "300 ms"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.16,
+     "len": 0.02,
+     "tone": "ok"
+    }
+   },
+   "tool": {
+    "text": "search"
+   },
+   "looked_for": {
+    "text": "RateLimit"
+   },
+   "got": {
+    "text": "3 matches in 2 files"
+   },
+   "actions": {
+    "tags": [
+     "Show the matches",
+     "Run it again",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "model-write",
+  "parent": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "model · write"
+   },
+   "start": {
+    "text": "+2.7"
+   },
+   "took": {
+    "text": "3.4 s"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.18,
+     "len": 0.2267,
+     "tone": "model"
+    }
+   },
+   "model": {
+    "text": "Opus 5.5 · High"
+   },
+   "read": {
+    "text": "5.8K tokens"
+   },
+   "wrote": {
+    "text": "612 tokens"
+   },
+   "speed": {
+    "text": "38 tokens a second"
+   },
+   "cost": {
+    "text": "$0.09"
+   },
+   "made": {
+    "text": "2 edits"
+   },
+   "actions": {
+    "tags": [
+     "Show what it wrote",
+     "Show its logs",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "edit-rate-limit-rs",
+  "parent": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "edit rate_limit.rs"
+   },
+   "start": {
+    "text": "+6.1"
+   },
+   "took": {
+    "text": "200 ms"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.4067,
+     "len": 0.0133,
+     "tone": "ok"
+    }
+   },
+   "tool": {
+    "text": "edit"
+   },
+   "file": {
+    "text": "src/middleware/rate_limit.rs"
+   },
+   "change": {
+    "text": "+48, new file"
+   },
+   "actions": {
+    "tags": [
+     "Open the change",
+     "Put it back",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "edit-upload-rs",
+  "parent": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "edit upload.rs"
+   },
+   "start": {
+    "text": "+6.3"
+   },
+   "took": {
+    "text": "200 ms"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.42,
+     "len": 0.0133,
+     "tone": "ok"
+    }
+   },
+   "tool": {
+    "text": "edit"
+   },
+   "file": {
+    "text": "src/routes/upload.rs"
+   },
+   "change": {
+    "text": "+6 −1"
+   },
+   "actions": {
+    "tags": [
+     "Open the change",
+     "Put it back",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "child-docs-changelog",
+  "parent": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "child · Docs · changelog"
+   },
+   "start": {
+    "text": "+6.6"
+   },
+   "took": {
+    "text": "4.1 s"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.44,
+     "len": 0.2733,
+     "tone": "accent"
+    }
+   },
+   "agent": {
+    "text": "Docs · changelog"
+   },
+   "model": {
+    "text": "Haiku 5.5"
+   },
+   "steps": {
+    "text": "3"
+   },
+   "cost": {
+    "text": "$0.00"
+   },
+   "wrote": {
+    "text": "CHANGELOG.md"
+   },
+   "state": {
+    "text": "done"
+   },
+   "actions": {
+    "tags": [
+     "Open its thread",
+     "Show its trace",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "child-tests-upload",
+  "parent": "turn-2-add-the-limit",
+  "cells": {
+   "step": {
+    "text": "child · Tests · upload"
+   },
+   "start": {
+    "text": "+6.6"
+   },
+   "took": {
+    "text": "8.2 s"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.44,
+     "len": 0.5467,
+     "tone": "accent"
+    }
+   },
+   "agent": {
+    "text": "Tests · upload"
+   },
+   "model": {
+    "text": "Sonnet 5.5"
+   },
+   "steps": {
+    "text": "2 so far"
+   },
+   "cost": {
+    "text": "$0.03"
+   },
+   "state": {
+    "text": "waiting on you"
+   },
+   "children": {
+    "text": "2"
+   },
+   "actions": {
+    "tags": [
+     "Open its thread",
+     "Show its trace",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "model",
+  "parent": "child-tests-upload",
+  "cells": {
+   "step": {
+    "text": "model"
+   },
+   "start": {
+    "text": "+6.6"
+   },
+   "took": {
+    "text": "1.8 s"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.44,
+     "len": 0.12,
+     "tone": "model"
+    }
+   },
+   "model": {
+    "text": "Sonnet 5.5"
+   },
+   "read": {
+    "text": "2.2K tokens"
+   },
+   "wrote": {
+    "text": "410 tokens"
+   },
+   "cost": {
+    "text": "$0.01"
+   },
+   "actions": {
+    "tags": [
+     "Show what it wrote",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "cargo-test-waiting-on-you",
+  "parent": "child-tests-upload",
+  "cells": {
+   "step": {
+    "text": "cargo test · waiting on you"
+   },
+   "start": {
+    "text": "+8.4"
+   },
+   "took": {
+    "text": "0:42…"
+   },
+   "timeline": {
+    "bar": {
+     "start": 0.56,
+     "len": 0.4267,
+     "tone": "need"
+    }
+   },
+   "command": {
+    "text": "cargo test -p api upload::"
+   },
+   "asked": {
+    "text": "17:58:03"
+   },
+   "waiting": {
+    "text": "0:42"
+   },
+   "blocks": {
+    "text": "Tests · upload"
+   },
+   "runs_in": {
+    "text": "sandbox, no network"
+   },
+   "takes": {
+    "text": "about 20 s"
+   },
+   "actions": {
+    "tags": [
+     "Run it ↵",
+     "Edit",
+     "Deny",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

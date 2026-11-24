@@ -1,0 +1,89 @@
+[
+ {
+  "id": "rate-limit",
+  "cells": {
+   "title": {
+    "text": "Rate limit"
+   },
+   "age": {
+    "text": "now"
+   },
+   "text": {
+    "text": "Wants to run cargo test -p api upload::"
+   },
+   "kind": {
+    "dot": "need"
+   },
+   "actions": {
+    "tags": [
+     "Allow once",
+     "Always",
+     "Deny"
+    ]
+   }
+  }
+ },
+ {
+  "id": "cold-start",
+  "cells": {
+   "title": {
+    "text": "Cold start"
+   },
+   "age": {
+    "text": "11m"
+   },
+   "text": {
+    "text": "Asks: profile the release build?"
+   },
+   "kind": {
+    "dot": "need"
+   },
+   "actions": {
+    "tags": [
+     "Answer",
+     "Open thread"
+    ]
+   }
+  }
+ },
+ {
+  "id": "checkout",
+  "cells": {
+   "title": {
+    "text": "Checkout"
+   },
+   "age": {
+    "text": "24m"
+   },
+   "text": {
+    "text": "Done. Two files changed, +18 −6."
+   },
+   "kind": {
+    "dot": "done"
+   },
+   "actions": {
+    "tags": [
+     "Review changes"
+    ]
+   }
+  }
+ },
+ {
+  "id": "notes-2-4",
+  "dim": true,
+  "cells": {
+   "title": {
+    "text": "Notes 2.4"
+   },
+   "age": {
+    "text": "2h"
+   },
+   "text": {
+    "text": "Draft is in notes/2.4.md"
+   },
+   "kind": {
+    "dot": "idle"
+   }
+  }
+ }
+]

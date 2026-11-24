@@ -1,0 +1,72 @@
+{
+ "id": "F12",
+ "chips": [
+  "High",
+  "Proving",
+  "blocks calling this thread done",
+  "F12"
+ ],
+ "title": "Bucket::take can underflow when the clock steps back",
+ "why": "If the machine's clock is adjusted backwards, this line can crash the server. High because it can take the service down; the language server reports the same line.",
+ "labels": [
+  {
+   "label": "Evidence",
+   "note": "3 places"
+  },
+  {
+   "label": "Proposed fix",
+   "note": "by Tests · upload · 3m ago"
+  },
+  {
+   "label": "Proof",
+   "note": "closes itself when both pass"
+  },
+  {
+   "label": "History",
+   "note": ""
+  }
+ ],
+ "evidence": [
+  "rate_limit.rs line 20",
+  "problem from rust-analyzer",
+  "your comment"
+ ],
+ "fix": [
+  {
+   "sign": "m",
+   "text": "- None => Err(self.refill_at - now),"
+  },
+  {
+   "sign": "a",
+   "text": "+ None => Err(self.refill_at.saturating_duration_since(now)),"
+  }
+ ],
+ "checks": [
+  {
+   "state": "w",
+   "text": "The new clock-steps-back test passes",
+   "note": "waiting on you"
+  },
+  {
+   "state": "pe",
+   "text": "The language server stops reporting line 20",
+   "note": "after the fix lands"
+  }
+ ],
+ "history": [
+  "17:52",
+  "You commented on line 20. It became a finding.",
+  "17:55",
+  "rust-analyzer reported the same line. Merged into this one.",
+  "17:58",
+  "Tests · upload proposed a fix and wrote a test.",
+  "now",
+  "The test is waiting for your go-ahead to run."
+ ],
+ "buttons": [
+  "Allow the test ↵",
+  "Reassign",
+  "Dismiss",
+  "Send to tracker"
+ ]
+}

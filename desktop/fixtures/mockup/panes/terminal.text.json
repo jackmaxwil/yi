@@ -1,0 +1,11 @@
+{
+ "pane": "terminal",
+ "frame": 14,
+ "strings": [
+  "zsh",
+  "agent: cargo test · waiting",
+  "~/atlas-api · exit 0",
+  "atlas-api rate-limit-uploads $ git status --short M src/routes/upload.rs ?? src/middleware/rate_limit.rs atlas-api rate-limit-uploads $"
+ ],
+ "titles": []
+}

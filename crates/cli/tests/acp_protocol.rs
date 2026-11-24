@@ -1607,6 +1607,122 @@ fn an_edit_approval_shows_its_diff_to_a_strict_client() -> TestResult {
     client.finish()
 }
 
+/// A session opened by a client that says it can show things: the model's `show` reaches it
+/// as a `_yi/show` request, its answer is what the model reads, and the call is an ordinary
+/// tool call in the session file.
+#[test]
+fn a_client_that_can_show_is_asked_and_the_model_reads_what_happened() -> TestResult {
+    let dir = temp_dir("show")?;
+    let args = json!({"address": "src/main.rs:12", "strength": "front"});
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "show", "args": args}),
+            json!({"text": "pointed at it"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let cwd = dir.display().to_string();
+    let opened = json!({"cwd": cwd, "_meta": {"yi": {"shows": true}}});
+    let new = client.request("2", "session/new", opened)?;
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str());
+    let session_id = session_id.ok_or("missing sessionId")?.to_owned();
+    prompt(
+        &mut client,
+        "p",
+        &session_id,
+        json!([{"type": "text", "text": "show me where it starts"}]),
+    )?;
+    let frames = client.read_until(|frame| frame["method"] == "_yi/show" || is_idle(frame))?;
+    let ask = frames.last().filter(|frame| frame["method"] == "_yi/show");
+    let ask = ask.ok_or("the turn ended with no show request")?;
+    let decoded: yi_types::acp::AcpShowParams = serde_json::from_value(ask["params"].clone())?;
+    assert_eq!(decoded.session_id, session_id);
+    assert_eq!(decoded.address, "src/main.rs:12", "as the model wrote it");
+    assert!(
+        std::path::Path::new(&decoded.cwd).is_absolute(),
+        "a relative path needs the folder it is under: {decoded:?}"
+    );
+    assert_eq!(decoded.strength, yi_types::acp::AcpShowStrength::Front);
+    client.send(&json!({
+        "jsonrpc": "2.0", "id": ask["id"],
+        "result": {"outcome": "tab", "note": "The user is typing in that place."},
+    }))?;
+    client.read_until(is_idle)?;
+    let read = "Added as a tab; the user was not interrupted. The user is typing in that place.";
+    assert!(
+        transcript_has(&dir.join("sessions"), read)?,
+        "the model did not read the client's answer"
+    );
+    client.finish()
+}
+
+/// A client that never said it can show things is not offered the tool: a model that calls
+/// it anyway is told the tool does not exist, and no request reaches the client.
+#[test]
+fn a_client_that_cannot_show_is_never_asked_to() -> TestResult {
+    let dir = temp_dir("no-show")?;
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "show", "args": {"address": "src/main.rs"}}),
+            json!({"text": "carried on"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    let frames = prompt_until_idle(&mut client, "p", &session_id, "show me")?;
+    assert!(
+        frames.iter().all(|frame| frame["method"] != "_yi/show"),
+        "a client that cannot show was asked to"
+    );
+    assert!(
+        !transcript_has(&dir.join("sessions"), "the user was not interrupted")?,
+        "the tool ran with no display"
+    );
+    client.finish()
+}
+
+/// A session's tools are fixed when it is built, so one a showing client resumes in a fresh
+/// worker is built with `show`, though the client that made it could show nothing.
+#[test]
+fn a_stored_session_resumed_by_a_client_that_can_show_is_asked() -> TestResult {
+    let dir = temp_dir("show-resume")?;
+    let script = faux_script(&dir, &[json!({"text": "hello"})])?;
+    let mut first = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = new_faux_session(&mut first, &dir)?;
+    prompt_until_idle(&mut first, "p", &session_id, "hi")?;
+    first.finish()?;
+
+    let turns = [
+        json!({"tool": "show", "args": {"address": "src/main.rs"}}),
+        json!({"text": "pointed at it"}),
+    ];
+    let script = faux_script(&dir, &turns)?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let cwd = dir.display().to_string();
+    let shows = json!({"yi": {"shows": true}});
+    let resumed = json!({"sessionId": session_id, "cwd": cwd, "_meta": shows});
+    client.request("2", "session/resume", resumed)?;
+    let blocks = json!([{"type": "text", "text": "show me"}]);
+    prompt(&mut client, "q", &session_id, blocks)?;
+    let frames = client.read_until(|frame| frame["method"] == "_yi/show" || is_idle(frame))?;
+    let ask = frames.last().filter(|frame| frame["method"] == "_yi/show");
+    let ask = ask.ok_or("the resumed session was built without the tool")?;
+    assert_eq!(
+        ask["params"]["strength"], "tab",
+        "an unsaid strength is a tab"
+    );
+    client.send(&json!({"jsonrpc": "2.0", "id": ask["id"], "result": {"outcome": "front"}}))?;
+    client.read_until(is_idle)?;
+    assert!(transcript_has(&dir.join("sessions"), "Shown in front.")?);
+    client.finish()
+}
+
 #[test]
 fn a_resource_link_in_a_prompt_reaches_the_model() -> TestResult {
     let dir = temp_dir("strict-link")?;

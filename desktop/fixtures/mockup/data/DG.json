@@ -1,0 +1,26 @@
+[
+ [
+  "H",
+  "Error",
+  "mismatched types: expected Result&lt;(), Duration&gt;, found bool",
+  "upload.rs:31"
+ ],
+ [
+  "M",
+  "Warn",
+  "subtracting two Instants can panic if the clock steps back",
+  "rate_limit.rs:20"
+ ],
+ [
+  "M",
+  "Warn",
+  "unused Result that must be used",
+  "upload.rs:58"
+ ],
+ [
+  "L",
+  "Hint",
+  "this import is never used",
+  "tests/upload.rs:3"
+ ]
+]

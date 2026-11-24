@@ -822,6 +822,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());
     tools.push(Arc::new(annotate));
     tools.push(crate::answer::tool(session.answer_handle(), &tools));
+    tools.extend(session.shower().map(crate::show::tool));
     crate::ask_user::wire(&wiring, &mut tools);
     if let Some(broker) = &wiring.broker {
         broker.set_journal(journal_into(session.store_handle()));
