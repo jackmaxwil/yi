@@ -336,6 +336,27 @@ fn attach_all(win: &mut Win, pane: PaneId) {
     });
 }
 
+/// Scrolls each pane this window draws to the line the model pointed at, once its file is
+/// read; a tab still behind waits. Call it from the window's poll; true when one moved.
+pub fn follow(win: &mut Win, tx: &mut Tx) -> bool {
+    let window = win.window;
+    let ready = with(win, |hub| {
+        let read = |pane: PaneId| shown(hub, pane).is_some_and(|(_, text)| text.is_some());
+        let here = |pane: PaneId| hub.model.grid.window_of(pane) == Some(window);
+        let due = |(pane, _): &(PaneId, u32)| here(*pane) && read(*pane);
+        let (ready, waiting) = hub.model.reveals.iter().copied().partition(due);
+        hub.model.reveals = waiting;
+        Some::<Vec<(PaneId, u32)>>(ready)
+    });
+    let ready = ready.unwrap_or_default();
+    for (pane, line) in &ready {
+        if let Ok(line) = LineNo::try_from(*line) {
+            reveal(tx, &surface(*pane), line);
+        }
+    }
+    !ready.is_empty()
+}
+
 fn open_at(win: &mut Win, tx: &mut Tx, pane: PaneId, found: &Reference) {
     if let Ok(file) = Address::new(Kind::File, &found.path) {
         open_file(win, tx, file);

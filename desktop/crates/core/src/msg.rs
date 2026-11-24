@@ -59,6 +59,14 @@ pub enum Effect {
 
 /// Applies `msg` to `model`. Pure: the same model and message give the same result.
 pub fn step(model: &mut Model, msg: Msg) -> Vec<Effect> {
+    // A session's kinds told and a window moved are the app's own doing, not the person's.
+    let own = |change: &GridMsg| matches!(change, GridMsg::Have { .. } | GridMsg::Moved { .. });
+    model.acted |= match &msg {
+        Msg::Command(..) | Msg::Attach(_) => true,
+        Msg::Source(_, ask) => matches!(ask, SourceCmd::Input(_) | SourceCmd::Screen(_)),
+        Msg::Grid(change) => !own(change),
+        _ => false,
+    };
     match msg {
         Msg::Wire(event) => reduce::step::step(model, event),
         Msg::Feed(feed, event) => {

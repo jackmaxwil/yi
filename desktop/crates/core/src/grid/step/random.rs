@@ -101,7 +101,7 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
     let all: Vec<PaneId> = grid.panes.iter().map(|pane| pane.id).collect();
     let holes = grid.windows.iter().flat_map(|window| &window.layout.away);
     let out: Vec<PaneId> = holes.map(|hole| hole.pane).collect();
-    let change = match dice.below(36) {
+    let change = match dice.below(38) {
         0 | 1 => {
             let saved = dice.pick(&SAVED)?.slug;
             let window = if dice.below(4) > 0 { MAIN } else { window };
@@ -232,6 +232,17 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
                 size,
             }
         }
+        35 | 36 => {
+            // The model points at a file, in front or not.
+            let thing = Address::new(Kind::File, dice.pick(&["src/a.rs", "src/c.rs"])?).ok()?;
+            let (kind, front) = (PaneKind::Code, dice.below(2) > 0);
+            GridMsg::Point {
+                window,
+                kind,
+                thing,
+                front,
+            }
+        }
         _ => GridMsg::Leave(dice.pick(&all)?),
     };
     Some(Change::Said(Msg::Grid(change)))
@@ -347,6 +358,18 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
     };
     let drawn_in = |pane: PaneId| before.window_of(pane).and_then(|id| before.window(id));
     let others = |pane: PaneId| drawn_in(pane).is_some_and(|w| w.layout.docked().nth(1).is_some());
+    if let GridMsg::Point { front: false, .. } = change {
+        let fronts = |grid: &Windows| -> Vec<PaneId> {
+            let layouts = grid.windows.iter().map(|window| &window.layout);
+            layouts
+                .flat_map(|layout| layout.docked().map(|(pane, _)| pane))
+                .collect()
+        };
+        let still = fronts(after);
+        if !fronts(before).iter().all(|pane| still.contains(pane)) {
+            return Err("a quiet show took a pane out of front".to_owned());
+        }
+    }
     let refused = match change {
         GridMsg::Leave(pane) => others(*pane) && after.window_of(*pane) == before.window_of(*pane),
         GridMsg::Close(pane) => others(*pane) && after.window_of(*pane) == before.window_of(*pane),
@@ -370,6 +393,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::About { .. }
         | GridMsg::Beside { .. }
         | GridMsg::Put { .. }
+        | GridMsg::Point { .. }
         | GridMsg::Have { .. }
         | GridMsg::SplitAt { .. }
         | GridMsg::Place { .. }

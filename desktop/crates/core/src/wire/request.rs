@@ -70,6 +70,8 @@ pub const PROMPT: &str = "session/prompt";
 pub const CANCEL: &str = "session/cancel";
 /// The server's ask; this app sends it only to itself, reading back what a restart kept.
 pub const PERMISSION: &str = "session/request_permission";
+/// The server's ask to put a thing in front of the person: the model's `show` tool.
+pub const SHOW: &str = yi_types::acp::SHOW_METHOD;
 pub const SET_OPTION: &str = "session/set_config_option";
 pub const STEER: &str = "_yi/steer";
 pub const SLASH: &str = "_yi/slash";
@@ -84,7 +86,7 @@ pub const CHILD_ANSWER: &str = "_yi/child_answer";
 pub const CHILD_ABORT: &str = "_yi/child_abort";
 
 pub fn new_thread(cwd: &str) -> Value {
-    json!({"cwd": cwd, "mcpServers": []})
+    json!({"cwd": cwd, "mcpServers": [], "_meta": {"yi": {"shows": true}}})
 }
 
 /// The whole stored branch again, as `_yi/replay` frames only: the standard replay would
@@ -95,7 +97,7 @@ pub fn resume(thread: &ThreadId, cwd: &str) -> Value {
         params["cwd"] = Value::from(cwd);
     }
     params["replayFrom"] = Value::from(0);
-    params["_meta"] = json!({"yi": {"replayUpdates": false}});
+    params["_meta"] = json!({"yi": {"replayUpdates": false, "shows": true}});
     params
 }
 

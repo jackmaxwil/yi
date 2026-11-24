@@ -37,6 +37,7 @@ mod outside;
 mod panes;
 mod peek;
 mod places;
+mod pointed;
 mod project;
 mod replay;
 mod sidebar;

@@ -13,6 +13,7 @@ use crate::ids::{AgentId, Millis, ThreadId};
 use crate::model::Model;
 use crate::msg::Effect;
 use crate::reduce::agents;
+use crate::reduce::pointed;
 use crate::reduce::state::{Asked, Failure, Held, Link, MAX_FAILURES, Pending, Wire};
 use crate::reduce::threads::{MAX_THREADS, Run, Thread, Workdir};
 use crate::reduce::usage::Tokens;
@@ -73,7 +74,16 @@ pub fn step(model: &mut Model, event: WireEvent) -> Vec<Effect> {
     // Incident: nothing ticks the running app's clock, so a 3 minute turn read "0m". The time
     // the wire's events carry moves it.
     model.now = model.now.max(model.wire.seen);
-    out.into_iter().map(Effect::Wire).collect()
+    // Invariant: an act is dated no earlier than it happened, by the next time the wire
+    // tells: the person is never found idle sooner than they are.
+    if std::mem::take(&mut model.acted) {
+        model.touched = model.now;
+    }
+    let mut effects: Vec<Effect> = out.into_iter().map(Effect::Wire).collect();
+    for (id, params) in std::mem::take(&mut model.wire.shows) {
+        effects.extend(pointed::answer(model, &id, &params));
+    }
+    effects
 }
 
 /// Carries out a command routed to the server: the requests it makes.
@@ -104,6 +114,7 @@ impl Wire {
             Frame::Update { thread, update } => self.update(thread, update, at, out),
             Frame::Ask { id, params } => self.ask(id, *params, at, out),
             Frame::Reply { id, result } => self.settle(&id, result, at, out),
+            Frame::Show { id, params } => self.shows.push((id, *params)),
             Frame::Request { id, method } => out.push(Request::refuse(&id, &method)),
             Frame::Other(_) => {}
         }

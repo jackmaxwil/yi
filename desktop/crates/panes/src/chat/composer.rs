@@ -100,9 +100,12 @@ pub fn drawn<'a>(pane: &PaneCx<'a>) -> Option<&'a TextEdit> {
 /// Copies the window's field to the hub after each change, so it travels with the pane.
 fn sync(win: &mut Win, pane: PaneId) {
     let draft = Draft(edit(win, pane).clone());
-    if let Ok(mut hub) = win.hub.try_borrow_mut()
-        && let Some(kept) = hub.panes.get_mut::<Draft>(Some(pane))
-    {
+    let Ok(mut hub) = win.hub.try_borrow_mut() else {
+        return;
+    };
+    // Typing is no message of the model's: the composer says the person is here.
+    hub.model.acted = true;
+    if let Some(kept) = hub.panes.get_mut::<Draft>(Some(pane)) {
         *kept = draft;
     }
 }

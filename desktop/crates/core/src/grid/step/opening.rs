@@ -103,6 +103,48 @@ pub(in crate::grid) fn put(
     Ok(ops)
 }
 
+/// The model's pane about `thing`: the one `id` holds, else a new tab where its place's go.
+/// It comes in front only with `front`; behind, it carries a dot. No slot changes hands.
+pub(in crate::grid) fn point(
+    grid: &mut Windows,
+    id: WindowId,
+    kind: PaneKind,
+    thing: &Address,
+    front: bool,
+) -> Result<(), GridError> {
+    let same = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
+    let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
+    let known = grid.panes.iter().filter(same).map(|pane| pane.id);
+    let known: Vec<PaneId> = known.collect();
+    let pane = match known.iter().copied().find(|pane| layout.holds(*pane)) {
+        Some(pane) => {
+            handled(grid, id, pane);
+            pane
+        }
+        None => {
+            let hidden = known.into_iter().find(|pane| idle(grid, *pane));
+            let pane = match hidden {
+                Some(pane) => pane,
+                None => add(grid, kind)?,
+            };
+            if let Some(made) = grid.panes.iter_mut().find(|other| other.id == pane) {
+                made.thing = Some(thing.clone());
+            }
+            fresh(grid, id, pane);
+            seat(grid, id, pane)?;
+            pane
+        }
+    };
+    if front {
+        return raise(grid, id, pane);
+    }
+    // The step that made this change takes the dot off a pane that is drawn.
+    if let Some(pane) = grid.panes.iter_mut().find(|other| other.id == pane) {
+        pane.unseen = true;
+    }
+    Ok(())
+}
+
 /// The pane of `kind` about `thing` that `id` draws.
 fn about(grid: &Windows, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
     let is = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);

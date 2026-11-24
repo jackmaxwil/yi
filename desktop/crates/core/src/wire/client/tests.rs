@@ -59,6 +59,10 @@ fn check(row: usize, recorded: &Value, got: &Value) -> Result<(), String> {
         Some("initialize") => {
             got["method"] == "initialize" && got["params"]["protocolVersion"] == 2
         }
+        Some(method @ (crate::wire::request::NEW | crate::wire::request::RESUME)) => {
+            let params = crate::reduce::step::tests::showing(recorded["params"].clone());
+            got["method"] == method && got["params"] == params
+        }
         Some(method) => got["method"] == method && got["params"] == recorded["params"],
         None => got["id"] == recorded["id"] && got["result"] == recorded["result"],
     };

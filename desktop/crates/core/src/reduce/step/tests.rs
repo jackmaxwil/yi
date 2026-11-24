@@ -11,6 +11,8 @@ mod lists;
 #[cfg(test)]
 mod parts;
 #[cfg(test)]
+mod pointed;
+#[cfg(test)]
 mod resume;
 #[cfg(test)]
 mod turn;
@@ -113,6 +115,13 @@ pub(crate) fn run(
         ..Run::new(command).on(target)
     };
     step(model, Msg::Command(Route::Wire, run))
+}
+
+/// A recording's params for a new or resumed thread, with this app's word that it can show
+/// things: the recordings were made before it said so.
+pub(crate) fn showing(mut params: Value) -> Value {
+    params["_meta"]["yi"]["shows"] = Value::Bool(true);
+    params
 }
 
 /// The frames a step asked the client to send, as JSON.

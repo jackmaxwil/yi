@@ -95,6 +95,11 @@ pub const SCENES: &[Scene] = &[
         stage: Stage::App,
         setup: carrying,
     },
+    Scene {
+        name: "shell/pointed",
+        stage: Stage::App,
+        setup: pointed,
+    },
 ];
 
 /// The status bar's git row and the mockup's repositories, as the git feed reports them.
@@ -300,6 +305,63 @@ fn carrying(hub: &mut Hub) {
     let at = Point { x: 676.0, y: 560.0 };
     if let Some(hands) = hub.panes.get_mut::<Hands>(None) {
         hands.0.insert(MAIN, Carried { thing, from, at });
+    }
+}
+
+/// The model pointed at a file while the person was typing: a tab with a dot behind the
+/// viewer, and the step in chat that offers to show it.
+fn pointed(hub: &mut Hub) {
+    everything(hub);
+    let shown = yd_ui::shown::thread(hub, MAIN).map(|thread| (thread.id.clone(), thread.sync));
+    let Some((thread, sync)) = shown else {
+        return;
+    };
+    let seq = match sync {
+        yd_core::wire::replay::Sync::Live(Some(last)) => last.saturating_add(1),
+        _ => 0,
+    };
+    let id = thread.as_str();
+    let event = |seq: u64, event: String| {
+        format!(
+            r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"{id}","update":{{"sessionUpdate":"_yi/event","seq":{seq},"event":{event}}}}}}}"#
+        )
+    };
+    let address = "src/routes/sessions.rs:12";
+    let said = "Added as a tab; the user was not interrupted. The user is busy; it waits as a tab.";
+    let args = format!(r#"{{"address":"{address}","strength":"front"}}"#);
+    // The answer the scene left streaming ends with the call, as a model's message does.
+    let message = format!(
+        r#"{{"role":"assistant","content":[{{"type":"text","text":"Here is where a session is made."}},{{"type":"toolCall","id":"show-1","name":"show","arguments":{args}}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-opus-5-5","usage":{{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},"stopReason":"stop","timestamp":0}}"#
+    );
+    let lines = [
+        event(
+            seq,
+            format!(r#"{{"type":"message_end","message":{message}}}"#),
+        ),
+        event(
+            seq.saturating_add(1),
+            format!(
+                r#"{{"type":"tool_execution_start","toolCallId":"show-1","toolName":"show","args":{args}}}"#
+            ),
+        ),
+        format!(
+            r#"{{"jsonrpc":"2.0","id":"show_1","method":"_yi/show","params":{{"sessionId":"{id}","address":"{address}","cwd":"","strength":"front"}}}}"#
+        ),
+        event(
+            seq.saturating_add(2),
+            format!(
+                r#"{{"type":"tool_execution_end","toolCallId":"show-1","toolName":"show","result":{{"content":[{{"type":"text","text":"{said}"}}],"details":{{}}}},"isError":false}}"#
+            ),
+        ),
+    ];
+    // The window's first poll tells the grid its session; the ask comes before it here.
+    hub.model.grid.shows.insert(MAIN, thread.clone());
+    hub.model.acted = true;
+    for line in lines {
+        step(
+            &mut hub.model,
+            Msg::Wire(yd_core::wire::event::WireEvent::Line(line)),
+        );
     }
 }
 
