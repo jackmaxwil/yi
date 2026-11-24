@@ -116,14 +116,11 @@ def facts(pr, notes, statuses, holds, who):
     """What `state_of` reads, from the listing's PR, its comments, its head's status rows and the round authors."""
     head = pr["head"]["sha"]
     seen = [a for a in pr_review.attempts_of(notes, who, pr["number"]) if holds(a["sha"], head)]
-    lanes, times = {}, [pr_review.when(pr["updated_at"])]
-    for status in statuses:
-        job = forge_pr.required_jobs([status["context"]])[0]
-        if job in (*LANES, "title"):
-            lanes[job] = "failure" if status["status"] == "error" else status["status"]
-            times.append(pr_review.when(status.get("updated_at") or pr["updated_at"]))
-    gate = ("title" if lanes.get("title") == "failure" else "red" if "failure" in lanes.values()
-            else "green" if all(lanes.get(job) == "success" for job in (*LANES, "title")) else "pending")
+    need, jobs = (*LANES, "title"), forge_pr.as_jobs(statuses)
+    times = [pr_review.when(pr["updated_at"]), *(pr_review.when(s.get("updated_at") or pr["updated_at"])
+                                                 for s, (job, _, _) in zip(statuses, jobs) if job in need)]
+    verdict = forge_pr.decide({"state": "open"}, forge_pr.job_states(jobs), need, False)
+    gate = "title" if verdict == "failed:title" else "red" if verdict.startswith("failed:") else verdict
     fixes = [r for r in bot_meter.rows(notes) if r["kind"] == "yi-autofix" and r.get("from") == head[:12]]
     rounds = [a for a in seen if a.get("kind") == "round"]
     return {"labels": {label["name"] for label in pr.get("labels") or []}, "draft": pr["title"].startswith(forge_pr.DRAFT),
@@ -144,25 +141,14 @@ def said(description):
     return description.split(" since ")[0], description.endswith(" parked")
 
 
-def comments_of(number):
-    """One PR's comments, each page read with a timeout."""
-    def transport(method, path, payload):
-        answer = forge_pr.fgj_api(method, path, payload, timeout=FORGE_SECS) or []
-        if not isinstance(answer, list):
-            raise SystemExit(f"#{number}: the forge did not list the comments: {answer}")
-        return answer
-    return list(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/comments?x=1"))
-
-
 def assess(pr, who, notes):
     """(state, owner, since, clock, the head's status rows) as the forge has them now."""
     sha, base = pr["head"]["sha"], pr["base"]["ref"]
-    combined = forge_pr.fgj_api("GET", f"repos/{forge_pr.repo()}/commits/{sha}/status", timeout=FORGE_SECS)
-    if not isinstance(combined, dict) or "message" in combined:
-        raise SystemExit(f"{forge_pr.UNREAD}: {combined}")
-    rows = combined.get("statuses") or []
+    rows = forge_pr.status_rows(forge_pr.repo(), sha, timeout=FORGE_SECS)
+    if rows is None:
+        raise SystemExit(forge_pr.UNREAD)
     merged = functools.cache(lambda: pr_review.holds_for(pr["number"], base))
-    holds = lambda reviewed, head: head.startswith(reviewed) or merged()(reviewed, head)
+    holds = lambda reviewed, head: pr_review.on_head(reviewed, head) or merged()(reviewed, head)
     return (*state_of(facts(pr, notes, rows, holds, who)), rows)
 
 
@@ -175,7 +161,7 @@ def report(every, held=None):
     for pr in every:
         try:
             notes = (held or {}).get(pr["number"])
-            state, owner, since, clock, rows = assess(pr, who, comments_of(pr["number"]) if notes is None else notes)
+            state, owner, since, clock, rows = assess(pr, who, pr_review.comments(forge_pr.repo(), pr["number"], FORGE_SECS) if notes is None else notes)
             text = describe(state, owner, since, clock, now)
             old = next((row.get("description") or "" for row in rows if row.get("context") == STATE), "")
             if said(old) == said(text):
@@ -196,7 +182,7 @@ def cmd_parked(args):
     every, now, rows, who = listing(forge_pr.open_pulls(), "the open pull requests"), time.time(), [], pr_review.authors()
     for pr in every:
         try:
-            state, owner, since, clock, _ = assess(pr, who, comments_of(pr["number"]))
+            state, owner, since, clock, _ = assess(pr, who, pr_review.comments(forge_pr.repo(), pr["number"], FORGE_SECS))
         except (Exception, SystemExit) as err:
             print(f"#{pr['number']} unreadable: {err}"[:300])
             continue
@@ -1262,7 +1248,6 @@ def queue_verb_cases():
 
 
 RECORDED = ROOT / "scripts/fixtures/pr_state/recorded.json"
-ON_HEAD = lambda sha, head: head.startswith(sha) or sha.startswith(head[:12])
 FACTS = {"labels": set(), "draft": False, "base": "main", "gate": "green", "mergeable": True, "since": 0.0,
          "fix": None, "lost": False, "retries_spent": False, "verdict": "clean"}
 # The states the recording holds no gap of: no gap over a day sat in them, or the recording cannot hold the fact.
@@ -1281,7 +1266,7 @@ def state_cases(off=""):
     """Each recorded parked moment reads the state it was recorded in, and each other state its hand case."""
     bad = []
     for case in json.loads(RECORDED.read_text()):
-        got = state_of(facts(case["pr"], case["comments"], case["statuses"], ON_HEAD, {"yi-bot", "jack"}), off)[0]
+        got = state_of(facts(case["pr"], case["comments"], case["statuses"], pr_review.on_head, {"yi-bot", "jack"}), off)[0]
         if got != case["state"]:
             bad.append(f"#{case['pr']['number']} at {case['at']}, {case['b_state']} for {case['gap_hours']} h, read {got}, not {case['state']}")
     for want, change in STATE_CASES:
@@ -1290,20 +1275,24 @@ def state_cases(off=""):
     return bad
 
 
-def forge_double(statuses, refuse=(), pulls=()):
+def forge_double(statuses, refuse=(), pulls=(), hang=()):
     """A forge for the tick and the report: the open listing, comment and timeline pages, combined statuses by
-    head, status posts kept; any other call fails."""
+    head, status posts kept; a path holding a `refuse` word answers an error, a `hang` word times out."""
     calls = []
 
     def answer(method, path, payload=None, timeout=None):
         calls.append((method, path, payload, timeout))
+        if any(word in path for word in hang):
+            raise subprocess.TimeoutExpired("fgj", timeout)
+        if any(word in path for word in refuse):
+            return {"message": "500 database is locked"}
         sha = path.split("/")[-2] if path.endswith("/status") else path.rsplit("/", 1)[-1]
         if method == "GET" and "/pulls?state=open" in path:
             return list(pulls)
         if method == "GET" and ("/comments?" in path or "/timeline?" in path):
             return []
         if method == "GET" and path.endswith("/status"):
-            return {"message": "500 database is locked"} if sha in refuse else {"statuses": statuses.get(sha, [])}
+            return {"statuses": statuses.get(sha, [])}
         if method == "POST" and "/statuses/" in path:
             statuses.setdefault(sha, [])[:] = [s for s in statuses.get(sha, []) if s["context"] != STATE] + [
                 {"context": STATE, "status": payload["state"], "description": payload["description"]}]
@@ -1317,9 +1306,9 @@ def report_cases():
     bad, now = [], time.time()
     pr = lambda n, sha: {"number": n, "title": "t", "labels": [], "base": {"ref": "main"}, "head": {"sha": sha},
                          "mergeable": True, "updated_at": datetime.datetime.fromtimestamp(now - 3600, datetime.timezone.utc).isoformat()}
-    every = [pr(1, "a" * 40), pr(2, "b" * 40), pr(3, "c" * 40)]
+    every = [pr(1, "a" * 40), pr(2, "b" * 40), pr(3, "c" * 40), pr(4, "d" * 40), pr(5, "e" * 40)]
     statuses = {}
-    answer, calls = forge_double(statuses, refuse={"b" * 40})
+    answer, calls = forge_double(statuses, refuse={"b" * 40, "issues/4/"}, hang={"e" * 40})
     with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
             mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot"}), contextlib.redirect_stdout(io.StringIO()) as said_out:
         with mock.patch.dict(os.environ, {"STATE_REPORT": "off"}):
@@ -1331,7 +1320,7 @@ def report_cases():
             posts = [c for c in calls if c[0] == "POST"]
             if sorted(c[1].rsplit("/", 1)[1][0] for c in posts) != ["a", "c"] or any(c[2]["state"] != "success" for c in posts):
                 bad.append(f"one head's refused read did not leave the others written, each success: {posts}")
-            if "no state for #2" not in said_out.getvalue():
+            if not all(f"no state for #{n}" in said_out.getvalue() for n in (2, 4, 5)):
                 bad.append(f"a refused read went unsaid: {said_out.getvalue()!r}")
             if any(c[3] is None for c in calls):
                 bad.append(f"a report call had no timeout: {[c for c in calls if c[3] is None]}")
@@ -1392,13 +1381,15 @@ def tick_call_cases():
 def parked_cases():
     """`just pr parked` prints the PRs past their clock, oldest first, and never one within it; it writes nothing."""
     now = time.time()
-    pulls = [aged(1, "a" * 40, 30, now), aged(2, "b" * 40, 1, now), aged(3, "c" * 40, 40, now)]
-    answer, calls = forge_double({}, pulls=pulls)
+    pulls = [aged(1, "a" * 40, 30, now), aged(2, "b" * 40, 1, now), aged(3, "c" * 40, 40, now), aged(4, "d" * 40, 50, now)]
+    answer, calls = forge_double({}, pulls=pulls, hang={"issues/4/"})
     with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
             mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot"}), contextlib.redirect_stdout(io.StringIO()) as out:
         cmd_parked(argparse.Namespace())
-    printed = [line.split()[0] for line in out.getvalue().splitlines() if line.startswith("#")]
+    printed = [line.split()[0] for line in out.getvalue().splitlines() if " h  " in line]
     bad = [] if printed == ["#3", "#1"] else [f"parked printed {printed}, not ['#3', '#1']: {out.getvalue()!r}"]
+    if "#4 unreadable" not in out.getvalue():
+        bad.append(f"a PR whose comments timed out was not named unreadable: {out.getvalue()!r}")
     return bad + [f"parked wrote {c}" for c in calls if c[0] != "GET"]
 
 
@@ -1417,7 +1408,7 @@ def neutral_cases():
                 jobs = forge_pr.jobs_of(pr)
                 seen.append((forge_pr.decide(pr, jobs, [*LANES, "title"], False), lanes_state({"lanes": jobs}),
                              pr_autofix.red_lanes("o/r", pr["head"]["sha"]), forge_pr.rerun_waits(pr),
-                             facts(pr | {"updated_at": "2026-11-22T10:04:00Z"}, [], rows + extra, ON_HEAD, {"yi-bot"})))
+                             facts(pr | {"updated_at": "2026-11-22T10:04:00Z"}, [], rows + extra, pr_review.on_head, {"yi-bot"})))
         if seen[0] != seen[1]:
             bad.append(f"a yi/state status moved a decision on {rows}: {seen[0]} became {seen[1]}")
     return bad

@@ -882,9 +882,10 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
 # --- the verbs ------------------------------------------------------------------------
 
 
-def comments(repo, number):
+def comments(repo, number, timeout=None):
+    # Invariant: without a timeout the call is the two-argument one every forge double in the selfchecks answers.
     def transport(method, path, payload):
-        answer = forge_pr.fgj_api(method, path, payload) or []
+        answer = (forge_pr.fgj_api(method, path, payload) if timeout is None else forge_pr.fgj_api(method, path, payload, timeout=timeout)) or []
         if not isinstance(answer, list):
             raise Unanswered(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
         return answer
