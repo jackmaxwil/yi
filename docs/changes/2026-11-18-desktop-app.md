@@ -1,4 +1,6 @@
 ---
+version: 0.1083.0
+decisions: D610
 issue: Closes #2257
 shares: #2295 its YI_DESIGN.md edit is the console's prompt queue; this one adds §17.5 and two §1.2 entries
 shares: #2239 its YI_DESIGN.md edit is the ACP schema; this one adds §17.5 and two §1.2 entries

@@ -147,7 +147,7 @@ pub fn carry(win: &mut Win, tx: &mut Tx, command: CommandId, target: &Target) ->
     }
     notifications::run(win, tx, command)
         || (command == PICK && pick::run(win, tx, command, target))
-        || yd_panes::has::carry(win, tx, command, target)
+        || yd_panes::settings::pane::pane_word(win, tx, command, target)
         || yd_panes::agents::pane::carry(win, tx, command, target)
         || yd_panes::chat::pane::child::carry(win, tx, command, target)
         || yd_panes::trace::pane::carry(win, tx, command, target)

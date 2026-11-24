@@ -19,6 +19,7 @@ use yd_ui::pane::{PaneDef, SCENE_PANE, Stage};
 use yd_ui::win::{Hub, Win};
 
 use super::{DEF, current, path, scenes, thing_at};
+use crate::test_support::tap;
 
 const TABS: yd_core::ids::FeedId = OPEN_FILES;
 static DEFS: &[&PaneDef] = &[&DEF];
@@ -156,16 +157,6 @@ fn a_pane_with_no_file_open_keeps_its_name_on_its_tab() -> Check {
     Ok(())
 }
 
-fn tap(rt: &mut Window, key: &str) -> Check {
-    let tab = element(rt, key)?.rect;
-    let at = (tab[0] + tab[2] / 2.0, tab[1] + tab[3] / 2.0);
-    rt.pointer_move(at.0, at.1);
-    rt.pointer_down(at.0, at.1);
-    rt.pointer_up(at.0, at.1);
-    run(rt, 0.2);
-    Ok(())
-}
-
 /// A file looked at has the preview tab. Brought in front again by its tab it is still the
 /// preview; its tab pressed while it is in front keeps it.
 #[test]
@@ -197,12 +188,12 @@ fn the_preview_tab_is_kept_by_a_press_on_it_while_it_shows() -> Check {
             .ok_or("no tab number")?;
         format!("code-0.tab-{number}.pane-tab")
     };
-    tap(&mut rt, "code-0.tab-2.pane-tab")?;
+    tap(&mut rt, "code-0.tab-2.pane-tab", |rt| run(rt, 0.2))?;
     assert_eq!(shown_file(&rt)?, UPLOAD);
-    tap(&mut rt, &third)?;
+    tap(&mut rt, &third, |rt| run(rt, 0.2))?;
     assert_eq!(shown_file(&rt)?, "src/lib.rs");
     assert!(preview(&rt)?, "brought in front, it is still the preview");
-    tap(&mut rt, &third)?;
+    tap(&mut rt, &third, |rt| run(rt, 0.2))?;
     assert!(!preview(&rt)?, "pressed while it shows, it is kept");
     Ok(())
 }
