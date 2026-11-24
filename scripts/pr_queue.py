@@ -7,12 +7,12 @@
 Nothing is stored: the state is the `queue` label, the `queue/candidate` ref and that ref's statuses,
 so a crashed tick loses nothing. A red candidate stays until it is replaced, since it is the memory
 of what comes next. Base and retry markers ride the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
-import argparse, contextlib, io, os, pathlib, re, shutil, subprocess, sys, tempfile, time
+import argparse, contextlib, datetime, functools, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
-import forge_pr, forge_tracking, pr_review
+import bot_meter, forge_pr, forge_tracking, pr_review
 from check_pr_metadata import CITE
 from _common import scratch_repo
 
@@ -74,6 +74,145 @@ RULES = (
 
 def step(obs, off=""):
     return next(((action, name) for name, holds, action in RULES if name != off and holds(obs)), ("none", "none"))
+
+
+STATE, FORGE_SECS = "yi/state", 60
+BLOCKED = lambda f: f["verdict"] == "blocked"
+CLEAN = lambda f: f["verdict"] in ("clean", "override") and f["gate"] == "green"
+# Invariant: a PR's state is the first row that holds, and a clock is its owner's measured p90 latency on the
+# 2026-10-20..11-24 forge record, or the code's own window where that owner is a timer.
+STATES = (
+    ("held", "person", 22, lambda f: "autofix:hold" in f["labels"]),
+    ("fixer working", "fixer", 1, lambda f: "autofix:working" in f["labels"]),
+    ("fixer failed", "fixer", 12, lambda f: "autofix:failed" in f["labels"]),
+    ("fixer asked", "fixer", 12, lambda f: "autofix" in f["labels"]),
+    ("fixer declined", "person", 22, lambda f: f["fix"] == "declined"),
+    ("fixer handed off", "person", 22, lambda f: f["fix"] == "handoff"),
+    ("based off main", "queue", 10, lambda f: f["base"] != "main"),
+    ("awaiting review", "review", 18, lambda f: f["verdict"] is None and not f["lost"]),
+    ("lost answers", "review", 1.2, lambda f: f["lost"] and not f["retries_spent"]),
+    ("lost answers, retries spent", "person", 22, lambda f: f["lost"]),
+    ("blocked round, queued", "queue", 0.25, lambda f: BLOCKED(f) and "queue" in f["labels"]),
+    ("blocked round, draft", "fixer", 12, lambda f: BLOCKED(f) and f["draft"]),
+    ("blocked round, ready", "fixer", 12, BLOCKED),
+    ("conflicted", "fixer", 12, lambda f: f["mergeable"] is False),
+    ("title red", "author", 22, lambda f: f["gate"] == "title"),
+    ("gate red", "fixer", 4, lambda f: f["gate"] == "red"),
+    ("gate pending", "gate", STALE_MINUTES / 60, lambda f: f["gate"] == "pending"),
+    ("queued", "queue", 1, lambda f: "queue" in f["labels"] and CLEAN(f)),
+    ("clean draft", "review", 8, lambda f: f["draft"] and CLEAN(f)),
+    ("clean, not queued", "person", 13, lambda f: not f["draft"] and CLEAN(f)),
+    ("unknown", "person", 0, lambda f: True),
+)
+
+
+def state_of(f, off=""):
+    """(state, owner, since, clock hours) of one PR's facts; nothing reads it to decide anything."""
+    name, owner, clock, _ = next((row for row in STATES if row[0] != off and row[3](f)), ("none", "person", 0, None))
+    return name, owner, f["since"], clock
+
+
+def epoch(at):
+    return datetime.datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
+
+
+def facts(pr, notes, statuses, holds, who):
+    """What `state_of` reads, from the listing's PR, its comments, its head's status rows and the round authors."""
+    head = pr["head"]["sha"]
+    seen = [a for a in pr_review.attempts_of(notes, who, pr["number"]) if holds(a["sha"], head)]
+    lanes, times = {}, [epoch(pr["updated_at"])]
+    for status in statuses:
+        job = forge_pr.required_jobs([status["context"]])[0]
+        if job in (*LANES, "title"):
+            lanes[job] = "failure" if status["status"] == "error" else status["status"]
+            times.append(epoch(status.get("updated_at") or pr["updated_at"]))
+    gate = ("title" if lanes.get("title") == "failure" else "red" if "failure" in lanes.values()
+            else "green" if all(lanes.get(job) == "success" for job in (*LANES, "title")) else "pending")
+    fixes = [r for r in bot_meter.rows(notes) if r["kind"] == "yi-autofix" and r.get("from") == head[:12]]
+    rounds = [a for a in seen if a.get("kind") == "round"]
+    return {"labels": {label["name"] for label in pr.get("labels") or []}, "draft": pr["title"].startswith(forge_pr.DRAFT),
+            "base": pr["base"]["ref"], "gate": gate, "mergeable": pr.get("mergeable"), "since": max(times),
+            "fix": fixes[-1].get("verdict") if fixes else None,
+            "lost": bool(seen) and pr_review.lost_attempt(seen[-1]), "retries_spent": len(seen) > pr_review.RETRIES,
+            "verdict": rounds[-1]["verdict"] if rounds and not pr_review.lost_attempt(seen[-1]) else None}
+
+
+def describe(state, owner, since, clock, now):
+    age = (now - since) / 3600
+    when = datetime.datetime.fromtimestamp(since, datetime.timezone.utc).strftime("%m-%d %H:%M")
+    return f"{state}, waiting on {owner} since {when}Z ({age:.0f} h, clock {clock:.3g} h)" + (" parked" if age > clock else "")
+
+
+def said(description):
+    """The part of a description whose change is worth a write: state, owner, and the clock crossed."""
+    return description.split(" since ")[0], description.endswith(" parked")
+
+
+NOTES = {}
+
+
+def notes_of(number):
+    """The comments the tick already read for this PR, else a read with a timeout."""
+    if number not in NOTES:
+        def transport(method, path, payload):
+            answer = forge_pr.fgj_api(method, path, payload, timeout=FORGE_SECS) or []
+            if not isinstance(answer, list):
+                raise SystemExit(f"#{number}: the forge did not list the comments: {answer}")
+            return answer
+        NOTES[number] = list(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/comments?x=1"))
+    return NOTES[number]
+
+
+def assess(pr, who):
+    """(state, owner, since, clock, the head's status rows) as the forge has them now."""
+    sha, base = pr["head"]["sha"], pr["base"]["ref"]
+    combined = forge_pr.fgj_api("GET", f"repos/{forge_pr.repo()}/commits/{sha}/status", timeout=FORGE_SECS)
+    if not isinstance(combined, dict) or "message" in combined:
+        raise SystemExit(f"{forge_pr.UNREAD}: {combined}")
+    rows = combined.get("statuses") or []
+    merged = functools.cache(lambda: pr_review.holds_for(pr["number"], base))
+    holds = lambda reviewed, head: head.startswith(reviewed) or merged()(reviewed, head)
+    return (*state_of(facts(pr, notes_of(pr["number"]), rows, holds, who)), rows)
+
+
+def report(every):
+    """One `yi/state` status per open head, written only when what it says changed."""
+    if os.environ.get("STATE_REPORT") != "on":
+        return
+    now, wrote, who = time.time(), 0, pr_review.authors()
+    for pr in every:
+        try:
+            state, owner, since, clock, rows = assess(pr, who)
+            text = describe(state, owner, since, clock, now)
+            old = next((row.get("description") or "" for row in rows if row.get("context") == STATE), "")
+            if said(old) == said(text):
+                continue
+            answer = forge_pr.fgj_api("POST", f"repos/{forge_pr.repo()}/statuses/{pr['head']['sha']}",
+                                      {"state": "success", "context": STATE, "description": text}, timeout=FORGE_SECS)
+            if not isinstance(answer, dict) or answer.get("context") != STATE:
+                raise SystemExit(f"the forge refused the status: {answer}")
+            wrote += 1
+        # Invariant: one PR's forge error, a timeout included, never ends the tick or the report for the others.
+        except (Exception, SystemExit) as err:
+            print(f"queue: no state for #{pr['number']}: {err}"[:300])
+    print(f"queue: state written on {wrote} of {len(every)} open heads")
+
+
+def cmd_parked(args):
+    """Every open PR past its state's clock, oldest first, from the forge as it is now; writes nothing."""
+    every, now, rows, who = listing(forge_pr.open_pulls(), "the open pull requests"), time.time(), [], pr_review.authors()
+    for pr in every:
+        try:
+            state, owner, since, clock, _ = assess(pr, who)
+        except (Exception, SystemExit) as err:
+            print(f"#{pr['number']} unreadable: {err}"[:300])
+            continue
+        if (now - since) / 3600 > clock:
+            rows.append((since, f"#{pr['number']} {(now - since) / 3600:.0f} h  {state}, waiting on {owner} (clock {clock:.3g} h)  {pr['title']}"))
+    for _, row in sorted(rows):
+        print(row)
+    print(f"{len(rows)} of {len(every)} open pull requests past their clock")
+    return 0
 
 
 def git(*args, cwd=None, check=True):
@@ -183,8 +322,9 @@ def enqueued_at(number):
     return enqueue_time(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/timeline?x=1"))
 
 
-def queued_pulls():
-    return [pr for pr in listing(forge_pr.open_pulls(), "the open pull requests") if LABEL in {label["name"] for label in pr.get("labels") or []}]
+def queued_pulls(every=None):
+    every = listing(forge_pr.open_pulls(), "the open pull requests") if every is None else every
+    return [pr for pr in every if LABEL in {label["name"] for label in pr.get("labels") or []}]
 
 
 def eligible_problem(pr, jobs):
@@ -204,7 +344,8 @@ def eligible_problem(pr, jobs):
 def dequeue_reason(pr):
     if "autofix:failed" in {label["name"] for label in pr.get("labels") or []}:
         return "the fixer gave up on it (`autofix:failed`)"
-    rounds = pr_review.rounds_of(pr_review.comments(forge_pr.repo(), pr["number"]), pr_review.authors(), pr["number"])
+    NOTES[pr["number"]] = pr_review.comments(forge_pr.repo(), pr["number"])
+    rounds = pr_review.rounds_of(NOTES[pr["number"]], pr_review.authors(), pr["number"])
     if rounds and rounds[-1].get("verdict") == "blocked":
         return "its last review round is blocked"
     return None
@@ -239,14 +380,15 @@ def base_of(tip, body, in_main):
 
 def observe(mode):
     git("fetch", "-q", "origin", "main")
-    pulls = queued_pulls()
+    every = listing(forge_pr.open_pulls(), "the open pull requests")
+    pulls = queued_pulls(every)
     for pr in list(pulls):
         if reason := dequeue_reason(pr):
             set_label(pr["number"], LABEL, False)
             comment(pr["number"], f"Left the queue: {reason}. Add the `{LABEL}` label again once that is answered.")
             pulls.remove(pr)
     obs = {"candidate": None, "in_main": False, "base": None, "main": git("rev-parse", "origin/main").stdout.strip(),
-           "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "members": [], "queued": [], "pulls": pulls}
+           "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "members": [], "queued": [], "pulls": pulls, "open": every}
     if git("ls-remote", "origin", f"refs/heads/{CANDIDATE}").stdout.strip():
         git("fetch", "-q", "origin", f"+refs/heads/{CANDIDATE}:refs/remotes/origin/{CANDIDATE}")
         tip = git("rev-parse", f"origin/{CANDIDATE}").stdout.strip()
@@ -506,6 +648,7 @@ def land(obs, mode):
 
 
 def tick(mode):
+    NOTES.clear()
     try:
         obs = observe(mode)
     except pr_review.Unanswered as err:
@@ -530,6 +673,7 @@ def tick(mode):
             finish(obs)
     elif action == "paused":
         print(f"queue: paused on {obs['candidate'][:10]}, whose lanes read {obs['lanes']}; deleting {CANDIDATE} resumes")
+    report(obs["open"])
     return 0
 
 
@@ -709,7 +853,7 @@ def scenario_repo(numbers, shared=False):
 
         module = sys.modules[__name__]
         with mock.patch.multiple(module, ROOT=root, git=counted, record_main=lambda root=ROOT: True,
-                                 queued_pulls=lambda: [pulls[number] for number in sorted(queued)], enqueued_at=lambda number: number,
+                                 queued_pulls=lambda every=None: [pulls[number] for number in sorted(queued)], enqueued_at=lambda number: number,
                                  dequeue_reason=lambda pr: None, eligible_problem=lambda pr, jobs: None,
                                  record_candidate=lambda candidate: (candidate, True), use_driver=lambda cwd: None,
                                  comment=lambda number, text: comments.append((number, text)), set_label=label, delete_ref=remove,
@@ -979,7 +1123,7 @@ def shadow_cases():
     bad, posted = [], []
     heads = {1812: "55a77022f2c6c470ae6bb5fc601c17236d8e883d", 1857: "71c203e2372f576ae772b9a4cedc59a2fd7e907d"}
     obs = {"candidate": "e0f35fe52686c2d9a7b0d3f1c5e8a4b6d7f90123", "base": "9d4f83c6f41f01b011ed48e063396ec46eceaa09",
-           "members": list(heads.items()), "stale_member": None}
+           "members": list(heads.items()), "stale_member": None, "open": []}
     pull = lambda number: {"title": "t", "head": {"ref": "b"}}
     with mock.patch.object(forge_pr, "pull", pull), mock.patch.object(pr_review, "comments", lambda repo, n: [{"body": b} for m, b in posted if m == n]), \
             mock.patch.multiple(sys.modules[__name__], same_tree=lambda *a: True, comment=lambda n, b: posted.append((n, b)),
@@ -1123,11 +1267,118 @@ def queue_verb_cases():
     return bad
 
 
+RECORDED = ROOT / "scripts/fixtures/pr_state/recorded.json"
+ON_HEAD = lambda sha, head: head.startswith(sha) or sha.startswith(head[:12])
+FACTS = {"labels": set(), "draft": False, "base": "main", "gate": "green", "mergeable": True, "since": 0.0,
+         "fix": None, "lost": False, "retries_spent": False, "verdict": "clean"}
+# The states the recording holds no gap of: no gap over a day sat in them, or the recording cannot hold the fact.
+STATE_CASES = (
+    ("fixer working", dict(labels={"autofix:working"}, verdict="blocked")),
+    ("lost answers, retries spent", dict(lost=True, retries_spent=True, verdict=None)),
+    ("blocked round, queued", dict(labels={"queue"}, verdict="blocked")),
+    ("conflicted", dict(mergeable=False)),
+    ("gate pending", dict(gate="pending")),
+    ("queued", dict(labels={"queue"})),
+    ("unknown", dict(verdict="none such")),
+)
+
+
+def state_cases(off=""):
+    """Each recorded parked moment reads the state it was recorded in, and each other state its hand case."""
+    bad = []
+    for case in json.loads(RECORDED.read_text()):
+        got = state_of(facts(case["pr"], case["comments"], case["statuses"], ON_HEAD, {"yi-bot", "jack"}), off)[0]
+        if got != case["state"]:
+            bad.append(f"#{case['pr']['number']} at {case['at']}, {case['b_state']} for {case['gap_hours']} h, read {got}, not {case['state']}")
+    for want, change in STATE_CASES:
+        if (got := state_of({**FACTS, **change}, off)[0]) != want:
+            bad.append(f"{change} read {got}, not {want}")
+    return bad
+
+
+def forge_double(statuses, refuse=()):
+    """A forge for the report: comment pages, combined statuses by head, status posts kept; any other call fails."""
+    calls = []
+
+    def answer(method, path, payload=None, timeout=None):
+        calls.append((method, path, payload, timeout))
+        sha = path.split("/")[-2] if path.endswith("/status") else path.rsplit("/", 1)[-1]
+        if method == "GET" and "/comments?" in path:
+            return []
+        if method == "GET" and path.endswith("/status"):
+            return {"message": "500 database is locked"} if sha in refuse else {"statuses": statuses.get(sha, [])}
+        if method == "POST" and "/statuses/" in path:
+            statuses.setdefault(sha, [])[:] = [s for s in statuses.get(sha, []) if s["context"] != STATE] + [
+                {"context": STATE, "status": payload["state"], "description": payload["description"]}]
+            return {"context": STATE, **payload}
+        raise AssertionError(f"the report made a call it may not: {method} {path}")
+    return answer, calls
+
+
+def report_cases():
+    """The report writes one success status per head, again only on a change, past one PR's error, and only when on."""
+    bad, now = [], time.time()
+    pr = lambda n, sha: {"number": n, "title": "t", "labels": [], "base": {"ref": "main"}, "head": {"sha": sha},
+                         "mergeable": True, "updated_at": datetime.datetime.fromtimestamp(now - 3600, datetime.timezone.utc).isoformat()}
+    every = [pr(1, "a" * 40), pr(2, "b" * 40), pr(3, "c" * 40)]
+    statuses = {}
+    answer, calls = forge_double(statuses, refuse={"b" * 40})
+    with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot"}), contextlib.redirect_stdout(io.StringIO()) as said_out:
+        with mock.patch.dict(os.environ, {"STATE_REPORT": "off"}):
+            report(every)
+        if calls:
+            bad.append(f"a report switched off made {len(calls)} forge calls")
+        with mock.patch.dict(os.environ, {"STATE_REPORT": "on"}):
+            NOTES.clear(), report(every)
+            posts = [c for c in calls if c[0] == "POST"]
+            if sorted(c[1].rsplit("/", 1)[1][0] for c in posts) != ["a", "c"] or any(c[2]["state"] != "success" for c in posts):
+                bad.append(f"one head's refused read did not leave the others written, each success: {posts}")
+            if "no state for #2" not in said_out.getvalue():
+                bad.append(f"a refused read went unsaid: {said_out.getvalue()!r}")
+            if any(c[3] is None for c in calls):
+                bad.append(f"a report call had no timeout: {[c for c in calls if c[3] is None]}")
+            if "awaiting review, waiting on review" not in str(statuses.get("a" * 40)):
+                bad.append(f"a head with no lane run read {statuses.get('a' * 40)}")
+            before = len(calls)
+            NOTES.clear(), report(every)
+            if [c for c in calls[before:] if c[0] == "POST"]:
+                bad.append("an unchanged state was written again, the 272-comment loop as statuses")
+            with mock.patch.object(time, "time", lambda: now + 3600 * 20):
+                before = len(calls)
+                NOTES.clear(), report(every)
+                crossed = [c for c in calls[before:] if c[0] == "POST"]
+            if len(crossed) != 2 or not all(c[2]["description"].endswith(" parked") for c in crossed):
+                bad.append(f"crossing the clock did not write each head parked once: {crossed}")
+    return bad
+
+
+def neutral_cases():
+    """A `yi/state` success on a head moves no decision that reads the head's statuses."""
+    import pr_autofix
+    bad = []
+    lanes = lambda *states: [{"context": f"pr / {job} (pull_request)", "status": state} for job, state in zip((*LANES, "title"), states)]
+    mine = {"context": STATE, "status": "success", "description": "unknown, waiting on person since 11-22 10:04Z (26 h, clock 0 h) parked"}
+    pr = {"number": 7, "title": "t", "state": "open", "head": {"sha": "a" * 40}, "base": {"ref": "main"}, "labels": []}
+    for rows in ([], lanes("success", "success", "success", "success"), lanes("success", "failure", "pending"), lanes("pending")):
+        seen = []
+        for extra in ([], [mine]):
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: {"statuses": rows + extra}), \
+                    mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(forge_pr, "required", lambda: [*LANES, "title"]):
+                jobs = forge_pr.jobs_of(pr)
+                seen.append((forge_pr.decide(pr, jobs, [*LANES, "title"], False), lanes_state({"lanes": jobs}),
+                             pr_autofix.red_lanes("o/r", pr["head"]["sha"]), forge_pr.rerun_waits(pr),
+                             facts(pr | {"updated_at": "2026-11-22T10:04:00Z"}, [], rows + extra, ON_HEAD, {"yi-bot"})))
+        if seen[0] != seen[1]:
+            bad.append(f"a yi/state status moved a decision on {rows}: {seen[0]} became {seen[1]}")
+    return bad
+
+
 def offline_cases():
     """Every case with the forge's read failing: one that reaches it is a gate `just check` cannot run, since
     the guardrails lane installs no fgj."""
     cases = (rule_cases, git_cases, build_cases, record_cases, landing_cases, shadow_cases, forge_cases, queue_verb_cases,
-             batch_cases, conflict_cases, green_cases, candidate_gate_cases)
+             batch_cases, conflict_cases, green_cases, candidate_gate_cases, state_cases, report_cases, neutral_cases)
     bad = []
     with mock.patch.object(forge_pr, "fgj_api", side_effect=RuntimeError("fgj")):
         for case in cases:
@@ -1144,6 +1395,8 @@ def selfcheck():
     bad = offline_cases()
     bad += [f"rule `{name}` disabled and every case still passes, so it refutes nothing"
             for name, _, _ in RULES if not rule_cases(name)]
+    bad += [f"state `{name}` disabled and every case still reads its state, so it refutes nothing"
+            for name, *_ in STATES if not state_cases(name)]
     for name, call in (("red batch", lambda: batch_cases("red batch")), ("member-only conflict", lambda: conflict_cases("main_conflict")),
                        ("green batch of four", lambda: green_cases("K")), ("landed batch recovery", lambda: green_cases("FORK"))):
         if not call():

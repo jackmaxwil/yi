@@ -81,7 +81,7 @@ def scope():
     return ("-R", repo(), "--hostname", HOST)
 
 
-def fgj_api(method, path, payload=None):
+def fgj_api(method, path, payload=None, timeout=None):
     """A missing resource is None, the way check_pr_metadata's transport expects.
 
     fgj prints the response body on stdout whatever the status and `HTTP <code>` on
@@ -91,7 +91,7 @@ def fgj_api(method, path, payload=None):
     if payload is not None:
         command += ["--input", "-"]
         body = json.dumps(payload)
-    out = subprocess.run(command, input=body, capture_output=True, text=True, check=False)
+    out = subprocess.run(command, input=body, capture_output=True, text=True, check=False, timeout=timeout)
     if out.returncode and "HTTP 404" in out.stderr:
         return None
     text = (out.stdout or out.stderr).strip()
@@ -1418,6 +1418,7 @@ def build_parser():
     queue = pr.add_parser("queue", help="add a reviewed PR to the merge queue; no number prints the queue")
     queue.add_argument("number", nargs="?")
     queue.set_defaults(run=pr_queue.cmd_queue)
+    pr.add_parser("parked", help="every open PR past the clock of its state, oldest first; writes nothing").set_defaults(run=pr_queue.cmd_parked)
     return parser
 
 

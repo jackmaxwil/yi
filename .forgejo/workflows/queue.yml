@@ -27,16 +27,17 @@ jobs:
           curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
           echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
           chmod +x /usr/local/bin/fgj
-      # Most ticks stop here on one or two API calls, with no checkout.
+      # Most ticks stop here on one or two API calls, with no checkout, unless the state report is on.
       - name: anything to do
         id: work
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
+          STATE_REPORT: ${{ vars.STATE_REPORT }}
         run: |
           labelled=$(fgj api --hostname git.example.invalid "repos/${{ github.repository }}/issues?type=pulls&state=open&labels=queue&limit=1" \
             | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' || echo 1)
           ref=$(fgj api --hostname git.example.invalid "repos/${{ github.repository }}/branches/queue%2Fcandidate" >/dev/null 2>&1 && echo 1 || echo 0)
-          [ "$labelled$ref" = "00" ] && echo "run=no" >> "$GITHUB_OUTPUT" || echo "run=yes" >> "$GITHUB_OUTPUT"
+          [ "$labelled$ref" = "00" ] && [ "$STATE_REPORT" != on ] && echo "run=no" >> "$GITHUB_OUTPUT" || echo "run=yes" >> "$GITHUB_OUTPUT"
       - if: steps.work.outputs.run == 'yes'
         uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the tick pushes candidates and main with the checkout's token.
         with:
@@ -50,6 +51,8 @@ jobs:
           # API goes as yi-bot, which already comments and labels for the fixer; git goes as the recorder.
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
           MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
+          # `on` writes one `yi/state` status per open head; nothing reads it to decide.
+          STATE_REPORT: ${{ vars.STATE_REPORT }}
           # Rounds count from the same two authors the review job and the fixer read.
           YI_ROUND_AUTHORS: yi-bot,jack
         run: python3 scripts/pr_queue.py
