@@ -69,10 +69,15 @@ class Started:
 
 
 def clients(server_pid, sock):
-    """How many connections the server holds on its socket (its own listener excluded)."""
+    """How many connections the server holds on its socket (its own listener excluded).
+
+    A connection it accepted is listed under the socket's path, as the listener is. The `->`
+    lines are pairs of its own, four with nobody connected: counting those stopped the server
+    before a slow app had connected, and the app then never drew Reconnect.
+    """
     out = subprocess.run(["lsof", "-a", "-U", "-p", str(server_pid), "-F", "n"],
                          capture_output=True, text=True).stdout
-    return sum(1 for line in out.splitlines() if line.startswith("n") and "->" in line)
+    return sum(1 for line in out.splitlines() if line == f"n{sock}") - 1
 
 
 def until(what, test, timeout=STATE_WAIT):
