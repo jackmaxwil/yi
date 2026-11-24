@@ -1,4 +1,5 @@
 ---
+version: 0.1109.0
 issue: Refs #2309
 cut: none desktop/crates/core/src/wire/frame.rs
 cut: none desktop/crates/panes/src/chat/tools.rs
