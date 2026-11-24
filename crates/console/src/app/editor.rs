@@ -229,6 +229,13 @@ impl App {
         Some(found)
     }
 
+    pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
+        if let Err(error) = self.show_file(path, workdir, None, false) {
+            self.dirty = true;
+            self.note(&error);
+        }
+    }
+
     /// A file the agent points at, its cursor on `line`: in front with the keys, or `quiet`,
     /// a tab that waits, in a split of its own where no editor is open, the keys left alone.
     pub(super) fn show_file(
@@ -238,28 +245,33 @@ impl App {
         line: Option<usize>,
         quiet: bool,
     ) -> Result<(), String> {
-        let mut file = load(path, workdir)?;
         let row = line.map(|line| line.saturating_sub(1));
+        let home = self.state.focused_pane_id();
+        let group = if quiet {
+            self.editor_panel()
+        } else {
+            self.editor_group()
+        };
+        if let Some(tabs) = group.and_then(|id| self.tabs_of(id))
+            && let Some(index) = tabs.find(path)
+        {
+            if !quiet {
+                tabs.show(index);
+            }
+            if let (Some(row), Some(open)) = (row, tabs.files_mut().find(|file| file.path == path))
+            {
+                open.jump(row, 0);
+            }
+            self.dirty = true;
+            return Ok(());
+        }
+        let mut file = load(path, workdir)?;
         if let Some(row) = row {
             file.jump(row, 0);
         }
-        let home = self.state.focused_pane_id();
-        let group = match quiet {
-            true => self.editor_panel(),
-            false => self.editor_group(),
-        };
         match group.and_then(|id| self.tabs_of(id)) {
-            Some(tabs) => {
-                match quiet {
-                    true => tabs.open_behind(file),
-                    false => tabs.open(file),
-                }
-                // One already open keeps its own text: only its cursor moves.
-                let open = tabs.files_mut().find(|file| file.path == path);
-                if let (Some(row), Some(open)) = (row, open) {
-                    open.jump(row, 0);
-                }
-            }
+            Some(tabs) if quiet => tabs.open_behind(file),
+            Some(tabs) => tabs.open(file),
             None => {
                 self.state
                     .split_focused(ratatui::layout::Direction::Horizontal);
@@ -275,36 +287,6 @@ impl App {
         }
         self.dirty = true;
         Ok(())
-    }
-
-    /// A file opens as a tab that stays until it is closed: in an editor panel, else in a new split
-    /// beside the focused pane, so a file never takes the screen from what was there.
-    pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
-        let file = match load(path, workdir) {
-            Ok(file) => file,
-            Err(error) => {
-                self.dirty = true;
-                return self.note(&error);
-            }
-        };
-        match self.editor_group() {
-            Some(id) => {
-                if let Some(PaneContent::Editor(tabs)) =
-                    self.state.panes.get_mut(&id).map(|pane| &mut pane.content)
-                {
-                    tabs.open(file);
-                }
-            }
-            None => {
-                self.state
-                    .split_focused(ratatui::layout::Direction::Horizontal);
-                if let Some(pane) = self.state.focused_pane_mut() {
-                    pane.content = PaneContent::Editor(Box::new(Tabs::new(file)));
-                    pane.scroll_from_bottom = 0;
-                }
-            }
-        }
-        self.dirty = true;
     }
 
     pub(super) fn tabs_of(&mut self, pane: PaneId) -> Option<&mut Tabs> {

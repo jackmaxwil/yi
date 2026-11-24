@@ -54,19 +54,11 @@ fn draw(setup: fn(&mut Hub)) -> Result<(Runtime<Win>, Sent), Box<dyn Error>> {
 }
 
 fn tap(rt: &mut Runtime<Win>, key: &str) -> Check {
-    let all = rt.elements();
-    let hit = all
-        .iter()
-        .find(|e| !e.exiting && e.key.as_deref() == Some(key));
-    let [x, y, w, h] = hit.ok_or(format!("no {key}"))?.rect;
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    rt.pointer_move(x, y);
-    rt.pointer_down(x, y);
-    rt.pointer_up(x, y);
-    for _ in 0..3 {
-        rt.frame(0.016);
-    }
-    Ok(())
+    crate::test_support::tap(rt, key, |rt| {
+        for _ in 0..3 {
+            rt.frame(0.016);
+        }
+    })
 }
 
 fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {

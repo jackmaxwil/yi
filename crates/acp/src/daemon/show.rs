@@ -2,42 +2,40 @@
 //! client that attaches later, and never answered by a client that only says it cannot.
 use serde_json::{Value, json};
 
+use super::pending::Held;
 use super::{Input, Supervisor};
 use yi_types::acp::SHOW_METHOD;
 
 impl Supervisor {
     /// Sends a worker's show to every client watching its session; with none, the worker is
-    /// told at once. True when `frame` was a show and is dealt with; any other id is kept.
+    /// told at once. True when `frame` was a show and is dealt with.
     pub(super) fn worker_asked(&mut self, root: &str, frame: &Value, line: &str) -> bool {
         if frame.get("method").and_then(Value::as_str) != Some(SHOW_METHOD) {
-            if let Some(id) = frame.get("id").and_then(Value::as_str) {
-                self.worker_requests.insert(id.to_owned(), root.to_owned());
-            }
             return false;
         }
         let session = frame.pointer("/params/sessionId").and_then(Value::as_str);
         let entry = session.and_then(|session| self.sessions.get(session));
         let watchers = entry.map(|entry| entry.attached.iter().copied().collect::<Vec<_>>());
         let watchers = watchers.unwrap_or_default();
+        if !watchers.is_empty()
+            && let Some(id) = frame.get("id").and_then(Value::as_str)
+        {
+            let held = Held::new(root.to_owned(), frame);
+            self.worker_requests.insert(id.to_owned(), held);
+        }
         for client in &watchers {
             self.send_client(*client, line.to_owned());
         }
         if watchers.is_empty() {
+            if let Some(id) = frame.get("id").and_then(Value::as_str) {
+                self.worker_requests.remove(id);
+            }
             let id = frame.get("id").cloned().unwrap_or(Value::Null);
             let error = json!({"code": -32603, "message": "no client attached"});
             let reply = json!({"jsonrpc": "2.0", "id": id, "error": error});
             let _ = self.input.send(Input::WorkerReply(root.to_owned(), reply));
         }
         true
-    }
-
-    /// The worker a client's answer to a show goes back to: the one that holds the session
-    /// the request id names. None for an error, which another client's answer must not lose to.
-    pub(super) fn show_root(&self, request_id: &str, frame: &Value) -> Option<String> {
-        let session = request_id.strip_prefix("show_")?.rsplit_once('_')?.0;
-        let shown = frame.get("error").is_none();
-        let entry = self.sessions.get(session).filter(|_| shown)?;
-        Some(entry.root.clone())
     }
 }
 
@@ -46,8 +44,9 @@ mod tests {
     use serde_json::{Value, json};
     use tokio::sync::mpsc;
 
+    use super::super::Input;
+    use super::super::pending::Held;
     use super::super::tests::supervisor_with_rows;
-    use super::super::{Input, SessionEntry};
 
     fn show(session: &str) -> Value {
         let params =
@@ -91,7 +90,7 @@ mod tests {
     }
 
     /// A client's answer is written to the worker that asked; the error of a client that
-    /// cannot show, sent first, is not. The worker here is `cat`, read back line by line.
+    /// cannot show, sent first, is not, while a permission ask's error is. The worker is `cat`.
     #[tokio::test]
     async fn a_clients_answer_is_written_to_the_worker_and_its_error_is_not() -> Result<(), String>
     {
@@ -111,6 +110,10 @@ mod tests {
             generation,
         };
         supervisor.workers.insert(root, worker);
+        for id in ["show_pinned_0", "perm_pinned_1"] {
+            let held = Held::new("/repo".to_owned(), &json!({"id": id}));
+            supervisor.worker_requests.insert(id.to_owned(), held);
+        }
         let deaf = json!({"jsonrpc": "2.0", "id": "show_pinned_0",
             "error": {"code": -32601, "message": "Method not found"}});
         let answer = json!({"jsonrpc": "2.0", "id": "show_pinned_0", "result": {"outcome": "tab"}});
@@ -126,23 +129,78 @@ mod tests {
             answer.to_string(),
             "the answer, with no error ahead of it"
         );
+        let refused = json!({"jsonrpc": "2.0", "id": "perm_pinned_1",
+            "error": {"code": -32601, "message": "Method not found"}});
+        supervisor.handle_client_line(7, refused.clone()).await;
+        let Ok(Ok(Some(line))) = tokio::time::timeout(limit, lines.next_line()).await else {
+            return Err("a permission ask's error never reached the worker".to_owned());
+        };
+        assert_eq!(line, refused.to_string());
+        assert!(supervisor.worker_requests.is_empty());
         Ok(())
     }
 
-    /// An answer goes back to the worker that holds the session its id names. A client that
-    /// only says it cannot show is not an answer: another client's must still get through.
-    #[test]
-    fn an_answer_finds_its_worker_and_a_clients_error_is_dropped() {
+    /// A permission ask waits for whoever attaches next. A show does not: sent again to a late
+    /// client, it would open a file after the moment it pointed at.
+    #[tokio::test]
+    async fn a_show_waiting_for_its_answer_is_not_sent_again_to_a_late_client() -> Result<(), String>
+    {
         let mut supervisor = supervisor_with_rows();
-        let other = SessionEntry::new("/else".to_owned(), None);
-        supervisor.sessions.insert("a_b".to_owned(), other);
-        let shown = json!({"result": {"outcome": "tab"}});
-        let deaf = json!({"error": {"code": -32601, "message": "Method not found"}});
-        let root = |id: &str, frame: &Value| supervisor.show_root(id, frame);
-        assert_eq!(root("show_pinned_3", &shown).as_deref(), Some("/repo"));
-        assert_eq!(root("show_a_b_0", &shown).as_deref(), Some("/else"));
-        assert_eq!(root("show_pinned_3", &deaf), None, "an error");
-        assert_eq!(root("show_gone_1", &shown), None, "no such session");
-        assert_eq!(root("perm_pinned_3", &shown), None, "not a show");
+        let (late, mut sent) = mpsc::channel(8);
+        supervisor.clients.insert(9, late);
+        let frame = show("pinned");
+        assert!(supervisor.worker_asked("/repo", &frame, &frame.to_string()));
+        let ask = json!({"jsonrpc": "2.0", "id": "perm_pinned_1",
+            "method": "session/request_permission", "params": {"sessionId": "pinned"}});
+        supervisor.hold_request("/repo", "session/request_permission", &ask);
+        supervisor.flush_parked("pinned", 9);
+        assert_eq!(
+            sent.try_recv().ok(),
+            Some(ask.to_string()),
+            "the ask, again"
+        );
+        assert!(sent.try_recv().is_err(), "and not the show");
+        Ok(())
+    }
+
+    /// Watched shows own a response id until a result arrives. A client error leaves it for the
+    /// next client, while a detached show does not leave an id behind.
+    #[tokio::test]
+    async fn an_answer_finds_its_worker_and_a_clients_error_is_dropped() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        let watched = show("pinned");
+        assert!(supervisor.worker_asked("/repo", &watched, &watched.to_string()));
+        assert_eq!(
+            supervisor
+                .worker_requests
+                .get("show_pinned_0")
+                .map(|held| held.root.as_str()),
+            Some("/repo")
+        );
+        let Some(entry) = supervisor.sessions.get_mut("loose") else {
+            return Err("the detached session was not seeded".to_owned());
+        };
+        entry.attached.clear();
+        let detached = show("loose");
+        assert!(supervisor.worker_asked("/repo", &detached, &detached.to_string()));
+        assert!(
+            !supervisor.worker_requests.contains_key("show_loose_0"),
+            "a detached show is refused immediately"
+        );
+        let error = json!({"jsonrpc": "2.0", "id": "show_pinned_0",
+            "error": {"code": -32601, "message": "Method not found"}});
+        supervisor.handle_client_line(7, error).await;
+        assert_eq!(
+            supervisor
+                .worker_requests
+                .get("show_pinned_0")
+                .map(|held| held.root.as_str()),
+            Some("/repo"),
+            "a client error leaves the request for another client"
+        );
+        let answer = json!({"jsonrpc": "2.0", "id": "show_pinned_0", "result": {}});
+        supervisor.handle_client_line(7, answer).await;
+        assert!(supervisor.worker_requests.is_empty());
+        Ok(())
     }
 }

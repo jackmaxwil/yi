@@ -1,4 +1,6 @@
 ---
+version: 0.1084.0
+decisions: D611
 issue: Closes #2304
 decision: in Yi Desktop a pane shows a thing of its session and exists only while there is one, a layout sets places and not panes, and what opens by itself arrives as a quiet tab that never takes focus, under one show action shared by the person, a rule table and one model tool that says what to show and not where | the owner found that "too many blank panels are being opened with low user value" and asked that "panels should be session linked", then chose each of these in two question rounds on 2026-11-21 | remove `Pane.seated`, `Hole.resting`, `GridMsg::Have` and `yd_panes::has`, and a layout seats every pane it names again
 ---

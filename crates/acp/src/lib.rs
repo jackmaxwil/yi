@@ -103,7 +103,7 @@ pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
 pub(crate) mod permission;
 
 pub use crate::permission::bridge_asker;
-pub use crate::show::{SHOW_POLLS, bridge_shower};
+pub use crate::show::bridge_shower;
 struct SessionHandle {
     session: Arc<AgentSession>,
     host: Arc<SubagentHost>,

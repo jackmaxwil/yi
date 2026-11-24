@@ -482,6 +482,14 @@ fn check_new_session(height: u16, sidebar: SidebarMode, lines: usize) -> TestRes
     )?;
     assert_composer_above_hint(&frame, height, height.saturating_sub(2), &case)
 }
+#[test]
+fn a_new_console_session_advertises_the_show_tool() -> TestResult {
+    run(
+        "new-shows",
+        new_session_steps(),
+        "wait-frame 5000 command palette\nkey alt-n\nwait-frame 5000 s-new\nquit\n",
+    )
+}
 
 #[test]
 fn composer_stays_above_hint_for_new_sessions() -> TestResult {
@@ -1866,6 +1874,12 @@ fn cmd_i_toggles_the_notebook_pane() -> TestResult {
 }
 
 fn new_session_reply(frame: &Value) -> Vec<Value> {
+    let shows = frame
+        .pointer("/params/_meta/yi/shows")
+        .and_then(Value::as_bool);
+    if shows != Some(true) {
+        return Vec::new();
+    }
     vec![ok(
         frame,
         json!({"sessionId": "s-new", "configOptions": [], "_meta": {"yi": {"name": "s-new"}}}),

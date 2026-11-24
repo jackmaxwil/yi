@@ -95,7 +95,8 @@ fn exit_refused(refused: Refused) -> i32 {
 
 fn build_session(
     args: &Args,
-    (asker, shower): (Option<yi_runtime::Asker>, Option<yi_runtime::Shower>),
+    asker: Option<yi_runtime::Asker>,
+    shower: Option<yi_runtime::Shower>,
     session_id: Option<&str>,
     prompts_close: bool,
     [unattended, exits_idle]: [bool; 2],
@@ -899,7 +900,7 @@ fn run_rpc(args: &Args) -> i32 {
     };
     let (session, host) = {
         let _guard = runtime.enter();
-        match build_session(args, (None, None), None, false, [false; 2]) {
+        match build_session(args, None, None, None, false, [false; 2]) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
@@ -927,8 +928,7 @@ fn run_acp(args: &Args) -> i32 {
         let runtime_handle = runtime.handle().clone();
         std::sync::Arc::new(move |asker, shower, session| {
             let _guard = runtime_handle.enter();
-            let wired = (asker, shower);
-            build_session(&build_args, wired, session, false, [false; 2])
+            build_session(&build_args, asker, shower, session, false, [false; 2])
                 .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
         })
     };

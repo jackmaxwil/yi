@@ -1,12 +1,12 @@
 //! Opening a pane where panes of its place go: for the person, and by itself for a rule.
 
-use super::{add, edit, find, fresh, handled, idle, raise};
+use super::{add, edit, find, fresh, handled, hidden_idle, raise, same_pane};
 use crate::address::uri::Address;
 use crate::grid::layout::{ChatSide, Edge, GridError, Layout, Point, Size};
 use crate::grid::leave::{split, stack};
 use crate::grid::place::place;
 use crate::grid::saved::JUST_CHAT;
-use crate::grid::swap::{Spot, Zone, join, land, own, spot_at};
+use crate::grid::swap::{Spot, Zone, join, land, own, rect_in, spot_at};
 use crate::grid::windows::{Pane, Scope, WindowOp, Windows};
 use crate::ids::{PaneId, WindowId};
 use crate::pane::{PaneKind, Place};
@@ -47,13 +47,11 @@ pub(super) fn open(
     }
     // A thing is shown once: its pane out in a window of its own is where it shows.
     let out = |pane: &&Pane| thing.is_some() && grid.origin_of(pane.id).is_some();
-    let same = |pane: &&Pane| pane.kind == kind && pane.thing == thing;
+    let same = |pane: &&Pane| same_pane(pane, kind, thing.as_ref());
     if grid.panes.iter().filter(same).any(|pane| out(&pane)) {
         return Ok(Vec::new());
     }
-    let hidden = grid.panes.iter();
-    let hidden = hidden.filter(|pane| pane.kind == kind && pane.thing == thing);
-    let hidden = hidden.map(|pane| pane.id).find(|pane| idle(grid, *pane));
+    let hidden = hidden_idle(grid, kind, thing.as_ref());
     let pane = match hidden {
         Some(pane) => pane,
         None => add(grid, kind)?,
@@ -92,7 +90,9 @@ pub(in crate::grid) fn put(
         return Err(GridError::NoSuchWindow(id));
     }
     let ops = open(grid, id, kind, Some(thing.clone()), None)?;
-    let pane = about(grid, id, kind, thing).ok_or(GridError::NoSuchWindow(id))?;
+    let pane = grid
+        .drawn_about(id, kind, thing)
+        .ok_or(GridError::NoSuchWindow(id))?;
     let side = grid.side;
     // On a middle it joins those tabs even when it has none of its own: unlike a carried
     // pane, it has no slot to give in exchange.
@@ -112,16 +112,14 @@ pub(in crate::grid) fn point(
     thing: &Address,
     front: bool,
 ) -> Result<(), GridError> {
-    let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
-    let known: Vec<PaneId> = grid.panes_about(kind, thing).collect();
-    let pane = match known.iter().copied().find(|pane| layout.holds(*pane)) {
+    grid.window(id).ok_or(GridError::NoSuchWindow(id))?;
+    let pane = match grid.about_in(id, kind, thing) {
         Some(pane) => {
             handled(grid, id, pane);
             pane
         }
         None => {
-            let hidden = known.into_iter().find(|pane| idle(grid, *pane));
-            let pane = match hidden {
+            let pane = match hidden_idle(grid, kind, Some(thing)) {
                 Some(pane) => pane,
                 None => add(grid, kind)?,
             };
@@ -154,11 +152,19 @@ impl Windows {
         self.panes.iter().filter(is).map(|pane| pane.id)
     }
 
-    /// The pane of `kind` about `thing` that `id` draws.
+    /// The pane of `kind` about `thing` that `id` holds: drawn, a tab behind, or resting.
     #[must_use]
     pub fn about_in(&self, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
         let layout = &self.window(id)?.layout;
-        self.panes_about(kind, thing).find(|pane| layout.holds(*pane))
+        self.panes_about(kind, thing)
+            .find(|pane| layout.holds(*pane))
+    }
+
+    /// The pane of `kind` about `thing` that `id` draws.
+    #[must_use]
+    pub fn drawn_about(&self, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
+        let mut found = self.panes_about(kind, thing);
+        found.find(|pane| self.window_of(*pane) == Some(id))
     }
 
     /// The drop zone under `at` while `thing` is carried from pane `from` over `window`: where
@@ -182,22 +188,11 @@ impl Windows {
         let mut next = self.clone();
         let put = put(&mut next, window, kind, thing, spot, size);
         let lands = put.ok().and_then(|_| {
-            let pane = about(&next, window, kind, thing)?;
-            let drawn = next.place(window, size);
-            drawn
-                .into_iter()
-                .find(|(id, _)| *id == pane)
-                .map(|(_, rect)| rect)
+            let pane = next.drawn_about(window, kind, thing)?;
+            rect_in(&next.window(window)?.layout, self.side, size, pane)
         });
         Some(Zone { spot, band, lands })
     }
-}
-
-/// The pane of `kind` about `thing` that `id` draws.
-fn about(grid: &Windows, id: WindowId, kind: PaneKind, thing: &Address) -> Option<PaneId> {
-    let is = |pane: &&Pane| pane.kind == kind && pane.thing.as_ref() == Some(thing);
-    let mut found = grid.panes.iter().filter(is).map(|pane| pane.id);
-    found.find(|pane| grid.window_of(*pane) == Some(id))
 }
 
 /// Puts `pane`, which `id` does not hold, where panes of its place go: a tab of that place's
@@ -285,11 +280,7 @@ fn arrive(grid: &mut Windows, window: WindowId, kind: PaneKind) -> Result<(), Gr
         }
         return Ok(());
     }
-    let hidden = grid
-        .panes
-        .iter()
-        .filter(|pane| pane.kind == kind && pane.thing.is_none());
-    let hidden = hidden.map(|pane| pane.id).find(|pane| idle(grid, *pane));
+    let hidden = hidden_idle(grid, kind, None);
     let pane = match hidden {
         Some(pane) => pane,
         None => add(grid, kind)?,

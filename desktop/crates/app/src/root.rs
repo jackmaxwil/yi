@@ -88,7 +88,8 @@ pub fn init() -> Win {
             saved: FIRST_LAYOUT,
         };
         step(&mut hub.model, Msg::Grid(show));
-        // Asked for one by one, as a person would: none rests in a scene with nothing to show.
+        // Incident: cut once as a launch opening blank panes, which the native start never shows;
+        // scenes, tests and journeys start here, each pane asked for so none rests with nothing to show.
         let kinds: Vec<_> = hub.model.grid.panes.iter().map(|pane| pane.kind).collect();
         for kind in kinds {
             let window = MAIN;
