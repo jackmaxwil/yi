@@ -129,6 +129,8 @@ pub(crate) fn root_at(
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
+    // Invariant: a test judges the code, so its root admits by a fixed answer, not the machine's load.
+    host.admit_with(Arc::new(|_, _| Ok(())));
     Ok((session, host))
 }
 
