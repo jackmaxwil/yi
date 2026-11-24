@@ -7,6 +7,7 @@ use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
 use yd_ui::win::dispatch;
 
+use super::fill::rect;
 use super::*;
 
 /// Everything with the debugger and IPython opened: Changes, the debugger and IPython are
@@ -45,13 +46,7 @@ fn front(runtime: &Runtime<Win>) -> Result<&'static str, Box<dyn Error>> {
 
 /// The middle of the bar of the pane drawn in that slot.
 fn bar(runtime: &Runtime<Win>) -> Result<(f32, f32), Box<dyn Error>> {
-    let key = format!("{}-", front(runtime)?);
-    let shown = runtime.elements();
-    let found = shown.iter().find(|e| {
-        let own = e.key.as_deref().unwrap_or_default();
-        !e.exiting && own.starts_with(&key) && own.ends_with(".pane-tab-bar")
-    });
-    let [x, y, w, h] = found.ok_or("no bar")?.rect;
+    let [x, y, w, h] = rect(runtime, front(runtime)?, ".pane-tab-bar")?;
     Ok((x + w * 0.6, y + h / 2.0))
 }
 

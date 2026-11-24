@@ -1,7 +1,7 @@
 //! A pane given its window's whole grid: it is drawn alone, the grid under it is kept, and
 //! the fill ends with any change that arranges the window.
 
-use crate::grid::layout::{Point, Rect, Size};
+use crate::grid::layout::{Point, Rect};
 use crate::grid::place::probe::{Check, FRAME_1};
 use crate::ids::ThreadId;
 use crate::pane::PaneKind::{Changes, Chat, Code, Debugger, Files, Terminal};
@@ -18,8 +18,7 @@ fn everything() -> Model {
 }
 
 fn whole() -> Rect {
-    let (x, y, Size { w, h }) = (0.0, 0.0, FRAME_1);
-    Rect { x, y, w, h }
+    FRAME_1.whole()
 }
 
 /// Filled, the pane is the one thing drawn, over the whole grid; said again, every pane is

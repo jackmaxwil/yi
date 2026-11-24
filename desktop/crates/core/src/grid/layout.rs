@@ -24,6 +24,17 @@ pub struct Size {
     pub h: f32,
 }
 
+impl Size {
+    pub fn whole(self) -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: self.w,
+            h: self.h,
+        }
+    }
+}
+
 /// A pane's place inside its grid, in points from the grid's top left.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {

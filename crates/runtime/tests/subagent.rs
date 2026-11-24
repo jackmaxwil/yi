@@ -170,6 +170,22 @@ async fn a_deadline_past_the_parents_bound_is_refused_with_both_numbers() -> Tes
     Ok(())
 }
 
+/// Dies with a child on the parent's 60 s default: a document written in one long response
+/// from a thinking model outlived it and the turn was killed (plan nine-owner-requests, #2215).
+#[tokio::test]
+async fn a_child_waits_longer_for_a_read_than_the_default() -> TestResult {
+    let (_root, family) = family("yi-child-deadline")?;
+    family
+        .host
+        .spawn("write".to_owned(), kwargs(&[("name", json!("author"))]))?;
+    let built = family.built.lock().map_err(|_| "poisoned")?;
+    assert_eq!(
+        built[0].read_timeout_secs,
+        Some(yi_types::model::CHILD_READ_TIMEOUT_SECS)
+    );
+    Ok(())
+}
+
 /// Dies with the reservation in `draw` and `Children::reserved`: mint instead and two children
 /// each draw the whole budget, so the root's one budget is spent twice.
 #[tokio::test]
