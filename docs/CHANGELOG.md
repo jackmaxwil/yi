@@ -6,6 +6,7 @@ there and writes its row here, in the order main landed the files.
 
 | ver | date | change |
 |---|---|---|
+| 0.1103.0 | 2026-11-24 | Yi Desktop's right-click menu on a pane's bar can now move the pane to another place: "Move to work", "Move to side" or "Move to shelf". It joins that place's tabs in front, or opens the place if nothing is there, and stays of that place. The menu also stays inside the window now: with the rows a bar has, it ran off the bottom of the window for a pane low in it. (Refs #2308) |
 | 0.1102.0 | 2026-11-24 | Yi Desktop's right-click menu on a pane's bar or tab now does what its rows say, on the pane under the pointer: Split right, Split down, Pull out as a window, Keep, Keep across sessions and Close others. The three rows it already drew answered "not available yet". (Refs #2308) |
 | 0.1101.0 | 2026-11-24 | Yi Desktop's two journeys that stop the server while the app is open now wait until the app has really connected. The runner's count of the server's connections was never zero, so the server was stopped two seconds after the app was launched whether it had connected or not, and on a slow start the app never drew Reconnect. (Refs #2257) |
 | 0.1100.0 | 2026-11-24 | Yi Desktop's pane bars now answer the trackpad and the middle button: two fingers sideways along a bar turn its tabs, one for each short stretch, and a middle-click on a tab closes it. A flick does not run through the tabs after the fingers lift, and a tab with no close cross is left alone. (Refs #2308) |
