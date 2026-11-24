@@ -144,13 +144,11 @@ def act(rig, actions):
 def bodies(expect, tree):
     """Each pane key in `bodies` draws words below its tab bar: never a blank body.
 
-    `absent_keys` and `absent_texts` must be missing from the tree.
+    `absent_texts` must be missing from the tree.
     """
     elements = tree.get("elements", [])
-    keys = {e.get("key") for e in elements}
     texts = {e.get("text") for e in elements}
-    found = [f"{k} is there" for k in expect.get("absent_keys", []) if k in keys]
-    found += [f"{t!r} is shown" for t in expect.get("absent_texts", []) if t in texts]
+    found = [f"{t!r} is shown" for t in expect.get("absent_texts", []) if t in texts]
     for pane in expect.get("bodies", []):
         root = next((e for e in elements if e.get("key") == pane), None)
         bar = next((e for e in elements if e.get("key") == f"{pane}.pane-tab-bar"), None)

@@ -4,7 +4,7 @@
 use rune::Tx;
 use yd_core::feed::{FeedStatus, OPEN_FILES, Table};
 use yd_core::grid::step::GridMsg;
-use yd_core::ids::{RowId, WindowId};
+use yd_core::ids::WindowId;
 use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
 use yd_core::row::Rows;
@@ -39,9 +39,8 @@ fn has(hub: &Hub, window: WindowId, kind: PaneKind) -> bool {
         }
         PaneKind::Code => rows(tables.get(OPEN_FILES)),
         PaneKind::Web => {
-            let (feed, table) = (web::pane::FEED, tables.get(web::pane::FEED));
-            let page = RowId::new(format!("page:{}", feed.instance));
-            table.is_some_and(|table| table.find(&page).is_some()) || failing(table)
+            let table = tables.get(web::pane::FEED);
+            web::pane::page_row(table, web::pane::FEED).is_some() || failing(table)
         }
         PaneKind::Remote => remote::pane::has(hub),
         PaneKind::Report => thread.and_then(report::pane::newest).is_some(),

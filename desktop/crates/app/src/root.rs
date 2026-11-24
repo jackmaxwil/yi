@@ -84,12 +84,6 @@ pub fn init() -> Win {
             saved: FIRST_LAYOUT,
         };
         step(&mut hub.model, Msg::Grid(show));
-        // Asked for one by one, as a person would: none rests in a scene with nothing to show.
-        let kinds: Vec<_> = hub.model.grid.panes.iter().map(|pane| pane.kind).collect();
-        for kind in kinds {
-            let window = MAIN;
-            step(&mut hub.model, Msg::Grid(GridMsg::Open { window, kind }));
-        }
     }
     Win::new(hub, MAIN)
 }
