@@ -397,5 +397,6 @@ pub fn ask_text(ask: &ReviewedAsk) -> crate::permission::PermissionAsk<'_> {
         grants: &ask.grants,
         tool_call_id: None,
         stop: None,
+        agent: None,
     }
 }

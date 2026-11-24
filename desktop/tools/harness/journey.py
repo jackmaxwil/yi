@@ -68,7 +68,8 @@ def check(journey, tree):
     texts = {e.get("text") for e in elements}
     want = journey.get("expect", {})
     return ([f"no element keyed {k!r}" for k in want.get("keys", []) if k not in keys]
-            + [f"no element shows {t!r}" for t in want.get("texts", []) if t not in texts])
+            + [f"no element shows {t!r}" for t in want.get("texts", []) if t not in texts]
+            + [f"{k} is drawn" for k in want.get("absent_keys", []) if k in keys])
 
 
 def run(name):
