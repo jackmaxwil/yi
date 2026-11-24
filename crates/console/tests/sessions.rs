@@ -38,11 +38,10 @@ fn a_poll_never_clears_a_done_session_only_a_focus_does() {
 /// or which done todos the ledger backs, where the solo TUI showed the plan line.
 #[test]
 fn claims_and_plan_progress_reach_a_pane() -> Result<(), String> {
+    use agent_client_protocol_schema::v2::OtherSessionUpdate;
     use yi_console::app::port::{Decoded, decode};
-    use yi_types::acp::AcpExtensionUpdate;
-    let frame = |kind: &str, key: &str, value: serde_json::Value| AcpExtensionUpdate {
-        session_update: kind.to_owned(),
-        fields: std::iter::once((key.to_owned(), value)).collect(),
+    let frame = |kind: &str, key: &str, value: serde_json::Value| {
+        OtherSessionUpdate::new(kind, std::iter::once((key.to_owned(), value)).collect())
     };
     let claims = frame(
         "_yi/claims",
@@ -117,14 +116,14 @@ fn a_working_avatar_plays_its_loop_and_rests_as_its_identicon() {
 #[test]
 fn a_titled_session_name_reaches_a_pane() -> Result<(), String> {
     use yi_console::app::port::{Decoded, decode};
-    let update = yi_types::acp::AcpExtensionUpdate {
-        session_update: "_yi/name".to_owned(),
-        fields: std::iter::once((
+    let update = agent_client_protocol_schema::v2::OtherSessionUpdate::new(
+        "_yi/name",
+        std::iter::once((
             "name".to_owned(),
             serde_json::json!("Fix the context gauge"),
         ))
         .collect(),
-    };
+    );
     match decode(update).map_err(|_| "malformed name")? {
         Decoded::Name(name) => assert_eq!(name, "Fix the context gauge"),
         _ => return Err("name decoded as something else".to_owned()),

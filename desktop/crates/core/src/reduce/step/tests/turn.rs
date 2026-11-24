@@ -1,7 +1,6 @@
 //! A whole recorded turn: prompt, streamed answer, idle.
 
 use serde_json::{Value, json};
-use yi_types::acp::AcpStopReason;
 use yi_types::event::{AgentEvent, RunEnd};
 use yi_types::message::{AgentMessage, HostSource, UserContent};
 
@@ -14,6 +13,7 @@ use crate::reduce::threads::{Run, Workdir};
 use crate::reduce::turns::Turn;
 use crate::reduce::usage::Tokens;
 use crate::wire::replay::{Sync, play_line};
+use crate::wire::shapes::AcpStopReason;
 
 const THREAD: &str = "01a1de97-bf6c-7514-9fae-b57db1eaa7e1";
 

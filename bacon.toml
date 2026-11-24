@@ -1,0 +1,8 @@
+[jobs.clippy]
+command = ["just", "clippy"]
+need_stdout = false
+
+[jobs.test]
+command = ["just", "test"]
+need_stdout = true
+analyzer = "nextest"

@@ -242,7 +242,6 @@ async fn an_untargeted_hold_warns_instead_of_holding_every_call() -> TestResult 
             rlm_dir: root.join("rlm"),
             summarizer: None,
             advisor: Some(faux_model(128_000)),
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(root.join("plans")),
             parent_link: None,

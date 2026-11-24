@@ -93,7 +93,7 @@ Every other file under a directory belongs to the task the plan gives that direc
 
 ## The wire as built
 
-`yd-core` holds the whole connection; it draws nothing. `core/src/wire/` has the client threads, `event`, `frame` (decode), `request` (encode) and `replay` (resume bookkeeping); `core/src/reduce/` folds frames into `Model.wire`.
+`yd-core` holds the whole connection; it draws nothing. `core/src/wire/` has the client threads, `event`, `frame` (decode), `shapes` (the config option and stop reason it decodes into), `request` (encode) and `replay` (resume bookkeeping); `core/src/reduce/` folds frames into `Model.wire`.
 
 - **A request is an id and a line.** `Request { id: Option<RequestId>, line: String }`: `line` is one JSON-RPC object with no newline; `id` is none when no answer comes (an answer to a server ask, a refusal). `RequestId` is `Number(u64)` (this app's own, in the order sent) or `Text`. Build one with `Request::call(n, method, params)`, `answer(id, result)` or `refuse(id, method)`; method names and param builders are in `wire/request.rs`.
 - **`WireEvent`** is what the client's threads hand the UI, carried in `Msg::Wire`: `Line(String)` (an undecoded line, how a recording or scene feeds the model), `Frame { at, frame }`, `Up { at, server, latency }` (`latency` is how long the server took to answer `initialize`; a recording times nothing unless its row carries `took`), `Down { at, why: Down }`, `Unsent { at, id }` (a request the client could not write), `Poll { at }` (time to ask for the thread list), `Bad { at, why }`. `Frame` is `Update`, `Ask`, `Reply`, `Request` (a method this app lacks) or `Other(raw)`.

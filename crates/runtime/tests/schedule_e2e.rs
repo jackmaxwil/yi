@@ -1625,31 +1625,13 @@ fn wired_root(root: &std::path::Path, reply: &str) -> Result<AgentSession, Box<d
     yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
-            provider,
             system_prompt: String::new(),
-            tool_execution: ExecutionMode::Sequential,
             cwd,
             home,
-            lane_slots: 1,
-            broker: None,
             tools: Arc::new(Vec::new),
-            depth: 0,
-            max_depth: 1,
             rlm_dir: root.join(format!("rlm-{}", yi_session::now_ms())),
-            family_dir: None,
-            summarizer: None,
-            advisor: None,
-            auto_review: None,
-            plan_stale_turns: None,
-            plans_dir: Some(root.join("plans")),
-            parent_link: None,
-            wall: yi_runtime::Wall::default(),
-            auto_background: None,
-            deadline: None,
-            kernel_prewarm: false,
-            mcp_read: None,
             sessions_dir: Some(root.join("sessions")),
-            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+            ..crate::wiring::root_wiring(provider, root)
         },
     );
     Ok(session)

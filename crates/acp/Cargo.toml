@@ -12,4 +12,5 @@ workspace = true
 yi-types.workspace = true
 yi-runtime.workspace = true
 serde_json.workspace = true
+agent-client-protocol-schema.workspace = true
 tokio.workspace = true

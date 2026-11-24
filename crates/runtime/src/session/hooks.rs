@@ -719,7 +719,6 @@ mod tests {
             family_dir: None,
             summarizer: None,
             advisor: None,
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(root.join("plans")),
             parent_link,
@@ -841,7 +840,7 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the hook overwritten: an auto-review session built on the root's stream took
+    /// Dies with the hook overwritten: a side session built on the root's stream took
     /// the slot, and with no store of its own it dropped the root's settled cost.
     #[test]
     fn a_side_session_on_the_root_stream_keeps_the_root_hook()

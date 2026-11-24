@@ -13,10 +13,6 @@ pub struct ModelRoles {
     /// advisor observes and says nothing until a model role names it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advisor: Option<String>,
-    /// Naming this role turns the §8 auto reviewer on. Unset, auto mode is the
-    /// deterministic ladder and nothing extra is ever constructed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_review: Option<String>,
     /// Naming a checkpoint (`english`) turns on the local `classifier` sidecar; unset, nothing
     /// is constructed. It is never a chat model, so it never falls back to the primary.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -233,6 +229,7 @@ pub struct DiscoveredCustomModel {
     pub max_tokens: Option<u64>,
     #[serde(default, deserialize_with = "lenient_reasoning")]
     pub reasoning: Option<bool>,
+    #[serde(default, deserialize_with = "lenient_u64")]
     pub max_output_tokens: Option<u64>,
     #[serde(default, deserialize_with = "lenient_limit")]
     pub limit: Option<DiscoveredCustomLimit>,
@@ -252,6 +249,13 @@ pub struct DiscoveredCustomLimit {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CustomModelList {
     pub data: Vec<DiscoveredCustomModel>,
+}
+
+fn lenient_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(serde_json::Value::deserialize(deserializer)?.as_u64())
 }
 
 fn lenient_limit<'de, D>(deserializer: D) -> Result<Option<DiscoveredCustomLimit>, D::Error>
@@ -335,20 +339,11 @@ impl CustomProvider {
                     context: None,
                     output: None,
                 });
-                let sent = [
-                    model.context_window,
-                    model.max_tokens,
-                    model.max_output_tokens,
-                    limit.context,
-                    limit.output,
-                ];
                 let context_window = advertised([model.context_window, limit.context]);
                 let max_tokens =
                     advertised([model.max_tokens, model.max_output_tokens, limit.output])
                         .or(context_window);
-                let nothing_positive =
-                    sent.iter().any(Option::is_some) && advertised(sent).is_none();
-                if model.id.is_empty() || nothing_positive {
+                if model.id.is_empty() {
                     return None;
                 }
                 let input = model.input.or_else(|| {
@@ -558,7 +553,13 @@ pub struct CompactionConfig {
 
 /// Keys an older Yi read that this one does not, each with why it went: D182 deleted the
 /// artifact and closure stop gates that `gates` switched.
-const REMOVED: &[(&str, &str)] = &[("gates", "the artifact and closure stop gates are gone")];
+const REMOVED: &[(&str, &str)] = &[
+    ("gates", "the artifact and closure stop gates are gone"),
+    (
+        "models.autoReview",
+        "the model auto-reviewer was removed; an ask the classifier does not settle goes to you",
+    ),
+];
 
 /// A key [`migrate`] dropped before the strict parse, and why, so a config that loaded
 /// yesterday still loads and the caller names each drop.
@@ -578,12 +579,19 @@ impl std::fmt::Display for ConfigMigration {
 /// Rewrites a raw config into the shape [`UserConfig`] parses; a current config comes back
 /// unchanged with no migrations, so running it twice is running it once.
 pub fn migrate(config: &mut serde_json::Value) -> Vec<ConfigMigration> {
-    let Some(keys) = config.as_object_mut() else {
-        return Vec::new();
-    };
+    fn remove(config: &mut serde_json::Value, path: &str) -> bool {
+        match path.split_once('.') {
+            Some((head, rest)) => config
+                .get_mut(head)
+                .is_some_and(|inner| remove(inner, rest)),
+            None => config
+                .as_object_mut()
+                .is_some_and(|keys| keys.remove(path).is_some()),
+        }
+    }
     REMOVED
         .iter()
-        .filter(|(key, _)| keys.remove(*key).is_some())
+        .filter(|(key, _)| remove(config, key))
         .map(|&(key, why)| ConfigMigration { key, why })
         .collect()
 }

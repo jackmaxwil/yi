@@ -141,7 +141,7 @@ impl ProviderStream {
     }
 
     /// Invariant: only a run loop's turns stream through this, so a Cursor frame in a side call
-    /// (compaction, title, rewind, the reviewer) never runs the session's tools.
+    /// (compaction, title, rewind) never runs the session's tools.
     pub(crate) fn armed(
         &self,
         tools: Vec<Arc<dyn yi_loop::tool::AgentTool>>,
@@ -183,7 +183,7 @@ impl ProviderStream {
         }
     }
 
-    /// Invariant: a side session (an auto-review) shares the root's stream, so its hook never
+    /// Invariant: a side session (a title, a summary) shares the root's stream, so its hook never
     /// replaces the one wired first, which books on the root's ledger.
     pub(crate) fn settle_unless_wired(&self, hook: yi_ai::settle::Settle) {
         if let Ok(mut slot) = self.settle.lock() {

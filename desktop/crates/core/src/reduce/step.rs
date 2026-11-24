@@ -6,7 +6,6 @@ pub(crate) mod tests;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use yi_types::acp::AcpConfigOption;
 
 use crate::command::table::Run as Command;
 use crate::ids::{AgentId, Millis, ThreadId};
@@ -21,6 +20,7 @@ use crate::wire::event::{Down, WireEvent};
 use crate::wire::frame::{Frame, Kept, Refusal, Update};
 use crate::wire::replay::{Sync, Taken};
 use crate::wire::request::{self, Request, RequestId};
+use crate::wire::shapes::AcpConfigOption;
 
 /// How long a request may wait for its answer. A prompt is not held to it: the server
 /// answers one only when the thread takes it, which may be turns away.

@@ -4,13 +4,13 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use agent_client_protocol_schema::v2 as acp;
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
 use yi_tui::colors::Theme;
 use yi_tui::input::handle_terminal_event;
 use yi_tui::{Reply, UiEvent};
-use yi_types::acp::{AcpPermissionParams, AcpSessionUpdate, AcpUpdateParams};
 
 use crate::client::{ClientEvent, Outbound};
 use crate::keys::{self, Action};
@@ -421,7 +421,7 @@ impl App {
                 {
                     // An agent event shows only through a pane's chat, which asks for its frame.
                     let event = matches!(&update.update,
-                        AcpSessionUpdate::Extension(e) if e.session_update == "_yi/event");
+                        acp::SessionUpdate::Other(e) if e.session_update == "_yi/event");
                     self.reduce_update(outbound, update);
                     self.dirty |= !event;
                 } else {
@@ -431,13 +431,12 @@ impl App {
             }
             Some("session/request_permission") => {
                 let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
-                let params = value
-                    .get("params")
-                    .cloned()
-                    .and_then(|params| serde_json::from_value::<AcpPermissionParams>(params).ok());
+                let params = value.get("params").cloned().and_then(|params| {
+                    serde_json::from_value::<acp::RequestPermissionRequest>(params).ok()
+                });
                 match (id, params) {
                     (Some(request_id), Some(params)) => {
-                        let session = SessionId(params.session_id.clone());
+                        let session = SessionId(params.session_id.0.to_string());
                         self.state
                             .set_session_status(&session, SessionStatus::Blocked);
                         self.notes
@@ -587,20 +586,20 @@ impl App {
         self.dirty = true;
     }
 
-    fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
-        let id = SessionId(update.session_id);
+    fn reduce_update(&mut self, outbound: &Outbound, update: acp::UpdateSessionNotification) {
+        let id = SessionId(update.session_id.0.to_string());
         if port::writes_transcript(&update.update) {
             self.resume_offsets.remove(&id);
             self.state.parked.remove(&id);
         }
         self.absorb_review(&id, &update.update);
         let update = match update.update {
-            AcpSessionUpdate::Extension(extension) => {
+            acp::SessionUpdate::Other(extension) => {
                 return self.reduce_extension(outbound, &id, extension);
             }
             other => other,
         };
-        if let AcpSessionUpdate::StateUpdate(state) = &update {
+        if let acp::SessionUpdate::StateUpdate(state) = &update {
             let focused = self.state.focused_session().as_ref() == Some(&id);
             let mut status = SessionStatus::from_state(state, false);
             let was_working = self
@@ -627,9 +626,9 @@ impl App {
                 _ => self.notes.disarm(&id),
             }
         }
-        if let AcpSessionUpdate::UsageUpdate { size, .. } = &update {
+        if let acp::SessionUpdate::UsageUpdate(usage) = &update {
             for chat in self.state.chats_mut(&id) {
-                chat.app.set_context_window(*size);
+                chat.app.set_context_window(usage.size);
             }
         }
         self.absorb_edit(outbound, &id, &update);

@@ -444,7 +444,7 @@ struct PaneData<'a> {
     notebooks: &'a std::collections::BTreeMap<SessionId, Vec<crate::model::NbCell>>,
     sessions: &'a std::collections::BTreeMap<SessionId, SessionRow>,
     notes: &'a std::collections::BTreeMap<SessionId, String>,
-    options: &'a std::collections::BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
+    options: &'a crate::model::SessionOptions,
     cmd: bool,
     kitty: bool,
 }

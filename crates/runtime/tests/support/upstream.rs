@@ -117,7 +117,6 @@ pub(crate) fn root_at(
             family_dir: None,
             summarizer: None,
             advisor: None,
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(scratch.join("plans")),
             parent_link: None,
@@ -130,6 +129,8 @@ pub(crate) fn root_at(
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
+    // Invariant: a test judges the code, so its root admits by a fixed answer, not the machine's load.
+    host.admit_with(Arc::new(|_, _| Ok(())));
     Ok((session, host))
 }
 

@@ -262,7 +262,7 @@ pub(crate) fn error_frame(id: Value, code: i64, message: &str) -> String {
 }
 
 pub(crate) fn result_frame(id: Value, result: Value) -> String {
-    json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
+    crate::update::result_envelope(id, result).to_string()
 }
 
 impl Supervisor {

@@ -95,25 +95,11 @@ pub fn listed_models() -> Vec<Model> {
 }
 
 pub fn pickable_models(current: &Model) -> Vec<Model> {
-    keep_usable(available_models(), current, |provider| {
-        provider == yi_ai::faux::FAUX_PROVIDER || yi_ai::auth::has_credential(provider)
-    })
-}
-
-fn keep_usable(models: Vec<Model>, current: &Model, usable: impl Fn(&str) -> bool) -> Vec<Model> {
-    let mut asked = std::collections::HashMap::new();
-    let mut holds = |provider: &str| {
-        *asked
-            .entry(provider.to_owned())
-            .or_insert_with(|| usable(provider))
-    };
-    if !models.iter().any(|model| holds(&model.provider)) {
-        return models;
-    }
-    let is_current = |model: &Model| model.provider == current.provider && model.id == current.id;
-    (models.into_iter())
-        .filter(|model| holds(&model.provider) || is_current(model))
-        .collect()
+    crate::subagent::models::usable_models(
+        available_models(),
+        Some(current),
+        yi_ai::auth::has_credential,
+    )
 }
 
 pub fn dynamic_model_count(id: &str) -> Result<usize, String> {
@@ -406,7 +392,8 @@ mod tests {
             registered("anthropic", "b"),
             registered("openai", "g"),
         ];
-        let kept = keep_usable(models, &registered("faux", "x"), |provider| {
+        let current = registered("faux", "x");
+        let kept = crate::subagent::models::usable_models(models, Some(&current), |provider| {
             asked.set(asked.get() + 1);
             provider == "localgw"
         });
@@ -421,16 +408,18 @@ mod tests {
             registered("anthropic", "b"),
             registered("localgw", "m1"),
         ];
-        let kept = keep_usable(models, &registered("anthropic", "b"), |provider| {
+        let current = registered("anthropic", "b");
+        let kept = crate::subagent::models::usable_models(models, Some(&current), |provider| {
             provider == "localgw"
         });
         assert_eq!(offered(&kept), ["anthropic/b", "localgw/m1"]);
     }
 
     #[test]
-    fn a_picker_with_no_credential_anywhere_still_lists_the_catalog() {
+    fn a_picker_with_no_credential_lists_no_unrunnable_models() {
         let models = vec![registered("anthropic", "a"), registered("openai", "g")];
-        let kept = keep_usable(models, &registered("faux", "x"), |_| false);
-        assert_eq!(offered(&kept), ["anthropic/a", "openai/g"]);
+        let current = registered("faux", "x");
+        let kept = crate::subagent::models::usable_models(models, Some(&current), |_| false);
+        assert!(kept.is_empty());
     }
 }

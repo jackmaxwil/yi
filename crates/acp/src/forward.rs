@@ -5,13 +5,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use agent_client_protocol_schema::v2 as acp;
 use serde_json::Value;
 use tokio::task::JoinSet;
 use yi_runtime::session_store::{
     BranchBounds, EntryOrder, EntryQuery, SharedSession, lock_session,
 };
 use yi_runtime::{AgentSession, SubagentHost};
-use yi_types::acp::AcpSessionUpdate;
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::message::AgentMessage;
@@ -30,7 +30,7 @@ pub(crate) struct Forward {
 }
 
 impl Forward {
-    fn emit(&self, update: AcpSessionUpdate) {
+    fn emit(&self, update: acp::SessionUpdate) {
         (self.sink)(&update_notification(&self.session_id, update));
     }
 

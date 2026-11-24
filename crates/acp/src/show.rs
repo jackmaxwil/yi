@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 use yi_runtime::{ShowAsk, Shower};
-use yi_types::acp::{AcpFrame, AcpShowParams, AcpShowResult, SHOW_METHOD};
+use yi_types::acp::{AcpShowParams, AcpShowResult, SHOW_METHOD};
 
 use crate::permission::{PendingAsks, PendingWait, with_pending_ask};
 use crate::{AcpState, LineSink};
@@ -31,18 +31,13 @@ pub fn bridge_shower(
             cwd: ask.cwd.to_string_lossy().into_owned(),
             strength: ask.strength.clone(),
         };
-        let request = AcpFrame {
-            jsonrpc: "2.0".to_owned(),
-            id: Some(Value::String(id.clone())),
-            method: SHOW_METHOD.to_owned(),
-            params: serde_json::to_value(&params).ok(),
-        };
+        let request = json!({"jsonrpc": "2.0", "id": id, "method": SHOW_METHOD, "params": params});
         let stopped = || ask.stop.is_some_and(|stop| stop());
         let answer = with_pending_ask(
             &pending,
             &id,
             &sink,
-            &json!(request),
+            &request,
             PendingWait::Attempts(polls),
             &stopped,
         );

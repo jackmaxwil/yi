@@ -559,7 +559,6 @@ async fn an_attached_session_answers_tool_calls_and_stores_their_rows() -> Resul
             family_dir: None,
             summarizer: None,
             advisor: None,
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(cwd.join("plans")),
             parent_link: None,

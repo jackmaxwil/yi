@@ -1609,7 +1609,7 @@ fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<AskingFamily> {
                 tool_execution: ExecutionMode::Sequential,
             };
             let mut child = AgentSession::new(config, provider);
-            let ask = yi_runtime::auto_review::AskUserTool::new(None).asking(Some(build.link));
+            let ask = yi_runtime::ask_user::AskUserTool::default().asking(Some(build.link));
             child.use_tools(vec![Arc::new(ask)], std::env::temp_dir(), None);
             Ok(child)
         }),
@@ -1725,7 +1725,7 @@ async fn a_programs_ask_user_value_is_the_parents_answer_and_the_models_has_none
         host: Arc::downgrade(&harness.host),
     };
     for (program, want) in [(true, Some(json!({"answer": "notes.md"}))), (false, None)] {
-        let ask = yi_runtime::auto_review::AskUserTool::new(None).asking(Some(link.clone()));
+        let ask = yi_runtime::ask_user::AskUserTool::default().asking(Some(link.clone()));
         let mut context = yi_tools::ToolContext::new(std::env::temp_dir());
         context.program = program;
         let input = json!({"question": "Which file name?"});
@@ -3877,7 +3877,6 @@ fn wired_scripted(
             family_dir: None,
             summarizer: None,
             advisor: None,
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(root.join("plans")),
             parent_link: None,

@@ -5,12 +5,10 @@ mod scratch;
 
 use std::error::Error;
 
+use agent_client_protocol_schema::v2 as acp;
 use serde_json::{Map, Value, json};
 use yi_acp::update::{IdMap, extension, replay_updates, to_updates, update_notification};
 use yi_acp::{VERSION_MISMATCH_ERROR, negotiate};
-use yi_types::acp::{
-    AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus, AcpUpdateParams,
-};
 use yi_types::encoding::base64;
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
@@ -67,8 +65,8 @@ fn text_deltas_become_message_chunks_with_a_stable_message_id() -> TestResult {
     };
     let first = to_updates(&delta("hel"), &mut ids); // codespell:ignore hel
     let second = to_updates(&delta("lo"), &mut ids);
-    let id_of = |updates: &[AcpSessionUpdate]| match updates {
-        [AcpSessionUpdate::AgentMessageChunk { message_id, .. }] => Ok(message_id.clone()),
+    let id_of = |updates: &[acp::SessionUpdate]| match updates {
+        [acp::SessionUpdate::AgentMessageChunk(chunk)] => Ok(chunk.message_id.clone()),
         other => Err(format!("expected one chunk, got {other:?}")),
     };
     assert_eq!(
@@ -89,7 +87,9 @@ fn agent_lifecycle_maps_to_state_updates_with_stop_reason() -> TestResult {
     let start = to_updates(&AgentEvent::AgentStart, &mut ids);
     assert_eq!(
         start,
-        vec![AcpSessionUpdate::StateUpdate(AcpState::Running)]
+        vec![acp::SessionUpdate::StateUpdate(acp::StateUpdate::Running(
+            acp::RunningStateUpdate::new()
+        ))]
     );
     to_updates(
         &AgentEvent::MessageUpdate {
@@ -109,9 +109,9 @@ fn agent_lifecycle_maps_to_state_updates_with_stop_reason() -> TestResult {
     );
     assert_eq!(
         end,
-        vec![AcpSessionUpdate::StateUpdate(AcpState::Idle {
-            stop_reason: Some(AcpStopReason::Cancelled),
-        })],
+        vec![acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(
+            acp::IdleStateUpdate::new().stop_reason(acp::StopReason::Cancelled)
+        ))],
         "an aborted run must surface stopReason cancelled"
     );
     let json = serde_json::to_value(&end[0])?;
@@ -220,8 +220,8 @@ fn tool_execution_maps_to_tool_call_updates_and_bash_to_terminals() -> TestResul
     let chunk = serde_json::to_value(&end[0])?;
     assert_eq!(chunk["data"], base64(b"ok"));
     match &end[2] {
-        AcpSessionUpdate::ToolCallUpdate(update) => {
-            assert_eq!(update.status, Some(AcpToolCallStatus::Completed));
+        acp::SessionUpdate::ToolCallUpdate(update) => {
+            assert_eq!(update.status.value(), Some(&acp::ToolCallStatus::Completed));
         }
         other => return Err(format!("expected tool_call_update, got {other:?}").into()),
     }
@@ -273,10 +273,10 @@ fn a_nonzero_exit_and_a_verdict_end_as_failed_tool_calls() -> TestResult {
             &mut ids,
         );
         let status = end.iter().find_map(|update| match update {
-            AcpSessionUpdate::ToolCallUpdate(update) => update.status.clone(),
+            acp::SessionUpdate::ToolCallUpdate(update) => update.status.value().cloned(),
             _ => None,
         });
-        assert_eq!(status, Some(AcpToolCallStatus::Failed), "{tool}: {end:?}");
+        assert_eq!(status, Some(acp::ToolCallStatus::Failed), "{tool}: {end:?}");
     }
     Ok(())
 }
@@ -335,16 +335,16 @@ fn update_notifications_match_the_serde_wire_shape() -> TestResult {
             "_yi/replay",
             [("entries", json!([{"a": 1}])), ("from", json!(0))],
         ),
-        AcpSessionUpdate::StateUpdate(AcpState::Running),
+        acp::SessionUpdate::StateUpdate(acp::StateUpdate::Running(acp::RunningStateUpdate::new())),
     ];
     for update in updates {
         let expected = json!({
             "jsonrpc": "2.0",
             "method": "session/update",
-            "params": serde_json::to_value(AcpUpdateParams {
-                session_id: "s1".to_owned(),
-                update: update.clone(),
-            })?,
+            "params": serde_json::to_value(acp::UpdateSessionNotification::new(
+                "s1",
+                update.clone(),
+            ))?,
         });
         assert_eq!(update_notification("s1", update), expected);
     }
@@ -727,12 +727,9 @@ fn yi_event_round_trips_every_variant() -> TestResult {
     for (n, event) in every_event().into_iter().enumerate() {
         let seq = u64::try_from(n)?;
         let update = yi_acp::update::event_update(&event, seq, Some(&child));
-        let wire = serde_json::to_value(yi_types::acp::AcpUpdateParams {
-            session_id: "s".to_owned(),
-            update,
-        })?;
-        let back: yi_types::acp::AcpUpdateParams = serde_json::from_value(wire)?;
-        let AcpSessionUpdate::Extension(extension) = back.update else {
+        let wire = serde_json::to_value(acp::UpdateSessionNotification::new("s", update))?;
+        let back: acp::UpdateSessionNotification = serde_json::from_value(wire)?;
+        let acp::SessionUpdate::Other(extension) = back.update else {
             return Err("an event update must decode as an extension".into());
         };
         assert_eq!(extension.session_update, "_yi/event");
@@ -766,7 +763,7 @@ fn a_reply_without_usage_reports_no_context_figure() -> TestResult {
     assert!(
         !updates
             .iter()
-            .any(|update| matches!(update, AcpSessionUpdate::UsageUpdate { .. })),
+            .any(|update| matches!(update, acp::SessionUpdate::UsageUpdate(_))),
         "{updates:?}"
     );
     Ok(())

@@ -348,8 +348,9 @@ fn an_unreadable_limit_costs_the_limits_and_not_the_model() -> TestResult {
         ("array", json!([64000, 16000])),
         ("strings", json!({"context": "64000", "output": "16000"})),
     ] {
-        let discovery =
-            json!({"data": [{"id": "m2", "max_output_tokens": 16000, "limit": limit}]}).to_string();
+        let discovery = json!({"data": [{"id": "m2", "reasoning": {"type": "both"},
+            "max_output_tokens": 16000, "limit": limit}]})
+        .to_string();
         let (port, seen) = fake_gateway_serving(&discovery)?;
         let providers = json!({"localgw": {
             "baseUrl": format!("http://127.0.0.1:{port}/v1"),
@@ -391,28 +392,23 @@ fn a_model_list_without_a_data_array_is_named() -> TestResult {
 }
 
 #[test]
-fn a_model_list_with_no_usable_model_is_named() -> TestResult {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut reader = BufReader::new(stream);
-            let _ = read_request(&mut reader);
-            let body = r#"{"data":[{"id":"m2","context_window":0,"max_tokens":0}]}"#;
-            let _ = reader
-                .get_mut()
-                .write_all(reply("200 OK", "application/json", body).as_bytes());
-        }
-    });
+fn a_model_list_with_zero_limits_uses_catalog_defaults() -> TestResult {
+    let (port, seen) = fake_gateway_serving(
+        r#"{"data":[{"id":"m2","context_window":0,"max_tokens":0,"max_output_tokens":0,
+        "limit":{"context":0,"output":0}}]}"#,
+    )?;
     let providers = json!({"localgw": {
         "baseUrl": format!("http://127.0.0.1:{port}/v1"),
         "apiKey": "sk-placeholder", "models": []}});
-    let home = Home::new("discover-empty", &providers)?;
+    let home = Home::new("discover-zero", &providers)?;
     let ask = home.yi(&["ask", "--here", "--model", "localgw/m2", "hi"], &[])?;
-    assert_ne!(ask.status.code(), Some(0));
-    let err = text(&ask);
-    assert!(err.contains("no usable model"), "{err}");
-    assert!(!err.contains("unknown model"), "{err}");
+    assert_eq!(ask.status.code(), Some(0), "{}", text(&ask));
+    let requests = seen.lock().map_err(|_| "fake lock")?.clone();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let completion = requests.get(1).ok_or("no completion request")?;
+    let body: Value = serde_json::from_str(completion.rsplit("\r\n").next().unwrap_or_default())?;
+    assert_eq!(body["model"], "m2");
+    assert_eq!(body["max_tokens"], 16384);
     Ok(())
 }
 

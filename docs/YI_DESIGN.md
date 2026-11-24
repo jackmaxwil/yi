@@ -16,7 +16,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor`, `openai-codex` and `claude` | D191 |
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
-| Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
+| Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, Seatbelt containment on macOS (§8) | D81, D205 |
 | Worktrees and node | Resource admission: a root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14); one machine is a node card, `~/.yi/node.json`, and every live kernel on it takes one of its slots or shares its family's (§9); a child may run its bash in a local container (§11) | D119, D203, D285, D286 |
 | ACP | v2 only; a lower `protocolVersion` gets a version-mismatch error; the wire is hand-rolled and held to a vendored upstream schema tag (§17.2) | D1, D40, D328 |
 | Workspace | `yi serve` owns sessions; `yi console` is an ACP client over its socket; bare `yi` on a terminal opens the console, `--solo` the TUI (§17) | D95, D118 |
@@ -41,7 +41,9 @@ Tape pane, a session's ledger over wall time (left when the terminal pane entere
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
 cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
 host, D286) · a local model server Yi starts or installs (the Laya classifier sidecar left when
-the classifier moved to Jev through OpenRouter).
+the classifier moved to Jev through OpenRouter) · a model that reviews an auto-mode ask before the
+user (`models.autoReview`, left for `desktop/`, #2257: the classifier settles what it can and the user
+answers the rest).
 
 ## 2. Crates and dependency direction
 A folder `crates/x/` is the crate `yi-x` (`scripts/guardrails/check_manifests.py`). The internal
@@ -57,7 +59,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-orb` | Orb geometry and kitty-graphics painter | yi-types |
 | `yi-session` | Session store: JSONL and in-memory repos, ids, queries | yi-types |
 | `yi-context` | Token accounting, compaction cut point, context assembly | yi-types, yi-tools |
-| `yi-permission` | Modes, rules, command classifier, catastrophic denylist, review ledger | yi-types |
+| `yi-permission` | Modes, rules, command classifier, catastrophic denylist | yi-types |
 | `yi-tools` | `Tool` trait, builtin tools, hashline edits, bash jobs, sandbox, checkpoints | yi-types, yi-permission |
 | `yi-mcp-cli` | The `yi mcp` one-shot JSON-RPC client | yi-oauth, yi-types |
 | `yi-kernel` | Jupyter client: connection file, ZMQ framing, HMAC, snapshot, uv install | yi-types |
@@ -332,9 +334,9 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   CC BY 4.0 citation, the snapshot's age and what was left out, and applies nothing.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
-- State: `models { primary, summarizer, advisor, autoReview, classifier, selector, webSearch }` and
+- State: `models { primary, summarizer, advisor, classifier, selector, webSearch }` and
   `webSearch { engine }` in `~/.yi/config.json`
-  ([`config.rs`](../crates/types/src/config.rs)); advisor, autoReview and classifier off until named;
+  ([`config.rs`](../crates/types/src/config.rs)); advisor and classifier off until named;
   [`RetryPolicy`](../crates/ai/src/retry.rs). Shapes: [`model.rs`](../crates/types/src/model.rs).
 - A side model lands with the main-model request it deletes or the capability it buys, judged on
   complete-task cost with its `side:*` usage counted, and it answers an id, a range or an
@@ -605,7 +607,7 @@ on to the broker; the deprecated `approve`/`block` map to allow/deny. The broker
 call: an allow answers only the mode's own ask (journaled as answered by `claudeCodeHook`), never a
 configured ask rule's, a hold's or a write under `.claude`, stays contained where a sandbox exists,
 and never widens what the sandbox lets an in-process write reach; an ask goes to the person, never
-the classifier or reviewer, and refuses headless. `continue: false` denies the call or ends its
+the classifier, and refuses headless. `continue: false` denies the call or ends its
 result with `terminate`, which stops the loop once every call of the batch did. `updatedInput` maps back
 to Yi's arguments before the rules, wall and permission gates and is validated again; a shape that does
 not map exactly (a grep rewrite, a timeout that is no whole second, a multi-file edit, an edit whose
@@ -713,7 +715,7 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   becomes a reviewable `Ask`.
 - With a classifier and an OpenRouter key, `classifier.approval` says when Jev's `noul` answers a
   reviewable auto-mode ask: `instant` (default) first, P(safe) ≥ 0.8 (0.9 if destructive) allows,
-  ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
+  anything lower asks the user; `after-delay` once the
   person has not answered for `askTimeoutSecs` (30; 0 never hands it over), a confident allow only, and only
   where a prompt closes when its call settles elsewhere (the solo TUI); `wait-for-user` never.
   The question carries the call, the latest typed user message, the last two answered calls, the
@@ -727,10 +729,12 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   | 0.8 | 0 | 53 |
   | 0.9 | 0 | 27 |
   | 0.8, 0.9 destructive (default) | 0 | 44 |
-- With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
-  with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
+- An auto-mode ask the classifier does not settle goes to the user; no model reviews it first.
+  A call the user refused is remembered (256) so a later confident classifier answer cannot
+  overrule it.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
-  whether the user, the reviewer or nobody answered.
+  whether the user, the classifier or nobody answered (`reviewer` is what a removed model
+  auto-reviewer wrote, and old sessions still replay it).
 - Owner: [`decide`](../crates/permission/src/decide.rs), [`sandbox`](../crates/tools/src/sandbox.rs)
 - State: `PermissionMode { Ask, Auto, Yolo }`, `Decision { Allow, Contain, Deny, Ask { title,
   description, reviewable } }`, `Class { Safe, Destructive, Egress, Unknown }`.
@@ -1260,7 +1264,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 - `~/.yi/config.json` is the only config file, parsed strictly before dispatch and read again as each
   session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
-  `models{primary,summarizer,advisor,autoReview,classifier,selector,webSearch}`, `webSearch{engine}`,
+  `models{primary,summarizer,advisor,classifier,selector,webSearch}`, `webSearch{engine}`,
   `bash{autoBackgroundMs}`, `plans{dir}`, `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`,
   `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace,follow}`, `lanes{enabled,slots,land}`,
@@ -1272,11 +1276,18 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   [`config.rs`](../crates/types/src/config.rs)
 
 ### 17.2 ACP and daemon
-`yi-acp` speaks a hand-rolled ACP v2 subset over JSON-RPC 2.0, shapes in `yi-types::acp`,
-measured against the upstream `schema-v2.0.0-alpha.5` schema vendored under
-`crates/cli/tests/fixtures/acp-v2/` (D328): every frame a faux session emits must pass it, with
-no custom root field and no `other` value outside `_`. Yi's own fields on a standard shape ride
-`_meta.yi`. `initialize` advertises `session: {delete: {}}`; below version 2 it fails −32602,
+`yi-acp` and `yi-console` speak ACP v2 over JSON-RPC 2.0 with the upstream
+`agent-client-protocol-schema` crate (1.17.0, feature `unstable_protocol_v2`, module `v2`), the
+types-only half of `agent-client-protocol`: the standard shapes are its structs, built and read
+through its builders. `yi-types::acp` keeps Yi's own (`AcpMeta`, `AcpRoute*`, `AcpForkParams`,
+`AcpCommitted`, `AcpPromptResult`, `AcpPending*`, `AcpShow*`, `DaemonLedger*`) and one standard
+family, the permission request with its options and subject: the daemon's `_yi/pending` list is
+built from it and the desktop client decodes it, and `yi-types` takes no protocol crate (§2). The
+desktop client holds its own config-option and stop-reason shapes. The wire is measured against the crate's own
+schema, upstream `schema/v2/schema.json` at tag v1.17.0, vendored under
+`crates/cli/tests/fixtures/acp-v2/` beside the older `schema-v2.0.0-alpha.5` file (D351, whose
+hand-rolled subset the crate supersedes): every frame a faux session emits must pass it, with no custom root field and no
+`other` value outside `_`. Yi's own fields on a standard shape ride `_meta.yi`. `initialize` advertises `session: {delete: {}}`; below version 2 it fails −32602,
 an unknown method −32601, bad JSON −32700.
 
 | Method | Side | What |
@@ -1295,7 +1306,7 @@ an unknown method −32601, bad JSON −32700.
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
-as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
+as `OtherSessionUpdate`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, at most 512 entries and 8 MiB per frame; a root's
 last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
 `_yi/committed{entry, ancestors, ancestors_notice}` (`AcpCommitted`: each user or assistant message as saved, with
@@ -1501,6 +1512,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 |---|---|---|---|---|
 | `serde` | `derive`, `std` | types | every wire and disk shape (§20) | hand-rolled JSON: compat correctness matters more |
 | `serde_json` | `std`, `preserve_order` | all but orb, permission | JSON with key order kept, so a session file round-trips byte for byte | same |
+| `agent-client-protocol-schema` | `unstable_protocol_v2`; no `schemars` | acp, console | the ACP v2 wire shapes, so Yi stops hand-writing a protocol another team versions (§17.2); pulls `anyhow` (scoped wrapper in `deny.toml`), `serde_with`, `strum`, `derive_more` | the full `agent-client-protocol` crate (96 crates with futures, tracing and uuid, a runtime Yi does not use); keeping `yi-types::acp` (every protocol revision a hand edit) |
 | `tokio` | `rt`, `sync`, `time`, `macros`, `process`, `io-util`, `net`; no `rt-multi-thread` | ai, kernel, loop, runtime, acp, tui, cli | provider streams, kernel sockets, scheduler timers | `smol`: `zeromq` is tokio-shaped |
 | `ureq` | `tls` | ai, oauth, mcp-cli, kernel, cli | blocking HTTP and SSE to providers, OAuth, MCP HTTP, the uv download, the release tarball; bundled webpki roots only, because `native-certs` linked CoreFoundation into every command's startup, a flat ~13.05M instructions per command: 33.8% of `--version`, 8.3% of `ask` | `reqwest` (hyper stack), `native-tls` (openssl on Linux), `native-certs` (keychain CAs, a corporate-proxy CA, at that startup cost) |
 | `h2` | — | ai | HTTP/2 Connect to Cursor's agent `Run` method; the server rejects HTTP/1.1 | `reqwest` / `hyper` (banned); `ureq` (HTTP/1.1) |
@@ -1579,7 +1591,7 @@ covers, and the attribute covers the one item after it, to its matching brace or
   changed shape until `--update`, which lands in its own commit (§21).
 - Unknown data survives where the shape allows it: structs carry `#[serde(flatten)]` maps
   (38 in `crates/types/src`); open wire enums end in `#[serde(untagged)] Other(String)` (e.g.
-  `AcpStopReason`, `SpanKind`) or a `#[serde(other)]` unit variant.
+  `AcpShowOutcome`, `SpanKind`) or a `#[serde(other)]` unit variant.
 - Config structs in [`config.rs`](../crates/types/src/config.rs) and `LanesConfig` in
   [`lane.rs`](../crates/types/src/lane.rs) set `deny_unknown_fields`: an unknown key is an error.
 - Golden fixtures in [`crates/types/tests/fixtures`](../crates/types/tests/fixtures) are added,

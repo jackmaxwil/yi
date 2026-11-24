@@ -88,7 +88,6 @@ struct BrokerSetup {
     store: Option<yi_session::SharedSession>,
     /// The `--session-dir` the root's broker holds; the session's broker is its child's.
     session_dir: Option<PathBuf>,
-    reviewer: Option<Arc<yi_runtime::auto_review::Reviewer>>,
 }
 
 impl Default for BrokerSetup {
@@ -101,7 +100,6 @@ impl Default for BrokerSetup {
             session: None,
             store: None,
             session_dir: None,
-            reviewer: None,
         }
     }
 }
@@ -146,9 +144,6 @@ async fn run_held(
         broker = broker.for_child(&gate.wall, project);
     }
     let broker = Arc::new(broker);
-    if let Some(reviewer) = gate.reviewer {
-        broker.set_reviewer(reviewer);
-    }
     if let Some(store) = gate.store {
         session.attach_store(store)?;
     }
@@ -1005,11 +1000,8 @@ async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult 
 
 /// After a contained refusal in a protected dir (here the git hooks), a walled session's
 /// retry naming it is refused outright, never approved to run outside the sandbox, where it
-/// would read another session's transcript. `asker` or `reviewer` approves anything asked.
-async fn walled_retry(
-    asker: Option<Asker>,
-    reviewer: Option<Arc<yi_runtime::auto_review::Reviewer>>,
-) -> Result<String, Box<dyn Error>> {
+/// would read another session's transcript. `asker` approves anything asked.
+async fn walled_retry(asker: Option<Asker>) -> Result<String, Box<dyn Error>> {
     let root = Scratch::new("yi-seam-walled-retry")?;
     // Under HOME: a refusal there asks again for a later call that only names its dir.
     let project = root.join("home/project");
@@ -1025,7 +1017,6 @@ async fn walled_retry(
     let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
     let gate = BrokerSetup {
         asker,
-        reviewer,
         wall: Wall {
             deny_write: Vec::new(),
             deny_read: vec![project.join("secret")],
@@ -1048,29 +1039,8 @@ fn refused_outright(retry: &str) -> bool {
 async fn a_walled_retry_an_asker_approves_never_runs_outside_the_sandbox() -> TestResult {
     seatbelt()?;
     let allow: Asker = Arc::new(|_| AskOutcome::AllowOnce);
-    let retry = walled_retry(Some(allow), None).await?;
+    let retry = walled_retry(Some(allow)).await?;
     assert!(refused_outright(&retry), "an asker ran it outside: {retry}");
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbox() -> TestResult {
-    seatbelt()?;
-    let provider = Arc::new(ProviderStream::new(None));
-    provider.queue_faux(vec![faux_assistant_message(
-        vec![yi_ai::faux::faux_text("allow")],
-        StopReason::Stop,
-    )]);
-    let reviewer = yi_runtime::auto_review::Reviewer::new(
-        provider,
-        faux_model(128_000),
-        yi_runtime::classifier::Screeners::default(),
-    );
-    let retry = walled_retry(None, Some(Arc::new(reviewer))).await?;
-    assert!(
-        refused_outright(&retry),
-        "the reviewer ran it outside: {retry}"
-    );
     Ok(())
 }
 

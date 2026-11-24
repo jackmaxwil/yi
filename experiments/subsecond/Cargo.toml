@@ -1,0 +1,10 @@
+[package]
+name = "yi-subsecond-experiment"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+subsecond = "=0.8.0-alpha.3"

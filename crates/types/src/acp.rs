@@ -3,18 +3,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// JSON-RPC 2.0 method frame, either direction (request when `id` is
-/// present, notification otherwise).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcpFrame {
-    pub jsonrpc: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<Value>,
-    pub method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<Value>,
-}
-
 /// The fields a relay routes a frame by, read in place; the frame itself travels as its bytes.
 /// A field spelled with an escape fails the read, and the caller parses the whole frame.
 #[derive(Debug, Default, Deserialize)]
@@ -46,93 +34,6 @@ pub struct AcpRouteUpdate<'a> {
 
 fn present<'de, D: serde::Deserializer<'de>>(value: D) -> Result<bool, D::Error> {
     serde::de::IgnoredAny::deserialize(value).map(|_| true)
-}
-
-/// JSON-RPC 2.0 success response to an ACP client request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcpResponse {
-    pub jsonrpc: String,
-    pub id: Value,
-    pub result: Value,
-}
-
-/// JSON-RPC 2.0 error response to an ACP client request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcpErrorResponse {
-    pub jsonrpc: String,
-    pub id: Value,
-    pub error: AcpErrorShape,
-}
-
-/// JSON-RPC error object; `code` follows the JSON-RPC 2.0 vocabulary.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcpErrorShape {
-    pub code: i64,
-    pub message: String,
-}
-
-/// Params of the `session/update` notification.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpUpdateParams {
-    pub session_id: String,
-    pub update: AcpSessionUpdate,
-}
-
-/// ACP v2 `session/update` payload — the subset of update kinds Yi emits
-/// plus an extension carrier for `_yi/*` updates (design §17.2).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "sessionUpdate", rename_all = "snake_case")]
-pub enum AcpSessionUpdate {
-    #[serde(rename_all = "camelCase")]
-    AgentMessageChunk {
-        message_id: String,
-        content: AcpContentBlock,
-    },
-    #[serde(rename_all = "camelCase")]
-    AgentThoughtChunk {
-        message_id: String,
-        content: AcpContentBlock,
-    },
-    #[serde(rename_all = "camelCase")]
-    AgentMessage {
-        message_id: String,
-        content: Vec<AcpContentBlock>,
-    },
-    #[serde(rename_all = "camelCase")]
-    UserMessage {
-        message_id: String,
-        content: Vec<AcpContentBlock>,
-    },
-    StateUpdate(AcpState),
-    ToolCallUpdate(AcpToolCallUpdate),
-    #[serde(rename_all = "camelCase")]
-    ToolCallContentChunk {
-        tool_call_id: String,
-        content: AcpToolContent,
-    },
-    #[serde(rename_all = "camelCase")]
-    TerminalUpdate {
-        terminal_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        command: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        exit_status: Option<AcpTerminalExit>,
-    },
-    #[serde(rename_all = "camelCase")]
-    TerminalOutputChunk {
-        terminal_id: String,
-        data: String,
-    },
-    #[serde(rename_all = "camelCase")]
-    UsageUpdate {
-        used: u64,
-        size: u64,
-    },
-    /// Extension or future update kinds; `sessionUpdate` values beginning
-    /// with `_` are implementation extensions (`_yi/*`, design §17.2).
-    #[serde(untagged)]
-    Extension(AcpExtensionUpdate),
 }
 
 /// ACP v2 tool-call upsert: omitted fields leave the client's value unchanged; also the
@@ -180,41 +81,6 @@ pub struct DaemonLedgerEntry {
     pub pinned_ms: Option<u64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
-}
-
-/// Carrier for `_yi/*` extension updates and unknown future update kinds;
-/// the discriminator plus its fields re-emit verbatim (§20).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcpExtensionUpdate {
-    #[serde(rename = "sessionUpdate")]
-    pub session_update: String,
-    #[serde(flatten)]
-    pub fields: BTreeMap<String, Value>,
-}
-
-/// ACP v2 session state (`state_update`); `stopReason` accompanies `idle`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum AcpState {
-    Running,
-    #[serde(rename_all = "camelCase")]
-    Idle {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        stop_reason: Option<AcpStopReason>,
-    },
-    RequiresAction,
-}
-
-/// ACP v2 stop reasons; unknown values round-trip via `Other`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AcpStopReason {
-    EndTurn,
-    MaxTokens,
-    Refusal,
-    Cancelled,
-    #[serde(untagged)]
-    Other(String),
 }
 
 /// ACP content block — Yi emits text; unknown blocks round-trip via `Other`.
@@ -322,42 +188,6 @@ pub enum AcpToolKind {
     Unknown(String),
 }
 
-/// Exit information for a terminal update; the wire's `exitCode` is unsigned.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpTerminalExit {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<u32>,
-}
-
-/// `initialize` response body; `protocolVersion` is always 2.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpInitializeResult {
-    pub protocol_version: u16,
-    pub info: AcpImplementation,
-    pub capabilities: Value,
-    pub auth_methods: Vec<Value>,
-}
-
-/// Implementation info advertised in `initialize`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcpImplementation {
-    pub name: String,
-    pub version: String,
-}
-
-/// `session/new` and `session/resume` response body; resume carries no `sessionId`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpSessionResult {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    pub config_options: Vec<AcpConfigOption>,
-    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<AcpMeta>,
-}
-
 /// The spec forbids custom fields at the root of its types; Yi's ride `_meta.yi`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AcpMeta {
@@ -448,32 +278,6 @@ pub struct AcpCommitted {
     pub ancestors_notice: Option<String>,
 }
 
-/// A `select` session config option; `currentValue` is one of the `options` values.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpConfigOption {
-    pub config_id: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub kind: AcpConfigKind,
-    pub current_value: String,
-    pub options: Vec<AcpConfigChoice>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AcpConfigKind {
-    Select,
-    #[serde(untagged)]
-    Other(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcpConfigChoice {
-    pub value: String,
-    pub name: String,
-}
-
 /// `session/prompt` response: sent once the prompt is inserted, or at once with `queue_place` when queued mid-turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -528,17 +332,6 @@ pub enum AcpPermissionOptionKind {
     RejectAlways,
     #[serde(untagged)]
     Other(String),
-}
-
-/// `session/request_permission` response outcome.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum AcpPermissionOutcome {
-    Cancelled,
-    #[serde(rename_all = "camelCase")]
-    Selected {
-        option_id: String,
-    },
 }
 
 /// The agent's request that its client show a thing; only a client that set `_meta.yi.shows`

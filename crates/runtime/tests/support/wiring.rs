@@ -86,7 +86,6 @@ pub(crate) fn walled_session(w: Wired<'_>) -> yi_runtime::AgentSession {
             family_dir: w.board,
             summarizer: None,
             advisor: None,
-            auto_review: None,
             plan_stale_turns: None,
             plans_dir: Some(w.rlm.join("plans")),
             parent_link: w.link,
@@ -100,4 +99,37 @@ pub(crate) fn walled_session(w: Wired<'_>) -> yi_runtime::AgentSession {
         },
     );
     session
+}
+
+/// The wiring a plain root gets: no broker, no wall, one lane slot, its plans and rlm dir under `root`.
+pub(crate) fn root_wiring(
+    provider: Arc<yi_runtime::ProviderStream>,
+    root: &std::path::Path,
+) -> yi_runtime::RuntimeWiring {
+    yi_runtime::RuntimeWiring {
+        provider,
+        system_prompt: "sys".to_owned(),
+        tool_execution: yi_loop::ExecutionMode::Sequential,
+        cwd: root.to_path_buf(),
+        home: root.join("home"),
+        lane_slots: 1,
+        broker: None,
+        tools: Arc::new(yi_tools::builtin_tools),
+        depth: 0,
+        max_depth: 1,
+        rlm_dir: root.join("rlm"),
+        family_dir: None,
+        summarizer: None,
+        advisor: None,
+        plan_stale_turns: None,
+        plans_dir: Some(root.join("plans")),
+        parent_link: None,
+        wall: yi_runtime::Wall::default(),
+        auto_background: None,
+        deadline: None,
+        kernel_prewarm: false,
+        mcp_read: None,
+        sessions_dir: None,
+        kernels: yi_runtime::fetch::KernelServiceMap::new(),
+    }
 }

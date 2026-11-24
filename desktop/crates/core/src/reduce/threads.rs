@@ -4,7 +4,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
-use yi_types::acp::{AcpConfigOption, AcpStopReason};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::subagent::ChildFlag;
@@ -20,6 +19,7 @@ use crate::reduce::usage::{Tokens, Usage};
 use crate::wire::frame::{Kept, Replay};
 use crate::wire::replay::Sync;
 use crate::wire::request::RequestId;
+use crate::wire::shapes::{AcpConfigOption, AcpStopReason};
 
 /// What the server says a thread is doing.
 #[derive(Debug, Clone, PartialEq)]

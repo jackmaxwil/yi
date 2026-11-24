@@ -108,7 +108,7 @@ pub(crate) fn rig_of(
         factory: Arc::new(move |build: ChildBuild<'_>| {
             let mut child = scripted(script.clone());
             if asks {
-                let ask = crate::auto_review::AskUserTool::new(None).asking(Some(build.link));
+                let ask = crate::ask_user::AskUserTool::default().asking(Some(build.link));
                 let ask: Arc<dyn yi_tools::Tool> = Arc::new(ask);
                 child.use_tools(vec![ask], cwd.clone(), None);
             }

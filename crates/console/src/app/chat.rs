@@ -4,12 +4,12 @@
 use std::collections::BTreeSet;
 use std::sync::mpsc::TryRecvError;
 
+use agent_client_protocol_schema::v2 as acp;
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 use yi_tui::app::command_channel;
 use yi_tui::input::handle_terminal_event;
 use yi_tui::{AskChoice, AskRequest, Command, Reply, TuiOptions, UiEvent};
-use yi_types::acp::{AcpExtensionUpdate, AcpPermissionParams, AcpSessionResult};
 use yi_types::entry::Entry;
 use yi_types::subagent::{ChildId, ChildStatus, ChildUpdate};
 
@@ -205,7 +205,7 @@ impl App {
         &mut self,
         outbound: &Outbound,
         id: &SessionId,
-        extension: AcpExtensionUpdate,
+        extension: acp::OtherSessionUpdate,
     ) {
         let Ok(decoded) = decode(extension) else {
             return self.drop_frame();
@@ -410,25 +410,28 @@ impl App {
     }
 
     pub(super) fn absorb_result(&mut self, id: &SessionId, result: &Value) {
-        let Ok(result) = serde_json::from_value::<AcpSessionResult>(result.clone()) else {
+        let Ok(result) = serde_json::from_value::<acp::ResumeSessionResponse>(result.clone())
+        else {
             return;
         };
-        if let Some(name) = result.meta.as_ref().and_then(|meta| meta.yi.name.as_ref())
+        let meta = (result.meta.map(Value::Object))
+            .and_then(|meta| serde_json::from_value::<yi_types::acp::AcpMeta>(meta).ok());
+        if let Some(name) = meta.as_ref().and_then(|meta| meta.yi.name.as_ref())
             && let Some(row) = self.state.sessions.get_mut(id)
         {
             row.name = Some(name.clone());
         }
         let config = config_of(&result.config_options);
         self.apply_config(id, &config, false);
-        if let Some(start) = result.meta.as_ref().and_then(|meta| meta.yi.rewriter) {
+        if let Some(start) = meta.and_then(|meta| meta.yi.rewriter) {
             self.learn_rewriter(id, start);
         }
     }
 
     /// The ask lands in one pane per session: the focused one if it shows the session,
     /// else the lowest; none yet, and it waits for a pane to open.
-    pub(super) fn offer_ask(&mut self, request_id: String, params: AcpPermissionParams) {
-        let session = SessionId(params.session_id.clone());
+    pub(super) fn offer_ask(&mut self, request_id: String, params: acp::RequestPermissionRequest) {
+        let session = SessionId(params.session_id.0.to_string());
         let focused = self.state.focused_pane_id();
         let mut targets: Vec<PaneId> = self
             .state
@@ -470,9 +473,10 @@ impl App {
             options: params.options,
         });
         let _ = chat.events.0.send(UiEvent::Ask(AskRequest {
-            title: params.title,
+            title: params.title.clone(),
             description: params
                 .description
+                .clone()
                 .unwrap_or_else(|| "the agent asks for permission".to_owned()),
             grants,
             reply: tx,
@@ -484,7 +488,7 @@ impl App {
     pub(super) fn deliver_orphan_asks(&mut self, session: &SessionId) {
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.state.orphan_asks)
             .into_iter()
-            .partition(|(_, params)| params.session_id == session.0);
+            .partition(|(_, params)| *params.session_id.0 == *session.0);
         self.state.orphan_asks = rest;
         for (request_id, params) in mine {
             self.offer_ask(request_id, params);
