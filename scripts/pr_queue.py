@@ -112,20 +112,16 @@ def state_of(f, off=""):
     return name, owner, f["since"], clock
 
 
-def epoch(at):
-    return datetime.datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
-
-
 def facts(pr, notes, statuses, holds, who):
     """What `state_of` reads, from the listing's PR, its comments, its head's status rows and the round authors."""
     head = pr["head"]["sha"]
     seen = [a for a in pr_review.attempts_of(notes, who, pr["number"]) if holds(a["sha"], head)]
-    lanes, times = {}, [epoch(pr["updated_at"])]
+    lanes, times = {}, [pr_review.when(pr["updated_at"])]
     for status in statuses:
         job = forge_pr.required_jobs([status["context"]])[0]
         if job in (*LANES, "title"):
             lanes[job] = "failure" if status["status"] == "error" else status["status"]
-            times.append(epoch(status.get("updated_at") or pr["updated_at"]))
+            times.append(pr_review.when(status.get("updated_at") or pr["updated_at"]))
     gate = ("title" if lanes.get("title") == "failure" else "red" if "failure" in lanes.values()
             else "green" if all(lanes.get(job) == "success" for job in (*LANES, "title")) else "pending")
     fixes = [r for r in bot_meter.rows(notes) if r["kind"] == "yi-autofix" and r.get("from") == head[:12]]
@@ -148,22 +144,17 @@ def said(description):
     return description.split(" since ")[0], description.endswith(" parked")
 
 
-NOTES = {}
+def comments_of(number):
+    """One PR's comments, each page read with a timeout."""
+    def transport(method, path, payload):
+        answer = forge_pr.fgj_api(method, path, payload, timeout=FORGE_SECS) or []
+        if not isinstance(answer, list):
+            raise SystemExit(f"#{number}: the forge did not list the comments: {answer}")
+        return answer
+    return list(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/comments?x=1"))
 
 
-def notes_of(number):
-    """The comments the tick already read for this PR, else a read with a timeout."""
-    if number not in NOTES:
-        def transport(method, path, payload):
-            answer = forge_pr.fgj_api(method, path, payload, timeout=FORGE_SECS) or []
-            if not isinstance(answer, list):
-                raise SystemExit(f"#{number}: the forge did not list the comments: {answer}")
-            return answer
-        NOTES[number] = list(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/comments?x=1"))
-    return NOTES[number]
-
-
-def assess(pr, who):
+def assess(pr, who, notes):
     """(state, owner, since, clock, the head's status rows) as the forge has them now."""
     sha, base = pr["head"]["sha"], pr["base"]["ref"]
     combined = forge_pr.fgj_api("GET", f"repos/{forge_pr.repo()}/commits/{sha}/status", timeout=FORGE_SECS)
@@ -172,17 +163,19 @@ def assess(pr, who):
     rows = combined.get("statuses") or []
     merged = functools.cache(lambda: pr_review.holds_for(pr["number"], base))
     holds = lambda reviewed, head: head.startswith(reviewed) or merged()(reviewed, head)
-    return (*state_of(facts(pr, notes_of(pr["number"]), rows, holds, who)), rows)
+    return (*state_of(facts(pr, notes, rows, holds, who)), rows)
 
 
-def report(every):
-    """One `yi/state` status per open head, written only when what it says changed."""
+def report(every, held=None):
+    """One `yi/state` status per open head, written only when what it says changed; `held` is the comments
+    the tick already read, by PR number."""
     if os.environ.get("STATE_REPORT") != "on":
         return
     now, wrote, who = time.time(), 0, pr_review.authors()
     for pr in every:
         try:
-            state, owner, since, clock, rows = assess(pr, who)
+            notes = (held or {}).get(pr["number"])
+            state, owner, since, clock, rows = assess(pr, who, comments_of(pr["number"]) if notes is None else notes)
             text = describe(state, owner, since, clock, now)
             old = next((row.get("description") or "" for row in rows if row.get("context") == STATE), "")
             if said(old) == said(text):
@@ -203,7 +196,7 @@ def cmd_parked(args):
     every, now, rows, who = listing(forge_pr.open_pulls(), "the open pull requests"), time.time(), [], pr_review.authors()
     for pr in every:
         try:
-            state, owner, since, clock, _ = assess(pr, who)
+            state, owner, since, clock, _ = assess(pr, who, comments_of(pr["number"]))
         except (Exception, SystemExit) as err:
             print(f"#{pr['number']} unreadable: {err}"[:300])
             continue
@@ -341,11 +334,10 @@ def eligible_problem(pr, jobs):
     return None
 
 
-def dequeue_reason(pr):
+def dequeue_reason(pr, notes):
     if "autofix:failed" in {label["name"] for label in pr.get("labels") or []}:
         return "the fixer gave up on it (`autofix:failed`)"
-    NOTES[pr["number"]] = pr_review.comments(forge_pr.repo(), pr["number"])
-    rounds = pr_review.rounds_of(NOTES[pr["number"]], pr_review.authors(), pr["number"])
+    rounds = pr_review.rounds_of(notes, pr_review.authors(), pr["number"])
     if rounds and rounds[-1].get("verdict") == "blocked":
         return "its last review round is blocked"
     return None
@@ -381,14 +373,16 @@ def base_of(tip, body, in_main):
 def observe(mode):
     git("fetch", "-q", "origin", "main")
     every = listing(forge_pr.open_pulls(), "the open pull requests")
-    pulls = queued_pulls(every)
+    pulls, notes = queued_pulls(every), {}
     for pr in list(pulls):
-        if reason := dequeue_reason(pr):
+        if "autofix:failed" not in {label["name"] for label in pr.get("labels") or []}:
+            notes[pr["number"]] = pr_review.comments(forge_pr.repo(), pr["number"])
+        if reason := dequeue_reason(pr, notes.get(pr["number"], [])):
             set_label(pr["number"], LABEL, False)
             comment(pr["number"], f"Left the queue: {reason}. Add the `{LABEL}` label again once that is answered.")
             pulls.remove(pr)
     obs = {"candidate": None, "in_main": False, "base": None, "main": git("rev-parse", "origin/main").stdout.strip(),
-           "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "members": [], "queued": [], "pulls": pulls, "open": every}
+           "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "members": [], "queued": [], "pulls": pulls, "open": every, "notes": notes}
     if git("ls-remote", "origin", f"refs/heads/{CANDIDATE}").stdout.strip():
         git("fetch", "-q", "origin", f"+refs/heads/{CANDIDATE}:refs/remotes/origin/{CANDIDATE}")
         tip = git("rev-parse", f"origin/{CANDIDATE}").stdout.strip()
@@ -648,7 +642,6 @@ def land(obs, mode):
 
 
 def tick(mode):
-    NOTES.clear()
     try:
         obs = observe(mode)
     except pr_review.Unanswered as err:
@@ -673,7 +666,7 @@ def tick(mode):
             finish(obs)
     elif action == "paused":
         print(f"queue: paused on {obs['candidate'][:10]}, whose lanes read {obs['lanes']}; deleting {CANDIDATE} resumes")
-    report(obs["open"])
+    report(obs["open"], obs["notes"])
     return 0
 
 
@@ -854,12 +847,13 @@ def scenario_repo(numbers, shared=False):
         module = sys.modules[__name__]
         with mock.patch.multiple(module, ROOT=root, git=counted, record_main=lambda root=ROOT: True,
                                  queued_pulls=lambda every=None: [pulls[number] for number in sorted(queued)], enqueued_at=lambda number: number,
-                                 dequeue_reason=lambda pr: None, eligible_problem=lambda pr, jobs: None,
+                                 dequeue_reason=lambda pr, notes: None, eligible_problem=lambda pr, jobs: None,
                                  record_candidate=lambda candidate: (candidate, True), use_driver=lambda cwd: None,
                                  comment=lambda number, text: comments.append((number, text)), set_label=label, delete_ref=remove,
                                  statuses_url=lambda sha, lane: ""), \
                 mock.patch.multiple(forge_pr, pull=lambda number: pulls[number], is_behind=lambda pr: False, repo=lambda: "r",
-                                    head_jobs=jobs, unreviewed=lambda number, pr: [], open_pulls=lambda: []):
+                                    head_jobs=jobs, unreviewed=lambda number, pr: [], open_pulls=lambda: []), \
+                mock.patch.object(pr_review, "comments", lambda repo, number: []):
             state = {"base": base, "pulls": pulls, "queued": queued, "comments": comments, "autofix": autofix, "pushes": pushes}
             yield state
 
@@ -1123,7 +1117,7 @@ def shadow_cases():
     bad, posted = [], []
     heads = {1812: "55a77022f2c6c470ae6bb5fc601c17236d8e883d", 1857: "71c203e2372f576ae772b9a4cedc59a2fd7e907d"}
     obs = {"candidate": "e0f35fe52686c2d9a7b0d3f1c5e8a4b6d7f90123", "base": "9d4f83c6f41f01b011ed48e063396ec46eceaa09",
-           "members": list(heads.items()), "stale_member": None, "open": []}
+           "members": list(heads.items()), "stale_member": None, "open": [], "notes": {}}
     pull = lambda number: {"title": "t", "head": {"ref": "b"}}
     with mock.patch.object(forge_pr, "pull", pull), mock.patch.object(pr_review, "comments", lambda repo, n: [{"body": b} for m, b in posted if m == n]), \
             mock.patch.multiple(sys.modules[__name__], same_tree=lambda *a: True, comment=lambda n, b: posted.append((n, b)),
@@ -1296,14 +1290,17 @@ def state_cases(off=""):
     return bad
 
 
-def forge_double(statuses, refuse=()):
-    """A forge for the report: comment pages, combined statuses by head, status posts kept; any other call fails."""
+def forge_double(statuses, refuse=(), pulls=()):
+    """A forge for the tick and the report: the open listing, comment and timeline pages, combined statuses by
+    head, status posts kept; any other call fails."""
     calls = []
 
     def answer(method, path, payload=None, timeout=None):
         calls.append((method, path, payload, timeout))
         sha = path.split("/")[-2] if path.endswith("/status") else path.rsplit("/", 1)[-1]
-        if method == "GET" and "/comments?" in path:
+        if method == "GET" and "/pulls?state=open" in path:
+            return list(pulls)
+        if method == "GET" and ("/comments?" in path or "/timeline?" in path):
             return []
         if method == "GET" and path.endswith("/status"):
             return {"message": "500 database is locked"} if sha in refuse else {"statuses": statuses.get(sha, [])}
@@ -1330,7 +1327,7 @@ def report_cases():
         if calls:
             bad.append(f"a report switched off made {len(calls)} forge calls")
         with mock.patch.dict(os.environ, {"STATE_REPORT": "on"}):
-            NOTES.clear(), report(every)
+            report(every)
             posts = [c for c in calls if c[0] == "POST"]
             if sorted(c[1].rsplit("/", 1)[1][0] for c in posts) != ["a", "c"] or any(c[2]["state"] != "success" for c in posts):
                 bad.append(f"one head's refused read did not leave the others written, each success: {posts}")
@@ -1341,16 +1338,68 @@ def report_cases():
             if "awaiting review, waiting on review" not in str(statuses.get("a" * 40)):
                 bad.append(f"a head with no lane run read {statuses.get('a' * 40)}")
             before = len(calls)
-            NOTES.clear(), report(every)
+            report(every)
             if [c for c in calls[before:] if c[0] == "POST"]:
                 bad.append("an unchanged state was written again, the 272-comment loop as statuses")
             with mock.patch.object(time, "time", lambda: now + 3600 * 20):
                 before = len(calls)
-                NOTES.clear(), report(every)
+                report(every)
                 crossed = [c for c in calls[before:] if c[0] == "POST"]
             if len(crossed) != 2 or not all(c[2]["description"].endswith(" parked") for c in crossed):
                 bad.append(f"crossing the clock did not write each head parked once: {crossed}")
     return bad
+
+
+def aged(n, sha, hours, now, labels=()):
+    return {"number": n, "title": f"PR {n}", "labels": [{"name": name} for name in labels], "base": {"ref": "main"},
+            "head": {"sha": sha}, "mergeable": True,
+            "updated_at": datetime.datetime.fromtimestamp(now - hours * 3600, datetime.timezone.utc).isoformat()}
+
+
+def tick_call_cases():
+    """A tick reads a queued PR's comments once with the report on or off, and off it reads nothing else of an
+    unqueued one; under MERGE_QUEUE off the report alone runs, and with both off nothing is asked."""
+    bad, now = [], time.time()
+    pulls = [aged(1, "a" * 40, 1, now, ["queue"]), aged(2, "b" * 40, 1, now)]
+    seen = {}
+    for switch in ("off", "on"):
+        answer, calls = forge_double({}, pulls=pulls)
+        with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+                mock.patch.object(sys.modules[__name__], "git", mock.Mock(return_value=mock.Mock(stdout="", returncode=0))), \
+                mock.patch.dict(os.environ, {"STATE_REPORT": switch, "YI_ROUND_AUTHORS": "yi-bot"}), contextlib.redirect_stdout(io.StringIO()):
+            tick("on")
+        seen[switch] = calls
+        if switch == "off" and [c for c in calls if "/issues/2/" in c[1] or "b" * 40 in c[1]]:
+            bad.append(f"a tick with the report off read the unqueued PR: {calls}")
+    comments = {switch: [c[1] for c in calls if "/issues/1/comments" in c[1]] for switch, calls in seen.items()}
+    if comments["on"] != comments["off"]:
+        bad.append(f"the report read the queued PR's comments again: {comments}")
+    if len([c for c in seen["off"] if c[0] != "GET"]) or len(seen["on"]) <= len(seen["off"]):
+        bad.append(f"the report switch did not decide the extra calls: off {len(seen['off'])}, on {len(seen['on'])}")
+    for queue, switch, want in (("off", "on", 2), ("off", "off", 0)):
+        answer, calls = forge_double({}, pulls=pulls)
+        with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+                mock.patch.object(sys.modules[__name__], "tick", mock.Mock(return_value=0)) as ticked, \
+                mock.patch.dict(os.environ, {"MERGE_QUEUE": queue, "STATE_REPORT": switch, "YI_ROUND_AUTHORS": "yi-bot"}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            main([])
+        posts = [c for c in calls if c[0] == "POST"]
+        if ticked.called or len(posts) != want or (not want and calls):
+            bad.append(f"MERGE_QUEUE {queue} with STATE_REPORT {switch} ticked={ticked.called}, posted {len(posts)} of {want}, calls {len(calls)}")
+    return bad
+
+
+def parked_cases():
+    """`just pr parked` prints the PRs past their clock, oldest first, and never one within it; it writes nothing."""
+    now = time.time()
+    pulls = [aged(1, "a" * 40, 30, now), aged(2, "b" * 40, 1, now), aged(3, "c" * 40, 40, now)]
+    answer, calls = forge_double({}, pulls=pulls)
+    with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot"}), contextlib.redirect_stdout(io.StringIO()) as out:
+        cmd_parked(argparse.Namespace())
+    printed = [line.split()[0] for line in out.getvalue().splitlines() if line.startswith("#")]
+    bad = [] if printed == ["#3", "#1"] else [f"parked printed {printed}, not ['#3', '#1']: {out.getvalue()!r}"]
+    return bad + [f"parked wrote {c}" for c in calls if c[0] != "GET"]
 
 
 def neutral_cases():
@@ -1378,7 +1427,8 @@ def offline_cases():
     """Every case with the forge's read failing: one that reaches it is a gate `just check` cannot run, since
     the guardrails lane installs no fgj."""
     cases = (rule_cases, git_cases, build_cases, record_cases, landing_cases, shadow_cases, forge_cases, queue_verb_cases,
-             batch_cases, conflict_cases, green_cases, candidate_gate_cases, state_cases, report_cases, neutral_cases)
+             batch_cases, conflict_cases, green_cases, candidate_gate_cases, state_cases, report_cases, neutral_cases,
+             tick_call_cases, parked_cases)
     bad = []
     with mock.patch.object(forge_pr, "fgj_api", side_effect=RuntimeError("fgj")):
         for case in cases:
@@ -1423,7 +1473,10 @@ def main(argv):
         return selfcheck()
     mode = os.environ.get("MERGE_QUEUE", "off")
     if mode not in ("shadow", "on"):
-        print(f"queue: MERGE_QUEUE is {mode}; nothing to do")
+        print(f"queue: MERGE_QUEUE is {mode}; nothing to do but the state report")
+        # Invariant: an off queue takes no queue action, so the report reads the listing itself.
+        if os.environ.get("STATE_REPORT") == "on":
+            report(listing(forge_pr.open_pulls(), "the open pull requests"))
         return 0
     return tick(mode)
 

@@ -1,6 +1,7 @@
 # The merge queue's tick (scripts/pr_queue.py): it merges up to four `queue`-labelled PRs onto current main on
 # queue/candidate, reads that ref's gate, and fast-forwards main to the exact commits that went green.
 # MERGE_QUEUE is `off`, `shadow` or `on`: shadow does everything up to the push and says what it would land.
+# STATE_REPORT `on` writes each open head's `yi/state`, and under an off queue that is all a tick does.
 name: queue
 
 on:
@@ -17,7 +18,7 @@ permissions:
 
 jobs:
   queue:
-    if: vars.MERGE_QUEUE == 'on' || vars.MERGE_QUEUE == 'shadow'
+    if: vars.MERGE_QUEUE == 'on' || vars.MERGE_QUEUE == 'shadow' || vars.STATE_REPORT == 'on'
     runs-on: llm
     timeout-minutes: 10
     steps:

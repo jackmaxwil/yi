@@ -16,6 +16,7 @@ without a forge or a model; the verbs are `just pr review|fix|sweep`.
 """
 import argparse
 import contextlib
+import datetime
 import fcntl
 import fnmatch
 import functools
@@ -231,6 +232,11 @@ def verdict(findings, overridden, n):
     if not holding({"n": n, "findings": findings}):
         return "clean"
     return "override" if overridden else "blocked"
+
+
+def when(at):
+    """A comment's ISO time as a Unix time, 0 for a row that carries none."""
+    return datetime.datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp() if at else 0.0
 
 
 def on_head(sha, head):
