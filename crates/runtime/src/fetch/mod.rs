@@ -160,11 +160,11 @@ impl KernelServiceMap {
         Arc::new(Self::default())
     }
 
-    /// Every session still held, by its kernel or else by itself: the family cap counts these.
+    /// Incident: a reaped child something still referenced kept its seat at the family cap.
     pub fn live(&self) -> usize {
         let kernels = {
             let mut kernels = self.lock();
-            kernels.retain(|_, service| service.strong_count() > 0);
+            kernels.retain(|_, service| service.upgrade().is_some_and(|k| !k.is_disposed()));
             kernels.len()
         };
         kernels.saturating_add(self.kernelless().len())
@@ -183,7 +183,7 @@ impl KernelServiceMap {
             .kernelless
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        held.retain(|session| session.strong_count() > 0);
+        held.retain(|session| session.upgrade().is_some_and(|s| !s.is_retired()));
         held
     }
 
@@ -781,31 +781,40 @@ pub fn user_inputs(session: &yi_session::SharedSession) -> Result<Vec<UserConten
 pub(crate) fn user_entries(
     session: &yi_session::SharedSession,
 ) -> Result<Vec<(String, UserContent)>, String> {
+    user_entries_recent(session, usize::MAX)
+}
+
+pub(crate) fn user_entries_recent(
+    session: &yi_session::SharedSession,
+    keep: usize,
+) -> Result<Vec<(String, UserContent)>, String> {
     let entries = yi_session::lock_session(session)
         .find_entries(&EntryQuery {
             order: EntryOrder::OldestFirst,
             ..EntryQuery::default()
         })
         .map_err(|error| error.to_string())?;
-    Ok(entries
-        .into_iter()
-        .filter_map(|entry| {
-            let Entry::Message {
-                id,
-                message:
-                    AgentMessage::User {
-                        content,
-                        attribution: Attribution::User,
-                        ..
-                    },
-                ..
-            } = entry
-            else {
-                return None;
-            };
-            Some((id, content))
-        })
-        .collect())
+    let mut recent = std::collections::VecDeque::new();
+    for entry in entries {
+        let Entry::Message {
+            id,
+            message:
+                AgentMessage::User {
+                    content,
+                    attribution: Attribution::User,
+                    ..
+                },
+            ..
+        } = entry
+        else {
+            continue;
+        };
+        if recent.len() >= keep {
+            recent.pop_front();
+        }
+        recent.push_back((id, content));
+    }
+    Ok(recent.into())
 }
 
 pub fn content_hash(text: &str) -> String {
@@ -1255,6 +1264,54 @@ mod tests {
             "a finished session leaves no entry behind"
         );
         read_via(&map, "main").await?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_retired_session_still_held_leaves_the_family_count() -> TestResult {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        let session = Arc::new(crate::session::AgentSession::new(
+            crate::session::SessionConfig {
+                system_prompt: String::new(),
+                model: yi_ai::faux::faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            provider,
+        ));
+        let map = KernelServiceMap::new();
+        map.enroll(&session);
+        assert_eq!(map.live(), 1);
+        session.retire();
+        assert_eq!(map.live(), 0);
+        drop(session);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_disposed_kernel_still_held_leaves_the_family_count() -> TestResult {
+        let dir = Scratch::new("yi-fetch-disposed-kernel")?;
+        let service = Arc::new(crate::kernel::KernelService::new(
+            crate::kernel::KernelServiceOptions {
+                cwd: dir.to_path_buf(),
+                home: dir.to_path_buf(),
+                session_dir: None,
+                family_dir: None,
+                host: Arc::new(NoHost),
+                on_restore: None,
+                on_boot: None,
+                sandbox: None,
+                snapshot_key: None,
+                per_session_state: false,
+                cell_ceiling: None,
+            },
+        ));
+        let map = KernelServiceMap::new();
+        map.insert("child", &service);
+        assert_eq!(map.live(), 1);
+        service.dispose().await;
+        assert_eq!(map.live(), 0);
+        drop(service);
         Ok(())
     }
 }

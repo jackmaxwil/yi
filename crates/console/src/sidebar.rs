@@ -321,18 +321,36 @@ pub(crate) fn project_roots(state: &crate::model::ConsoleState) -> Vec<String> {
     roots
 }
 
+/// Every root the saved order names, in its place, then the live roots it does not name: a
+/// directory with no sessions right now keeps its slot until the person moves it.
+pub(crate) fn saved_order(state: &crate::model::ConsoleState) -> Vec<String> {
+    let mut order = state.side.order.clone();
+    order.extend(
+        project_roots(state)
+            .into_iter()
+            .filter(|root| !state.side.order.contains(root)),
+    );
+    let mut seen = std::collections::HashSet::new();
+    order.retain(|root| seen.insert(root.clone()));
+    order
+}
+
 /// Move project `root` to where `to` is in the painted order of projects.
 pub(crate) fn move_group(state: &mut crate::model::ConsoleState, root: &str, to: &str) {
-    let mut roots = project_roots(state);
+    let painted = project_roots(state);
+    if !painted.iter().any(|known| known == root) || !painted.iter().any(|known| known == to) {
+        return;
+    }
+    let mut order = saved_order(state);
     let (Some(from), Some(at)) = (
-        roots.iter().position(|known| known == root),
-        roots.iter().position(|known| known == to),
+        order.iter().position(|known| known == root),
+        order.iter().position(|known| known == to),
     ) else {
         return;
     };
-    let moved = roots.remove(from);
-    roots.insert(at, moved);
-    state.side.order = roots;
+    let moved = order.remove(from);
+    order.insert(at, moved);
+    state.side.order = order;
 }
 
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
@@ -797,7 +815,7 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
 impl App {
     /// The project order as the sidebar lists it, written to config so the next console starts in it.
     pub(crate) fn save_order(&mut self, outbound: &Outbound) {
-        let roots = project_roots(&self.state);
+        let roots = saved_order(&self.state);
         let params = serde_json::json!({"id": "console.projectOrder", "value": roots});
         self.send_request(
             outbound,

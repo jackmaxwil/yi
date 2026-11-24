@@ -59,6 +59,11 @@ pub enum Reply {
         entries: Vec<Entry>,
     },
     Notice(String),
+    Rewriter(yi_types::config::RewriteLength),
+    Rewritten {
+        ask: u64,
+        outcome: Result<String, String>,
+    },
 }
 
 pub trait SessionPort {
@@ -439,8 +444,8 @@ impl App {
                     let typed = attribution.reads_as_typed(*timestamp);
                     if typed {
                         self.open_user_turn();
-                        self.answer = crate::app::AnswerTrack::default();
                     }
+                    self.answer = crate::app::AnswerTrack::default();
                     self.commit_cell(&user_cell(user_text(content), typed));
                 }
                 AgentMessage::Custom {
@@ -486,8 +491,11 @@ impl App {
                     }
                     self.answer.close_message(message);
                 }
-                AgentMessage::ToolResult { tool_name, .. }
-                    if tool_name == crate::transcript::ANSWER_TOOL => {}
+                AgentMessage::ToolResult {
+                    tool_name,
+                    is_error,
+                    ..
+                } if tool_name == crate::transcript::ANSWER_TOOL => self.answer.refused(*is_error),
                 AgentMessage::ToolResult {
                     tool_call_id,
                     tool_name,
@@ -586,6 +594,17 @@ impl App {
                 }
             }
             Reply::Notice(text) => self.notice(text),
+            Reply::Rewriter(start) => self.composer.rewrite = crate::rewrite::Rewrite::ready(start),
+            Reply::Rewritten { ask, outcome } => {
+                let held = self.composer.text();
+                match self.composer.rewrite.answer(ask, outcome, &held) {
+                    Some(Ok(rewrite)) => self.composer.set_text(&rewrite),
+                    Some(Err(reason)) => self.notice(format!(
+                        "no rewrite: {reason} · enter sends your draft as typed"
+                    )),
+                    None => {}
+                }
+            }
         }
         self.scheduler.request();
     }

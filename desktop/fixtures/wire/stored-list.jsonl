@@ -1,0 +1,6 @@
+{"dir": "send", "frame": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 2, "clientInfo": {"name": "spike", "version": "0"}}}}
+{"dir": "recv", "frame": {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 2, "info": {"name": "yi", "version": "0.1041.0"}, "capabilities": {"session": {"delete": {}}}, "authMethods": []}}}
+{"dir": "send", "frame": {"jsonrpc": "2.0", "id": 2, "method": "session/list", "params": {}}}
+{"dir": "recv", "frame": {"jsonrpc": "2.0", "id": 2, "result": {"sessions": []}}}
+{"dir": "send", "frame": {"jsonrpc": "2.0", "id": 3, "method": "session/list", "params": {"cwd": "$PROJECT"}}}
+{"dir": "recv", "frame": {"jsonrpc": "2.0", "id": 3, "result": {"sessions": [{"sessionId": "01a1e351-7d1c-75e4-86e8-ff8029d4ff7e", "cwd": "$PROJECT", "title": "hello", "_meta": {"yi": {"attached": false, "createdAt": 1794815131033}}}]}}}

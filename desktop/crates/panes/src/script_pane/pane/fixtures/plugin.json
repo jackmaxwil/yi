@@ -1,0 +1,1 @@
+{"name": "queue-depth", "title": "Queue depth", "icon": "chart", "adds": ["pane"], "reach": ["ci-ubuntu:9100"], "every": 5}

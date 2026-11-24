@@ -575,6 +575,11 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
         guide.contains("{cmd: {checker: command, timeout_ms}}"),
         "{guide}"
     );
+    assert!(
+        guide.contains("Below plan.done_refusal_cap done runs its check")
+            && !guide.contains("One red verdict short"),
+        "{guide}"
+    );
     Ok(())
 }
 

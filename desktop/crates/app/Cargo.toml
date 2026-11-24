@@ -1,0 +1,27 @@
+[package]
+name = "yi-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Rune's headless flags in release builds; debug builds always take them.
+tooling = ["rune/tooling"]
+
+[dependencies]
+rune = { workspace = true }
+rune-kit = { workspace = true }
+rune-luau = { workspace = true }
+rune-notify = { workspace = true }
+yd-core = { workspace = true }
+yd-mac = { workspace = true }
+yd-panes = { workspace = true }
+yd-sources = { workspace = true }
+yd-ui = { workspace = true }
+
+[dev-dependencies]
+yd-sources = { workspace = true, features = ["test-support"] }

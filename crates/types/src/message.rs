@@ -1,3 +1,4 @@
+use crate::wire::{Unknown, UnknownTag};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Number, Value};
 
@@ -47,9 +48,21 @@ pub enum Content {
 
 const CONTENT_TYPES: [&str; 4] = ["text", "thinking", "image", "toolCall"];
 
+macro_rules! unread_notice {
+    ($noun:literal, $field:literal) => {
+        concat!(
+            "[… 1 ",
+            $noun,
+            " left out: its ",
+            $field,
+            " is newer than this build, which cannot read it; the session file keeps it as written, and no call here returns it]"
+        )
+    };
+}
+
 /// What a reader is shown in place of an [`Content::Other`] block; never the block's own `type`,
 /// which is file text a forged session could fill with anything.
-pub const UNREAD_CONTENT: &str = "[… 1 content block left out: its type is newer than this build, which cannot read it; the session file keeps it as written, and no call here returns it]";
+pub const UNREAD_CONTENT: &str = unread_notice!("content block", "type");
 
 /// The block's object as read; it re-emits as serde_json writes it, and nothing reads inside it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -401,6 +414,38 @@ pub enum AgentMessage {
         tokens_before: u64,
         timestamp: u64,
     },
+    /// A `role` this build does not know, written by a newer build; kept as written.
+    #[serde(untagged)]
+    Other(UnknownMessage),
+}
+
+/// What a reader is shown in place of an [`AgentMessage::Other`]; never its `role`, which is
+/// file text a forged session could fill with anything.
+pub const UNREAD_MESSAGE: &str = unread_notice!("message", "role");
+
+/// The message object as read; it re-emits as serde_json writes it, and nothing reads inside it.
+pub type UnknownMessage = Unknown<MessageTag>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageTag;
+
+impl UnknownTag for MessageTag {
+    const TAG: &'static str = "role";
+    const KNOWN: &'static [&'static str] = &[
+        "user",
+        "assistant",
+        "toolResult",
+        "bashExecution",
+        "custom",
+        "branchSummary",
+        "compactionSummary",
+    ];
+}
+
+impl UnknownMessage {
+    pub fn timestamp(&self) -> u64 {
+        self.u64_field("timestamp").unwrap_or_default()
+    }
 }
 
 /// The text blocks of `blocks` joined by `sep`; every other kind of block is skipped.
@@ -527,6 +572,7 @@ impl AgentMessage {
             Self::BranchSummary { summary, .. } | Self::CompactionSummary { summary, .. } => {
                 summary.clone()
             }
+            Self::Other(_) => String::new(),
         }
     }
 
@@ -538,7 +584,8 @@ impl AgentMessage {
             | Self::BashExecution { .. }
             | Self::Custom { .. }
             | Self::BranchSummary { .. }
-            | Self::CompactionSummary { .. } => Attribution::Unproven,
+            | Self::CompactionSummary { .. }
+            | Self::Other(_) => Attribution::Unproven,
         }
     }
 }

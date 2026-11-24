@@ -1,0 +1,40 @@
+{
+ "pane": "notifications",
+ "frame": 4,
+ "sizes": [
+  {
+   "part": "notification-panel",
+   "check": [
+    "width"
+   ],
+   "selector": ".npanel",
+   "height": 274,
+   "width": 322,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "row",
+   "check": [
+    "height"
+   ],
+   "selector": ".nt",
+   "height": 68,
+   "width": 322,
+   "padding": [
+    6,
+    9,
+    6,
+    9
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  }
+ ]
+}

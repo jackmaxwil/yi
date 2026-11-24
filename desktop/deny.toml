@@ -1,0 +1,35 @@
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[advisories]
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+unused-ignored-advisory = "deny"
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
+private = { ignore = true }
+# A build dependency of psm, which rune-taffy's stacker pulls in; LLVM's exception only widens Apache-2.0.
+exceptions = [{ crate = "ar_archive_writer", allow = ["Apache-2.0 WITH LLVM-exception"] }]
+
+[bans]
+multiple-versions = "deny"
+# Rune pins two generations of the objc2 family and several small crates; this app cannot change that.
+skip-tree = [
+    { crate = "rune", reason = "duplicates inside the Rune framework's own tree; see docs/deps.md" },
+    { crate = "rune-kit", reason = "same" },
+    { crate = "rune-luau", reason = "same" },
+    { crate = "rune-notify", reason = "same" },
+]
+# Rune's publishable crates name each other by path without a version, which this check reads as a wildcard.
+wildcards = "warn"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+required-git-spec = "rev"
+# rune-luau pins mlua to one git revision and the app takes Rune from the owner's fork at a full revision; nothing else may come from git.
+allow-git = ["https://github.com/mlua-rs/mlua", "https://github.com/jackmaxwil/rune"]
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

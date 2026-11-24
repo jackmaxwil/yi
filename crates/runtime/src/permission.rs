@@ -10,8 +10,8 @@ use yi_permission::{
     PermissionMode, RequestId, ReviewedAsk, SessionRules, ToolCall, UserVerdict,
     canonical_command_identity, canonical_tool_identity, decide,
 };
-use yi_tools::ToolKind;
 use yi_tools::hashline::types::FileOp;
+use yi_tools::{CancelFlag, ToolKind};
 use yi_types::event::AgentEvent;
 use yi_types::permission::{
     Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
@@ -26,40 +26,10 @@ pub(crate) use hooked::claude_dir;
 mod kept;
 pub(crate) use kept::protected;
 mod late;
-use late::{Answered, Late};
+use late::{Answered, Late, stop_released};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AskOutcome {
-    AllowOnce,
-    AllowAlways(usize),
-    Reject,
-}
-
-/// One approval request. `description` and `patch` are separate so a structured consumer
-/// (ACP, §17.2) sends the patch as content while a text one renders `text()` over both.
-pub struct PermissionAsk<'a> {
-    pub title: &'a str,
-    pub description: &'a str,
-    pub patch: Option<&'a str>,
-    pub changes: &'a [PathBuf],
-    pub grants: &'a [yi_permission::Grant],
-    pub tool_call_id: Option<&'a str>,
-}
-
-impl PermissionAsk<'_> {
-    pub fn text(&self) -> String {
-        match self.patch {
-            Some(patch) => format!(
-                "{}\n{}",
-                self.description,
-                PermissionBroker::cut_preview(patch)
-            ),
-            None => self.description.to_owned(),
-        }
-    }
-}
-
-pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
+mod ask;
+pub use ask::{AskOutcome, Asker, PermissionAsk};
 pub type Journal<T = PermissionRecord> = Arc<dyn Fn(T) + Send + Sync>;
 
 /// What the reviewer is told about a call, and whether it may see it at all.
@@ -94,6 +64,8 @@ pub struct PermissionBroker {
     /// Appends each kept rule to the holder's own session JSONL, the one ledger of them.
     rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
+    stop: std::sync::OnceLock<CancelFlag>,
+    agent: std::sync::OnceLock<String>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
     /// A walled holder's retry never leaves the sandbox for a protected dir.
     walled: bool,
@@ -212,6 +184,8 @@ impl PermissionBroker {
             journal: std::sync::OnceLock::new(),
             rule_journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
+            stop: std::sync::OnceLock::new(),
+            agent: std::sync::OnceLock::new(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
             walled: false,
             unattended: false,
@@ -229,6 +203,10 @@ impl PermissionBroker {
 
     pub fn set_journal(&self, journal: Journal) {
         let _first_wiring_wins = self.journal.set(journal);
+    }
+
+    pub fn set_stop(&self, stop: CancelFlag) {
+        let _first_wiring_wins = self.stop.set(stop);
     }
 
     pub fn set_approver(&self, approver: Arc<crate::classifier::Approver>) {
@@ -628,6 +606,8 @@ impl PermissionBroker {
                 changes: &targets,
                 grants: &[],
                 tool_call_id: Some(tool_call_id),
+                stop: None,
+                agent: None,
             };
             return self.hook_answered(&ask, &reason, command);
         }
@@ -662,6 +642,8 @@ impl PermissionBroker {
                 changes: &targets,
                 grants: &grants,
                 tool_call_id: Some(tool_call_id),
+                stop: self.stop.get(),
+                agent: self.agent.get().map(String::as_str),
             },
             Reviewed {
                 reviewable,
@@ -991,7 +973,11 @@ impl PermissionBroker {
         let Some(asker) = &self.asker else {
             return crate::gate::unaskable(request, &stored.description);
         };
-        let ask = crate::auto_review::ask_text(&stored);
+        let ask = PermissionAsk {
+            stop: self.stop.get(),
+            agent: self.agent.get().map(String::as_str),
+            ..crate::auto_review::ask_text(&stored)
+        };
         let _ = self.events.send(AgentEvent::PermissionRequested {
             tool_call_id: tool_call_id.to_owned(),
             title: stored.title.clone(),
@@ -1086,24 +1072,23 @@ impl PermissionBroker {
         if let AskOutcome::AllowAlways(index) = outcome {
             self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }
-        if allowed {
-            CallOutcome {
-                allowed: true,
-                reason: "allowed by user".to_owned(),
-                containment: Containment::Uncontained,
-            }
+        let reason = if allowed {
+            "allowed by user".to_owned()
         } else {
-            CallOutcome {
-                allowed: false,
-                reason: format!("The user denied this call. {rendered}"),
-                containment: Containment::Uncontained,
-            }
+            format!("The user denied this call. {rendered}")
+        };
+        CallOutcome {
+            allowed,
+            reason,
+            containment: Containment::Uncontained,
         }
     }
 
     fn answered_or_person(&self, ask: &PermissionAsk<'_>, answered: Option<Answered>) -> Answered {
         answered.unwrap_or_else(|| {
-            Answered::Person(self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask)))
+            let outcome = self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask));
+            let stopped = stop_released(ask);
+            Answered::Person { outcome, stopped }
         })
     }
 }

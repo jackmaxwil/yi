@@ -306,6 +306,34 @@ fn build_params_defaults_reasoning_effort_to_none_when_unset() -> TestResult {
     Ok(())
 }
 
+/// Incident: a relay answered with `"usage": {}` and zero counts on a reply that had text; the turn
+/// was stored as a measured zero instead of unknown.
+#[test]
+fn a_usage_object_that_counts_nothing_stores_the_turn_as_unknown() -> TestResult {
+    let model = target_model()?;
+    for usage in [
+        json!({}),
+        json!({"prompt_tokens": 0, "completion_tokens": 0}),
+    ] {
+        let mut mapper = ChunkMapper::new(&model);
+        mapper.push_chunk(&json!({"id": "g", "choices": [{"delta": {"content": "hi"}}]}));
+        mapper.push_chunk(
+            &json!({"id": "g", "choices": [{"delta": {}, "finish_reason": "stop"}],
+                                  "usage": usage}),
+        );
+        let events = mapper.finish();
+        let Some(yi_types::event::AssistantMessageEvent::Done {
+            message: AgentMessage::Assistant { usage: stored, .. },
+            ..
+        }) = events.last()
+        else {
+            return Err(format!("expected done event: {:?}", events.last()).into());
+        };
+        assert!(stored.unknown, "{usage}: {stored:?}");
+    }
+    Ok(())
+}
+
 #[test]
 fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestResult {
     let model = target_model()?;

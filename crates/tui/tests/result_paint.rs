@@ -210,11 +210,61 @@ fn search_context_rows_keep_the_separator_that_marks_the_hit() {
         ],
     );
     assert!(
-        spans.iter().any(|(content, _)| content == "  19- "),
+        spans.iter().any(|(content, _)| content == "  19-"),
         "{spans:?}"
     );
     assert!(
         spans.iter().any(|(content, _)| content == "  20 "),
+        "{spans:?}"
+    );
+    assert_eq!("  19-".chars().count(), "  20 ".chars().count());
+}
+
+#[test]
+fn search_hit_with_a_dash_digit_dash_in_its_text_is_a_hit() {
+    let spans = done("grep", "a-1-b", &["12:let x = a-1-b;"]);
+    assert!(
+        spans.iter().any(|(content, _)| content == "  12 "),
+        "{spans:?}"
+    );
+    assert!(
+        !spans
+            .iter()
+            .any(|(content, _)| content.contains("12:let x = a")),
+        "{spans:?}"
+    );
+}
+
+#[test]
+fn search_hit_with_a_colon_digit_colon_in_its_text_is_a_hit() {
+    let spans = done("grep", "x", &["12:at 10:30:00"]);
+    assert!(
+        spans.iter().any(|(content, _)| content == "  12 "),
+        "{spans:?}"
+    );
+    assert!(
+        !spans
+            .iter()
+            .any(|(content, _)| content.contains("12:at 10")),
+        "{spans:?}"
+    );
+}
+
+#[test]
+fn search_rows_past_the_tag_cap_are_coloured_with_their_context() {
+    let spans = done(
+        "grep",
+        "fn ",
+        &[
+            "src/paint.rs-19-impl Palette {",
+            "src/paint.rs:20:    pub fn new() -> Self {",
+        ],
+    );
+    assert!(pathed(&spans, "src/paint.rs"), "{spans:?}");
+    assert!(carries(&spans, "impl", Token::Keyword), "{spans:?}");
+    assert!(carries(&spans, "pub", Token::Keyword), "{spans:?}");
+    assert!(
+        spans.iter().any(|(content, _)| content == "  19-"),
         "{spans:?}"
     );
 }

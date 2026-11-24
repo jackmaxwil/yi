@@ -1,0 +1,51 @@
+{
+  "about": "A prompt typed into the composer has the agent run a command that writes a file: it appears in Files and its diff in Changes.",
+  "serve": [
+    "--yolo"
+  ],
+  "worker": true,
+  "empty": true,
+  "runs": [
+    {
+      "steps": [
+        {
+          "t": 3.0,
+          "type": "tap",
+          "key": "chat-8.composer.input"
+        },
+        {
+          "t": 3.2,
+          "type": "type",
+          "text": "write the file"
+        },
+        {
+          "t": 3.8,
+          "type": "key",
+          "name": "Enter"
+        },
+        {
+          "t": 10.0,
+          "type": "mark",
+          "name": "end"
+        }
+      ],
+      "expect": {
+        "files": [
+          "one.txt"
+        ],
+        "texts": [
+          "one.txt",
+          "new file",
+          "one",
+          "(no output)",
+          "turn done"
+        ],
+        "contains": [
+          "2 files \u00b7 1 changed",
+          "Changed in this thread \u00b7 1",
+          "1 file \u00b7 +1 \u22120"
+        ]
+      }
+    }
+  ]
+}

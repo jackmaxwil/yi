@@ -1,0 +1,21 @@
+{
+ "pane": "findings-checks",
+ "frame": 10,
+ "strings": [
+  "Standing checks",
+  "3 on",
+  "4 checks",
+  "they file findings on their own",
+  "New",
+  "Any error in a file this thread changed",
+  "files High · fired once today",
+  "More than 2 connection resets an hour",
+  "files Low · fired 12m ago",
+  "A VM with no backup",
+  "files Med · fired 3h ago",
+  "A step in a turn that takes over 5 s",
+  "files Low · off",
+  "Any finding can be turned into a check: \"watch for this\""
+ ],
+ "titles": []
+}

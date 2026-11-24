@@ -35,6 +35,24 @@ pub(crate) fn selector_model() -> Option<Model> {
     role_model("selector", spec, "the reducer's cut stands alone")
 }
 
+pub(crate) fn rewriter(
+    provider: &std::sync::Arc<yi_runtime::provider::ProviderStream>,
+    cwd: &std::path::Path,
+    home: &std::path::Path,
+) -> Option<yi_runtime::rewrite::Rewriter> {
+    let spec = crate::configured_roles().rewriter;
+    let model = role_model("rewriter", spec, "drafts go as typed")?;
+    let shape = crate::config().rewrite.clone().unwrap_or_default();
+    let effort = shape.thinking.unwrap_or(yi_types::model::Effort::Low);
+    Some(yi_runtime::rewrite::Rewriter::new(
+        std::sync::Arc::clone(provider),
+        model,
+        (effort, shape.length.unwrap_or_default()),
+        shape.skill,
+        (cwd.to_path_buf(), home.to_path_buf()),
+    ))
+}
+
 pub(crate) fn web_search_model() -> Option<Model> {
     let spec = crate::configured_roles()
         .web_search

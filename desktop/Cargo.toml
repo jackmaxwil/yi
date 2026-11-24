@@ -1,0 +1,88 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/sources",
+    "crates/ui",
+    "crates/panes",
+    "crates/mac",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.99.1"
+publish = false
+
+[workspace.dependencies]
+yd-core = { path = "crates/core" }
+yd-sources = { path = "crates/sources" }
+yd-ui = { path = "crates/ui" }
+yd-panes = { path = "crates/panes" }
+yd-mac = { path = "crates/mac" }
+# Rune's default features minus ogg-audio (MPL-2.0 codecs this app never plays) and dbus (Linux only).
+rune = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc", default-features = false, features = ["accessibility", "embedded-fonts", "metal-backend", "svg", "native-file-dialog"] }
+rune-kit = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc", features = ["markdown"] }
+rune-luau = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
+rune-notify = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
+yi-types = { path = "../crates/types" }
+# Yi's client-local browser crate: Chrome frames for the web pane.
+yi-browser = { path = "../crates/browser" }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
+vt100 = { version = "0.15", default-features = false }
+# Already in the lock through Rune; decodes the browser's frames.
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+# Already in the lock through Rune at this version; decodes the browser's frames on the source's thread.
+png = { version = "0.18", default-features = false }
+rustix = { version = "0.38", default-features = false, features = ["fs", "process", "std", "stdio"] }
+objc2 = "0.5.2"
+block2 = "0.5"
+objc2-foundation = { version = "0.2.2", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std"] }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+# Yi publishes no crate: `pub` means "visible to the next crate up", never docs.rs, so a
+# public doc naming a private item is normal here and the lint is a library concern (D55).
+private_intra_doc_links = "allow"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+await_holding_lock = "deny"
+await_holding_invalid_type = "deny"
+disallowed_methods = "deny"
+
+# Mirrors the root workspace's dev profile: desktop/ is its own workspace root, so Cargo
+# reads only this table here. Change both together.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Rune's own release profile: an app that links Rune builds it the way Rune measures it.
+[profile.release]
+codegen-units = 16
+incremental = true
+
+# What the bundle ships: Rune's release, with an arithmetic overflow a loud stop, not a wrap.
+[profile.dist]
+inherits = "release"
+overflow-checks = true
+
+# Rune's five patched crates: a dependency's `[patch]` does not reach the workspace that
+# depends on it, so an app that builds Rune repeats them.
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
+winit = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
+parley_engine = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
+accesskit_windows = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
+accesskit_macos = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }

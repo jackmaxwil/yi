@@ -1,0 +1,18 @@
+[
+ {
+  "id": "L13",
+  "cells": {
+   "value": {
+    "text": "now = 1731.42s"
+   }
+  }
+ },
+ {
+  "id": "L18",
+  "cells": {
+   "value": {
+    "text": "self.tokens = 0"
+   }
+  }
+ }
+]

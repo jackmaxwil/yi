@@ -20,6 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import check_public_surface as surface
+import checkout_guard
 import forge_pr
 import pr_review
 
@@ -651,7 +652,7 @@ def case_body(case: Case) -> str:
 
 def rule_hashes() -> dict[str, str]:
     paths = ["scripts/intake/bridge.py", "scripts/intake/allowed.json", "scripts/intake/allowed_signers", "scripts/mirror/exclude.txt", "scripts/mirror/replace.txt", "scripts/mirror/deny.txt"]
-    return {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in paths}
+    return {path: checkout_guard.file_sha256(ROOT / path) for path in paths}
 
 
 def audit_payload(case: Case, imported: str, outcome: Outcome, actor: str, override: Optional[dict[str, str]]) -> dict[str, Any]:

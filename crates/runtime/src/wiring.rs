@@ -679,6 +679,7 @@ fn attach_kernel(
     let (tools_now, root) = (session.tools_handle(), wiring.parent_link.is_none());
     crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
     let service = wire_kernel(session, wiring, registry);
+    service.attach_events(session.events_sender());
     session.set_kernel_service(Arc::clone(&service));
     wiring.kernels.insert(
         wiring
@@ -824,6 +825,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());
     tools.push(Arc::new(annotate));
     tools.push(crate::answer::tool(session.answer_handle(), &tools));
+    tools.extend(session.shower().map(crate::show::tool));
     crate::auto_review::wire(session, &wiring, &mut tools);
     if let Some(broker) = &wiring.broker {
         broker.set_journal(journal_into(session.store_handle()));

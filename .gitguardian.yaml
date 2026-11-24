@@ -13,3 +13,5 @@ paths-ignore:
   - "skills/yi/session-mining/extract.py"
   - "vendor/rtk/filters/ssh.toml"
   - "crates/runtime/src/memory/doc.rs"
+  - "desktop/tests/journeys/daily/fixtures/*"
+  - "desktop/tests/journeys/all/fixtures/*"

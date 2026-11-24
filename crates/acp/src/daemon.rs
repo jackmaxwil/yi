@@ -14,7 +14,9 @@ use yi_types::mail::Envelope;
 use crate::negotiate;
 
 mod mail;
+mod pending;
 mod settings;
+mod show;
 use mail::SUPERVISOR;
 
 pub struct DaemonOptions {
@@ -245,7 +247,7 @@ pub(crate) struct Supervisor {
     pub(crate) sessions: HashMap<String, SessionEntry>,
     woken: HashSet<(String, String)>,
     requests: HashMap<u64, ClientRequest>,
-    worker_requests: HashMap<String, String>,
+    worker_requests: HashMap<String, pending::Held>,
     /// Worker-originated requests that arrived with no attached client, flushed on the next
     /// attach; without this the worker's synchronous asker blocks on an unseen answer.
     parked: HashMap<String, Vec<Value>>,
@@ -386,10 +388,16 @@ impl Supervisor {
         // A frame with an id and no method is a response to a
         // worker-originated request (the permission bridge).
         if method.is_empty() {
-            if let Some(request_id) = id.as_ref().and_then(Value::as_str)
-                && let Some(root) = self.worker_requests.remove(request_id)
-            {
-                self.forward_response_to_worker(&root, frame).await;
+            if let Some(request_id) = id.as_ref().and_then(Value::as_str) {
+                let shown = request_id.starts_with("show_");
+                let asked = if frame.get("error").is_some() && shown {
+                    None
+                } else {
+                    self.worker_requests.remove(request_id)
+                };
+                if let Some(held) = asked {
+                    self.forward_response_to_worker(&held.root, frame).await;
+                }
             }
             return;
         }
@@ -497,6 +505,7 @@ impl Supervisor {
                 let _ = std::fs::write(stopped_marker(&self.options.socket), b"");
                 let _ = self.input.send(Input::Shutdown);
             }
+            "_yi/pending" => self.pending(client, id, &frame),
             "_yi/seen" => self.mark_seen(client, id, &frame),
             "_yi/pin" => self.pin(client, id, &frame),
             "_yi/settings" | "_yi/set_default" => self.settings(client, id, &method, &frame),
@@ -647,13 +656,12 @@ impl Supervisor {
             self.send_client(client, frame.to_string());
             return;
         }
-        // Worker-originated request (permission bridge): remember the id so
-        // the client's response routes back.
-        if let Some(id) = frame.get("id").and_then(Value::as_str) {
-            self.worker_requests.insert(id.to_owned(), root.clone());
+        // A show is relayed or refused here and now; any other request is held until a client
+        // answers it or the worker closes it.
+        if self.worker_asked(&root, &frame, &line) {
+            return;
         }
-        // With no client attached the frame is dropped but the ledger records that something
-        // happened, so a reattaching console still sees the unseen work.
+        self.hold_request(&root, &method, &frame);
         let session_id = frame
             .pointer("/params/sessionId")
             .and_then(Value::as_str)
@@ -668,10 +676,11 @@ impl Supervisor {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let Some(entry) = self.sessions.get_mut(&session_id) else {
-            // A worker speaks at attach, before its `session/new` response makes this entry.
-            let queue = self.parked.entry(session_id).or_default();
-            if queue.len() < PARKED_MAX {
-                queue.push(frame);
+            if frame.get("id").is_none() {
+                let queue = self.parked.entry(session_id).or_default();
+                if queue.len() < PARKED_MAX {
+                    queue.push(frame);
+                }
             }
             return;
         };
@@ -705,29 +714,11 @@ impl Supervisor {
             return self.refuse_ask(root, &session_id, &frame, &owed);
         }
         if detached {
-            // Requests (frames with an id) park for the next attach; a
-            // capped queue bounds a worker that asks in a loop.
-            if let Some(request_id) = frame.get("id").cloned() {
-                let queue = self.parked.entry(session_id).or_default();
-                if queue.len() < PARKED_MAX {
-                    queue.push(frame);
-                } else {
-                    // Incident: past the cap the ask was dropped, leaving the
-                    // worker's synchronous asker on an answer nobody would send.
-                    let _ = self.input.send(Input::WorkerReply(
-                        root,
-                        json!({
-                            "jsonrpc": "2.0",
-                            "id": request_id,
-                            "error": {"code": -32603, "message": "no client attached; ask queue full"},
-                        }),
-                    ));
-                }
-            }
             return;
         }
         // Fan out to every watcher; for a worker-originated request the first answer wins
         // and the stale ids of the rest fall out of `worker_requests` with it.
+        self.mark_sent(frame.get("id").and_then(Value::as_str), &watchers);
         for client in watchers {
             self.send_client(client, line.clone());
         }
@@ -743,17 +734,6 @@ impl Supervisor {
         };
         for &client in &entry.attached {
             self.send_client(client, line.clone());
-        }
-    }
-
-    fn flush_parked(&mut self, session_id: &str, client: ClientId) {
-        if let Some(entry) = self.sessions.get_mut(session_id) {
-            (entry.headless, entry.owed) = (false, Vec::new());
-        }
-        if let Some(queue) = self.parked.remove(session_id) {
-            for frame in queue {
-                self.send_client(client, frame.to_string());
-            }
         }
     }
 
@@ -774,6 +754,7 @@ impl Supervisor {
             }
         }
         self.tell_exited(&root);
+        self.worker_requests.retain(|_, held| held.root != root);
         // Invariant: a pin outlives its worker, or the next persist writes the ledger without it.
         self.sessions
             .retain(|_, entry| entry.root != root || entry.pinned_ms.is_some());
@@ -1015,7 +996,7 @@ mod tests {
     }
 
     /// A supervisor with no worker, its pinned and unpinned `/repo` rows mid-turn for client 7.
-    fn supervisor_with_rows() -> Supervisor {
+    pub(super) fn supervisor_with_rows() -> Supervisor {
         let (ledger, _stored) = std::sync::mpsc::channel();
         let (input, _inputs) = mpsc::unbounded_channel();
         let mut supervisor = Supervisor {
@@ -1356,6 +1337,79 @@ mod tests {
         let yolo = vec!["--yolo".to_owned()];
         assert_eq!(restart_flags(&socket, &yolo), Some(yolo));
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    fn child_ask(id: &str, session: &str) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": "session/request_permission",
+            "params": {"sessionId": session, "title": "ipython requires permission",
+                "description": "tool invocation is not read-only: ipython",
+                "options": [{"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
+                    {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}],
+                "_meta": {"yi": {"asker": {"childId": "sub-1"}}}}})
+    }
+
+    /// Dies with a delivered ask vanishing from the daemon, leaving a reconnecting client with
+    /// no card and the worker waiting on a person looking at a window without one.
+    #[tokio::test]
+    async fn a_delivered_ask_is_listed_and_sent_again_to_the_client_that_attaches_next()
+    -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        let (first, mut first_rx) = mpsc::channel(8);
+        let (second, mut second_rx) = mpsc::channel(8);
+        supervisor.clients.insert(1, first);
+        supervisor.clients.insert(2, second);
+        supervisor.clients.insert(3, mpsc::channel(8).0);
+        let attach = |supervisor: &mut Supervisor, client| {
+            if let Some(row) = supervisor.sessions.get_mut("pinned") {
+                row.attached.insert(client);
+            }
+        };
+        attach(&mut supervisor, 1);
+        for (id, session) in [("perm_a_1", "pinned"), ("perm_b_1", "loose")] {
+            let ask = child_ask(id, session);
+            supervisor.handle_worker_line("/repo".to_owned(), ask.clone(), ask.to_string());
+        }
+        assert!(first_rx.try_recv().is_ok(), "the first client got the ask");
+        supervisor.clients.remove(&1);
+        if let Some(row) = supervisor.sessions.get_mut("pinned") {
+            row.attached.clear();
+        }
+        attach(&mut supervisor, 2);
+        supervisor.flush_parked("pinned", 2);
+        supervisor.flush_parked("pinned", 2);
+        let again = second_rx.try_recv().map_err(|error| error.to_string())?;
+        assert!(
+            again.contains("perm_a_1") && !again.contains("perm_b_1"),
+            "{again}"
+        );
+        assert!(second_rx.try_recv().is_err(), "sent twice to one client");
+        supervisor.pending(
+            2,
+            Some(json!(9)),
+            &json!({"params": {"sessionId": "pinned"}}),
+        );
+        let listed: Value = serde_json::from_str(&second_rx.try_recv().map_err(|e| e.to_string())?)
+            .map_err(|error| error.to_string())?;
+        let requests = &listed["result"]["requests"];
+        assert_eq!(requests.as_array().map(Vec::len), Some(1), "{listed}");
+        assert_eq!(requests[0]["requestId"], "perm_a_1");
+        assert_eq!(requests[0]["_meta"]["yi"]["asker"]["childId"], "sub-1");
+        let closed = json!({"jsonrpc": "2.0", "method": "_yi/permission_closed",
+            "params": {"sessionId": "pinned", "requestId": "perm_a_1"}});
+        supervisor.handle_worker_line("/repo".to_owned(), closed.clone(), closed.to_string());
+        let told = second_rx.try_recv().map_err(|error| error.to_string())?;
+        assert!(told.contains("_yi/permission_closed"), "{told}");
+        supervisor.pending(2, Some(json!(10)), &json!({}));
+        let rest: Value = serde_json::from_str(&second_rx.try_recv().map_err(|e| e.to_string())?)
+            .map_err(|error| error.to_string())?;
+        let left: Vec<&str> = rest["result"]["requests"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["requestId"].as_str())
+            .collect();
+        assert!(left.is_empty(), "an unattached session leaks: {rest}");
         Ok(())
     }
 }

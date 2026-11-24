@@ -17,7 +17,7 @@ const BASE: &str = "https://h/coding/v1";
 
 /// `list` as the next session loads it: written under a cache dir, read over the bundle.
 fn loaded(list: &Value, base: &str) -> Result<Catalog, Box<dyn Error>> {
-    let (written, _) = catalog(list, base)?;
+    let (written, _) = catalog(list, base, &Catalog::bundled())?;
     let dir = Scratch::new("yi-kimi-catalog")?;
     std::fs::write(dir.join("kimi.json"), written.to_string())?;
     Ok(Catalog::bundled().with_cache(&dir))
@@ -155,7 +155,7 @@ fn an_entry_without_limit_context_or_with_an_unknown_protocol_is_a_rejected_line
 }
 
 fn catalog_err(list: &Value) -> Result<String, Box<dyn Error>> {
-    match catalog(list, BASE) {
+    match catalog(list, BASE, &Catalog::bundled()) {
         Ok(_) => Err("a list with nothing loadable was written".into()),
         Err(error) => Ok(error),
     }
@@ -180,7 +180,7 @@ fn no_limit_output_never_sends_a_zero_completion_cap() -> TestResult {
 #[test]
 fn the_recorded_account_list_loads_k3_1() -> TestResult {
     let live: Value = serde_json::from_str(include_str!("fixtures/kimi-models-2026-10-24.json"))?;
-    let (_, count) = catalog(&live, "https://api.kimi.ai/coding/v1")?;
+    let (_, count) = catalog(&live, "https://api.kimi.ai/coding/v1", &Catalog::bundled())?;
     assert_eq!(count, live["data"].as_array().map_or(0, Vec::len));
     let catalog = loaded(&live, "https://api.kimi.ai/coding/v1")?;
     assert!(catalog.rejected().is_empty(), "{:?}", catalog.rejected());
@@ -194,5 +194,38 @@ fn the_recorded_account_list_loads_k3_1() -> TestResult {
         [Effort::Low, Effort::High, Effort::Max]
     );
     assert_eq!(k3_1.input, ["text", "image"]);
+    Ok(())
+}
+
+/// Incident: a refresh rewrote kimi.json from the list alone, so a `readTimeoutSecs` an author
+/// set by hand on a slow model vanished with the next refresh.
+#[test]
+fn a_refresh_keeps_a_deadline_an_author_set_by_hand() -> TestResult {
+    let live: Value = serde_json::from_str(include_str!("fixtures/kimi-models-2026-10-24.json"))?;
+    let base = "https://api.kimi.ai/coding/v1";
+    let (first, _) = catalog(&live, base, &Catalog::bundled())?;
+    let mut hand = first.clone();
+    let api = hand
+        .as_object_mut()
+        .and_then(|groups| {
+            groups
+                .values_mut()
+                .find_map(|group| group.get_mut("k3.1-pro"))
+        })
+        .ok_or("k3.1-pro row")?;
+    api["readTimeoutSecs"] = json!(600);
+    let dir = Scratch::new("yi-kimi-timeout")?;
+    std::fs::write(dir.join("kimi.json"), hand.to_string())?;
+    let (written, _) = catalog(&live, base, &Catalog::bundled().with_cache(&dir))?;
+    let next = Scratch::new("yi-kimi-timeout-next")?;
+    std::fs::write(next.join("kimi.json"), written.to_string())?;
+    let rewritten = Catalog::bundled().with_cache(&next);
+    assert_eq!(model(&rewritten, "k3.1-pro")?.read_timeout_secs, Some(600));
+    assert_eq!(
+        model(&rewritten, "kimi-for-coding")
+            .ok()
+            .and_then(|m| m.read_timeout_secs),
+        None
+    );
     Ok(())
 }

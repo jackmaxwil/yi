@@ -276,6 +276,7 @@ pub struct KernelService {
     last_error: Mutex<Option<String>>,
     on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     died: std::sync::atomic::AtomicBool,
+    disposed: std::sync::atomic::AtomicBool,
     names: Mutex<Option<Vec<String>>>,
     restarted: Mutex<Option<String>>,
     surface: Mutex<Option<String>>,
@@ -288,6 +289,8 @@ pub struct KernelService {
     user_cells: std::sync::atomic::AtomicUsize,
     pub(crate) cell_calls: std::sync::OnceLock<Arc<dyn yi_tools::CellCalls>>,
     pub(crate) running_cell: Mutex<Option<String>>,
+    pub(crate) events:
+        std::sync::OnceLock<tokio::sync::broadcast::Sender<yi_types::event::AgentEvent>>,
 }
 
 impl KernelService {
@@ -310,6 +313,7 @@ impl KernelService {
             last_error: Mutex::new(None),
             on_death: Mutex::new(None),
             died: std::sync::atomic::AtomicBool::new(false),
+            disposed: std::sync::atomic::AtomicBool::new(false),
             names: Mutex::new(None),
             restarted: Mutex::new(None),
             surface: Mutex::new(None),
@@ -321,6 +325,7 @@ impl KernelService {
             user_cells: std::sync::atomic::AtomicUsize::new(0),
             cell_calls: std::sync::OnceLock::new(),
             running_cell: Mutex::new(None),
+            events: std::sync::OnceLock::new(),
         }
     }
 
@@ -669,7 +674,13 @@ impl KernelService {
         Some(crate::kernel_bootstrap::compaction_notice(names.as_deref()))
     }
 
+    pub fn is_disposed(&self) -> bool {
+        self.disposed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub async fn dispose(&self) {
+        self.disposed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.kill().await;
         if let Ok(mut held) = self.snapshot_lock.lock() {
             *held = None;
@@ -774,6 +785,7 @@ impl KernelService {
             notes.extend(self.waited.lock().ok().and_then(|mut waited| waited.take()));
             self.refresh_path(&manager).await;
             let abort = AbortFlag::default();
+            let live = self.live_cell();
             let watcher = {
                 let abort = abort.clone();
                 let cancelled = Arc::clone(cancelled);
@@ -794,7 +806,7 @@ impl KernelService {
                     code,
                     ExecuteOptions {
                         abort: Some(abort),
-                        on_stream: Some(spill.sink()),
+                        on_stream: Some(live.tee(spill.sink())),
                         on_request: (calls.clone())
                             .map(|calls| Box::new(move |id: &str| calls.open(id)) as Box<_>),
                         ..ExecuteOptions::default()
@@ -802,6 +814,7 @@ impl KernelService {
                 )
                 .await;
             watcher.abort();
+            drop(live);
             match outcome {
                 Ok(result) => {
                     notes.extend(spill.note(yi_kernel::DEFAULT_MAX_OUTPUT_CHARS));

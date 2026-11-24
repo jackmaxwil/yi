@@ -1,0 +1,230 @@
+{
+ "rows": [
+  {
+   "title": "Theme",
+   "desc": "The whole look. Edit it, or make your own, in Themes.",
+   "key": "appearance.theme",
+   "scope": "you",
+   "mod": false,
+   "control": {
+    "select": "Yi Dark",
+    "extra": [
+     "Edit"
+    ]
+   }
+  },
+  {
+   "title": "Density",
+   "desc": "Row height and padding, everywhere at once.",
+   "key": "appearance.density",
+   "scope": "you · changed",
+   "mod": true,
+   "control": {
+    "choice": "Compact",
+    "options": [
+     "Dense",
+     "Compact",
+     "Roomy"
+    ]
+   }
+  },
+  {
+   "title": "Text font",
+   "desc": "Chat, labels and names.",
+   "key": "appearance.text_font",
+   "scope": "you · changed",
+   "mod": true,
+   "control": {
+    "select": "System",
+    "extra": []
+   }
+  },
+  {
+   "title": "Code font",
+   "desc": "Code, logs, addresses.",
+   "key": "appearance.code_font",
+   "scope": "you · changed",
+   "mod": true,
+   "control": {
+    "select": "Geist Mono",
+    "extra": []
+   }
+  },
+  {
+   "title": "See-through",
+   "desc": "How much of the desktop shows through the window.",
+   "key": "appearance.glass",
+   "scope": "you · changed",
+   "mod": true,
+   "control": {
+    "ratio": 0.6,
+    "text": "60%"
+   }
+  },
+  {
+   "title": "Chat side",
+   "desc": "Which side the chat pane opens on.",
+   "key": "layout.chat_side",
+   "scope": "you",
+   "mod": false,
+   "control": {
+    "choice": "Right",
+    "options": [
+     "Left",
+     "Right"
+    ]
+   }
+  },
+  {
+   "title": "Folded sidebar",
+   "desc": "What a folded sidebar shows for each session.",
+   "key": "layout.sidebar_folded",
+   "scope": "you · changed",
+   "mod": true,
+   "control": {
+    "select": "Full titles",
+    "extra": []
+   }
+  },
+  {
+   "title": "\"Needs you\" colour",
+   "desc": "Dots, the approval card, counts.",
+   "key": "appearance.needs_you",
+   "scope": "project overrides yours",
+   "mod": true,
+   "control": {
+    "text": "#78d2c6"
+   }
+  },
+  {
+   "title": "Springs",
+   "desc": "Buttons press in, dragged panes lag and settle.",
+   "key": "motion.springs",
+   "scope": "you",
+   "mod": false,
+   "control": {
+    "flag": true
+   }
+  },
+  {
+   "title": "Moving light",
+   "desc": "A light that drifts and follows state.",
+   "key": "motion.moving_light",
+   "scope": "you · changed",
+   "mod": true,
+   "control": {
+    "flag": false
+   }
+  }
+ ],
+ "groups": [
+  {
+   "depth": 0,
+   "name": "Appearance",
+   "count": "6",
+   "open": true
+  },
+  {
+   "depth": 1,
+   "name": "Theme",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 1,
+   "name": "Density",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 1,
+   "name": "Type",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 1,
+   "name": "Glass",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Layout",
+   "count": "2",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Agents",
+   "count": "",
+   "open": true
+  },
+  {
+   "depth": 1,
+   "name": "Models",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 1,
+   "name": "Permissions",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 1,
+   "name": "Budgets",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Findings",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Context boxes",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Code",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Terminal",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Notifications",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Keys",
+   "count": "1",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Plugins",
+   "count": "",
+   "open": false
+  },
+  {
+   "depth": 0,
+   "name": "Sync",
+   "count": "",
+   "open": false
+  }
+ ]
+}

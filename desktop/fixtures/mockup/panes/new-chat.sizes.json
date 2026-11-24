@@ -1,0 +1,53 @@
+{
+ "pane": "new-chat",
+ "frame": 19,
+ "sizes": [
+  {
+   "part": "top-bar",
+   "check": [],
+   "selector": ".top",
+   "height": 30,
+   "width": 1192,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "chat-column",
+   "check": [
+    "width"
+   ],
+   "selector": ".cfcol",
+   "height": 712,
+   "width": 680,
+   "padding": [
+    16,
+    22,
+    16,
+    22
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "composer",
+   "check": [],
+   "selector": ".cfcomp",
+   "height": 94,
+   "width": 636,
+   "padding": [
+    14,
+    14,
+    11,
+    14
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  }
+ ]
+}

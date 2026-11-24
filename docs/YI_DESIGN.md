@@ -30,8 +30,8 @@ self-modification (a `just refine` variant lands only as a PR the owner merges) 
 semantic search · resident LSP or DAP servers · a JavaScript runtime or Node sidecar · embedding
 `yi-runtime` through N-API or WASM · document converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
-§17.1) · a GUI · a model tool for the console's browser pane, which shows the user a page and gives
-the model nothing (driving the desktop is the `agent-desktop` plugin's, and a web page the
+§17.1) · a GUI that is not `desktop/`, the Mac client of `yi serve` (§17.5) · a model tool for the console's browser pane, which shows the user a page and gives
+the model nothing (`show`, §7.1, points at a file and is answered; driving the desktop is the `agent-desktop` plugin's, and a web page the
 `agent-browser` plugin's, §17.1) · email, or any capability that is not a coding agent other
 than those plugins ·
 server-side terminal-frame streaming or blit
@@ -273,7 +273,7 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   `openrouter/deepseek/deepseek-v4-flash`, calls OpenRouter's server-side search with Exa by
   default. This default does not select a primary model.
 - Custom providers: `providers.<id>{baseUrl,api,apiKeyEnv,apiKey,models[{id,name,reasoning,input,
-  contextWindow,maxTokens,cost}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
+  contextWindow,maxTokens,cost,readTimeoutSecs}]}` in `~/.yi/config.json`, addressed `<id>/<model>`, each speaking
   `api`: `openai-completions` (unset), `openai-responses` or `anthropic-messages`, any other value
   refused at load; an id a built-in provider, `laya` or `faux` holds refuses at load. Explicit
   models merge after the cache, so no refresh rewrites or drops them. An empty or omitted list
@@ -298,7 +298,10 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   the loop reads as final; `x-should-retry: true` retries any status.
 - A read timeout is the model's `readTimeoutSecs` (default 60 s) and bounds one read, so an idle
   gap between chunks and not the whole body; a timeout is neither retried nor resent, and its
-  refusal names the field, the default and the attempts that ran.
+  refusal names the field, the default and the attempts that ran. A request on a pooled
+  socket that has already carried a finished stream is bounded by the same wait on a helper thread
+  (ureq clears the deadline on a pooled socket), ends the same way, drops the pooled agent, and is
+  never sent twice. A child's model keeps `readTimeoutSecs` or 300 s.
 - `leak::recover_in` in both mappers' `finish` turns each well-formed text `<tool_call>` block
   outside a fence or inline span into a `ToolCall` (id `leak-{clock}-{message}-{n}`) and `Stop`
   into `ToolUse`.
@@ -418,6 +421,10 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `annotate`, `plan`, `todo`, and `ask_user`, and `wire_search` adds `web_search` when
   its provider is registered and gates its skill catalog entry on the same availability.
+  `show` (address, strength `peek`/`tab`/`front`) is pushed only for a session whose client set
+  `_meta.yi.shows` on `session/new` or `session/resume`: it sends that client `_yi/show`
+  (§17.2) and tells the model what the client answered, or that no display did within five
+  seconds; a session of a client that cannot show never carries its text.
   `check_request_budget.py` prices system block plus tool table against a shrink-only baseline
   and locks each tool's text and sha256 in `tool_surface.json`;
   a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
@@ -1275,7 +1282,7 @@ an unknown method −32601, bad JSON −32700.
 | Method | Side | What |
 |---|---|---|
 | `initialize`, `session/new`, `session/resume{replayFrom?}`, `session/list` | both | The daemon routes new/resume by cwd and lists from its ledger without a cwd |
-| `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3), and one still queued at close gets −32800; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
+| `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3) under the same lock that decides whether to start, so queue order is send order, and answers at once with `{messageId, queuePlace}` (1 is next after the running turn), a close then drops it unrun without a second answer; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
 | `_yi/kernel_execute`, `_yi/tracked`, `_yi/branch_diff`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; a hunk's blame chain; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again in `_meta.yi.prefill`) or `at` it, attached beside the source, which keeps its own branch; any other position is refused by name (`AcpForkParams`) |
@@ -1284,6 +1291,7 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
 | `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, and only an app named in config.json runs; saved files are kept 7 days |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch`; a client that closes the pane holding an ask, or quits, answers `cancelled`, which the worker takes as a refusal |
+| `_yi/show{sessionId, address, cwd, strength}` | worker → client | Sent only to a session opened with `_meta.yi.shows`; `address` is a path, `path:LINE` or a `yi://` address as the model wrote it and `cwd` what a relative path is under. The client answers `{outcome, note?}`, `outcome` one of `peek`, `tab`, `front`, `refused`: the console opens the file in its editor panel, in front with the keys only for `front` after ten seconds with no key or mouse, else as a tab that waits. The daemon never parks one, answers it at once when no client is attached, and drops a client's error so another client's answer can win; the worker waits five seconds |
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
@@ -1451,6 +1459,17 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Menu}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
 - Settled by: D95, D96, D112, D113, D141, D201, D276, D264, D267, D271
+
+### 17.5 Desktop
+The Mac app is `desktop/`: its own cargo workspace, never a member of Yi's (its lock holds 461 packages,
+most of them Rune's, against Yi's budget of 23 direct and 174 transitive), a client of `yi serve` over the ACP socket. Of Yi's code it
+reads only `yi-types` and `yi-browser`, by path; it takes Rune as a pinned git revision of the
+owner's fork, and gates itself with `desktop/justfile`. Yi's gates read none of it; the repository-wide
+ones take four exemptions: the mirror's address substitutions, the scan's journey fixtures, two blobs,
+the spelling check's wire recordings.
+It needs a Mac with a GPU, so no forge runner builds it.
+- Owner: [`desktop/docs/architecture.md`](../desktop/docs/architecture.md), [`desktop/docs/deps.md`](../desktop/docs/deps.md)
+- Settled by: D603, D604
 
 ## 18. Dependencies and size
 

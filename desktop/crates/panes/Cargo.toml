@@ -1,0 +1,16 @@
+[package]
+name = "yd-panes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rune = { workspace = true }
+rune-kit = { workspace = true }
+rune-luau = { workspace = true }
+yd-core = { workspace = true }
+yd-ui = { workspace = true }

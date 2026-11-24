@@ -540,6 +540,21 @@ mod tests {
         Ok(app)
     }
 
+    /// Dies with a saved place lost: a directory the config remembers but the session store does
+    /// not report right now was dropped from the order on the next move.
+    #[test]
+    fn moving_a_project_keeps_the_saved_place_of_an_unseen_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut app = two_projects()?;
+        app.state.side.order = vec!["/gone".to_owned(), "/a".to_owned(), "/b".to_owned()];
+        crate::sidebar::move_group(&mut app.state, "/b", "/a");
+        assert_eq!(
+            app.state.side.order.get(..3),
+            Some(&["/gone".to_owned(), "/b".to_owned(), "/a".to_owned()][..])
+        );
+        Ok(())
+    }
+
     /// Dies with a header that wobbles one cell reordering the projects: a press that never left
     /// the slop is the click its release replays, which folds the header.
     #[test]

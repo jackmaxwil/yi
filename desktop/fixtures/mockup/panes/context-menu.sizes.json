@@ -1,0 +1,57 @@
+{
+ "pane": "context-menu",
+ "frame": 14,
+ "sizes": [
+  {
+   "part": "context-menu",
+   "check": [
+    "width"
+   ],
+   "selector": ".cmenu",
+   "height": 376,
+   "width": 244,
+   "padding": [
+    4,
+    4,
+    4,
+    4
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "context-menu-head",
+   "check": [
+    "height"
+   ],
+   "selector": ".cmh",
+   "height": 41,
+   "width": 236,
+   "padding": [
+    5,
+    8,
+    6,
+    8
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "row",
+   "check": [
+    "height"
+   ],
+   "selector": ".cmi",
+   "height": 22,
+   "width": 236,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  }
+ ]
+}

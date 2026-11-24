@@ -43,6 +43,7 @@ import forge_pr  # noqa: E402
 import forge_tracking  # noqa: E402
 from check_commit_style import subject_errors  # noqa: E402
 from check_pr_metadata import CITE, DRAFT, section, template_problems  # noqa: E402
+import tui_see  # noqa: E402
 
 # Shadow posts every round and blocks nothing; blocking makes `just pr ready` and `just pr merge`
 # refuse a draft whose rounds are not clean. `just pr calibrate` reads the replay on the labelled set.
@@ -61,7 +62,9 @@ REVIEW_THINKING = "xhigh"
 # fixer's accept, so a fixer could weaken its own judge before the host committed.
 WALL = (".forgejo/", "scripts/guardrails/", "scripts/hooks/", "justfile", ".github/", "skills/yi/pr-review/")
 # Rows every PR adds and baselines every PR moves are unique text, not a sign of a twin.
-DUP_SKIP = re.compile(r"^(docs/CHANGELOG\.md|docs/ARCHITECTURE\.md|docs/solutions/|scripts/guardrails/baselines/)")
+# Incident: #2297's imported Cargo.lock shared 12 package windows with #2239's, and that twin held a 13-PR stack.
+DUP_SKIP = re.compile(r"^(docs/CHANGELOG\.md|docs/ARCHITECTURE\.md|docs/solutions/|scripts/guardrails/baselines/"
+                      r"|(.*/)?([^/]+\.lock|package-lock\.json|pnpm-lock\.yaml)$)")
 DUP_WINDOW = 6
 # Measured on the forge: the four compaction PRs (#159, #170, #172, #174) share 16 to 35
 # windows pairwise, unrelated pairs at most 2.
@@ -489,15 +492,27 @@ def windows(diff):
     return hashes
 
 
+def below(pr, pulls):
+    """The head branches under `pr` in its stack: its base, that PR's base, and on down. Incident: #2321
+    moved code two PRs under it had added, and a one-hop test read #2317 and #2312 as its twins."""
+    by_head = {p["head"]["ref"]: p for p in sorted(pulls, key=lambda p: p.get("state") == "open")}
+    refs, ref = set(), pr["base"]["ref"]
+    while ref in by_head and ref not in refs:
+        refs.add(ref)
+        ref = by_head[ref]["base"]["ref"]
+    return refs
+
+
 def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: False, issue_of=lambda n: None):
     """The same issue closed twice (by an open or a merged PR, or already closed), or added text
     another open PR already adds. A stack's own neighbours are not twins: one is the other's
     base, or one head carries the other's. Incident: #765, stacked on #733 and opened against
     main, was read as #733's twin."""
     mine, closes = windows(diff), {int(n) for kind, _, n in CITE.findall(pr.get("body") or "") if kind.lower() == "closes"}
-    out, reported = [], set()
+    out, reported, chain = [], set(), [*others, pr]
+    under = below(pr, chain)
     for other in others:
-        if other["number"] == pr["number"] or other["head"]["ref"] in (pr["base"]["ref"],) or other["base"]["ref"] == pr["head"]["ref"]:
+        if other["number"] == pr["number"] or other["head"]["ref"] in under or pr["head"]["ref"] in below(other, chain):
             continue
         # Incident: #1415 and #1416 reopened the work of the closed #1411 and #1405 and were blocked
         # as their twins; a PR closed unmerged landed nothing and closes nothing.
@@ -669,17 +684,21 @@ def token_free():
 
 def yi_bin():
     """The yi a model call runs; with none built and none on PATH, the first call builds it.
-    Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read."""
+    Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read.
+    Incident: a stale target/dist/yi rejected a newer config and voided rounds (2026-11-14); one older than the source is rebuilt."""
     with _BUILT:
         # Incident: the autofixer's worker builds into its own CARGO_TARGET_DIR, and every fix died looking
         # for target/debug/yi under the checkout (2026-11-05), so the search reads where cargo writes.
         target = ROOT / os.environ.get("CARGO_TARGET_DIR", "target")
+        newest = tui_see.newest_mtime(tui_see.binary_inputs(ROOT))
+        path_yi = shutil.which("yi")
+        debug = target / "debug/yi"
+        candidates = [target / "dist/yi", target / "release/yi", debug, *([pathlib.Path(path_yi)] if path_yi else [])]
         found = os.environ.get("YI_BIN") or next(
-            (str(p) for p in (target / "dist/yi", target / "release/yi", target / "debug/yi") if p.exists()), None)
-        if not (found or shutil.which("yi")):
-            subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True)
-            found = str(target / "debug/yi")
-        found = found or "yi"
+            (str(p) for p in candidates if p.exists() and p.stat().st_mtime >= newest), None)
+        if not found:
+            subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True, env=token_free())
+            found = str(debug)
         if not _REFRESHED and not os.environ.get("YI_BIN"):
             # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the reviewer's
             # model as unknown; a failed refresh falls back to the bundle, and a pinned YI_BIN is left alone.
@@ -1551,6 +1570,23 @@ def selfcheck():
                 got = set(pool.map(lambda _: yi_bin(), range(8)))
             yi = str(pathlib.Path(target or root / "target") / "debug/yi")
             assert builds == [["cargo", "build", "-q", "-p", "yi-cli"], [yi, "catalog", "refresh", "openrouter"]] and got == {yi}, (target, builds, got)
+        os.environ.pop("CARGO_TARGET_DIR", None)
+        stale = root / "target/dist/yi"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("")
+        os.utime(stale, (1, 1))
+        source = root / "crates/x/src/lib.rs"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("")
+        shutil.which = lambda name: "/usr/bin/yi"
+        builds.clear()
+        _REFRESHED.clear()
+        got = yi_bin()
+        assert got == str(root / "target/debug/yi") and builds[0][0] == "cargo", ("a binary older than the source is rebuilt, never run", got, builds)
+        builds.clear()
+        _REFRESHED.clear()
+        os.utime(stale, (time.time() + 60, time.time() + 60))
+        assert yi_bin() == str(stale) and not any(b[0] == "cargo" for b in builds), "a binary newer than the source is run as it is"
     finally:
         _REFRESHED.clear()
         subprocess.run, shutil.which, globals()["ROOT"] = keep[:3]
@@ -1876,6 +1912,8 @@ def selfcheck():
     other = diff.replace("+++ b/src/a.rs", "+++ b/src/b.rs")
     rows = "+++ b/docs/CHANGELOG.md\n" + "".join(f"+| row {i} |\n" for i in range(20))
     assert len(windows(diff)) == 15 and windows(rows) == set(), "changelog rows never count"
+    assert windows(diff.replace("src/a.rs", "desktop/Cargo.lock")) == set(), "a lockfile's packages are generated, not a twin's text"
+    assert len(windows(diff.replace("src/a.rs", "docs/lock.md"))) == 15, "only a lockfile is skipped by its name"
     pr = {"number": 5, "title": "t", "body": "Closes #4", "head": {"ref": "b5"}, "base": {"ref": "main"}}
     twin = {"number": 6, "title": "u", "state": "open", "body": "", "head": {"ref": "b6"}, "base": {"ref": "main"}}
     same_issue = dict(twin, number=7, body="Closes apex/yi#4")
@@ -1884,6 +1922,12 @@ def selfcheck():
     diffs = {6: other, 7: "", 8: other, 9: ""}
     found = duplicate_findings(pr, diff, [twin, same_issue, stacked, stranger, dict(twin, number=5)], diffs.get, "apex/yi")
     assert [f["claim"].split(" ")[0] for f in found] == ["#6", "#7"], found
+    low, mid = dict(twin, number=14, head={"ref": "b3"}), dict(twin, number=15, head={"ref": "b4"}, base={"ref": "b3"})
+    top = dict(pr, base={"ref": "b4"})
+    assert duplicate_findings(top, diff, [low, mid], {14: other, 15: ""}.get, "apex/yi") == [], "a PR two under this one in its stack is no twin"
+    assert duplicate_findings(dict(low, body=""), other, [mid, top], {15: "", 5: diff}.get, "apex/yi") == [], "nor is one two above it"
+    assert len(duplicate_findings(top, diff, [low, dict(mid, base={"ref": "main"})], {14: other, 15: ""}.get, "apex/yi")) == 1, \
+        "a PR outside the chain of bases is still a twin"
     landed = dict(twin, number=11, state="closed", merged=True)
     assert duplicate_findings(pr, diff, [landed], {11: other}.get, "apex/yi") == [], "a merged PR's text is main's, not a twin"
     abandoned = dict(same_issue, number=13, state="closed", merged=False)

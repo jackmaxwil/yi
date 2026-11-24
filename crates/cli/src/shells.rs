@@ -44,7 +44,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
     let target = session_target(args);
     let (session, host) = {
         let _guard = runtime.enter();
-        match build_session(args, Some(asker), Some(&target.id), true, [false; 2]) {
+        match build_session(args, Some(asker), None, Some(&target.id), true, [false; 2]) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
@@ -500,7 +500,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         sidebar: console
             .sidebar
             .map_or(yi_console::model::SidebarMode::Rail, Into::into),
-        project_order: console.project_order.unwrap_or_default(),
+        project_order: saved_project_order(&config()),
         pace: reveal_pace(args),
         follow: configured_follow(),
         assist: native_assist(args),
@@ -669,6 +669,30 @@ mod tests {
             "<plist><dict><key>reduceMotion</key><true/></dict></plist>",
         )?;
         assert_eq!(super::reduce_motion_in(home), Some(true));
+        Ok(())
+    }
+}
+
+#[cfg(feature = "tui")]
+fn saved_project_order(config: &yi_types::config::UserConfig) -> Vec<String> {
+    config
+        .console
+        .as_ref()
+        .and_then(|console| console.project_order.clone())
+        .unwrap_or_default()
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod project_order_tests {
+    #[test]
+    fn the_console_reads_its_saved_project_order_from_config_json()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = r#"{"console":{"projectOrder":["/tmp/other-root","/tmp/demo-root"]}}"#;
+        let (config, _) = yi_types::config::parse(raw)?;
+        assert_eq!(
+            super::saved_project_order(&config),
+            ["/tmp/other-root", "/tmp/demo-root"]
+        );
         Ok(())
     }
 }

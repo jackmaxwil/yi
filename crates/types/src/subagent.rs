@@ -74,12 +74,15 @@ pub enum LoopSignal {
 }
 
 /// What the child is doing right now, as opposed to how its run ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildActivity {
     Waiting,
     Writing,
     Executing,
+    /// An activity this build does not know, written by a newer build; kept as written.
+    #[serde(untagged)]
+    Other(String),
 }
 
 /// A finding the child made outside its own task. `violates_check_of` names an ancestor task

@@ -1,0 +1,55 @@
+{
+ "pairs": [
+  [
+   "Asked to",
+   {
+    "text": "Write tests for the new limiter and run them."
+   }
+  ],
+  [
+   "Said last",
+   {
+    "text": "\"Three tests written. I need to run them to check the 429 answer.\""
+   }
+  ],
+  [
+   "Touched",
+   {
+    "tags": [
+     "tests/upload.rs +41",
+     "read rate_limit.rs",
+     "read upload.rs"
+    ]
+   }
+  ],
+  [
+   "Budget",
+   {
+    "ratio": 0.42,
+    "text": "8.4K of 20K tokens · Sonnet 5.5 · 2 children"
+   }
+  ]
+ ],
+ "buttons": [
+  {
+   "text": "Run its command ↵",
+   "kind": "primary"
+  },
+  {
+   "text": "Open thread",
+   "kind": "plain"
+  },
+  {
+   "text": "Pause",
+   "kind": "plain"
+  },
+  {
+   "text": "More budget",
+   "kind": "plain"
+  },
+  {
+   "text": "Stop",
+   "kind": "ghost"
+  }
+ ]
+}
