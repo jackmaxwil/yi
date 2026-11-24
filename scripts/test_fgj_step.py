@@ -2,30 +2,30 @@
 """The `install fgj` step of the bot workflows starts without the internet when the job image carries fgj, and retries a download otherwise.
 Incident: 2026-11-04 (5h40) and 2026-11-18 (4h40), every queue, fixer and review run died on `Could not resolve host: codeberg.org`."""
 import hashlib
-import os
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+from check_workflows import workflow_job, workflow_step, workflow_steps
+
 FILES = ("queue", "autofix", "review")
 GOOD = b"genuine fgj v0.5.0 stand-in\n"
 SUM = hashlib.sha256(GOOD).hexdigest()
 PINNED = "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39"
 
 
-def step(name):
-    """The run script of the step named `install fgj`, dedented."""
-    lines = (ROOT / f".forgejo/workflows/{name}.yml").read_text().splitlines()
-    at = next(i for i, line in enumerate(lines) if line.strip() == "- name: install fgj")
-    body = []
-    for line in lines[at + 3:]:
-        if line.strip() and len(line) - len(line.lstrip()) <= 6:
-            break
-        body.append(line[10:])
-    return "\n".join(body) + "\n"
+def step(name, text=None):
+    """The run script of the `install fgj` step in a workflow's only job, dedented."""
+    text = text if text is not None else (ROOT / f".forgejo/workflows/{name}.yml").read_text()
+    job = workflow_job(text, name)
+    found = workflow_step(workflow_steps(job), "install fgj").splitlines()
+    body = found[found.index("        run: |") + 1:]
+    return "\n".join(line[10:] for line in body if line.startswith(" " * 10)) + "\n"
 
 
 def run(script, present=None, curl_fails=0):
@@ -80,6 +80,7 @@ class InstallFgj(unittest.TestCase):
                 self.assertEqual((rc, calls, installed), (0, 3, GOOD), err)
 
     def test_wrong_binary_is_replaced_by_a_verified_download(self):
+        """Regression guard only: the old step always downloaded, so it passes there too."""
         for name in FILES:
             with self.subTest(name):
                 rc, calls, installed, err = run(step(name), present=b"some other fgj\n")
