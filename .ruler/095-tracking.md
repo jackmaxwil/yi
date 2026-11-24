@@ -14,6 +14,9 @@ predecessor and is not authored — a row edited there changes nothing.
 - Sizes are labels, not prose: `size:S` (≤ 1 day), `size:M` (≤ 3 days), `size:L` (larger).
   Exactly one is mandatory — zero is unsized, two is unsized twice. At least one `area:*` label
   and a milestone are mandatory beside it, because a milestone is what a date is computed over.
+- Priority is a label, never body prose. `priority:first` is the work to do before anything else,
+  `priority:next` is what follows it, `priority:later` is wanted but unscheduled. At most one is
+  allowed per issue, and the weekly job lists open `priority:first` issues ahead of the rest.
 - A milestone's due date is arithmetic, not an intention: the weekly job divides the milestone's
   open size-days by the measured throughput and writes the date. A person never types one. A
   date that was typed is a promise; a date that was divided is a measurement, and the difference
