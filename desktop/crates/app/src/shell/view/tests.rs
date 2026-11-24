@@ -36,6 +36,7 @@ mod opens;
 mod outside;
 mod panes;
 mod peek;
+mod places;
 mod project;
 mod replay;
 mod sidebar;

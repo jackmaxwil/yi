@@ -1,5 +1,5 @@
 //! The top bar's one Panes button and its panel: layouts as pictures, layouts of your own
-//! kept, renamed and deleted in place, the chat side, and every pane switched on and off.
+//! kept, renamed and deleted in place, and the chat side. The list of panes is in `places`.
 
 use yd_core::grid::layout::{ChatSide, Layout, Size};
 use yd_core::grid::saved::{EVERYTHING, OwnId};
@@ -10,18 +10,18 @@ use yd_ui::menu::command_box::{self, Found};
 
 use super::*;
 
-const PANEL: &str = "grid.panel";
+pub(super) const PANEL: &str = "grid.panel";
 
 fn held() -> Mods {
     Mods { alt: true, ..cmd() }
 }
 
 /// ⌥⌘0, the key the button names.
-fn open(runtime: &mut Runtime<Win>) {
+pub(super) fn open(runtime: &mut Runtime<Win>) {
     strike(runtime, Key::Text("0".into()), held());
 }
 
-fn kinds(runtime: &Runtime<Win>) -> Result<Vec<PaneKind>, Box<dyn Error>> {
+pub(super) fn kinds(runtime: &Runtime<Win>) -> Result<Vec<PaneKind>, Box<dyn Error>> {
     seated(runtime, |layout| {
         layout.docked().map(|(pane, _)| pane).collect()
     })
@@ -210,125 +210,14 @@ fn each_picture_is_the_layout_as_this_grid_draws_it() -> Check {
     Ok(())
 }
 
-/// On places a pane as its Show command does; off closes it as its bar does, with no hole;
-/// chat stays on.
-#[test]
-fn a_pane_switched_on_is_placed_as_show_places_it_and_off_closes_with_no_hole() -> Check {
-    let mut panel = settled("shell/mockup")?;
-    let mut shown = settled("shell/mockup")?;
-    shown.update(|win, tx| view::run(win, tx, CommandId("pane.show-trace"), Target::App));
-    rest(&mut shown);
-    open(&mut panel);
-    assert_eq!(
-        by_key(&panel.elements(), "grid.panel.pane.trace")
-            .and_then(|e| e.label.clone())
-            .as_deref(),
-        Some("Trace, off")
-    );
-    tap(&mut panel, "grid.panel.pane.trace")?;
-    assert!(live(&panel, PANEL), "the panel stays open");
-    let grid = |runtime: &Runtime<Win>| -> Result<_, Box<dyn Error>> {
-        let hub = runtime.state.hub.try_borrow()?;
-        Ok(hub.model.grid.window(root::MAIN).map(|w| w.layout.clone()))
-    };
-    assert_eq!(grid(&panel)?, grid(&shown)?, "where Show Trace puts it");
-    let label = by_key(&panel.elements(), "grid.panel.pane.trace").and_then(|e| e.label.clone());
-    assert_eq!(label.as_deref(), Some("Trace, on"));
-    let before = kinds(&panel)?;
-    tap(&mut panel, "grid.panel.pane.files")?;
-    let after = kinds(&panel)?;
-    // The session has child agents, so Agents waited behind Files as a tab of the column.
-    let swap = |kind: PaneKind| match kind {
-        PaneKind::Files => PaneKind::Agents,
-        other => other,
-    };
-    let less: Vec<_> = before.into_iter().map(swap).collect();
-    assert_eq!(after, less, "Files closed, and its column's next tab shows");
-    let hub = panel.state.hub.try_borrow()?;
-    let placed = hub.model.grid.place(
-        root::MAIN,
-        Size {
-            w: 1000.0,
-            h: 700.0,
-        },
-    );
-    let area: f32 = placed.iter().map(|(_, r)| r.w * r.h).sum();
-    assert!((area - 700_000.0).abs() < 1.0, "no hole: {area}");
-    drop(hub);
-    tap(&mut panel, "grid.panel.pane.chat")?;
-    assert!(
-        kinds(&panel)?.contains(&PaneKind::Chat),
-        "chat cannot be turned off"
-    );
-    let chat = by_key(&panel.elements(), "grid.panel.pane.chat").and_then(|e| e.label.clone());
-    assert_eq!(chat.as_deref(), Some("Chat, always on"));
-    Ok(())
-}
-
-/// The keyboard: the panel takes it when opened, the arrows move from item to item, Space
-/// and Return press the one they are on.
-#[test]
-fn arrows_move_through_the_panel_and_space_or_return_presses() -> Check {
-    let mut runtime = settled("shell/mockup")?;
-    open(&mut runtime);
-    let focused = |runtime: &Runtime<Win>| {
-        let shown = runtime.elements();
-        let found = shown.iter().find(|e| e.focused && !e.exiting);
-        found.and_then(|e| e.key.clone()).unwrap_or_default()
-    };
-    let first = focused(&runtime);
-    assert!(
-        first.starts_with("grid.panel."),
-        "the panel has the keyboard: {first:?}"
-    );
-    strike(&mut runtime, Key::Right, Mods::default());
-    let next = focused(&runtime);
-    assert!(
-        next.starts_with("grid.panel.") && next != first,
-        "{first} then {next}"
-    );
-    strike(&mut runtime, Key::Up, Mods::default());
-    assert_eq!(focused(&runtime), first, "Up goes back");
-    let mut seen = vec![first.clone()];
-    for _ in 0..40 {
-        strike(&mut runtime, Key::Down, Mods::default());
-        let now = focused(&runtime);
-        if now == "grid.panel.pane.trace" {
-            break;
-        }
-        seen.push(now);
-    }
-    assert_eq!(focused(&runtime), "grid.panel.pane.trace", "after {seen:?}");
-    for key in [
-        "grid.panel.save",
-        "grid.panel.side.1",
-        "grid.panel.pane.files",
-    ] {
-        assert!(
-            seen.iter().any(|k| k == key),
-            "{key} is passed on the way: {seen:?}"
-        );
-    }
-    strike(&mut runtime, Key::Text(" ".into()), Mods::default());
-    assert!(
-        kinds(&runtime)?.contains(&PaneKind::Trace),
-        "Space turns Trace on"
-    );
-    strike(&mut runtime, Key::Enter, Mods::default());
-    assert!(
-        !kinds(&runtime)?.contains(&PaneKind::Trace),
-        "Return turns it off"
-    );
-    Ok(())
-}
-
 /// A layout saved in the panel sits beside the five with the next ⌥⌘ key, is in ⌘K and the
 /// View menu as "Layout: <name>", and its key shows it again.
 #[test]
 fn a_layout_saved_in_the_panel_takes_the_next_key_and_is_listed_everywhere() -> Check {
     let mut runtime = settled("shell/mockup")?;
     tap(&mut runtime, "shell.panes")?;
-    tap(&mut runtime, "grid.panel.pane.files")?;
+    let files = places::row_of(&runtime, "Files")?;
+    tap(&mut runtime, &format!("{files}.close"))?;
     save(&mut runtime, "Writing")?;
     assert_eq!(own(&runtime)?, [(6, "Writing".to_owned())]);
     assert_eq!(shown(&runtime)?, Some(OwnId(6)), "the window shows it now");
@@ -629,6 +518,11 @@ fn a_bar_short_of_room_counts_the_tabs_it_has_no_room_for() -> Check {
         Some(format!("{hidden} more tabs, in Panes").as_str())
     );
     tap(&mut runtime, &more)?;
-    assert!(live(&runtime, PANEL), "the Panes panel lists every pane");
+    assert!(live(&runtime, PANEL), "the Panes panel opens");
+    // Files is farthest from Plugins in the stack: the bar had no tab for it.
+    let files = places::row_of(&runtime, "Files")?;
+    tap(&mut runtime, &files)?;
+    assert!(kinds(&runtime)?.contains(&PaneKind::Files), "it is drawn");
+    assert!(!live(&runtime, PANEL), "and the panel is out of the way");
     Ok(())
 }

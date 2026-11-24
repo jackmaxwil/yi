@@ -166,7 +166,7 @@ Every row is a `Show` or an existing grid message. Nothing here needs a new idea
 | Two-finger swipe sideways on a tab bar | Next or previous tab, one for each 48 points; coasting turns none | ✓ `grid_view::view::swipe` on `on_wheel` |
 | Middle-click a tab | Closes it, when it has a cross | ✓ `on_middle_press` |
 | Right-click a pane bar or a tab | Move to work, side or shelf, Split right, Split down, Pull out as a window, Keep, Keep across sessions, Close others, Always open here, Never open by itself, each on the pane under the pointer | ✓ `grid_view::aimed::carry`, `GridMsg::Place` |
-| ⌥⌘0 | The Panes panel, now a list of the session's things by place, with the layouts | ✓ DF18, ✚ contents |
+| ⌥⌘0 | The Panes panel, now a list of the session's things by place, with the layouts. As built: a press on a row goes to its pane, a cross closes it, and the kinds with something to show and no pane are offered under "Not open" | ✓ `picker::places`, `Windows::listed` |
 | ⌥⌘1 to ⌥⌘9 | Layouts, as places | ✓ |
 | ⌘⇧↩ | Toggles fill for the focused pane | ✓ `pane.fill` |
 | ⌘⇧[ and ⌘⇧] | Previous and next tab | ✓ |
@@ -214,7 +214,7 @@ The one deliberate difference from an editor: panes come from what the session h
 - The code pane's own open-file tab table, and each pane's private tab handling where a stack now does it.
 - The "half of the largest pane" rule (`step.rs:193`).
 - The empty-state screens of every kind that can no longer exist without a thing. Loading, offline and error states stay.
-- The per-kind switches in the Panes panel.
+- The per-kind switches in the Panes panel. As built: gone with stage 5's list by place.
 
 The deletions are claims until stages 2 and 3 prove them; each stage reports the measured line count.
 

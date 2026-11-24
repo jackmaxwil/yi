@@ -11,6 +11,7 @@ use yd_core::grid::layout::{Edge, Rect, Size};
 use yd_core::grid::saved::{JUST_CHAT, OwnId, Slug};
 use yd_core::grid::step::GridMsg;
 use yd_core::grid::swap::{Spot, Zone};
+use yd_core::grid::windows::Windows;
 use yd_core::ids::{CommandId, PaneId, TabId, WindowId};
 use yd_core::kind::Kind;
 use yd_core::msg::Msg;
@@ -233,6 +234,14 @@ pub(super) fn tabs_of(context: &PaneCx<'_>, kind: PaneKind) -> Tabs {
     Tabs::shown(own.as_ref().or(kept), kind)
 }
 
+/// What `pane` is called where it is not drawn: a pane about a file by the file's name, as
+/// on its own bar, any other by its kind.
+pub(super) fn named(grid: &Windows, pane: PaneId, kind: PaneKind) -> String {
+    let about = grid.thing(pane).filter(|thing| thing.kind() == Kind::File);
+    let name = about.and_then(|file| file.id().rsplit('/').next());
+    name.unwrap_or(kind.title()).to_owned()
+}
+
 /// A slot's bar: the drawn pane's tabs and one for each other pane of its stack that shows
 /// here, as `width` has room; the farthest from the drawn pane give way and are counted.
 fn slot_tabs(context: &PaneCx<'_>, window: WindowId, kind: PaneKind, width: f32) -> (Tabs, usize) {
@@ -259,14 +268,10 @@ fn slot_tabs(context: &PaneCx<'_>, window: WindowId, kind: PaneKind, width: f32)
                 let unseen =
                     |other: &&yd_core::grid::windows::Pane| other.id == *pane && other.unseen;
                 let dot = grid.panes.iter().any(|other| unseen(&other));
-                // A pane about a file is known by the file's name, as on its own bar.
-                let about = grid.thing(*pane).filter(|thing| thing.kind() == Kind::File);
-                let name = about.and_then(|file| file.id().rsplit('/').next());
-                let tab = Tab::stacked(*pane, kind);
                 shown.tabs.push(Tab {
                     dot,
-                    title: name.map_or(tab.title.clone(), str::to_owned),
-                    ..tab
+                    title: named(grid, *pane, kind),
+                    ..Tab::stacked(*pane, kind)
                 });
             }
             None if Some(n) == at => shown.tabs.append(&mut own),

@@ -1,5 +1,5 @@
 //! The Panes panel under the top bar's button: a picture of every layout, the chat side, and
-//! every pane kind with a switch. The layouts kept are named, renamed and deleted in place.
+//! the session's panes by place. The layouts kept are named, renamed and deleted in place.
 
 use rune::{Align, Cursor, Cx, El, Key, KeyEvent, Side, TextEdit, Tx, col, el, row, text};
 use rune::{spacer, text_input};
@@ -10,19 +10,18 @@ use yd_core::grid::saved::{
     FIRST_OWN, LAST_KEYED, MAX_OWN, OwnId, Shape, find as find_saved, named,
 };
 use yd_core::grid::step::GridMsg;
-use yd_core::ids::{PaneId, WindowId};
+use yd_core::ids::WindowId;
 use yd_core::msg::Msg;
 use yd_core::pane::PaneKind;
 use yd_core::tokens::Tokens;
 
-use super::{BUTTON, LAYOUTS, PANES, SHOW_SETTINGS, SHOW_THEMES, own_command};
-use crate::chrome::tabs::{PLUS, icon_of};
-use crate::grid_view::view::{self, Act, Grips, act, grip, show_pane};
+use super::{BUTTON, LAYOUTS, own_command, places};
+use crate::chrome::tabs::PLUS;
+use crate::grid_view::view::{self, Act, Grips, act, grip};
 use crate::kit::button::{Button, button};
 use crate::kit::icons::glyph;
 use crate::kit::label::section;
 use crate::kit::segmented::segmented;
-use crate::kit::toggle::toggle;
 use crate::menu::command_box;
 use crate::menu::context::popover_shadow;
 use crate::theme::look::{LABEL, NONE, colour};
@@ -46,9 +45,9 @@ pub enum Naming {
 pub const KEY: &str = "grid.panel";
 const NAME: Field = (None, "layout-name");
 const NAME_KEY: &str = "grid.panel.name";
-const WIDTH: f32 = 300.0;
+pub(super) const WIDTH: f32 = 300.0;
 const PICTURE: f32 = 40.0;
-const ITEM: f32 = 20.0;
+pub(super) const ITEM: f32 = 20.0;
 /// Over the panes, whose frames and lines paint above the window's other layers.
 const OVER_ALL: i16 = 8;
 
@@ -314,79 +313,6 @@ fn asking(win: &Win, hub: &Hub, now: Naming) -> Option<El> {
     }
 }
 
-/// Every pane kind the grid shows, Settings and Themes aside: they open in a window.
-fn kinds() -> impl Iterator<Item = PaneKind> {
-    let apart = [SHOW_SETTINGS, SHOW_THEMES];
-    let shown = PANES
-        .iter()
-        .filter(move |(command, _)| !apart.contains(&command.id));
-    shown.map(|(_, kind)| *kind)
-}
-
-/// The panes of `kind` this window draws.
-fn drawn(hub: &Hub, window: WindowId, kind: PaneKind) -> Vec<PaneId> {
-    let grid = &hub.model.grid;
-    let Some(shown) = grid.window(window) else {
-        return Vec::new();
-    };
-    let docked = shown.layout.docked().map(|(pane, _)| pane);
-    docked
-        .filter(|pane| grid.kind(*pane) == Some(kind))
-        .collect()
-}
-
-/// On, a pane is placed as its Show command places it; off, every one of its kind here is
-/// closed as its bar's cross closes it.
-fn flip(win: &mut Win, tx: &mut Tx, kind: PaneKind) {
-    let window = win.window;
-    let panes = win.hub.try_borrow().map(|hub| drawn(&hub, window, kind));
-    let panes = panes.unwrap_or_default();
-    if panes.is_empty() {
-        show_pane(win, tx, kind);
-    }
-    for pane in panes {
-        act(win, tx, Act::Close(pane));
-    }
-}
-
-fn pane_item(hub: &Hub, window: WindowId, kind: PaneKind) -> El {
-    let tokens = &hub.model.tokens;
-    let on = kind == PaneKind::Chat || !drawn(hub, window, kind).is_empty();
-    let key = format!("{KEY}.pane.{}", kind.slug());
-    let ink = if on { tokens.fg } else { tokens.faint };
-    let state = match (kind, on) {
-        (PaneKind::Chat, _) => "always on",
-        (_, true) => "on",
-        (_, false) => "off",
-    };
-    let item = row()
-        .key(key.clone())
-        .w((WIDTH - 16.0) / 2.0)
-        .h(ITEM)
-        .px(5.0)
-        .gap(6.0)
-        .center_y()
-        .radius(RADIUS_CHIP.of(tokens))
-        .label(format!("{}, {state}", kind.title()))
-        .child(glyph(icon_of(kind), 11.0, ink))
-        .child(
-            text(kind.title())
-                .font(LABEL)
-                .color(colour(ink))
-                .truncate()
-                .grow(1.0)
-                .min_w(0.0),
-        )
-        .child(toggle(tokens, &format!("{key}.switch"), on));
-    match kind {
-        PaneKind::Chat => item.help("Chat is always on"),
-        _ => item
-            .hover(colour(HOVER.of(tokens)))
-            .cursor(Cursor::Pointer)
-            .on_press_tx(move |win: &mut Win, tx: &mut Tx| flip(win, tx, kind)),
-    }
-}
-
 fn side_switch(tokens: &Tokens, side: ChatSide) -> El {
     let on = match side {
         ChatSide::Left => 0,
@@ -427,11 +353,6 @@ pub fn layer(win: &Win, hub: &Hub, cx: &mut Cx<Win>, layer: &mut Vec<El>) {
         _ => grid.room(win.window),
     };
     let keys = command_box::keymap(hub);
-    let all: Vec<PaneKind> = kinds().collect();
-    let pairs = all.chunks(2).map(|pair| {
-        let items = pair.iter().map(|kind| pane_item(hub, win.window, *kind));
-        row().gap(4.0).children(items)
-    });
     let line = el().h(1.0).w_full().fill(colour(LINE_MENU.of(tokens)));
     let surface = popover_shadow(
         col()
@@ -451,8 +372,7 @@ pub fn layer(win: &Win, hub: &Hub, cx: &mut Cx<Win>, layer: &mut Vec<El>) {
     .children(asking(win, hub, now.naming))
     .child(side_switch(tokens, grid.side))
     .child(line)
-    .child(section(tokens, "Panes", None, None))
-    .children(pairs)
+    .children(places::rows(hub, win.window))
     .paint_order(OVER_ALL)
     .anchored(BUTTON, Side::Bottom, Align::End, 4.0)
     .modal(true, close);
