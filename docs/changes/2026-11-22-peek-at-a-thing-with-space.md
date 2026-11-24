@@ -1,4 +1,5 @@
 ---
+version: 0.1105.0
 issue: Refs #2308
 cut: none desktop/crates/ui/src/menu/context.rs
 cut: desktop/crates/app/src/shell/view/scenes.rs | step(&mut hub.model, Msg::Grid(GridMsg::Split(parent))); | a child's chat is a pane about the child that the grid opens; the scene no longer splits the parent's chat and binds the copy by hand
