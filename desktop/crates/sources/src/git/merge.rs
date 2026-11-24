@@ -205,6 +205,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "needs git 2.36 for `worktree list -z`, and the forge image has 2.34 (#2341)"
+    )]
     fn a_checkouts_commits_merge_into_the_project_folder_once_asked() -> Result<(), Box<dyn Error>>
     {
         let (home, lane) = project("merge")?;
@@ -229,6 +233,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "needs git 2.36 for `worktree list -z`, and the forge image has 2.34 (#2341)"
+    )]
     fn a_project_folder_with_edits_or_on_another_branch_takes_no_merge()
     -> Result<(), Box<dyn Error>> {
         let (home, lane) = project("merge-dirty")?;
@@ -252,6 +260,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "needs git 2.36 for `worktree list -z`, and the forge image has 2.34 (#2341)"
+    )]
     fn a_conflict_is_left_as_git_left_it_and_says_where() -> Result<(), Box<dyn Error>> {
         let (home, lane) = project("merge-conflict")?;
         std::fs::write(lane.join("a.rs"), "lane\n")?;
@@ -273,6 +285,10 @@ mod tests {
     /// Dogfood: "has no commit that main lacks: nothing to merge" while Changes listed the
     /// agent's files, which it had not committed.
     #[test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "needs git 2.36 for `worktree list -z`, and the forge image has 2.34 (#2341)"
+    )]
     fn uncommitted_work_in_the_checkout_is_named_as_the_reason() -> Result<(), Box<dyn Error>> {
         let (_, lane) = project("merge-uncommitted")?;
         std::fs::write(lane.join("by.rs"), "fn by() {}\n")?;
@@ -289,6 +305,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "needs git 2.36 for `worktree list -z`, and the forge image has 2.34 (#2341)"
+    )]
     fn the_row_says_what_a_merge_would_take_before_it_is_asked() -> Result<(), Box<dyn Error>> {
         let (_, lane) = project("merge-row")?;
         std::fs::write(lane.join("by.rs"), "fn by() {}\n")?;

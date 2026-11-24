@@ -597,6 +597,10 @@ mod tests {
     /// Dies with Yi's checkout of a second session: its edits are on `yi/<session>`, committed
     /// or not, in a worktree of the project's repository that `git status` there never shows.
     #[test]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        ignore = "needs git 2.36 for `worktree list -z`, and the forge image has 2.34 (#2341)"
+    )]
     fn a_sessions_checkout_is_named_and_shows_its_edits_against_the_base()
     -> Result<(), Box<dyn Error>> {
         let at = repo("checkout")?;

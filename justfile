@@ -172,9 +172,11 @@ desktop:
       echo "desktop: nothing the app builds from changed since ${base:0:10}"
       exit 0
     fi
-    # Incident: the gate image has no xkbcommon, and the app's test binaries do not link without it.
-    if [ "$(uname)" = Linux ] && ! pkg-config --exists xkbcommon; then
-      apt-get update -qq && apt-get install -y -qq --no-install-recommends libxkbcommon-dev
+    # Incident: without xkbcommon the app's test binaries do not link, and with no system font to
+    # find, the code view's tests measure nothing: ten failed in a bare Ubuntu 22.04.
+    need="libxkbcommon-dev fontconfig fonts-dejavu-core"
+    if [ "$(uname)" = Linux ] && ! dpkg -s $need >/dev/null 2>&1; then
+      apt-get update -qq && apt-get install -y -qq --no-install-recommends $need
     fi
     PY=$(scripts/py.sh)
     cd desktop && rustup show active-toolchain && PY="$PY" just gate
