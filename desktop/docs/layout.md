@@ -163,8 +163,8 @@ Every row is a `Show` or an existing grid message. Nothing here needs a new idea
 | Pinch in on a filled pane | Back to the grid | ✓ the same |
 | Two-finger double-tap | Toggles fill | ✓ `on_smart_magnify` |
 | Double-click a pane bar | Toggles fill | ✓ the bare part of the bar; a tab is pressed twice to keep a preview |
-| Two-finger swipe sideways on a tab bar | Next or previous tab | ✓ `on_wheel` |
-| Middle-click a tab | Closes it | ✓ `PointerButton::Middle` |
+| Two-finger swipe sideways on a tab bar | Next or previous tab, one for each 48 points; coasting turns none | ✓ `grid_view::view::swipe` on `on_wheel` |
+| Middle-click a tab | Closes it, when it has a cross | ✓ `on_middle_press` |
 | Right-click a pane bar | Move to (place), Split, Pop out, Keep, Keep across sessions, Close others, Always open here, Never open by itself | ✓ right-click menu |
 | ⌥⌘0 | The Panes panel, now a list of the session's things by place, with the layouts | ✓ DF18, ✚ contents |
 | ⌥⌘1 to ⌥⌘9 | Layouts, as places | ✓ |

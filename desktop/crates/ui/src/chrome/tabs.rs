@@ -1,13 +1,13 @@
 //! The tab bar: tabs, meta and the split, pull-out and close icons.
 
-use rune::{Cursor, Drag, El, Icon, Tx, el, row, text};
+use rune::{Cursor, Drag, El, Icon, Tx, WheelEvent, el, row, text};
 use yd_core::command::table::{Command, Route, Run, Target};
 use yd_core::ids::{CommandId, PaneId, TabId};
 use yd_core::pane::PaneKind;
 use yd_core::tokens::Tokens;
 
 use crate::grid_view::drag::{At, Grab, hand};
-use crate::grid_view::view::{Act, act};
+use crate::grid_view::view::{Act, act, swipe};
 use crate::kit::button::PRESS_SCALE;
 use crate::kit::icons::glyph;
 use crate::line_icon;
@@ -420,6 +420,14 @@ fn tab(tokens: &Tokens, bar: &Bar<'_>, tab: &Tab, active: bool) -> El {
         .on_drag(move |win: &mut Win, drag: &mut Drag, tx: &mut Tx| {
             hand(win, Grab::Tab(pane, id), at, drag, tx);
         });
+    // A middle press closes a tab that has a cross, as the cross does.
+    let body = if closes {
+        body.on_middle_press(move |win: &mut Win, tx: &mut Tx| {
+            act(win, tx, Act::CloseOne(pane, id));
+        })
+    } else {
+        body
+    };
     // Incident: a long title pushed the pane's icons off the bar, and a tab shrunk past its icon
     // and cross drew them over each other. A title gives way down to `TITLE_KEPT`, never below.
     body.shrink().min_w(least)
@@ -575,7 +583,8 @@ pub fn bar(tokens: &Tokens, bar: &Bar<'_>) -> El {
                         .truncate(),
                 ),
         )
-        .child(icons);
+        .child(icons)
+        .on_wheel(move |win: &mut Win, event: WheelEvent, tx: &mut Tx| swipe(win, tx, pane, event));
     if bar.alone {
         return strip.window_drag();
     }

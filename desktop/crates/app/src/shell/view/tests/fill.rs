@@ -13,7 +13,11 @@ fn frames(runtime: &Runtime<Win>) -> Vec<(String, [f32; 4])> {
     live.filter_map(frame).collect()
 }
 
-fn rect(runtime: &Runtime<Win>, slug: &str, end: &str) -> Result<[f32; 4], Box<dyn Error>> {
+pub(super) fn rect(
+    runtime: &Runtime<Win>,
+    slug: &str,
+    end: &str,
+) -> Result<[f32; 4], Box<dyn Error>> {
     let shown = runtime.elements();
     let found = shown.iter().find(|e| {
         let key = e.key.as_deref().unwrap_or_default();

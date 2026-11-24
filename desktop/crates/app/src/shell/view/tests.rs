@@ -37,6 +37,7 @@ mod project;
 mod replay;
 mod sidebar;
 mod steps;
+mod tabs;
 mod tools;
 
 type Check = Result<(), Box<dyn Error>>;
