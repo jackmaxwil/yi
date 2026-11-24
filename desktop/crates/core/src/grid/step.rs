@@ -9,7 +9,9 @@ use crate::grid::leave::{
 };
 use crate::grid::place::place;
 use crate::grid::resize::{even, position, resize};
-use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
+use crate::grid::saved::{
+    FIRST_OWN, JUST_CHAT, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named,
+};
 use crate::grid::swap::{Spot, land, swap};
 use crate::grid::windows::{Frame, Pane, Scope, Window, WindowOp, Windows};
 use crate::ids::{PaneId, ThreadId, WindowId};
@@ -114,6 +116,15 @@ pub fn step(grid: &mut Windows, change: GridMsg) -> Vec<Effect> {
     let Ok(ops) = apply(&mut next, change) else {
         return Vec::new();
     };
+    // A pane that is drawn has been seen: its tab carries no dot once it is behind again.
+    if next.panes.iter().any(|pane| pane.unseen) {
+        let layouts = next.windows.iter().map(|window| &window.layout);
+        let drawn = layouts.flat_map(|layout| layout.docked().map(|(pane, _)| pane));
+        let drawn: BTreeSet<PaneId> = drawn.collect();
+        for pane in next.panes.iter_mut() {
+            pane.unseen = pane.unseen && !drawn.contains(&pane.id);
+        }
+    }
     *grid = next;
     ops.into_iter().map(Effect::Window).collect()
 }
@@ -156,11 +167,21 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             if turned {
                 grid.fronts.insert((window, was), fronts);
             }
-            grid.have.insert(window, kinds.into_iter().collect());
+            let now: BTreeSet<PaneKind> = kinds.into_iter().collect();
+            let before = grid.have.insert((window, thread.clone()), now.clone());
+            let first = |kind: &PaneKind| before.as_ref().is_none_or(|had| !had.contains(kind));
+            let arrived: Vec<PaneKind> = now.iter().copied().filter(first).collect();
             match thread.clone() {
                 Some(thread) => grid.shows.insert(window, thread),
                 None => grid.shows.remove(&window),
             };
+            for kind in arrived.into_iter().filter(|kind| kind.arrives()) {
+                // A rule with no room opens nothing: the rest of the telling still holds.
+                let mut tried = grid.clone();
+                if arrive(&mut tried, window, kind).is_ok() {
+                    *grid = tried;
+                }
+            }
             let back = grid.fronts.get(&(window, thread)).cloned();
             for pane in back.unwrap_or_default().into_iter().filter(|_| turned) {
                 let here = grid.home_of(pane) == Some(window) && grid.showing(window, pane);
@@ -236,8 +257,13 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 return Err(GridError::NoSuchPane(pane));
             }
             // The tab left in the slot may be another session's: the slot settles on its own.
-            let mate = next_tab(&find(grid, window)?.layout, pane);
+            let before = find(grid, window)?.layout.clone();
+            let mate = next_tab(&before, pane);
             edit(grid, window, |layout| land(layout, side, pane, at, size))?;
+            // A pane dropped where it was is not moved: nothing of it or its slot changes.
+            if find(grid, window)?.layout == before {
+                return Ok(Vec::new());
+            }
             handled(grid, window, pane);
             if mate.is_some() {
                 settle_in(grid, window, mate)?;
@@ -303,6 +329,10 @@ fn host(grid: &Windows, layout: &Layout, place: Place) -> Option<PaneId> {
     layout.areas.iter().map(|(pane, _)| *pane).find(placed)
 }
 
+fn same_pane(pane: &Pane, kind: PaneKind, thing: Option<&Address>) -> bool {
+    pane.kind == kind && pane.thing.as_ref() == thing
+}
+
 /// Shows a pane of `kind` in `id`, the person's from then on. One the window has comes in
 /// front; else a hidden or a new one joins the stack of its place, or opens that place.
 fn open(
@@ -326,19 +356,11 @@ fn open(
     }
     // A thing is shown once: its pane out in a window of its own is where it shows.
     let out = |pane: &&Pane| thing.is_some() && grid.origin_of(pane.id).is_some();
-    let same = |pane: &&Pane| pane.kind == kind && pane.thing == thing;
+    let same = |pane: &&Pane| same_pane(pane, kind, thing.as_ref());
     if grid.panes.iter().filter(same).any(|pane| out(&pane)) {
         return Ok(Vec::new());
     }
-    let goes = kind.place_about(thing.is_some());
-    let onto = host(grid, layout, goes);
-    let size = grid.room(id);
-    let placed = place(layout, size, grid.side);
-    let largest = placed
-        .into_iter()
-        .max_by(|(_, a), (_, b)| (a.w * a.h).total_cmp(&(b.w * b.h)));
-    let hidden = grid.panes.iter().filter(same);
-    let hidden = hidden.map(|pane| pane.id).find(|pane| idle(grid, *pane));
+    let hidden = hidden_idle(grid, kind, thing.as_ref());
     let pane = match hidden {
         Some(pane) => pane,
         None => add(grid, kind)?,
@@ -347,11 +369,27 @@ fn open(
         made.thing = thing;
     }
     fresh(grid, id, pane);
-    if let Some(onto) = onto {
-        stack(&mut find(grid, id)?.layout, onto, pane)?;
+    if seat(grid, id, pane)? {
         raise(grid, id, pane)?;
-        return Ok(Vec::new());
     }
+    Ok(Vec::new())
+}
+
+/// Puts `pane`, which `id` does not hold, where panes of its place go: a tab of that place's
+/// stack, behind the one in front, else a slot of its own. True when it is a tab.
+fn seat(grid: &mut Windows, id: WindowId, pane: PaneId) -> Result<bool, GridError> {
+    let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
+    let found = grid.panes.iter().find(|other| other.id == pane);
+    let goes = found.ok_or(GridError::NoSuchPane(pane))?.place();
+    if let Some(onto) = host(grid, layout, goes) {
+        stack(&mut find(grid, id)?.layout, onto, pane)?;
+        return Ok(true);
+    }
+    let size = grid.room(id);
+    let placed = place(layout, size, grid.side);
+    let largest = placed
+        .into_iter()
+        .max_by(|(_, a), (_, b)| (a.w * a.h).total_cmp(&(b.w * b.h)));
     let (beside, room) = largest.ok_or(GridError::NoSuchWindow(id))?;
     let edge = if room.w >= room.h {
         Edge::Right
@@ -380,7 +418,47 @@ fn open(
             Ok(())
         })?;
     }
-    Ok(Vec::new())
+    Ok(false)
+}
+
+/// A rule's pane: `kind` has something to show in this session for the first time, so a pane
+/// of it joins its place as a quiet tab the window's own. One the window holds is enough.
+fn arrive(grid: &mut Windows, window: WindowId, kind: PaneKind) -> Result<(), GridError> {
+    let found = grid.window(window).ok_or(GridError::NoSuchWindow(window))?;
+    // Just chat is a page to read: nothing opens beside it by itself. Nor in a window that
+    // is not the session's home: a pane's own window, Settings, a chat that is a guest.
+    let home = |pane: &&Pane| {
+        let own = pane.kind == PaneKind::Chat && pane.thing.is_none();
+        let guest = grid.origin_of(pane.id).is_some_and(|from| from != window);
+        own && found.layout.holds(pane.id) && !guest
+    };
+    if found.saved == Some(JUST_CHAT.slug) || !grid.panes.iter().any(|pane| home(&pane)) {
+        return Ok(());
+    }
+    let shown = grid.shows.get(&window);
+    let here = |pane: &&Pane| pane.seated || pane.scope.holds(shown);
+    let held = |pane: &&Pane| pane.kind == kind && pane.thing.is_none() && here(pane);
+    let mut held = grid.panes.iter().filter(held);
+    if let Some(known) = held
+        .find(|pane| found.layout.holds(pane.id))
+        .map(|pane| pane.id)
+    {
+        // The window's own pane of the kind is back with something new: a dot if it is behind.
+        for pane in grid.panes.iter_mut().filter(|pane| pane.id == known) {
+            pane.unseen = pane.seated;
+        }
+        return Ok(());
+    }
+    let hidden = hidden_idle(grid, kind, None);
+    let pane = match hidden {
+        Some(pane) => pane,
+        None => add(grid, kind)?,
+    };
+    let behind = seat(grid, window, pane)?;
+    if let Some(made) = grid.panes.iter_mut().find(|other| other.id == pane) {
+        (made.seated, made.scope, made.unseen) = (true, Scope::Window, behind);
+    }
+    Ok(())
 }
 
 /// The person asked for `pane` in `window` or moved it there: it is theirs, open in the
@@ -416,7 +494,8 @@ fn settle(grid: &mut Windows, id: WindowId) -> Result<(), GridError> {
 
 /// [`settle`] for the one slot `only` is in, or for every slot of the window.
 fn settle_in(grid: &mut Windows, id: WindowId, only: Option<PaneId>) -> Result<(), GridError> {
-    if !grid.have.contains_key(&id) {
+    let thread = grid.shows.get(&id).cloned();
+    if !grid.have.contains_key(&(id, thread)) {
         return Ok(());
     }
     let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
@@ -455,13 +534,14 @@ fn settle_in(grid: &mut Windows, id: WindowId, only: Option<PaneId>) -> Result<(
 fn add(grid: &mut Windows, kind: PaneKind) -> Result<PaneId, GridError> {
     let highest = grid.panes.iter().map(|pane| pane.id.0).max().unwrap_or(0);
     let id = highest.checked_add(1).map(PaneId).ok_or(GridError::Full)?;
-    let (seated, scope, thing) = (false, Scope::Window, None);
+    let (seated, scope, thing, unseen) = (false, Scope::Window, None, false);
     grid.panes.push(Pane {
         id,
         kind,
         seated,
         scope,
         thing,
+        unseen,
     });
     Ok(id)
 }
@@ -469,6 +549,14 @@ fn add(grid: &mut Windows, kind: PaneKind) -> Result<PaneId, GridError> {
 /// Whether `pane` is in no window and out of none: hidden, for any window to show again.
 fn idle(grid: &Windows, pane: PaneId) -> bool {
     !grid.windows.iter().any(|window| window.layout.holds(pane))
+}
+
+fn hidden_idle(grid: &Windows, kind: PaneKind, thing: Option<&Address>) -> Option<PaneId> {
+    grid.panes
+        .iter()
+        .filter(|pane| same_pane(pane, kind, thing))
+        .map(|pane| pane.id)
+        .find(|pane| idle(grid, *pane))
 }
 
 /// Takes `pane` out of the window it is drawn in, for good. A window left with no pane
@@ -701,6 +789,8 @@ mod carry;
 mod random;
 #[cfg(test)]
 mod resting;
+#[cfg(test)]
+mod rules;
 #[cfg(test)]
 mod sessions;
 #[cfg(test)]

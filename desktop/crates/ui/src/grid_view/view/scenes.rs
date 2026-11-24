@@ -88,6 +88,7 @@ pub(super) fn show(hub: &mut Hub, saved: Slug) {
                 meta: meta_of(title).to_owned(),
                 fixed: false,
                 preview: false,
+                dot: false,
             })
             .collect();
     }

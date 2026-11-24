@@ -19,6 +19,12 @@ macro_rules! panes {
                 match self { $(PaneKind::$name => $wide),+ }
             }
 
+            /// Whether a window opens a pane of the kind by itself, as a quiet tab, the first
+            /// time a session has something of it to show: the rules of what arrives.
+            pub const fn arrives(self) -> bool {
+                matches!(self, PaneKind::Changes | PaneKind::Agents | PaneKind::Web)
+            }
+
             /// [`PaneKind::place`] for a pane about one thing or about none: a chat about
             /// one thing, a child agent's, is work beside the session's own chat.
             pub const fn place_about(self, thing: bool) -> Place {

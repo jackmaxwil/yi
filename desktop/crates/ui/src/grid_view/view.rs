@@ -181,7 +181,15 @@ fn slot_tabs(context: &PaneCx<'_>, window: WindowId, kind: PaneKind, width: f32)
     let mut own = std::mem::take(&mut shown.tabs);
     for (n, pane) in stack.iter().enumerate() {
         match grid.kind(*pane).filter(|_| others.contains(&n)) {
-            Some(kind) => shown.tabs.push(Tab::stacked(*pane, kind)),
+            Some(kind) => {
+                let unseen =
+                    |other: &&yd_core::grid::windows::Pane| other.id == *pane && other.unseen;
+                let dot = grid.panes.iter().any(|other| unseen(&other));
+                shown.tabs.push(Tab {
+                    dot,
+                    ..Tab::stacked(*pane, kind)
+                });
+            }
             None if Some(n) == at => shown.tabs.append(&mut own),
             None => {}
         }

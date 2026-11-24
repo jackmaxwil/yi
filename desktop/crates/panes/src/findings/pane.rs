@@ -294,6 +294,7 @@ fn tabs(pane: &PaneCx<'_>) -> Tabs {
             meta,
             fixed: true,
             preview: false,
+            dot: false,
         });
     }
     let closed = view.is_some_and(|view| view.closed);

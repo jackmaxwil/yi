@@ -310,7 +310,10 @@ pub fn rejoin(layout: &mut Layout, pane: PaneId) -> Result<(), GridError> {
     }
     if layout.slot(pane).is_none() {
         let is_in = |other: PaneId| layout.docked().any(|(docked, _)| docked == other);
-        let known = hole.beside.iter().copied().find(|(other, _)| is_in(*other));
+        // A neighbour remembered by a tab now behind another is the slot that tab shares.
+        let slots = hole.beside.iter().copied();
+        let mut slots = slots.filter_map(|(other, edge)| Some((layout.front(other)?, edge)));
+        let known = slots.find(|(other, _)| is_in(*other));
         let first = layout.docked().next().map(|(other, _)| (other, Edge::Left));
         let (other, edge) = known.or(first).ok_or(GridError::NoSuchPane(pane))?;
         split(layout, other, edge, pane)?;

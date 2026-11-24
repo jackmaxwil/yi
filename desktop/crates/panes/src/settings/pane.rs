@@ -113,6 +113,7 @@ fn tabs(pane: &PaneCx<'_>) -> Tabs {
         // The cross on All and Changed goes back to the group's tab, which has none.
         fixed: which == Which::Group,
         preview: false,
+        dot: false,
     };
     let group = state
         .group_in(&rows)

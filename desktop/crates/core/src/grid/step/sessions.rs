@@ -10,7 +10,7 @@ use crate::pane::PaneKind::{self, Chat, Containers, Trace, Web};
 
 use super::GridMsg;
 use super::resting::kinds_drawn;
-use super::tests::{FRAME_2, MAIN, change, drawn, pane, record};
+use super::tests::{FRAME_2, MAIN, change, drawn, pane, record, reread};
 
 /// The chat alone, in a window showing session `thread`.
 fn window(thread: &str) -> Model {
@@ -24,7 +24,9 @@ fn window(thread: &str) -> Model {
 /// The window turns to session `thread`; an empty name is New chat, no session at all.
 fn show(model: &mut Model, thread: &str) {
     let thread = (!thread.is_empty()).then(|| ThreadId::new(thread));
-    let (window, kinds) = (MAIN, PaneKind::ALL.to_vec());
+    // Every kind but those a rule opens by itself: these tests open their own panes.
+    let kinds = PaneKind::ALL.iter().copied();
+    let (window, kinds) = (MAIN, kinds.filter(|kind| !kind.arrives()).collect());
     let told = GridMsg::Have {
         window,
         kinds,
@@ -156,10 +158,7 @@ fn the_grid_file_keeps_each_panes_sessions() -> Check {
         !list.contains(&ThreadId::new("a")),
         "the oldest was forgotten"
     );
-    let text = serde_json::to_string(&model.grid)?;
-    let mut read: Windows = serde_json::from_str(&text)?;
-    (read.have, read.shows) = (model.grid.have.clone(), model.grid.shows.clone());
-    read.fronts = model.grid.fronts.clone();
+    let (_, read) = reread(&model)?;
     assert_eq!(read, model.grid);
     Ok(())
 }

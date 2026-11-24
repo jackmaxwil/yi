@@ -52,6 +52,15 @@ pub(super) fn drawn(model: &Model) -> Result<Vec<(PaneId, Rect)>, String> {
     Ok(placed)
 }
 
+/// The grid written to its file and read back, with what the file does not keep copied over.
+pub(super) fn reread(model: &Model) -> Result<(String, Windows), Box<dyn std::error::Error>> {
+    let text = serde_json::to_string(&model.grid)?;
+    let mut read: Windows = serde_json::from_str(&text)?;
+    read.shows = model.grid.shows.clone();
+    read.fronts = model.grid.fronts.clone();
+    Ok((text, read))
+}
+
 pub(super) fn open(model: &mut Model, kind: PaneKind) {
     let window = MAIN;
     change(model, GridMsg::Open { window, kind });
