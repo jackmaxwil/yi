@@ -520,25 +520,44 @@ fn a_literal_api_key_is_the_bearer() -> TestResult {
     Ok(())
 }
 
-/// No key anywhere is refused before any request, naming the variable that would supply one;
-/// `yi login` has no profile for a custom id, so it is not offered.
-#[test]
-fn a_declared_provider_with_no_key_is_refused_before_any_request() -> TestResult {
+/// A provider declared with `key` and no credential anywhere is refused before any request, and
+/// the refusal and the doctor row end in `refusal` and `detail`. `yi login` has no profile for a
+/// custom id, so it is never offered.
+fn refused_without_a_key(tag: &str, key: Value, refusal: &str, detail: &str) -> TestResult {
     let (port, seen) = fake_gateway()?;
-    let home = Home::new(
-        "nokey",
-        &localgw(port, json!({"apiKeyEnv": "LOCALGW_API_KEY"})),
-    )?;
+    let home = Home::new(tag, &localgw(port, key))?;
     let ask = home.yi(&["ask", "--here", "--model", "localgw/m1", "hi"], &[])?;
     assert_eq!(ask.status.code(), Some(4), "{}", text(&ask));
-    let refusal = "no credential for provider localgw (export LOCALGW_API_KEY)";
     assert!(text(&ask).contains(refusal), "{}", text(&ask));
     assert!(seen.lock().map_err(|_| "fake lock")?.is_empty());
     let row = providers_row(&home, &[])?;
     assert_eq!(row["status"], "fail", "{row}");
-    let detail = row["detail"].as_str().unwrap_or_default();
-    assert!(detail.ends_with("no key (export LOCALGW_API_KEY)"), "{row}");
+    assert!(
+        row["detail"].as_str().unwrap_or_default().ends_with(detail),
+        "{row}"
+    );
     Ok(())
+}
+
+#[test]
+fn a_declared_provider_with_no_key_is_refused_before_any_request() -> TestResult {
+    refused_without_a_key(
+        "nokey",
+        json!({"apiKeyEnv": "LOCALGW_API_KEY"}),
+        "no credential for provider localgw (export LOCALGW_API_KEY)",
+        "no key (export LOCALGW_API_KEY)",
+    )
+}
+
+/// The minimal config names `apiKeyEnv` on both surfaces, never a secret written into `config.json`.
+#[test]
+fn a_declared_provider_with_no_key_field_points_at_api_key_env() -> TestResult {
+    refused_without_a_key(
+        "nokeyfield",
+        json!({}),
+        "no credential for provider localgw (set providers.localgw.apiKeyEnv in config.json)",
+        "no key (set apiKeyEnv)",
+    )
 }
 
 /// A key only the yi-oauth store holds names the store, whose file names sanitize the id.

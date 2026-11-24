@@ -2,7 +2,7 @@
 
 use std::error::Error;
 
-use rune::{Cx, El, ElementInfo, Env, Runtime, col};
+use rune::{Cx, El, Env, Runtime, col};
 use yd_core::ids::WindowId;
 use yd_ui::pane::{PaneCx, PaneDef, SCENE_PANE};
 use yd_ui::win::{Hub, Win};
@@ -43,17 +43,9 @@ fn drawn() -> Result<Runtime<Win>, Box<dyn Error>> {
 }
 
 fn tap(rt: &mut Runtime<Win>, key: &str) -> Check {
-    let tree = rt.elements();
-    let hit = tree
-        .iter()
-        .find(|e: &&ElementInfo| e.key.as_deref() == Some(key));
-    let [x, y, w, h] = hit.ok_or_else(|| format!("no {key}"))?.rect;
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    rt.pointer_move(x, y);
-    rt.pointer_down(x, y);
-    rt.pointer_up(x, y);
-    rt.frame(0.016);
-    Ok(())
+    crate::test_support::tap(rt, key, |rt| {
+        rt.frame(0.016);
+    })
 }
 
 fn granted(rt: &Runtime<Win>) -> Result<bool, Box<dyn Error>> {

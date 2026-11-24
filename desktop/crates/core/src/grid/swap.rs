@@ -5,7 +5,7 @@ use crate::grid::layout::{
     Axis, ChatSide, Edge, GridError, Layout, MAX_PANES, MAX_TRACKS, MIN_PANE, Point, Rect, Size,
     Track, area,
 };
-use crate::grid::leave::{close, front, next_tab, split, stack};
+use crate::grid::leave::{front, next_tab, part, split, stack};
 use crate::grid::place::place;
 use crate::ids::PaneId;
 
@@ -84,21 +84,21 @@ pub fn land(
         Spot::Onto(other) if other == pane => {}
         Spot::Onto(other) if mate.is_none() => swap(layout, pane, other)?,
         Spot::Onto(other) => {
-            close(layout, pane)?;
+            part(layout, pane)?;
             stack(layout, other, pane)?;
             front(layout, pane)?;
         }
         Spot::Beside(other, edge) => {
             let other = if other == pane { mate } else { Some(other) };
             let other = other.ok_or(GridError::NoSuchPane(pane))?;
-            close(layout, pane)?;
+            part(layout, pane)?;
             if !docked(layout, other) {
                 return Err(GridError::NoSuchPane(other));
             }
             split(layout, other, own(edge, side), pane)?;
         }
         Spot::Side(edge) => {
-            close(layout, pane)?;
+            part(layout, pane)?;
             along(layout, own(edge, side), pane)?;
         }
     }
