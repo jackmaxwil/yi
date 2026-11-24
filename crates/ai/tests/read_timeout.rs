@@ -204,3 +204,146 @@ fn every_streaming_adapter_reads_the_deadline_from_the_model() -> TestResult {
     }
     Ok(())
 }
+
+const EVENT: &str = "data: {\"n\":0}\n\n";
+
+fn event_reply() -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{EVENT}",
+        EVENT.len()
+    )
+}
+
+/// What a test does with the second request that arrives on the kept-alive socket.
+type OnReused = Box<dyn FnOnce(std::io::BufReader<std::net::TcpStream>) + Send>;
+
+/// A gateway that answers one request, keeps its socket open, and hands the next request on that
+/// socket to `on_reused`; any later connection is answered at once. Returns the port and the
+/// number of connections accepted. The first send is pumped, so its agent holds a reusable socket.
+fn reused_socket(
+    on_reused: OnReused,
+) -> std::io::Result<(u16, Arc<AtomicUsize>, std::thread::JoinHandle<()>)> {
+    use std::io::{BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&accepted);
+    let server = std::thread::spawn(move || {
+        let Ok((first, _)) = listener.accept() else {
+            return;
+        };
+        count.fetch_add(1, Ordering::SeqCst);
+        let mut first = BufReader::new(first);
+        crate::loopback::read_request(&mut first);
+        let _ = first.get_mut().write_all(event_reply().as_bytes());
+        crate::loopback::read_request(&mut first);
+        let handler = std::thread::spawn(move || on_reused(first));
+        for later in listener.incoming().flatten() {
+            count.fetch_add(1, Ordering::SeqCst);
+            let mut later = BufReader::new(later);
+            crate::loopback::read_request(&mut later);
+            let _ = later.get_mut().write_all(event_reply().as_bytes());
+        }
+        let _ = handler.join();
+    });
+    Ok((port, accepted, server))
+}
+
+/// Sends once and pumps the reply, so the agent for `deadline` holds a socket to reuse.
+fn warm(url: &str, retry: &Retry<'_>) -> TestResult {
+    let body = probe();
+    let pumped = pump_sse_with_resend(
+        None,
+        retry,
+        || send_with_retry(url, &[], &body, None, retry),
+        |_| Ok(true),
+    );
+    assert!(pumped.is_ok(), "{pumped:?}");
+    Ok(())
+}
+
+/// Dies with a pooled socket a NAT dropped: the request written into it waited forever, because
+/// ureq clears the read deadline when a socket returns to its pool. Run under nextest, one process
+/// a test: the agent pool is process-wide and three slots wide.
+#[test]
+fn a_silent_reused_socket_ends_at_the_deadline_without_a_second_send() -> TestResult {
+    let (port, accepted, _server) = reused_socket(Box::new(|mut held| {
+        let mut rest = String::new();
+        let _ = std::io::BufRead::read_line(&mut held, &mut rest);
+    }))?;
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let retry = Retry::new(Duration::from_millis(1111), None, &|_| {});
+    warm(&url, &retry)?;
+    let body = probe();
+    let failed = send_with_retry(&url, &[], &body, None, &retry)
+        .err()
+        .ok_or("a silent reused socket answered")?;
+    assert!(failed.contains("readTimeoutSecs"), "{failed}");
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        1,
+        "the prompt was sent twice"
+    );
+    let next = send_with_retry(&url, &[], &body, None, &retry)?;
+    assert_eq!(
+        next.status(),
+        200,
+        "the next request dials a new connection"
+    );
+    Ok(())
+}
+
+/// Dies with a slow but live reused connection written to twice: the server generated the reply
+/// twice and the user paid twice.
+#[test]
+fn a_slow_reused_socket_is_not_sent_the_prompt_again() -> TestResult {
+    let (port, accepted, _server) = reused_socket(Box::new(|mut held| {
+        std::thread::sleep(Duration::from_millis(1700));
+        let _ = std::io::Write::write_all(held.get_mut(), event_reply().as_bytes());
+    }))?;
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let retry = Retry::new(Duration::from_millis(1222), None, &|_| {});
+    warm(&url, &retry)?;
+    let body = probe();
+    let failed = send_with_retry(&url, &[], &body, None, &retry)
+        .err()
+        .ok_or("a reply past the deadline arrived")?;
+    assert!(failed.contains("after 1 s"), "{failed}");
+    assert_eq!(accepted.load(Ordering::SeqCst), 1, "{failed}");
+    Ok(())
+}
+
+/// Dies with a total bound on a reused socket's stream: the deadline is one read, so a body
+/// slower than it in all still completes.
+#[test]
+fn a_reused_socket_streams_past_the_deadline_in_total() -> TestResult {
+    let (port, _, _server) = reused_socket(Box::new(|mut held| {
+        let stream = &mut *held.get_mut();
+        let _ = std::io::Write::write_all(
+            stream,
+            b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n",
+        );
+        for n in 0..6 {
+            std::thread::sleep(Duration::from_millis(300));
+            let _ =
+                std::io::Write::write_all(stream, format!("data: {{\"n\":{n}}}\n\n").as_bytes());
+        }
+    }))?;
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let retry = Retry::new(Duration::from_millis(1333), None, &|_| {});
+    warm(&url, &retry)?;
+    let body = probe();
+    let mut events = 0usize;
+    let pumped = pump_sse_with_resend(
+        None,
+        &retry,
+        || send_with_retry(&url, &[], &body, None, &retry),
+        |_| {
+            events = events.saturating_add(1);
+            Ok(true)
+        },
+    );
+    assert!(pumped.is_ok(), "{pumped:?}");
+    assert_eq!(events, 6);
+    Ok(())
+}

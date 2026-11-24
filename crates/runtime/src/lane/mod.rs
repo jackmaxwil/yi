@@ -93,6 +93,8 @@ pub fn head(cwd: &Path) -> Result<Head, LaneError> {
 pub enum LaneError {
     #[error("no free lane: {held} held, {orphans} orphaned of {slots}; `yi lanes` lists them")]
     PoolFull { slots: u8, held: u8, orphans: u8 },
+    #[error("{0}")]
+    Admission(crate::admission::Refusal),
     #[error("lane {slot} is held by session {session}")]
     SlotBusy { slot: SlotIndex, session: String },
     #[error("lane {slot} was left by session {session}; `yi lanes reap {slot}` frees it")]
@@ -621,8 +623,32 @@ impl Pool {
         self.slots
     }
 
+    /// Incident: sixty finished lanes' `target/` directories filled a 1.8 TB disk. A claim the
+    /// host refuses on disk first reaps every lane `gc` proves finished, then judges again.
+    fn admit_claim(&self) -> Result<(), LaneError> {
+        Self::retry_admission(
+            || crate::admission::check(&self.dir, 0),
+            || self.gc(&self.repo, false).map(|_| ()),
+        )
+    }
+
+    fn retry_admission(
+        mut check: impl FnMut() -> Result<(), crate::admission::Refusal>,
+        gc: impl FnOnce() -> Result<(), LaneError>,
+    ) -> Result<(), LaneError> {
+        let Err(refusal) = check() else {
+            return Ok(());
+        };
+        if refusal.resource != crate::admission::Resource::Disk {
+            return Err(LaneError::Admission(refusal));
+        }
+        gc()?;
+        check().map_err(LaneError::Admission)
+    }
+
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
         let _span = yi_types::trace::span("lane.claim");
+        self.admit_claim()?;
         let pool_lock = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
         let mut free = None;
@@ -994,11 +1020,7 @@ mod tests {
             assign.contains(&"GIT_CONFIG_COUNT=7".to_owned()),
             "{assign:?}"
         );
-        for protocol in [
-            "protocol.allow",
-            "protocol.https.allow",
-            "protocol.git.allow",
-        ] {
+        for protocol in ["protocol.https.allow", "protocol.git.allow"] {
             assert!(
                 assign
                     .iter()
@@ -1007,5 +1029,63 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn a_lane_finished_after_a_refusal_is_reaped_by_the_next_claim() -> Result<(), LaneError> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let refused = crate::admission::Refusal {
+            resource: crate::admission::Resource::Disk,
+            have: 0,
+            need: 1,
+            live: 0,
+        };
+        let first = Pool::retry_admission(|| Err(refused), || Ok(()));
+        assert!(matches!(first, Err(LaneError::Admission(_))));
+        let freed = AtomicBool::new(false);
+        let second = Pool::retry_admission(
+            || {
+                if freed.load(Ordering::Relaxed) {
+                    Ok(())
+                } else {
+                    Err(refused)
+                }
+            },
+            || {
+                freed.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+        );
+        assert!(
+            second.is_ok(),
+            "a claim after a refused one skipped the reap that frees space: {second:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_claim_refused_on_memory_or_load_skips_the_lane_sweep() {
+        use crate::admission::{Refusal, Resource};
+        for resource in [Resource::Memory, Resource::Cpu] {
+            let refused = Refusal {
+                resource,
+                have: 0,
+                need: 1,
+                live: 0,
+            };
+            let mut swept = false;
+            let outcome = Pool::retry_admission(
+                || Err(refused),
+                || {
+                    swept = true;
+                    Ok(())
+                },
+            );
+            assert!(matches!(outcome, Err(LaneError::Admission(_))));
+            assert!(
+                !swept,
+                "a {resource:?} refusal ran the lane gc, which frees only disk"
+            );
+        }
     }
 }

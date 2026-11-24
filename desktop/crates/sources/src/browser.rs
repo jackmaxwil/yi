@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use yd_core::command::table::Run;
 use yd_core::command::tools::web;
-use yd_core::feed::{FeedEvent, FeedStatus, Pointer, ScreenInput, ScreenKey, SourceCmd};
+use yd_core::feed::{
+    FeedEvent, FeedStatus, Pointer, ScreenInput, ScreenKey, SourceCmd, page_row_id,
+};
 use yd_core::inbox::{Closed, FeedTx};
 use yd_core::row::Row;
 use yi_browser::{Browser, Update};
@@ -262,7 +264,7 @@ impl Tab {
         let ms = self.ms.map(|ms| ms.to_string()).unwrap_or_default();
         let width = self.width.map(|w| w.to_string()).unwrap_or_default();
         let forward = self.at.saturating_add(1) < self.entries.len();
-        Row::new(format!("page:{instance}"))
+        Row::new(page_row_id(FEED.instance(instance)).as_str())
             .text("url", url)
             .text("title", title(url))
             .text("status", status)

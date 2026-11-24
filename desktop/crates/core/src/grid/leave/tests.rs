@@ -294,6 +294,26 @@ fn closing_a_pane_lets_its_neighbour_fill() -> Check {
     expect(&drawn(&layout, FRAME_1)?, &want)
 }
 
+/// Closing the last tab of a bar hands its slot to the first tab of the bar, the order closes
+/// have always taken, not to the tab just before it.
+#[test]
+fn closing_the_last_tab_hands_the_slot_to_the_first_tab() -> Check {
+    let mut layout = Layout {
+        cols: vec![Fr(1.0)],
+        rows: vec![Fr(1.0)],
+        areas: vec![(pane(Changes), area(1, 1, 2, 2))],
+        away: Vec::new(),
+        stacks: vec![vec![pane(Files), pane(Web), pane(Changes)]],
+    };
+    close(&mut layout, pane(Changes))?;
+    assert!(
+        layout.slot(pane(Files)).is_some(),
+        "the first tab takes the slot"
+    );
+    assert_eq!(layout.slot(pane(Web)), None, "the tab before it does not");
+    Ok(())
+}
+
 /// Plan default 4: a split puts the new pane to the right, in half the old pane's room.
 #[test]
 fn a_split_puts_a_new_pane_beside_the_old_in_half_its_room() -> Check {
