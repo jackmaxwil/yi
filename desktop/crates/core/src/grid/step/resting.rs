@@ -182,12 +182,12 @@ fn a_kind_is_offered_while_it_has_something_to_show_and_no_pane() -> Check {
     let (window, saved) = (MAIN, "just-chat");
     change(&mut model, GridMsg::Show { window, saved });
     assert_eq!(offered(&model), [], "not told yet");
-    have(&mut model, &[Chat, Files, Terminal]);
+    have(&mut model, &[Chat, Files, Terminal], None);
     assert_eq!(offered(&model), [Files, Terminal], "Changes would be blank");
     let kind = Files;
     change(&mut model, GridMsg::Open { window, kind });
     assert_eq!(offered(&model), [Terminal], "Files has its pane now");
-    have(&mut model, &[Chat, Files]);
+    have(&mut model, &[Chat, Files], None);
     assert_eq!(offered(&model), [], "the last shell is gone");
     let files = pane(&model, Files)?;
     change(&mut model, GridMsg::Close(files));
