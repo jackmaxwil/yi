@@ -1,6 +1,8 @@
 //! One module per pane. Most are descriptions over an engine in `yd-ui`.
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub mod agents;
 pub mod assets;

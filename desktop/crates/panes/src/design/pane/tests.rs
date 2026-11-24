@@ -22,6 +22,7 @@ use super::scenes::SCENES;
 use super::{DEF, FEED, Mode, carry, mode};
 use crate::design::handles::{fit, measured, resized, thing_at};
 use crate::design::markup::{self, Marks};
+use crate::test_support::tap;
 
 type Check = Result<(), Box<dyn Error>>;
 type Sent = Rc<RefCell<Vec<Effect>>>;
@@ -89,16 +90,6 @@ fn rect(rt: &Runtime<Win>, key: &str) -> Result<[f32; 4], Box<dyn Error>> {
     Ok(hit.ok_or_else(|| format!("no {key}"))?.rect)
 }
 
-fn tap(rt: &mut Runtime<Win>, key: &str) -> Check {
-    let [x, y, w, h] = rect(rt, key)?;
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    rt.pointer_move(x, y);
-    rt.pointer_down(x, y);
-    rt.pointer_up(x, y);
-    rest(rt);
-    Ok(())
-}
-
 fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {
     let mods = Mods {
         cmd,
@@ -141,7 +132,7 @@ fn asked(sent: &Sent) -> Vec<String> {
 }
 
 fn type_value(rt: &mut Runtime<Win>, slug: &str, typed: &str) -> Check {
-    tap(rt, &format!("design-0.value.{slug}"))?;
+    tap(rt, &format!("design-0.value.{slug}"), rest)?;
     press(rt, Key::Command('a'), true);
     press(rt, Key::Text(typed.to_owned()), false);
     press(rt, Key::Enter, false);
@@ -203,7 +194,7 @@ fn a_bad_colour_is_refused_in_place_and_a_good_one_is_asked_of_the_page() -> Che
 #[test]
 fn reset_asks_the_page_and_the_card_goes_when_the_change_rows_do() -> Check {
     let (mut rt, sent) = draw("design/mockup", false)?;
-    tap(&mut rt, "design-0.reset")?;
+    tap(&mut rt, "design-0.reset", rest)?;
     assert_eq!(asked(&sent), [format!("{} ", RESET.0)]);
     // The source answers a reset by taking its change rows away.
     rt.update(|win, _| {
@@ -228,7 +219,7 @@ fn reset_asks_the_page_and_the_card_goes_when_the_change_rows_do() -> Check {
 #[test]
 fn hand_to_agent_sends_one_prompt_with_the_list_and_two_attached_things() -> Check {
     let (mut rt, sent) = draw("design/mockup", true)?;
-    tap(&mut rt, "design-0.hand")?;
+    tap(&mut rt, "design-0.hand", rest)?;
     let all = sent.borrow();
     let prompts: Vec<&str> = all
         .iter()
@@ -389,7 +380,7 @@ fn in_design_mode_a_press_picks_once_and_the_page_gets_no_other_input() -> Check
         "an element is picked already"
     );
 
-    tap(&mut rt, "web-0.mode.2")?;
+    tap(&mut rt, "web-0.mode.2", rest)?;
     rt.update(|win, tx| {
         command_box::run(win, tx, Run::new(yd_core::command::tools::design::PICK));
     });
@@ -403,7 +394,7 @@ fn in_design_mode_a_press_picks_once_and_the_page_gets_no_other_input() -> Check
     );
     assert!(!screened(&sent));
 
-    tap(&mut rt, "web-0.mode.0")?;
+    tap(&mut rt, "web-0.mode.0", rest)?;
     click(&mut rt);
     assert!(screened(&sent), "in Browse the press is the page's again");
     assert!(rect(&rt, "web-0.design.element").is_err());
@@ -477,7 +468,7 @@ fn a_drag_on_a_marked_up_screen_makes_a_region_and_its_typed_note_is_attached() 
     rt.pointer_up(x + 250.0, y + 180.0);
     rest(&mut rt);
     assert_eq!(words(&rt, "design-0.screen.mark.1.number")?, ["2"]);
-    tap(&mut rt, "design-0.screen.mark.1.note.field")?;
+    tap(&mut rt, "design-0.screen.mark.1.note.field", rest)?;
     press(&mut rt, Key::Text("Too dark here".to_owned()), false);
     press(&mut rt, Key::Enter, false);
     rest(&mut rt);
