@@ -189,6 +189,7 @@ fn any_change(dice: &mut Dice, grid: &Windows, size: Size) -> Option<Change> {
                 thing,
             }
         }
+        32 => GridMsg::Fill(dice.pick(&all)?),
         _ => GridMsg::Leave(dice.pick(&all)?),
     };
     Some(Change::Said(Msg::Grid(change)))
@@ -294,6 +295,7 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
         | GridMsg::Have { .. }
         | GridMsg::Across { .. }
         | GridMsg::Front(_)
+        | GridMsg::Fill(_)
         | GridMsg::Moved { .. }
         | GridMsg::Keep { .. }
         | GridMsg::Wear { .. }
@@ -302,6 +304,35 @@ fn took(before: &Windows, change: &Change, after: &Windows) -> Result<(), String
     };
     if refused {
         return Err("the grid refused it".to_owned());
+    }
+    Ok(())
+}
+
+/// The grid under any fill: what every property of the arrangement is checked on.
+fn unfilled(grid: &Windows) -> Windows {
+    let mut plain = grid.clone();
+    plain.filled.clear();
+    plain
+}
+
+/// A window with a pane filling it draws that pane alone, over the whole grid, and the pane
+/// is one the window draws without the fill; a fill names a window that is there.
+fn filled(grid: &Windows, size: Size) -> Result<(), String> {
+    let plain = unfilled(grid);
+    for window in grid.filled.keys() {
+        let Some(pane) = grid.fills(*window) else {
+            continue;
+        };
+        if grid.place(*window, size) != [(pane, size.whole())] {
+            return Err(format!("{pane:?} does not fill {window:?}"));
+        }
+        if !plain
+            .place(*window, size)
+            .iter()
+            .any(|(drawn, _)| *drawn == pane)
+        {
+            return Err(format!("{pane:?} fills {window:?} and is not drawn in it"));
+        }
     }
     Ok(())
 }
@@ -330,10 +361,11 @@ fn runs(
             let Some(change) = any_change(&mut dice, &model.grid, size) else {
                 continue;
             };
-            let before = model.grid.clone();
+            let before = unfilled(&model.grid);
             make(&mut model, &change);
             let failed = |error| format!("seed {seed}, change {turn}, {change:?}: {error}");
-            each(&before, &change, &model.grid, size).map_err(failed)?;
+            filled(&model.grid, size).map_err(failed)?;
+            each(&before, &change, &unfilled(&model.grid), size).map_err(failed)?;
         }
     }
     Ok(())

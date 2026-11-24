@@ -24,6 +24,7 @@ mod colour;
 mod design;
 mod docking;
 mod environment;
+mod fill;
 mod first_look;
 mod ipython;
 mod joined;

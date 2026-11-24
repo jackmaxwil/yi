@@ -4,19 +4,14 @@ use crate::address::uri::Address;
 use crate::grid::layout::{Axis, ChatSide, Edge, GridError, Hole, Layout, Line, Size};
 use std::collections::BTreeSet;
 
-use crate::grid::leave::{
-    close, close_tab, front, leave, next_tab, rejoin, rest, split, stack, unstack,
-};
-use crate::grid::place::place;
+use crate::grid::leave::{close, close_tab, front, leave, next_tab, rejoin, rest, split, unstack};
 use crate::grid::resize::{even, position, resize};
-use crate::grid::saved::{
-    FIRST_OWN, JUST_CHAT, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named,
-};
+use crate::grid::saved::{FIRST_OWN, MAX_OWN, Own, OwnId, Shape, Slug, find as find_saved, named};
 use crate::grid::swap::{Spot, land, swap};
 use crate::grid::windows::{Frame, Pane, Scope, Window, WindowOp, Windows};
 use crate::ids::{PaneId, ThreadId, WindowId};
 use crate::msg::Effect;
-use crate::pane::{PaneKind, Place};
+use crate::pane::PaneKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridMsg {
@@ -59,6 +54,9 @@ pub enum GridMsg {
     Split(PaneId),
     /// Close a pane for good; its neighbours fill the room.
     Close(PaneId),
+    /// Give a pane its window's whole grid, the others out of sight; said again of it or of
+    /// a tab of its stack, the grid is back as it was.
+    Fill(PaneId),
     /// Show a pane of `kind` in a window that draws none: it takes half of the largest pane.
     Open {
         window: WindowId,
@@ -113,9 +111,29 @@ pub enum GridMsg {
 pub fn step(grid: &mut Windows, change: GridMsg) -> Vec<Effect> {
     // Invariant: a change happens whole or not at all, so it is made on a copy first.
     let mut next = grid.clone();
+    // Invariant: a fill lasts only through changes that arrange nothing, so the grid a
+    // person arranges is always the one they see. A tab of the filled stack may come in front.
+    let tab = |pane: &PaneId| {
+        grid.filled.iter().any(|(window, filled)| {
+            let layout = grid.window(*window).map(|window| &window.layout);
+            layout.is_some_and(|layout| layout.front(*filled) == layout.front(*pane))
+        })
+    };
+    let told = match &change {
+        GridMsg::Have { window, .. } => Some(*window),
+        _ => None,
+    };
+    let quiet = match &change {
+        GridMsg::Fill(_) | GridMsg::Moved { .. } => true,
+        GridMsg::Front(pane) => tab(pane),
+        _ => false,
+    };
     let Ok(ops) = apply(&mut next, change) else {
         return Vec::new();
     };
+    if !quiet && told.is_none_or(|window| changed(grid, &next, window)) {
+        next.filled.clear();
+    }
     // A pane that is drawn has been seen: its tab carries no dot once it is behind again.
     if next.panes.iter().any(|pane| pane.unseen) {
         let layouts = next.windows.iter().map(|window| &window.layout);
@@ -205,6 +223,15 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
         GridMsg::Leave(pane) => return pull(grid, pane),
         GridMsg::Rejoin(pane) => return dock(grid, pane),
         GridMsg::Close(pane) => return shut(grid, pane),
+        GridMsg::Fill(pane) => {
+            let window = grid.home_of(pane).ok_or(GridError::NoSuchPane(pane))?;
+            let was = grid.filled.remove(&window);
+            let layout = &find(grid, window)?.layout;
+            let (old, new) = (was.and_then(|was| layout.front(was)), layout.front(pane));
+            if old != new {
+                grid.filled.insert(window, pane);
+            }
+        }
         GridMsg::Split(pane) => {
             let (kind, from) = grid
                 .kind(pane)
@@ -284,20 +311,26 @@ fn edit(
     change: impl FnOnce(&mut Layout) -> Result<(), GridError>,
 ) -> Result<(), GridError> {
     let window = find(grid, id)?;
-    // A slot is named by its stack's first tab: which tab is in front is no change of layout.
-    let shape = |layout: &Layout| {
-        let named =
-            |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
-        let areas: Vec<_> = layout.areas.iter().map(named).collect();
-        let tracks = (layout.cols.clone(), layout.rows.clone());
-        (tracks, areas, layout.stacks.clone())
-    };
-    let before = shape(&window.layout);
+    let before = layout_shape(&window.layout);
     change(&mut window.layout)?;
-    if shape(&window.layout) != before {
+    if layout_shape(&window.layout) != before {
         (window.saved, window.own) = (None, None);
     }
     Ok(())
+}
+
+/// A slot is named by its stack's first tab: which tab is in front is no change of layout.
+fn layout_shape(layout: &Layout) -> impl PartialEq + use<> {
+    let named =
+        |(pane, at): &(PaneId, _)| (layout.stack(*pane).first().copied().unwrap_or(*pane), *at);
+    let areas: Vec<_> = layout.areas.iter().map(named).collect();
+    let tracks = (layout.cols.clone(), layout.rows.clone());
+    (tracks, areas, layout.stacks.clone())
+}
+
+fn changed(before: &Windows, after: &Windows, window: WindowId) -> bool {
+    let shape = |grid: &Windows| grid.window(window).map(|found| layout_shape(&found.layout));
+    shape(before) != shape(after)
 }
 
 /// Brings `pane` of `window` in front of its stack and back into the grid if its slot rests.
@@ -311,159 +344,8 @@ fn raise(grid: &mut Windows, window: WindowId, pane: PaneId) -> Result<(), GridE
     Ok(())
 }
 
-/// The pane holding the first slot of `layout` whose place is `place`: its stack's first
-/// pane, or the pane alone, is of a kind that goes there. A pulled-out pane's slot is none.
-fn host(grid: &Windows, layout: &Layout, place: Place) -> Option<PaneId> {
-    let first = |held: PaneId| layout.stack(held).first().copied().unwrap_or(held);
-    let placed = |held: &PaneId| {
-        let here = !layout.pulled(*held) && grid.origin_of(*held).is_none();
-        let first = grid.panes.iter().find(|pane| pane.id == first(*held));
-        here && first.map(|pane| grid.place_of(pane)) == Some(place)
-    };
-    layout.areas.iter().map(|(pane, _)| *pane).find(placed)
-}
-
 fn same_pane(pane: &Pane, kind: PaneKind, thing: Option<&Address>) -> bool {
     pane.kind == kind && pane.thing.as_ref() == thing
-}
-
-/// Shows a pane of `kind` in `id`, the person's from then on. One the window has comes in
-/// front; else a hidden or a new one joins the stack of its place, or opens that place.
-fn open(
-    grid: &mut Windows,
-    id: WindowId,
-    kind: PaneKind,
-    thing: Option<Address>,
-) -> Result<Vec<WindowOp>, GridError> {
-    let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
-    let of_kind =
-        |pane: &PaneId| grid.kind(*pane) == Some(kind) && grid.thing(*pane) == thing.as_ref();
-    let docked = layout.docked().map(|(pane, _)| pane).find(of_kind);
-    let behind = layout.stacks.iter().flatten().copied();
-    let behind = behind.filter(|pane| !layout.pulled(*pane)).find(of_kind);
-    let resting = layout.away.iter().filter(|hole| hole.resting);
-    let resting = resting.map(|hole| hole.pane).find(of_kind);
-    if let Some(pane) = docked.or(behind).or(resting) {
-        handled(grid, id, pane);
-        raise(grid, id, pane)?;
-        return Ok(Vec::new());
-    }
-    // A thing is shown once: its pane out in a window of its own is where it shows.
-    let out = |pane: &&Pane| thing.is_some() && grid.origin_of(pane.id).is_some();
-    let same = |pane: &&Pane| same_pane(pane, kind, thing.as_ref());
-    if grid.panes.iter().filter(same).any(|pane| out(&pane)) {
-        return Ok(Vec::new());
-    }
-    let hidden = hidden_idle(grid, kind, thing.as_ref());
-    let pane = match hidden {
-        Some(pane) => pane,
-        None => add(grid, kind)?,
-    };
-    if let Some(made) = grid.panes.iter_mut().find(|other| other.id == pane) {
-        made.thing = thing;
-    }
-    fresh(grid, id, pane);
-    if seat(grid, id, pane)? {
-        raise(grid, id, pane)?;
-    }
-    Ok(Vec::new())
-}
-
-/// Puts `pane`, which `id` does not hold, where panes of its place go: a tab of that place's
-/// stack, behind the one in front, else a slot of its own. True when it is a tab.
-fn seat(grid: &mut Windows, id: WindowId, pane: PaneId) -> Result<bool, GridError> {
-    let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
-    let found = grid.panes.iter().find(|other| other.id == pane);
-    let goes = grid.place_of(found.ok_or(GridError::NoSuchPane(pane))?);
-    if let Some(onto) = host(grid, layout, goes) {
-        stack(&mut find(grid, id)?.layout, onto, pane)?;
-        return Ok(true);
-    }
-    let size = grid.room(id);
-    let placed = place(layout, size, grid.side);
-    let largest = placed
-        .into_iter()
-        .max_by(|(_, a), (_, b)| (a.w * a.h).total_cmp(&(b.w * b.h)));
-    let (beside, room) = largest.ok_or(GridError::NoSuchWindow(id))?;
-    let edge = if room.w >= room.h {
-        Edge::Right
-    } else {
-        Edge::Bottom
-    };
-    edit(grid, id, |layout| split(layout, beside, edge, pane))?;
-    // The list column goes to the far side from the chat and the shelf along the bottom,
-    // where there is room; else the half it was cut stays.
-    let far = match grid.side {
-        ChatSide::Left => Edge::Right,
-        ChatSide::Right => Edge::Left,
-    };
-    let at = match goes {
-        Place::Side => Some(Spot::Side(far)),
-        Place::Shelf => Some(Spot::Side(Edge::Bottom)),
-        Place::Chat | Place::Work => None,
-    };
-    let side = grid.side;
-    if let Some(at) = at {
-        edit(grid, id, |layout| {
-            let mut tried = layout.clone();
-            if land(&mut tried, side, pane, at, size).is_ok() {
-                *layout = tried;
-            }
-            Ok(())
-        })?;
-    }
-    Ok(false)
-}
-
-/// Opens a pane for each of `kinds` that opens by itself. One with no room opens nothing:
-/// the change it came with still holds.
-fn arrivals(grid: &mut Windows, window: WindowId, kinds: Vec<PaneKind>) {
-    for kind in kinds {
-        let mut tried = grid.clone();
-        if grid.opens_alone(kind) && arrive(&mut tried, window, kind).is_ok() {
-            *grid = tried;
-        }
-    }
-}
-
-/// A rule's pane: `kind` has something to show in this session for the first time, so a pane
-/// of it joins its place as a quiet tab the window's own. One the window holds is enough.
-fn arrive(grid: &mut Windows, window: WindowId, kind: PaneKind) -> Result<(), GridError> {
-    let found = grid.window(window).ok_or(GridError::NoSuchWindow(window))?;
-    // Just chat is a page to read: nothing opens beside it by itself. Nor in a window that
-    // is not the session's home: a pane's own window, Settings, a chat that is a guest.
-    let home = |pane: &&Pane| {
-        let own = pane.kind == PaneKind::Chat && pane.thing.is_none();
-        let guest = grid.origin_of(pane.id).is_some_and(|from| from != window);
-        own && found.layout.holds(pane.id) && !guest
-    };
-    if found.saved == Some(JUST_CHAT.slug) || !grid.panes.iter().any(|pane| home(&pane)) {
-        return Ok(());
-    }
-    let shown = grid.shows.get(&window);
-    let here = |pane: &&Pane| pane.seated || pane.scope.holds(shown);
-    let held = |pane: &&Pane| pane.kind == kind && pane.thing.is_none() && here(pane);
-    let mut held = grid.panes.iter().filter(held);
-    if let Some(known) = held
-        .find(|pane| found.layout.holds(pane.id))
-        .map(|pane| pane.id)
-    {
-        // The window's own pane of the kind is back with something new: a dot if it is behind.
-        for pane in grid.panes.iter_mut().filter(|pane| pane.id == known) {
-            pane.unseen = pane.seated;
-        }
-        return Ok(());
-    }
-    let hidden = hidden_idle(grid, kind, None);
-    let pane = match hidden {
-        Some(pane) => pane,
-        None => add(grid, kind)?,
-    };
-    let behind = seat(grid, window, pane)?;
-    if let Some(made) = grid.panes.iter_mut().find(|other| other.id == pane) {
-        (made.seated, made.scope, made.unseen) = (true, Scope::Window, behind);
-    }
-    Ok(())
 }
 
 /// The person asked for `pane` in `window` or moved it there: it is theirs, open in the
@@ -790,10 +672,15 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
     Ok(ops)
 }
 
+mod opening;
+use opening::{arrivals, open};
+
 #[cfg(test)]
 mod about;
 #[cfg(test)]
 mod carry;
+#[cfg(test)]
+mod fill;
 #[cfg(test)]
 mod random;
 #[cfg(test)]

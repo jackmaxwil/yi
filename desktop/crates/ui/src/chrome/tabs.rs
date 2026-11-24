@@ -38,6 +38,7 @@ pub const POP_OUT: CommandId = CommandId("pane.pop-out");
 pub const CLOSE: CommandId = CommandId("pane.close");
 pub const ACROSS: CommandId = CommandId("pane.keep-across");
 pub const HERE: CommandId = CommandId("pane.keep-here");
+pub const FILL: CommandId = CommandId("pane.fill");
 pub const MOVE_LEFT: CommandId = CommandId("pane.move-left");
 pub const MOVE_RIGHT: CommandId = CommandId("pane.move-right");
 pub const MOVE_UP: CommandId = CommandId("pane.move-up");
@@ -64,6 +65,7 @@ pub const COMMANDS: &[Command] = &[
     command(CLOSE, "Close Pane", None),
     command(ACROSS, "Keep Pane Across Sessions", None),
     command(HERE, "Keep Pane in This Session Only", None),
+    command(FILL, "Fill Window with Pane", Some("cmd+shift+return")),
     command(MOVE_LEFT, "Move Pane Left", Some("ctrl+shift+cmd+left")),
     command(MOVE_RIGHT, "Move Pane Right", Some("ctrl+shift+cmd+right")),
     command(MOVE_UP, "Move Pane Up", Some("ctrl+shift+cmd+up")),
@@ -577,7 +579,10 @@ pub fn bar(tokens: &Tokens, bar: &Bar<'_>) -> El {
     if bar.alone {
         return strip.window_drag();
     }
-    strip.on_drag(move |win: &mut Win, drag: &mut Drag, tx: &mut Tx| {
-        hand(win, Grab::Bar(pane), at, drag, tx);
-    })
+    // A pane alone in its window has nothing to fill, and its bar is the window's title bar.
+    strip
+        .on_double_press_tx(move |win: &mut Win, tx: &mut Tx| act(win, tx, Act::Fill(pane)))
+        .on_drag(move |win: &mut Win, drag: &mut Drag, tx: &mut Tx| {
+            hand(win, Grab::Bar(pane), at, drag, tx);
+        })
 }

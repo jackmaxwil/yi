@@ -78,7 +78,7 @@ fn line_prefix(key: &str) -> Option<&str> {
     None
 }
 
-fn union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+pub fn union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let (left, top) = (a[0].min(b[0]), a[1].min(b[1]));
     let right = (a[0] + a[2]).max(b[0] + b[2]);
     let bottom = (a[1] + a[3]).max(b[1] + b[3]);
