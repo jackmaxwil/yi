@@ -717,7 +717,18 @@ JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS - JOB_SPEN
 # loss, leaving the head on a red check until a person ran `--again`. One classifier for a provider
 # limit, which the autofixer's TRANSIENT builds on with the disk and lock clauses a round never needs.
 THROTTLE_RETRIES, THROTTLE_DELAY = 2, 20
-THROTTLED = re.compile(r"overloaded|rate.?limit|too many requests|temporarily|\b(429|5\d\d)\b", re.I)
+# Incident: a bare `\b5\d\d\b` read "line 503" of a traceback as busy 639 times; a status counts only
+# where it is one: yi's `HTTP 503:`, OpenRouter's `code 503`, or a reason phrase after it.
+THROTTLED = re.compile(r"overloaded|rate.?limit|too many requests|temporarily|\b(?:HTTP|code|status)[ :]+(?:429|5\d\d)\b"
+                       r"|\b(?:429|5\d\d) (?:Too Many|Service Unavailable|Bad Gateway|Gateway Time)", re.I)
+# Invariant: a traceback, a missing file or module, or a nextest FAIL row is the bot's own run failing.
+OWN_FAILURE = re.compile(r'Traceback \(most recent|^\s*File "[^"]+", line \d+|\b(?:FileNotFound|ModuleNotFound)Error\b'
+                         r"|^\s*(?:TRY \d+ )?FAIL \[", re.M)
+
+
+def throttled(text, pattern=THROTTLED):
+    """Whether `text` says a provider (or, with the fixer's `pattern`, a disk or a lock) is busy, never the run itself."""
+    return bool(pattern.search(text)) and not OWN_FAILURE.search(text)
 
 
 class Unanswered(Exception):
@@ -800,7 +811,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
             break
         # A rate limit or an overload is waited out before the next attempt; the loss is recorded
         # only once the retries are spent. A writer's attempts already share one budget.
-        if (not write and tries < THROTTLE_RETRIES and THROTTLED.search(out.stderr or "")
+        if (not write and tries < THROTTLE_RETRIES and throttled(out.stderr or "")
                 and time.monotonic() + THROTTLE_DELAY <= ends):
             time.sleep(THROTTLE_DELAY)
     (meter or METER).add_sessions(sessions)
@@ -2208,6 +2219,8 @@ def selfcheck():
         "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]
     assert walled(["scripts/hooks/pre-commit", "justfile"]) == ["scripts/hooks/pre-commit", "justfile"], "the fixer's accept is walled"
     assert '{"refuted": true or false' in refute_prompt(finding), "a refuter is shown the JSON it must answer with"
+    for row in json.loads((ROOT / "scripts/fixtures/failure-sorter/errors.json").read_text()):
+        assert throttled(row["text"]) == (row["reads"] == "provider"), f"a recorded {row['reads']} error read wrong: {row['text'][-90:]!r}"
     print("ok   pr_review selfcheck")
 
 

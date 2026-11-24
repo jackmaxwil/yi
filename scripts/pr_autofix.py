@@ -95,6 +95,9 @@ LANE_SECS = 900
 # Incident: #1111's pass met a full /tmp, and #1779's was labelled for a git `index.lock` a dead
 # pass left behind: a disk or a lock that frees itself is a blip, never the PR's fault.
 TRANSIENT = re.compile(pr_review.THROTTLED.pattern + r"|No space left|Out of diskspace|Unable to create .*\.lock", re.I)
+# Incident: 645 deferrals reran 14 PRs' sandboxes every 15 minutes for two days with no label. The
+# longest real provider loss on record is #1025's three passes, so eight passes (two hours) is a stop.
+DEFERS = 8
 
 
 class Missed(RuntimeError):
@@ -127,7 +130,7 @@ class BaseRed(RuntimeError):
 
 def verdict_of(err, notes):
     """A miss retries one tier up until the top tier has missed too; a disk or provider blip waits."""
-    if TRANSIENT.search(str(err)):
+    if pr_review.throttled(str(err), TRANSIENT):
         return "deferred"
     if isinstance(err, (Missed, pr_review.Unanswered, subprocess.TimeoutExpired)) and misses(notes) + 1 < len(TIERS):
         return "missed"
@@ -1546,7 +1549,9 @@ def attempt(repo, pr, ids, asked=False):
         fields = {"kind": "findings", "from": pr["head"]["sha"][:12], "round": rnd["n"], "declined": err.highs}
         reason, verdict = str(err), "declined"
     except (RuntimeError, pr_review.Unanswered, subprocess.TimeoutExpired) as err:
-        reason, verdict = str(err), verdict_of(err, notes)
+        fields, reason, verdict = {"from": sha[:12]}, str(err), verdict_of(err, notes)
+        if verdict == "deferred" and len(head_rows(notes, sha, "deferred")) >= DEFERS:
+            reason, verdict = f"deferred {DEFERS} times on this head: {reason}", "failed"
     finally:
         set_label(repo, number, ids, "autofix:working", False)
     # What the comment promises: twice it names the hour the label clears itself, then it stays.
@@ -2127,6 +2132,17 @@ def waits_selfcheck():
         module.fix = raising(Flaky("the test lane(s) pass in the fixer's clone at this head"))
         if attempt("o/r", pr, {}) != "handoff" or "rerun failed again" not in posted[-1]:
             errs.append("a true flake's second failure was not handed off")
+        # A head's deferrals stop at DEFERS: the next blip fails under the label a person sees, and its row
+        # names the head, or the count could never reach the stop. Another head's deferrals count for nothing.
+        module.fix = raising(RuntimeError("yi ask exited 1: error: HTTP 503: provider_overloaded"))
+        for rows, want in (([meta(now - 60, "deferred")] * (DEFERS - 1), "deferred"), ([meta(now - 60, "deferred", "c" * 12)] * DEFERS, "deferred"),
+                           ([meta(now - 60, "deferred")] * DEFERS, "failed")):
+            notes[:], labelled[:] = rows, []
+            said = attempt("o/r", pr, {})
+            if said != want or (("autofix:failed", True) in labelled) != (want == "failed") or "from=" + "a" * 12 not in posted[-1]:
+                errs.append(f"{len(rows)} deferral(s) read {said} with labels {labelled}, not {want}: {posted[-1][:160]!r}")
+        if f"deferred {DEFERS} times on this head: yi ask exited 1" not in posted[-1]:
+            errs.append(f"a stopped deferral does not quote its count and last evidence: {posted[-1][-200:]!r}")
     finally:
         for (mod, name), value in zip(stub, saved):
             setattr(mod, name, value)
@@ -2555,6 +2571,11 @@ def selfcheck():
                              (subprocess.TimeoutExpired("yi", 1), tried("missed"), "missed")):
         if verdict_of(err, notes) != want:
             errs.append(f"{err!r} after {len(notes)} miss(es) read {verdict_of(err, notes)}, not {want}")
+    # Incident: 645 rows deferred 14 PRs for two days on "line 503" in a traceback and 512 in a test list.
+    for row in json.loads((ROOT / "scripts/fixtures/failure-sorter/errors.json").read_text()):
+        said = verdict_of(RuntimeError(row["text"]), tried())
+        if (said == "deferred") != (row["reads"] in ("provider", "disk")):
+            errs.append(f"a recorded {row['reads']} error ({row['count']}x, {row['source']}) read {said}: {row['text'][-90:]!r}")
     table = [
         (({"autofix:hold", "autofix"}, ["a.rs"], 9e9), "hold"),
         (({"autofix:failed"}, ["a.rs"], 9e9), "stopped"),
