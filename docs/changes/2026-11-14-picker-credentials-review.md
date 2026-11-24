@@ -1,4 +1,5 @@
 ---
+version: 0.1110.0
 issue: Refs #2204
 raise: crate runtime +1, tests +12
 cut: crates/runtime/src/discover.rs | fn keep_usable(models: Vec<Model>, current: &Model, usable: impl Fn(&str) -> bool) -> Vec<Model> { | the picker filter now lives once in subagent::models::usable_models, shared with the subagent model list
