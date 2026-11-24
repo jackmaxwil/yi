@@ -52,9 +52,7 @@ impl App {
             (Some(id), Some(params)) => self.show(outbound, id, &params),
             (_, _) => {
                 self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
-                if method == yi_types::acp::SHOW_METHOD
-                    && let Some(id) = value.get("id")
-                {
+                if let Some(id) = value.get("id") {
                     let error = json!({"code": -32601, "message": "Method not found"});
                     let _ = outbound.send(&json!({"jsonrpc": "2.0", "id": id, "error": error}));
                 }
