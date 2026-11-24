@@ -388,14 +388,13 @@ impl Supervisor {
         // worker-originated request (the permission bridge).
         if method.is_empty() {
             if let Some(request_id) = id.as_ref().and_then(Value::as_str) {
-                let asked = if frame.get("error").is_some() {
-                    self.worker_requests.get(request_id).cloned()
+                let shown = request_id.starts_with("show_");
+                let asked = if frame.get("error").is_some() && shown {
+                    None
                 } else {
                     self.worker_requests.remove(request_id)
                 };
-                if frame.get("error").is_none()
-                    && let Some(root) = asked
-                {
+                if let Some(root) = asked {
                     self.forward_response_to_worker(&root, frame).await;
                 }
             }

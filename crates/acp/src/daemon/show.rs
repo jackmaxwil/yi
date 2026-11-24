@@ -90,7 +90,7 @@ mod tests {
     }
 
     /// A client's answer is written to the worker that asked; the error of a client that
-    /// cannot show, sent first, is not. The worker here is `cat`, read back line by line.
+    /// cannot show, sent first, is not, while a permission ask's error is. The worker is `cat`.
     #[tokio::test]
     async fn a_clients_answer_is_written_to_the_worker_and_its_error_is_not() -> Result<(), String>
     {
@@ -113,6 +113,9 @@ mod tests {
         supervisor
             .worker_requests
             .insert("show_pinned_0".to_owned(), "/repo".to_owned());
+        supervisor
+            .worker_requests
+            .insert("perm_pinned_1".to_owned(), "/repo".to_owned());
         let deaf = json!({"jsonrpc": "2.0", "id": "show_pinned_0",
             "error": {"code": -32601, "message": "Method not found"}});
         let answer = json!({"jsonrpc": "2.0", "id": "show_pinned_0", "result": {"outcome": "tab"}});
@@ -128,6 +131,14 @@ mod tests {
             answer.to_string(),
             "the answer, with no error ahead of it"
         );
+        let refused = json!({"jsonrpc": "2.0", "id": "perm_pinned_1",
+            "error": {"code": -32601, "message": "Method not found"}});
+        supervisor.handle_client_line(7, refused.clone()).await;
+        let Ok(Ok(Some(line))) = tokio::time::timeout(limit, lines.next_line()).await else {
+            return Err("a permission ask's error never reached the worker".to_owned());
+        };
+        assert_eq!(line, refused.to_string());
+        assert!(supervisor.worker_requests.is_empty());
         Ok(())
     }
 

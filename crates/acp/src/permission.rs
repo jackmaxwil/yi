@@ -31,7 +31,7 @@ pub(crate) fn with_pending_ask<F>(
     sink: &LineSink,
     request: &Value,
     wait: PendingWait,
-    stopped: Option<&F>,
+    stopped: &F,
 ) -> Option<Value>
 where
     F: Fn() -> bool + ?Sized,
@@ -44,8 +44,7 @@ where
     let response = match wait {
         PendingWait::UntilStopped => loop {
             match receiver.recv_timeout(POLL) {
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                    if !stopped.is_some_and(|stop| stop()) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !stopped() => {}
                 other => break other.ok(),
             }
         },
@@ -53,7 +52,7 @@ where
             let mut answer = None;
             for _ in 0..polls {
                 answer = receiver.recv_timeout(POLL).ok();
-                if answer.is_some() || stopped.is_some_and(|stop| stop()) {
+                if answer.is_some() || stopped() {
                     break;
                 }
             }
@@ -126,7 +125,7 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             &sink,
             &json!(request),
             PendingWait::UntilStopped,
-            Some(&stopped),
+            &stopped,
         );
         let Some(response) = response else {
             return AskOutcome::Reject;

@@ -44,7 +44,7 @@ pub fn bridge_shower(
             &sink,
             &json!(request),
             PendingWait::Attempts(polls),
-            Some(&stopped),
+            &stopped,
         );
         let result = answer?.get("result").cloned()?;
         serde_json::from_value::<AcpShowResult>(result).ok()

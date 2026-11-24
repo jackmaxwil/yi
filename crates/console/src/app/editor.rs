@@ -229,26 +229,16 @@ impl App {
         Some(found)
     }
 
-    /// A file the agent points at, its cursor on `line`: in front with the keys, or `quiet`,
-    /// a tab that waits, in a split of its own where no editor is open, the keys left alone.
-    pub(super) fn show_file(
-        &mut self,
-        path: &str,
-        workdir: String,
-        line: Option<usize>,
-        quiet: bool,
-    ) -> Result<(), String> {
-        self.open_editor_at(path, workdir, line, quiet)
-    }
-
     pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
-        if let Err(error) = self.open_editor_at(path, workdir, None, false) {
+        if let Err(error) = self.show_file(path, workdir, None, false) {
             self.dirty = true;
             self.note(&error);
         }
     }
 
-    fn open_editor_at(
+    /// A file the agent points at, its cursor on `line`: in front with the keys, or `quiet`,
+    /// a tab that waits, in a split of its own where no editor is open, the keys left alone.
+    pub(super) fn show_file(
         &mut self,
         path: &str,
         workdir: String,
