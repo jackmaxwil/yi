@@ -25,6 +25,7 @@ mod children;
 mod colour;
 mod design;
 mod docking;
+mod dragged;
 mod environment;
 mod fill;
 mod first_look;

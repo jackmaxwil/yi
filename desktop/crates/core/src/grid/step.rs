@@ -88,6 +88,15 @@ pub enum GridMsg {
         pane: Option<PaneId>,
         edge: Edge,
     },
+    /// [`GridMsg::About`], but the pane lands at `at` in a grid drawn at `size`, as one carried
+    /// there by its bar does: a thing dropped on a pane, on its edge, or on the window's.
+    Put {
+        window: WindowId,
+        kind: PaneKind,
+        thing: Address,
+        at: Spot,
+        size: Size,
+    },
     /// The session a window shows and the kinds with something to show in it. A pane a
     /// layout seated follows its kind; one the person has follows the sessions it is open in.
     Have {
@@ -306,6 +315,13 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
             pane,
             edge,
         } => return open(grid, window, kind, Some(thing), Some((pane, edge))),
+        GridMsg::Put {
+            window,
+            kind,
+            thing,
+            at,
+            size,
+        } => return put(grid, window, kind, &thing, at, size),
         GridMsg::Resize {
             window,
             line,
@@ -729,7 +745,7 @@ fn shut(grid: &mut Windows, pane: PaneId) -> Result<Vec<WindowOp>, GridError> {
 }
 
 mod opening;
-use opening::{arrivals, open, seat};
+use opening::{arrivals, open, put, seat};
 
 #[cfg(test)]
 mod about;
@@ -739,6 +755,8 @@ mod bar;
 mod beside;
 #[cfg(test)]
 mod carry;
+#[cfg(test)]
+mod dropped;
 #[cfg(test)]
 mod fill;
 #[cfg(test)]

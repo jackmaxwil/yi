@@ -32,7 +32,7 @@ fn showing(saved: &'static str) -> Model {
     model
 }
 
-fn file(path: &str) -> Result<Address, String> {
+pub(super) fn file(path: &str) -> Result<Address, String> {
     Address::new(Kind::File, path).map_err(|error| error.to_string())
 }
 

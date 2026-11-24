@@ -20,7 +20,7 @@ use yd_core::pane::PaneKind;
 use crate::chrome::frame::{Look, Surface, surface};
 use crate::chrome::tabs::{self, Bar, Tab, Tabs, Turn};
 use crate::grid_view::drag::{At, GLIDE, Gesture, HELD, LIFT, LOOSE, preview};
-use crate::grid_view::{beside, picker, resize};
+use crate::grid_view::{beside, carried, picker, resize};
 use crate::menu::command_box;
 use crate::pane::{PaneCx, SCENE_PANE, Scene, Stage, TabAsk};
 use crate::theme::look::colour;
@@ -878,11 +878,7 @@ pub fn alone(win: &Win, hub: &Hub, cx: &mut Cx<Win>, kind: PaneKind) -> El {
 /// fills whatever room its parent gives it.
 pub fn grid(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
     let known = cx.window_layout(KEY);
-    let [x, y, w, h] = known.unwrap_or_default();
-    let at = At {
-        origin: [x, y],
-        size: Size { w, h },
-    };
+    let at = At::of(cx);
     let model = &hub.model;
     // Incident: panes laid out before the grid knew its size were 0 by 0 for one layout, and
     // every scroll area in them was reported as collapsed. None is drawn until it is known.
@@ -902,7 +898,7 @@ pub fn grid(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
     let grip = grips.map(|grips| grips.of(win.window)).unwrap_or_default();
     let zone = match grip.gesture {
         Gesture::Pane(held) => held.zone(hub, win.window, at.size),
-        _ => None,
+        _ => carried::zone(win, hub, at.size),
     };
     let frame = Frame {
         hub,
@@ -940,4 +936,5 @@ pub fn grid(win: &Win, hub: &Hub, cx: &mut Cx<Win>) -> El {
         .children(panes)
         .children(lines)
         .children(zone.map(|zone| preview(&model.tokens, zone)))
+        .children(carried::chip(win, hub))
 }
