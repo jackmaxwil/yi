@@ -65,6 +65,7 @@ pub struct PermissionBroker {
     rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
     stop: std::sync::OnceLock<CancelFlag>,
+    agent: std::sync::OnceLock<String>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
     /// A walled holder's retry never leaves the sandbox for a protected dir.
     walled: bool,
@@ -184,6 +185,7 @@ impl PermissionBroker {
             rule_journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
             stop: std::sync::OnceLock::new(),
+            agent: std::sync::OnceLock::new(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
             walled: false,
             unattended: false,
@@ -605,6 +607,7 @@ impl PermissionBroker {
                 grants: &[],
                 tool_call_id: Some(tool_call_id),
                 stop: None,
+                agent: None,
             };
             return self.hook_answered(&ask, &reason, command);
         }
@@ -640,6 +643,7 @@ impl PermissionBroker {
                 grants: &grants,
                 tool_call_id: Some(tool_call_id),
                 stop: self.stop.get(),
+                agent: self.agent.get().map(String::as_str),
             },
             Reviewed {
                 reviewable,
@@ -971,6 +975,7 @@ impl PermissionBroker {
         };
         let ask = PermissionAsk {
             stop: self.stop.get(),
+            agent: self.agent.get().map(String::as_str),
             ..crate::auto_review::ask_text(&stored)
         };
         let _ = self.events.send(AgentEvent::PermissionRequested {
@@ -1067,28 +1072,23 @@ impl PermissionBroker {
         if let AskOutcome::AllowAlways(index) = outcome {
             self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }
-        if allowed {
-            CallOutcome {
-                allowed: true,
-                reason: "allowed by user".to_owned(),
-                containment: Containment::Uncontained,
-            }
+        let reason = if allowed {
+            "allowed by user".to_owned()
         } else {
-            CallOutcome {
-                allowed: false,
-                reason: format!("The user denied this call. {rendered}"),
-                containment: Containment::Uncontained,
-            }
+            format!("The user denied this call. {rendered}")
+        };
+        CallOutcome {
+            allowed,
+            reason,
+            containment: Containment::Uncontained,
         }
     }
 
     fn answered_or_person(&self, ask: &PermissionAsk<'_>, answered: Option<Answered>) -> Answered {
         answered.unwrap_or_else(|| {
             let outcome = self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask));
-            Answered::Person {
-                outcome,
-                stopped: stop_released(ask),
-            }
+            let stopped = stop_released(ask);
+            Answered::Person { outcome, stopped }
         })
     }
 }

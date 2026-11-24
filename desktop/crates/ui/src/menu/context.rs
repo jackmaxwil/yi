@@ -100,7 +100,7 @@ pub fn close(win: &mut Win) -> bool {
 pub fn pane_thing(key: &str) -> Option<Thing> {
     let root = key.split('.').next()?;
     let (slug, id) = root.rsplit_once('-')?;
-    let kind = PaneKind::ALL.iter().find(|kind| kind.slug() == slug)?;
+    let kind = PaneKind::from_slug(slug)?;
     let pane = PaneId(id.parse().ok()?);
     Some(Thing {
         label: kind.title().to_owned(),
