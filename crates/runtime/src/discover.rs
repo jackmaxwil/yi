@@ -95,7 +95,11 @@ pub fn listed_models() -> Vec<Model> {
 }
 
 pub fn pickable_models(current: &Model) -> Vec<Model> {
-    crate::subagent::models::picker_models(current)
+    crate::subagent::models::usable_models(
+        available_models(),
+        Some(current),
+        yi_ai::auth::has_credential,
+    )
 }
 
 pub fn dynamic_model_count(id: &str) -> Result<usize, String> {

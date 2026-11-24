@@ -52,14 +52,6 @@ pub fn credentialed_models(stream: &ProviderStream) -> Vec<Model> {
     })
 }
 
-pub fn picker_models(current: &Model) -> Vec<Model> {
-    usable_models(
-        available_models(),
-        Some(current),
-        yi_ai::auth::has_credential,
-    )
-}
-
 pub(crate) fn usable_models(
     mut models: Vec<Model>,
     current: Option<&Model>,
