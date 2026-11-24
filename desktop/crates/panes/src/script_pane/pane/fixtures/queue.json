@@ -1,0 +1,1 @@
+{"waiting": 3, "retrying": 1, "done": 41, "history": [8, 10, 14, 13, 22, 18, 30, 26, 35, 24, 20], "files": [{"name": "detail-front.png", "state": "retrying", "tries": 3}, {"name": "detail-back.png", "state": "waiting", "tries": 0}, {"name": "swatch-olive.png", "state": "waiting", "tries": 0}, {"name": "swatch-sand.png", "state": "waiting", "tries": 0}]}

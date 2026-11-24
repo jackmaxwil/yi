@@ -1,0 +1,52 @@
+{
+ "rust-analyzer": [
+  "ready · 214 files indexed · answered 38 requests this turn, slowest 120 ms",
+  [
+   "Problems",
+   "Hover",
+   "Go to definition",
+   "Find references",
+   "Rename",
+   "Format",
+   "Type hints",
+   "Quick fixes"
+  ],
+  [
+   "Restart",
+   "Logs",
+   "Settings"
+  ],
+  "y"
+ ],
+ "typescript": [
+  "ready · 96 files indexed · answered 4 requests this turn",
+  [
+   "Problems",
+   "Hover",
+   "Go to definition",
+   "Find references",
+   "Rename",
+   "Format"
+  ],
+  [
+   "Restart",
+   "Logs",
+   "Settings"
+  ],
+  "y"
+ ],
+ "pyright": [
+  "off · starts by itself when a Python file opens",
+  [
+   "Problems",
+   "Hover",
+   "Go to definition",
+   "Find references"
+  ],
+  [
+   "Start now",
+   "Settings"
+  ],
+  "n"
+ ]
+}

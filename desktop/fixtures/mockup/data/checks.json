@@ -1,0 +1,26 @@
+[
+ {
+  "text": "Any error in a file this thread changed",
+  "note": "files High · fired once today",
+  "on": true,
+  "dot": "var(--ok)"
+ },
+ {
+  "text": "More than 2 connection resets an hour",
+  "note": "files Low · fired 12m ago",
+  "on": true,
+  "dot": "var(--ok)"
+ },
+ {
+  "text": "A VM with no backup",
+  "note": "files Med · fired 3h ago",
+  "on": true,
+  "dot": "var(--ok)"
+ },
+ {
+  "text": "A step in a turn that takes over 5 s",
+  "note": "files Low · off",
+  "on": false,
+  "dot": "rgb(93, 99, 114)"
+ }
+]

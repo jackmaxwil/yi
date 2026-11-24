@@ -1,0 +1,28 @@
+[
+ {
+  "id": "comment-1",
+  "cells": {
+   "path": {
+    "text": "src/middleware/rate_limit.rs"
+   },
+   "line": {
+    "text": "20"
+   },
+   "author": {
+    "text": "You"
+   },
+   "at": {
+    "text": "17:52"
+   },
+   "status": {
+    "text": "open"
+   },
+   "finding": {
+    "text": "finding F12"
+   },
+   "body": {
+    "text": "Can this underflow if the clock steps back? Use `saturating_duration_since`."
+   }
+  }
+ }
+]

@@ -497,7 +497,7 @@ fn inbound_texts(messages: &[AgentMessage]) -> Vec<String> {
         .collect()
 }
 
-fn user_texts(messages: &[AgentMessage]) -> Vec<String> {
+pub(crate) fn user_texts(messages: &[AgentMessage]) -> Vec<String> {
     messages
         .iter()
         .filter_map(|message| match message {
@@ -2608,6 +2608,19 @@ async fn a_respawned_reader_service_keeps_its_write_wall() -> TestResult {
 /// no kernel, leaves its seat, so the family admits one reader past its cap.
 #[tokio::test]
 async fn a_respawned_reader_service_keeps_its_family_seat() -> TestResult {
+    if std::env::var_os("RLM_RESPAWN_SEAT_CHILD").is_none() {
+        let output = crate::support::rerun_with_levers(
+            "recursion_e2e::a_respawned_reader_service_keeps_its_family_seat",
+            "RLM_RESPAWN_SEAT_CHILD",
+            r#"{"family.cap":8,"family.max_children":8}"#,
+        )?;
+        assert!(
+            output.status.success(),
+            "respawn-seat child failed: {output:?}"
+        );
+        return Ok(());
+    }
+    yi_runtime::levers::init(true)?;
     let harness = harness(0, 1, "serving")?;
     harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
     let mut asked = Map::new();

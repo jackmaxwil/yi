@@ -236,6 +236,7 @@ pub enum Action {
     OpenModelPicker,
     HistorySearch,
     PasteImage,
+    CycleRewrite,
 }
 
 impl Action {
@@ -261,6 +262,7 @@ impl Action {
             "open-model-picker" => Ok(Self::OpenModelPicker),
             "history-search" => Ok(Self::HistorySearch),
             "paste-image" => Ok(Self::PasteImage),
+            "cycle-rewrite" => Ok(Self::CycleRewrite),
             _ => Err(format!("unknown action: {s}")),
         }
     }
@@ -427,6 +429,10 @@ pub fn default_keymap() -> Keymap {
     map.bind(
         single(KeyCodeValue::Char('v'), true, false),
         Action::PasteImage,
+    );
+    map.bind(
+        single(KeyCodeValue::Char('i'), false, true),
+        Action::CycleRewrite,
     );
     map
 }

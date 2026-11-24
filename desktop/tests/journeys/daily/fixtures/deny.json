@@ -1,0 +1,44 @@
+{
+  "about": "A prompt typed in the composer makes the agent ask to run a command: the approval card appears and Escape answers it (Deny); the tool row shows the result.",
+  "worker": true,
+  "empty": true,
+  "runs": [
+    {
+      "steps": [
+        {
+          "t": 3.0,
+          "type": "tap",
+          "key": "chat-8.composer.input"
+        },
+        {
+          "t": 3.2,
+          "type": "type",
+          "text": "run the command"
+        },
+        {
+          "t": 4.0,
+          "type": "key",
+          "name": "Enter"
+        },
+        {
+          "t": 7.0,
+          "type": "key",
+          "name": "Escape"
+        },
+        {
+          "t": 11.0,
+          "type": "mark",
+          "name": "end"
+        }
+      ],
+      "expect": {
+        "absent": [
+          "one.txt"
+        ],
+        "texts": [
+          "echo one > one.txt"
+        ]
+      }
+    }
+  ]
+}

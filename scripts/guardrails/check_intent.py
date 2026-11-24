@@ -170,8 +170,8 @@ def review_selfcheck(off=""):
     return []
 
 
-def branch_diff(base):
-    return git("-c", "core.quotePath=false", "diff", "--unified=0", "--no-color", "--no-ext-diff", base).stdout
+def branch_diff(base, staged=False):
+    return git("-c", "core.quotePath=false", "diff", *(("--cached",) if staged else ()), "--unified=0", "--no-color", "--no-ext-diff", base).stdout
 
 
 def selfcheck(off=""):

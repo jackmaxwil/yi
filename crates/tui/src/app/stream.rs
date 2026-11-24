@@ -549,10 +549,11 @@ impl App {
         let whole = whole && rows.len() <= budget;
         let rows = crate::render::keep_last(rows, budget);
         self.thought_rows = self.thought_rows.max(rows.len());
+        let hint = crate::thought::fold_hint(self.mode);
         let cut = match rows.len() {
             _ if whole => String::new(),
-            0 => crate::thought::FOLDED.to_owned(),
-            kept => format!(" · last {kept} rows{}", crate::thought::FOLDED),
+            0 => hint.to_owned(),
+            kept => format!(" · last {kept} rows{hint}"),
         };
         let head = crate::thought::head("thinking", text, self.thought_elapsed(), &cut, &theme);
         std::iter::once(head).chain(rows).collect()
@@ -561,7 +562,7 @@ impl App {
     pub(crate) fn thought_block(&self, slice: &str, took: Option<u64>) -> Vec<Line<'static>> {
         let (width, theme, mode) = (self.content_width(), &self.theme, self.mode);
         if mode != TranscriptMode::Verbose {
-            let folded = crate::thought::FOLDED;
+            let folded = crate::thought::fold_hint(mode);
             return vec![crate::thought::head("thought", slice, took, folded, theme)];
         }
         let seam = &self.live_thought_seam;
@@ -917,6 +918,7 @@ impl App {
     ) {
         if tool_name == ANSWER_TOOL {
             self.tool_started.remove(&tool_call_id);
+            self.answer.refused(is_error);
             return;
         }
         self.count_kind(&tool_name);

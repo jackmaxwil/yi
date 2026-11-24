@@ -1,0 +1,363 @@
+[
+ {
+  "id": "bucket-take-can-underflow-when-the-clock-steps-back",
+  "cells": {
+   "severity": {
+    "badge": [
+     "High",
+     "bad"
+    ]
+   },
+   "finding": {
+    "text": "Bucket::take can underflow when the clock steps back"
+   },
+   "where": {
+    "text": "rate_limit.rs:20"
+   },
+   "state": {
+    "pill": [
+     "Proving",
+     "need"
+    ]
+   },
+   "who_has_it": {
+    "text": "Tests · upload"
+   },
+   "age": {
+    "text": "now"
+   },
+   "why": {
+    "text": "Can crash the server if the machine clock is set back."
+   },
+   "proof": {
+    "text": "The new clock-steps-back test passes"
+   },
+   "proof_state": {
+    "text": "waiting on you"
+   },
+   "evidence": {
+    "tags": [
+     "rate_limit.rs line 20",
+     "problem from rust-analyzer",
+     "your comment"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Allow the test ↵",
+     "Open its agent",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ },
+ {
+  "id": "429-answer-has-no-body-clients-show-a-blank-error",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Med",
+     "warn"
+    ]
+   },
+   "finding": {
+    "text": "429 answer has no body, clients show a blank error"
+   },
+   "where": {
+    "text": "upload.rs:31"
+   },
+   "state": {
+    "pill": [
+     "New",
+     "accent"
+    ]
+   },
+   "who_has_it": {
+    "text": "nobody yet"
+   },
+   "age": {
+    "text": "2m"
+   },
+   "why": {
+    "text": "People see an empty error and cannot tell when to try again."
+   },
+   "proof": {
+    "text": "A request over the limit gets a body with the wait in it"
+   },
+   "proof_state": {
+    "text": "not started"
+   },
+   "evidence": {
+    "tags": [
+     "upload.rs line 31",
+     "web app · div.alert"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Accept",
+     "Not a problem",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ },
+ {
+  "id": "limit-is-keyed-by-user-id-only-anonymous-uploads-are-unlimited",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Med",
+     "warn"
+    ]
+   },
+   "finding": {
+    "text": "Limit is keyed by user id only, anonymous uploads are unlimited"
+   },
+   "where": {
+    "text": "rate_limit.rs:41"
+   },
+   "state": {
+    "pill": [
+     "Open",
+     "dim"
+    ]
+   },
+   "who_has_it": {
+    "text": "nobody yet"
+   },
+   "age": {
+    "text": "2m"
+   },
+   "why": {
+    "text": "Anyone not signed in can still flood the endpoint."
+   },
+   "proof": {
+    "text": "A flood with no sign-in is turned away in a test"
+   },
+   "proof_state": {
+    "text": "not started"
+   },
+   "evidence": {
+    "tags": [
+     "rate_limit.rs line 41"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Give it to an agent",
+     "Fix now",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ },
+ {
+  "id": "uploader-retries-with-no-jitter",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Med",
+     "warn"
+    ]
+   },
+   "finding": {
+    "text": "Uploader retries with no jitter"
+   },
+   "where": {
+    "text": "ci-ubuntu · Uploader"
+   },
+   "state": {
+    "pill": [
+     "New",
+     "accent"
+    ]
+   },
+   "who_has_it": {
+    "text": "nobody yet"
+   },
+   "age": {
+    "text": "6m"
+   },
+   "why": {
+    "text": "Many clients would retry at the same instant."
+   },
+   "proof": {
+    "text": "Two runs retry at different moments"
+   },
+   "proof_state": {
+    "text": "not started"
+   },
+   "evidence": {
+    "tags": [
+     "ci-ubuntu · Atlas Uploader window",
+     "uploader log, 17:58:03"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Accept",
+     "Not a problem",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ },
+ {
+  "id": "no-test-covers-the-refill-boundary",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Low",
+     "dim"
+    ]
+   },
+   "finding": {
+    "text": "No test covers the refill boundary"
+   },
+   "where": {
+    "text": "tests/upload.rs"
+   },
+   "state": {
+    "pill": [
+     "Fixing",
+     "accent"
+    ]
+   },
+   "who_has_it": {
+    "text": "Tests · upload"
+   },
+   "age": {
+    "text": "3m"
+   },
+   "why": {
+    "text": "A change to the refill could break without anyone noticing."
+   },
+   "proof": {
+    "text": "A test at second 59 and at second 60"
+   },
+   "proof_state": {
+    "text": "being written"
+   },
+   "evidence": {
+    "tags": [
+     "tests/upload.rs"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Open its agent",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ },
+ {
+  "id": "alert-does-not-say-how-long-to-wait-in-words",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Low",
+     "dim"
+    ]
+   },
+   "finding": {
+    "text": "Alert does not say how long to wait in words"
+   },
+   "where": {
+    "text": "div.alert"
+   },
+   "state": {
+    "pill": [
+     "Open",
+     "dim"
+    ]
+   },
+   "who_has_it": {
+    "text": "you"
+   },
+   "age": {
+    "text": "9m"
+   },
+   "why": {
+    "text": "From your note in design mode."
+   },
+   "proof": {
+    "text": "The alert reads as a full sentence"
+   },
+   "proof_state": {
+    "text": "not started"
+   },
+   "evidence": {
+    "tags": [
+     "web app · div.alert"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Give it to an agent",
+     "Fix now",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ },
+ {
+  "id": "3-connection-resets-in-the-last-hour",
+  "cells": {
+   "severity": {
+    "badge": [
+     "Low",
+     "dim"
+    ]
+   },
+   "finding": {
+    "text": "3 connection resets in the last hour"
+   },
+   "where": {
+    "text": "docker:db"
+   },
+   "state": {
+    "pill": [
+     "Watching",
+     "ok"
+    ]
+   },
+   "who_has_it": {
+    "text": "a standing check"
+   },
+   "age": {
+    "text": "12m"
+   },
+   "why": {
+    "text": "Seen 4 times. May be the size of the connection pool."
+   },
+   "proof": {
+    "text": "No resets for a full hour"
+   },
+   "proof_state": {
+    "text": "41 minutes to go"
+   },
+   "evidence": {
+    "tags": [
+     "docker:db log, 17:58:03",
+     "3 earlier lines"
+    ]
+   },
+   "actions": {
+    "tags": [
+     "Stop watching",
+     "Give it to an agent",
+     "Attach",
+     "Dismiss"
+    ]
+   }
+  }
+ }
+]

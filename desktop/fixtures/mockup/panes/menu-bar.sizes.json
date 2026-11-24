@@ -1,0 +1,57 @@
+{
+ "pane": "menu-bar",
+ "frame": 5,
+ "sizes": [
+  {
+   "part": "menu-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".mbar",
+   "height": 24,
+   "width": 1200,
+   "padding": [
+    0,
+    12,
+    0,
+    12
+   ],
+   "font_size": 12.5,
+   "line_height": 12.5
+  },
+  {
+   "part": "status-menu",
+   "check": [
+    "width"
+   ],
+   "selector": ".smenu",
+   "height": 224,
+   "width": 318,
+   "padding": [
+    5,
+    5,
+    5,
+    5
+   ],
+   "font_size": 12.5,
+   "line_height": 12.5
+  },
+  {
+   "part": "row",
+   "check": [
+    "height"
+   ],
+   "selector": ".smenu .mi",
+   "height": 23,
+   "width": 308,
+   "padding": [
+    0,
+    9,
+    0,
+    9
+   ],
+   "font_size": 12.5,
+   "line_height": 12.5
+  }
+ ]
+}

@@ -1,0 +1,607 @@
+[
+ {
+  "id": "hv-01",
+  "group": "Infra",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "hv-01"
+   },
+   "about": {
+    "text": "VM host · 192.0.2.10"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "flag": true
+   },
+   "scan": {
+    "flag": true
+   },
+   "seen": {
+    "text": "now"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "nightly, last at 02:00"
+   },
+   "scan_detail": {
+    "text": "clean, 2 days ago"
+   },
+   "findings": {
+    "text": "none"
+   },
+   "actions": {
+    "tags": [
+     "Rescan",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   },
+   "group.summary": {
+    "text": "4 of 4 reachable"
+   }
+  }
+ },
+ {
+  "id": "nas-01",
+  "group": "Infra",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "nas-01"
+   },
+   "about": {
+    "text": "storage · 192.0.2.12"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "text": "–"
+   },
+   "scan": {
+    "flag": true
+   },
+   "seen": {
+    "text": "1m"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "does not apply"
+   },
+   "scan_detail": {
+    "text": "clean, 2 days ago"
+   },
+   "findings": {
+    "text": "none"
+   },
+   "actions": {
+    "tags": [
+     "Rescan",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "edge-01",
+  "group": "Infra",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "edge-01"
+   },
+   "about": {
+    "text": "router · 192.0.2.1"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": false
+   },
+   "backup": {
+    "text": "–"
+   },
+   "scan": {
+    "flag": true
+   },
+   "seen": {
+    "text": "now"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "not coming in"
+   },
+   "backup_detail": {
+    "text": "does not apply"
+   },
+   "scan_detail": {
+    "text": "clean, 2 days ago"
+   },
+   "findings": {
+    "text": "1 open"
+   },
+   "note": {
+    "text": "filed as a finding"
+   },
+   "actions": {
+    "tags": [
+     "Close the gap",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "build-01",
+  "group": "Infra",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "build-01"
+   },
+   "about": {
+    "text": "builder · 192.0.2.21"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "flag": false
+   },
+   "scan": {
+    "flag": false
+   },
+   "seen": {
+    "text": "4m"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "none"
+   },
+   "scan_detail": {
+    "text": "never scanned"
+   },
+   "findings": {
+    "text": "2 open"
+   },
+   "note": {
+    "text": "both filed as findings"
+   },
+   "actions": {
+    "tags": [
+     "Close the gaps",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "lan",
+  "group": "Network",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "lan"
+   },
+   "about": {
+    "text": "192.0.2.0/24 · 14 hosts"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "text": "–"
+   },
+   "scan": {
+    "flag": true
+   },
+   "seen": {
+    "text": "now"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "does not apply"
+   },
+   "scan_detail": {
+    "text": "clean, 2 days ago"
+   },
+   "findings": {
+    "text": "none"
+   },
+   "actions": {
+    "tags": [
+     "Rescan",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   },
+   "group.summary": {
+    "text": "1 gap"
+   }
+  }
+ },
+ {
+  "id": "vm-net",
+  "group": "Network",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "vm-net"
+   },
+   "about": {
+    "text": "198.51.100.0/24 · 6 hosts"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "text": "–"
+   },
+   "scan": {
+    "flag": true
+   },
+   "seen": {
+    "text": "now"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "does not apply"
+   },
+   "scan_detail": {
+    "text": "clean, 2 days ago"
+   },
+   "findings": {
+    "text": "none"
+   },
+   "actions": {
+    "tags": [
+     "Rescan",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "wan",
+  "group": "Network",
+  "cells": {
+   "state": {
+    "dot": "fail"
+   },
+   "asset": {
+    "text": "wan"
+   },
+   "about": {
+    "text": "uplink · no agent access"
+   },
+   "reach": {
+    "flag": false
+   },
+   "logs": {
+    "text": "–"
+   },
+   "backup": {
+    "text": "–"
+   },
+   "scan": {
+    "text": "–"
+   },
+   "seen": {
+    "text": "–"
+   },
+   "reach_detail": {
+    "text": "no way in"
+   },
+   "logs_detail": {
+    "text": "does not apply"
+   },
+   "backup_detail": {
+    "text": "does not apply"
+   },
+   "scan_detail": {
+    "text": "does not apply"
+   },
+   "findings": {
+    "text": "1 open"
+   },
+   "note": {
+    "text": "filed as a finding"
+   },
+   "actions": {
+    "tags": [
+     "Close the gap",
+     "Show findings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "ci-ubuntu",
+  "group": "VMs",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "ci-ubuntu"
+   },
+   "about": {
+    "text": "on hv-01 · 198.51.100.14"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "flag": true
+   },
+   "scan": {
+    "flag": true
+   },
+   "seen": {
+    "text": "now"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "nightly, last at 02:00"
+   },
+   "scan_detail": {
+    "text": "clean, 2 days ago"
+   },
+   "findings": {
+    "text": "none"
+   },
+   "actions": {
+    "tags": [
+     "Rescan",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   },
+   "group.summary": {
+    "text": "5 of 6 covered"
+   }
+  }
+ },
+ {
+  "id": "db-01",
+  "group": "VMs",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "db-01"
+   },
+   "about": {
+    "text": "on hv-01 · 198.51.100.11"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "flag": true
+   },
+   "scan": {
+    "flag": true
+   },
+   "seen": {
+    "text": "now"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "nightly, last at 02:00"
+   },
+   "scan_detail": {
+    "text": "clean, 2 days ago"
+   },
+   "findings": {
+    "text": "none"
+   },
+   "actions": {
+    "tags": [
+     "Rescan",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "git-01",
+  "group": "VMs",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "asset": {
+    "text": "git-01"
+   },
+   "about": {
+    "text": "on hv-01 · 198.51.100.12"
+   },
+   "reach": {
+    "flag": true
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "flag": true
+   },
+   "scan": {
+    "flag": false
+   },
+   "seen": {
+    "text": "2m"
+   },
+   "reach_detail": {
+    "text": "an agent can get in"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "nightly, last at 02:00"
+   },
+   "scan_detail": {
+    "text": "never scanned"
+   },
+   "findings": {
+    "text": "1 open"
+   },
+   "note": {
+    "text": "filed as a finding"
+   },
+   "actions": {
+    "tags": [
+     "Close the gap",
+     "Open a shell",
+     "Show findings",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "runner-b",
+  "group": "VMs",
+  "cells": {
+   "state": {
+    "dot": "stop"
+   },
+   "asset": {
+    "text": "runner-b"
+   },
+   "about": {
+    "text": "on hv-01 · stopped"
+   },
+   "reach": {
+    "text": "–"
+   },
+   "logs": {
+    "flag": true
+   },
+   "backup": {
+    "flag": false
+   },
+   "scan": {
+    "text": "–"
+   },
+   "seen": {
+    "text": "3h"
+   },
+   "reach_detail": {
+    "text": "does not apply"
+   },
+   "logs_detail": {
+    "text": "coming in"
+   },
+   "backup_detail": {
+    "text": "none"
+   },
+   "scan_detail": {
+    "text": "does not apply"
+   },
+   "findings": {
+    "text": "1 open"
+   },
+   "note": {
+    "text": "filed as a finding"
+   },
+   "actions": {
+    "tags": [
+     "Close the gap",
+     "Show findings",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

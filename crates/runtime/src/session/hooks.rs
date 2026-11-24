@@ -169,6 +169,17 @@ impl AgentSession {
         }
     }
 
+    /// Invariant: the stop check holds the session weakly, since the session holds the broker.
+    pub(super) fn wire_broker(&self, broker: &crate::permission::PermissionBroker) {
+        broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
+        let shared = Arc::downgrade(&self.shared);
+        broker.set_stop(Arc::new(move || {
+            shared
+                .upgrade()
+                .is_some_and(|shared| shared.signal.is_fired())
+        }));
+    }
+
     pub fn abort(&self) {
         self.shared.signal.fire();
     }
@@ -553,6 +564,12 @@ impl AgentSession {
             }
             true
         })
+    }
+
+    pub fn is_retired(&self) -> bool {
+        self.shared
+            .retired
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Incident: the kernel pump's monitor task owns the tokio Child, so a dropped session

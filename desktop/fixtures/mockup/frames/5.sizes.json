@@ -1,0 +1,141 @@
+{
+ "frame": 5,
+ "sizes": [
+  {
+   "part": "top-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".top",
+   "height": 25,
+   "width": 1192,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "status-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".sbar",
+   "height": 17,
+   "width": 1192,
+   "padding": [
+    0,
+    8,
+    0,
+    8
+   ],
+   "font_size": 9.5,
+   "line_height": 13.3
+  },
+  {
+   "part": "sidebar",
+   "check": [
+    "width"
+   ],
+   "selector": ".tree",
+   "height": 520,
+   "width": 196,
+   "padding": [
+    1,
+    2,
+    1,
+    2
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "sidebar-row",
+   "check": [
+    "height"
+   ],
+   "selector": ".tree .gr",
+   "height": 20,
+   "width": 191,
+   "padding": [
+    0,
+    5,
+    0,
+    0
+   ],
+   "font_size": 11.5,
+   "line_height": 16.1
+  },
+  {
+   "part": "sidebar-label",
+   "check": [
+    "height"
+   ],
+   "selector": ".tree .lab",
+   "height": 20,
+   "width": 191,
+   "padding": [
+    4,
+    5,
+    1,
+    5
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "pane-tab-bar",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs",
+   "height": 20,
+   "width": 676,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "pane-tab",
+   "check": [
+    "height"
+   ],
+   "selector": ".ptabs .pt",
+   "height": 19,
+   "width": 81,
+   "padding": [
+    0,
+    5,
+    0,
+    5
+   ],
+   "font_size": 10.5,
+   "line_height": 14.7
+  },
+  {
+   "part": "code-line",
+   "check": [
+    "height"
+   ],
+   "selector": ".dl",
+   "height": 16,
+   "width": 676,
+   "padding": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "font_size": 10.5,
+   "line_height": 16
+  }
+ ]
+}

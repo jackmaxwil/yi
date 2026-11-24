@@ -1,0 +1,29 @@
+{
+ "pane": "notifications",
+ "frame": 4,
+ "strings": [
+  "Notifications",
+  "3 new",
+  "Mark all read",
+  "Rate limit",
+  "now",
+  "Wants to run cargo test -p api upload::",
+  "Allow once",
+  "Always",
+  "Deny",
+  "Cold start",
+  "11m",
+  "Asks: profile the release build?",
+  "Answer",
+  "Open thread",
+  "Checkout",
+  "24m",
+  "Done. Two files changed, +18 −6.",
+  "Review changes",
+  "Notes 2.4",
+  "2h",
+  "Draft is in notes/2.4.md",
+  "3"
+ ],
+ "titles": []
+}

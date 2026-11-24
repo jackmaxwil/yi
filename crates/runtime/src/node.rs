@@ -25,7 +25,7 @@ pub fn configure(config: NodeConfig) {
     let _first_wins = CONFIG.set(config);
 }
 
-fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
+pub(crate) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
     let here = std::path::PathBuf::from(".");
     let mut command = yi_tools::host_command(program, &here).map_err(|error| error.to_string())?;
     command.args(args);

@@ -312,6 +312,7 @@ fn a_relative_redirect_after_a_directory_change_is_refused() -> TestResult {
         "time -p cd crates && echo hi > evals/probe.py",
         "command -p cd crates && echo hi > evals/probe.py",
         "exec cd crates && echo hi > evals/probe.py",
+        "eval cd crates && echo hi > evals/probe.py",
         "\\cd crates && echo hi > evals/probe.py",
         "'cd' crates && echo hi > evals/probe.py",
         "c\"d\" crates && echo hi > evals/probe.py",

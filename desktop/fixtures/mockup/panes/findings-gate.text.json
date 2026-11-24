@@ -1,0 +1,22 @@
+{
+ "pane": "findings-gate",
+ "frame": 10,
+ "strings": [
+  "Ready?",
+  "2 blockers",
+  "Not yet",
+  "2 things stand in the way",
+  "No High findings open",
+  "1 open",
+  "Every fix is proven",
+  "1 waiting",
+  "Tests pass",
+  "41 of 41, before this fix",
+  "No errors in changed files",
+  "checked 1m ago",
+  "New findings triaged",
+  "2 left, not blocking",
+  "Agents are held to this too"
+ ],
+ "titles": []
+}

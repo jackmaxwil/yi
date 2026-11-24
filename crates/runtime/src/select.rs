@@ -32,6 +32,15 @@ impl Selector {
     }
 }
 
+impl crate::session::AgentSession {
+    /// The model that picks the lines of a cut bash output, read when tools are installed.
+    pub fn set_selector(&self, selector: Option<Selector>) {
+        if let Ok(mut slot) = self.selector.lock() {
+            *slot = selector.map(Arc::new);
+        }
+    }
+}
+
 fn schema() -> serde_json::Value {
     let range = serde_json::json!({"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2});
     serde_json::json!({

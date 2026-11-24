@@ -1,0 +1,150 @@
+[
+ {
+  "id": "self",
+  "cells": {
+   "name": {
+    "text": "self"
+   },
+   "value": {
+    "text": ""
+   },
+   "type": {
+    "text": "&mut Bucket"
+   },
+   "changed": {
+    "flag": false
+   },
+   "holds": {
+    "text": "2 fields"
+   },
+   "lives_at": {
+    "text": "0x16f2a41c0"
+   },
+   "actions": {
+    "tags": [
+     "Watch",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "tokens",
+  "parent": "self",
+  "cells": {
+   "name": {
+    "text": "tokens"
+   },
+   "value": {
+    "text": "0"
+   },
+   "type": {
+    "text": "u32 · was 1"
+   },
+   "changed": {
+    "flag": true
+   },
+   "now": {
+    "text": "0"
+   },
+   "was": {
+    "text": "1, one stop ago"
+   },
+   "changed_at": {
+    "text": "rate_limit.rs:19"
+   },
+   "actions": {
+    "tags": [
+     "Stop when it changes",
+     "Watch",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "refill-at",
+  "parent": "self",
+  "cells": {
+   "name": {
+    "text": "refill_at"
+   },
+   "value": {
+    "text": "1772.62s"
+   },
+   "type": {
+    "text": "Instant"
+   },
+   "changed": {
+    "flag": false
+   },
+   "now": {
+    "text": "1772.62s"
+   },
+   "which_is": {
+    "text": "41.2s from now"
+   },
+   "actions": {
+    "tags": [
+     "Watch",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "now",
+  "cells": {
+   "name": {
+    "text": "now"
+   },
+   "value": {
+    "text": "1731.42s"
+   },
+   "type": {
+    "text": "Instant"
+   },
+   "changed": {
+    "flag": false
+   },
+   "now": {
+    "text": "1731.42s"
+   },
+   "passed_in_by": {
+    "text": "RateLimit::call"
+   },
+   "actions": {
+    "tags": [
+     "Watch",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "left",
+  "cells": {
+   "name": {
+    "text": "left"
+   },
+   "value": {
+    "text": ""
+   },
+   "type": {
+    "text": "not set yet"
+   },
+   "changed": {
+    "flag": false
+   },
+   "state": {
+    "text": "not set until line 19"
+   },
+   "actions": {
+    "tags": [
+     "Stop when it is set",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

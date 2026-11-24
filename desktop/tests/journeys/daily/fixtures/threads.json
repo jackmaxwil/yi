@@ -1,0 +1,8 @@
+{
+  "about": "The app starts, connects to the server and lists its threads.",
+  "seed": ["hello"],
+  "runs": [
+    {"steps": [{"t": 4.0, "type": "mark", "name": "end"}],
+     "expect": {"keys": ["shell.status.server"], "contains": ["hello"]}}
+  ]
+}

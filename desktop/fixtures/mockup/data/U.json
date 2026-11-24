@@ -1,0 +1,32 @@
+[
+ [
+  " ",
+  21,
+  "pub fn routes() -> Router {"
+ ],
+ [
+  " ",
+  22,
+  "  Router::new()"
+ ],
+ [
+  "-",
+  23,
+  "    .route(\"/upload\", post(upload))"
+ ],
+ [
+  "+",
+  23,
+  "    .route(\"/upload\", post(upload))"
+ ],
+ [
+  "+",
+  24,
+  "    .layer(RateLimit::per_user(LIMIT))"
+ ],
+ [
+  " ",
+  25,
+  "}"
+ ]
+]

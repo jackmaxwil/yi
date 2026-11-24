@@ -1,0 +1,285 @@
+[
+ {
+  "id": "yi-serve",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "yi serve"
+   },
+   "what_it_is": {
+    "text": "the agent runtime"
+   },
+   "pid": {
+    "text": "4412"
+   },
+   "up": {
+    "text": "3d 2h"
+   },
+   "restarts": {
+    "text": "0"
+   },
+   "login": {
+    "flag": true
+   },
+   "at_login": {
+    "text": "starts"
+   },
+   "last_line": {
+    "text": "ready"
+   },
+   "actions": {
+    "tags": [
+     "Restart",
+     "Stop",
+     "Logs",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "yi-kernel",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "yi kernel"
+   },
+   "what_it_is": {
+    "text": "Python for the agent"
+   },
+   "pid": {
+    "text": "4530"
+   },
+   "up": {
+    "text": "41m"
+   },
+   "restarts": {
+    "text": "0"
+   },
+   "login": {
+    "flag": true
+   },
+   "at_login": {
+    "text": "starts"
+   },
+   "last_line": {
+    "text": "ready"
+   },
+   "actions": {
+    "tags": [
+     "Restart",
+     "Stop",
+     "Logs",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "mcp-github",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "mcp · github"
+   },
+   "what_it_is": {
+    "text": "connector"
+   },
+   "pid": {
+    "text": "4619"
+   },
+   "up": {
+    "text": "3d 2h"
+   },
+   "restarts": {
+    "text": "1"
+   },
+   "login": {
+    "flag": true
+   },
+   "at_login": {
+    "text": "starts"
+   },
+   "last_line": {
+    "text": "ready"
+   },
+   "actions": {
+    "tags": [
+     "Restart",
+     "Stop",
+     "Logs",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "mcp-figma",
+  "cells": {
+   "state": {
+    "dot": "fail"
+   },
+   "name": {
+    "text": "mcp · figma"
+   },
+   "what_it_is": {
+    "text": "connector · needs sign-in"
+   },
+   "pid": {
+    "text": "–"
+   },
+   "up": {
+    "text": "–"
+   },
+   "restarts": {
+    "text": "5"
+   },
+   "login": {
+    "flag": true
+   },
+   "at_login": {
+    "text": "starts"
+   },
+   "last_line": {
+    "text": "exit 1, token expired 17:02"
+   },
+   "note": {
+    "text": "down for 56 minutes"
+   },
+   "actions": {
+    "tags": [
+     "Sign in",
+     "Restart",
+     "Logs",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "postgres-16",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "postgres@16"
+   },
+   "what_it_is": {
+    "text": "local database"
+   },
+   "pid": {
+    "text": "811"
+   },
+   "up": {
+    "text": "12d"
+   },
+   "restarts": {
+    "text": "0"
+   },
+   "login": {
+    "flag": true
+   },
+   "at_login": {
+    "text": "starts"
+   },
+   "last_line": {
+    "text": "ready"
+   },
+   "actions": {
+    "tags": [
+     "Restart",
+     "Stop",
+     "Logs",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "tailscaled",
+  "cells": {
+   "state": {
+    "dot": "run"
+   },
+   "name": {
+    "text": "tailscaled"
+   },
+   "what_it_is": {
+    "text": "network"
+   },
+   "pid": {
+    "text": "402"
+   },
+   "up": {
+    "text": "12d"
+   },
+   "restarts": {
+    "text": "0"
+   },
+   "login": {
+    "flag": true
+   },
+   "at_login": {
+    "text": "starts"
+   },
+   "last_line": {
+    "text": "ready"
+   },
+   "actions": {
+    "tags": [
+     "Restart",
+     "Stop",
+     "Logs",
+     "Attach"
+    ]
+   }
+  }
+ },
+ {
+  "id": "forge-runner",
+  "dim": true,
+  "cells": {
+   "state": {
+    "dot": "stop"
+   },
+   "name": {
+    "text": "forge runner"
+   },
+   "what_it_is": {
+    "text": "CI jobs on this Mac"
+   },
+   "pid": {
+    "text": "–"
+   },
+   "up": {
+    "text": "–"
+   },
+   "restarts": {
+    "text": "0"
+   },
+   "login": {
+    "flag": false
+   },
+   "at_login": {
+    "text": "does not start"
+   },
+   "last_line": {
+    "text": "stopped by you, 2 days ago"
+   },
+   "actions": {
+    "tags": [
+     "Start",
+     "Logs",
+     "Attach"
+    ]
+   }
+  }
+ }
+]

@@ -9,6 +9,8 @@ mod forward;
 pub mod replay;
 mod resident;
 pub mod review;
+mod rewrite;
+pub mod show;
 pub(crate) mod swap;
 pub mod update;
 
@@ -23,7 +25,7 @@ use tokio::task::JoinHandle;
 use yi_runtime::session_store::{
     CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
-use yi_runtime::{AgentSession, Asker, SubagentHost, pickable_models, select_model};
+use yi_runtime::{AgentSession, Asker, Shower, SubagentHost, pickable_models, select_model};
 use yi_types::acp::{
     AcpConfigChoice, AcpConfigKind, AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame,
     AcpImplementation, AcpInitializeResult, AcpMeta, AcpResponse, AcpSessionResult,
@@ -47,7 +49,11 @@ const REQUEST_CANCELLED: i64 = -32800;
 
 /// Builds a session for a store id, so a lane is claimed under the id that resumes it.
 pub type SessionBuilder = Arc<
-    dyn Fn(Option<Asker>, Option<&str>) -> Result<(AgentSession, Arc<SubagentHost>), String>
+    dyn Fn(
+            Option<Asker>,
+            Option<Shower>,
+            Option<&str>,
+        ) -> Result<(AgentSession, Arc<SubagentHost>), String>
         + Send
         + Sync,
 >;
@@ -97,6 +103,7 @@ pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
 pub(crate) mod permission;
 
 pub use crate::permission::bridge_asker;
+pub use crate::show::bridge_shower;
 struct SessionHandle {
     session: Arc<AgentSession>,
     host: Arc<SubagentHost>,
@@ -123,6 +130,8 @@ struct AcpState {
     failed: HashMap<String, String>,
     /// Incident: [`Self::ensure_loaded`] opened disk sessions after close, so cancel put them back.
     closed: HashSet<String>,
+    /// The sessions a client opened saying it can show things: built with the `show` tool.
+    shows: HashSet<String>,
     wake: tokio::sync::mpsc::WeakUnboundedSender<attach::Incoming>,
     defaults: Arc<dyn Fn() -> Option<SessionDefaults> + Send + Sync>,
     build: SessionBuilder,
@@ -202,7 +211,7 @@ impl AcpState {
         );
         let built = {
             let _span = yi_types::trace::span("acp.build_session");
-            (self.build)(Some(asker), Some(&session_id))
+            (self.build)(Some(asker), self.shower(&session_id), Some(&session_id))
         };
         self.adopt(store, built)
     }
@@ -325,6 +334,9 @@ impl AcpState {
             .and_then(|store| session_name(&store));
         let mut meta = AcpMeta::default();
         meta.yi.name = name;
+        meta.yi.rewriter = handle
+            .and_then(|handle| handle.session.rewriter())
+            .map(|rewriter| rewriter.start());
         AcpSessionResult {
             session_id: Some(session_id.to_owned()),
             config_options: options,
@@ -355,16 +367,28 @@ impl AcpState {
         };
         (handle.last_active).store(daemon::now_ms(), std::sync::atomic::Ordering::Relaxed);
         let (text, images) = crate::replay::prompt_parts(params);
-        crate::update::queued(&handle.prompts).push(PendingPrompt {
+        let pending = PendingPrompt {
             text: text.clone(),
-            message_id,
-            request,
-        });
+            message_id: message_id.clone(),
+            request: Some(request),
+        };
+        crate::update::queued(&handle.prompts).push(pending);
         let prompt = yi_types::message::AgentMessage::user_input_with_images(&text, images);
-        if handle.session.prompt_message(prompt.clone()).is_err() {
-            handle.session.follow_up_message(prompt);
+        match handle.session.submit_message(prompt) {
+            Ok(Some(place)) => {
+                // The forwarder may have inserted it first and answered with the request.
+                crate::update::queued(&handle.prompts)
+                    .iter_mut()
+                    .find(|held| held.message_id == message_id)
+                    .and_then(|held| held.request.take())?;
+                let answer = yi_types::acp::AcpPromptResult {
+                    message_id,
+                    queue_place: u64::try_from(place).ok(),
+                };
+                Some(Ok(json!(answer)))
+            }
+            _ => None,
         }
-        None
     }
 
     fn emit_config(&self, session_id: &str) {
@@ -378,6 +402,10 @@ impl AcpState {
                 (
                     "contextWindow",
                     Value::from(handle.session.model().context_window),
+                ),
+                (
+                    "rewriter",
+                    json!(handle.session.rewriter().map(|rewriter| rewriter.start())),
                 ),
             ],
         );
@@ -475,6 +503,7 @@ impl AcpState {
                     .create(CreateOptions::default())
                     .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
                 drop(creating);
+                self.note_shows(&lock_session(&store).metadata().id.clone(), params);
                 let Some(defaults) = (self.defaults)() else {
                     let session_id = self
                         .attach(&store)
@@ -521,8 +550,7 @@ impl AcpState {
                 Ok(json!({"sessions": sessions}))
             }
             "session/resume" => {
-                let id = Self::session_id(params)?;
-                self.closed.remove(&id);
+                let id = self.reopened(params)?;
                 let store = match self.store_of(&id) {
                     Some(store) => store,
                     None => self
@@ -857,6 +885,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
         building: HashMap::new(),
         failed: HashMap::new(),
         closed: HashSet::new(),
+        shows: HashSet::new(),
         wake: line_tx.downgrade(),
         defaults: options.defaults,
         build: options.build,
@@ -930,6 +959,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
                         "session/prompt" => state.prompt(id.clone(), &params),
                         "_yi/prepare_replace" => Some(Ok(state.prepare_replace().await)),
                         "_yi/restore" => Some(Ok(state.restore(&params))),
+                        "_yi/rewrite" => state.rewrite(id.clone(), &params),
                         _ => Some(state.handle(&incoming.method, &params)),
                     };
                     if let Some(outcome) = outcome {

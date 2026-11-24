@@ -1,0 +1,364 @@
+[
+ [
+  0,
+  "Turn 2 · add the limit",
+  0,
+  14.8,
+  "turn",
+  0,
+  [
+   [
+    "Asked",
+    "add a per-user rate limit"
+   ],
+   [
+    "Steps",
+    "11"
+   ],
+   [
+    "Agents",
+    "3"
+   ],
+   [
+    "Cost",
+    "$0.31"
+   ],
+   [
+    "Tokens",
+    "14.9K"
+   ],
+   [
+    "Changed",
+    "2 files, +54 −1"
+   ]
+  ],
+  [
+   "Show its logs",
+   "Open the changes"
+  ]
+ ],
+ [
+  1,
+  "model · plan",
+  0,
+  2.1,
+  "model",
+  0,
+  [
+   [
+    "Model",
+    "Opus 5.5 · High"
+   ],
+   [
+    "Read",
+    "3.1K tokens"
+   ],
+   [
+    "Wrote",
+    "212 tokens"
+   ],
+   [
+    "First word",
+    "420 ms"
+   ],
+   [
+    "Cost",
+    "$0.05"
+   ],
+   [
+    "Decided",
+    "read, search, edit"
+   ]
+  ],
+  [
+   "Show what it wrote",
+   "Show its logs"
+  ]
+ ],
+ [
+  1,
+  "read upload.rs",
+  2.1,
+  0.25,
+  "tool",
+  0,
+  [
+   [
+    "Tool",
+    "read"
+   ],
+   [
+    "File",
+    "src/routes/upload.rs"
+   ],
+   [
+    "Got",
+    "84 lines"
+   ]
+  ],
+  [
+   "Open the file",
+   "Run it again"
+  ]
+ ],
+ [
+  1,
+  "search \"RateLimit\"",
+  2.4,
+  0.3,
+  "tool",
+  0,
+  [
+   [
+    "Tool",
+    "search"
+   ],
+   [
+    "Looked for",
+    "RateLimit"
+   ],
+   [
+    "Got",
+    "3 matches in 2 files"
+   ]
+  ],
+  [
+   "Show the matches",
+   "Run it again"
+  ]
+ ],
+ [
+  1,
+  "model · write",
+  2.7,
+  3.4,
+  "model",
+  0,
+  [
+   [
+    "Model",
+    "Opus 5.5 · High"
+   ],
+   [
+    "Read",
+    "5.8K tokens"
+   ],
+   [
+    "Wrote",
+    "612 tokens"
+   ],
+   [
+    "Speed",
+    "38 tokens a second"
+   ],
+   [
+    "Cost",
+    "$0.09"
+   ],
+   [
+    "Made",
+    "2 edits"
+   ]
+  ],
+  [
+   "Show what it wrote",
+   "Show its logs"
+  ]
+ ],
+ [
+  1,
+  "edit rate_limit.rs",
+  6.1,
+  0.2,
+  "tool",
+  0,
+  [
+   [
+    "Tool",
+    "edit"
+   ],
+   [
+    "File",
+    "src/middleware/rate_limit.rs"
+   ],
+   [
+    "Change",
+    "+48, new file"
+   ]
+  ],
+  [
+   "Open the change",
+   "Put it back"
+  ]
+ ],
+ [
+  1,
+  "edit upload.rs",
+  6.3,
+  0.2,
+  "tool",
+  0,
+  [
+   [
+    "Tool",
+    "edit"
+   ],
+   [
+    "File",
+    "src/routes/upload.rs"
+   ],
+   [
+    "Change",
+    "+6 −1"
+   ]
+  ],
+  [
+   "Open the change",
+   "Put it back"
+  ]
+ ],
+ [
+  1,
+  "child · Docs · changelog",
+  6.6,
+  4.1,
+  "child",
+  0,
+  [
+   [
+    "Agent",
+    "Docs · changelog"
+   ],
+   [
+    "Model",
+    "Haiku 5.5"
+   ],
+   [
+    "Steps",
+    "3"
+   ],
+   [
+    "Cost",
+    "$0.00"
+   ],
+   [
+    "Wrote",
+    "CHANGELOG.md"
+   ],
+   [
+    "State",
+    "done"
+   ]
+  ],
+  [
+   "Open its thread",
+   "Show its trace"
+  ]
+ ],
+ [
+  1,
+  "child · Tests · upload",
+  6.6,
+  8.2,
+  "child",
+  0,
+  [
+   [
+    "Agent",
+    "Tests · upload"
+   ],
+   [
+    "Model",
+    "Sonnet 5.5"
+   ],
+   [
+    "Steps",
+    "2 so far"
+   ],
+   [
+    "Cost",
+    "$0.03"
+   ],
+   [
+    "State",
+    "waiting on you"
+   ],
+   [
+    "Children",
+    "2"
+   ]
+  ],
+  [
+   "Open its thread",
+   "Show its trace"
+  ]
+ ],
+ [
+  2,
+  "model",
+  6.6,
+  1.8,
+  "model",
+  0,
+  [
+   [
+    "Model",
+    "Sonnet 5.5"
+   ],
+   [
+    "Read",
+    "2.2K tokens"
+   ],
+   [
+    "Wrote",
+    "410 tokens"
+   ],
+   [
+    "Cost",
+    "$0.01"
+   ]
+  ],
+  [
+   "Show what it wrote"
+  ]
+ ],
+ [
+  2,
+  "cargo test · waiting on you",
+  8.4,
+  6.4,
+  "wait",
+  1,
+  [
+   [
+    "Command",
+    "cargo test -p api upload::"
+   ],
+   [
+    "Asked",
+    "17:58:03"
+   ],
+   [
+    "Waiting",
+    "0:42"
+   ],
+   [
+    "Blocks",
+    "Tests · upload"
+   ],
+   [
+    "Runs in",
+    "sandbox, no network"
+   ],
+   [
+    "Takes",
+    "about 20 s"
+   ]
+  ],
+  [
+   "Run it ↵",
+   "Edit",
+   "Deny"
+  ]
+ ]
+]

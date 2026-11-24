@@ -521,6 +521,8 @@ fn permission_options_keep_their_bytes_for_zero_one_and_two_grants() -> TestResu
             changes: &[],
             grants: grants.get(..count).ok_or("grants")?,
             tool_call_id: None,
+            stop: None,
+            agent: None,
         });
         let log = seen.lock().map_err(|error| error.to_string())?;
         let request = log.first().ok_or("no request")?;
@@ -573,6 +575,8 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         changes: &changes,
         grants: &grants,
         tool_call_id: None,
+        stop: None,
+        agent: None,
     });
     assert!(
         matches!(outcome, yi_runtime::AskOutcome::AllowAlways(1)),
@@ -902,5 +906,220 @@ fn a_replayed_block_this_build_cannot_read_reaches_the_client_as_its_notice() ->
         "the prompt's and the reply's two; replay sends no tool results: {replayed}"
     );
     assert!(!replayed.contains("webSearchToolResult"), "{replayed}");
+    Ok(())
+}
+
+#[test]
+fn an_unanswered_ask_is_released_when_its_session_is_stopped() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stopped);
+    let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || flag.load(Ordering::SeqCst));
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let sink: yi_acp::LineSink = Arc::new(move |frame: &Value| {
+        if let Ok(mut frames) = record.lock() {
+            frames.push(frame.clone());
+        }
+    });
+    let asker = yi_acp::bridge_asker("s1".to_owned(), sink, Arc::clone(&pending));
+    let raise = stopped.clone();
+    let stopper = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        raise.store(true, Ordering::SeqCst);
+    });
+    let outcome = asker(&yi_runtime::PermissionAsk {
+        title: "bash requires permission",
+        description: "run a command",
+        patch: None,
+        changes: &[],
+        grants: &[],
+        tool_call_id: None,
+        stop: Some(&stop),
+        agent: None,
+    });
+    stopper.join().map_err(|_| "stopper panicked")?;
+    assert!(matches!(outcome, yi_runtime::AskOutcome::Reject));
+    let left = pending.lock().map_err(|e| e.to_string())?;
+    assert!(
+        left.as_ref()
+            .is_some_and(std::collections::HashMap::is_empty)
+    );
+    let frames = seen.lock().map_err(|e| e.to_string())?;
+    let closed = frames
+        .iter()
+        .find(|frame| frame["method"] == "_yi/permission_closed")
+        .ok_or("stopped ask did not close its ACP request")?;
+    assert_eq!(closed["params"]["sessionId"], "s1");
+    assert_eq!(closed["params"]["requestId"], "perm_s1_1");
+    Ok(())
+}
+
+#[test]
+fn a_childs_ask_names_the_child_and_the_roots_does_not() -> TestResult {
+    use std::sync::{Arc, Mutex};
+    let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let sink: yi_acp::LineSink = Arc::new(move |frame: &Value| {
+        if let Ok(mut log) = record.lock() {
+            log.push(frame.clone());
+        }
+    });
+    let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let asker = yi_acp::bridge_asker("s1".to_owned(), sink, pending);
+    for agent in [Some("sub-655c3f0b"), None] {
+        asker(&yi_runtime::PermissionAsk {
+            title: "ipython requires permission",
+            description: "tool invocation is not read-only: ipython",
+            patch: None,
+            changes: &[],
+            grants: &[],
+            tool_call_id: None,
+            stop: Some(&release),
+            agent,
+        });
+    }
+    let log = seen.lock().map_err(|error| error.to_string())?;
+    let asks: Vec<&Value> = log
+        .iter()
+        .filter(|frame| frame["method"] == "session/request_permission")
+        .collect();
+    assert_eq!(
+        asks[0]["params"]["_meta"]["yi"]["asker"]["childId"],
+        "sub-655c3f0b"
+    );
+    assert!(asks[1]["params"].get("_meta").is_none(), "{}", asks[1]);
+    Ok(())
+}
+
+/// A sink that records each frame and answers a request with `reply`, when it has one.
+fn showing(pending: &Pending, reply: Option<Value>) -> (yi_acp::LineSink, Seen) {
+    let seen: Seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (route, record) = (std::sync::Arc::clone(pending), std::sync::Arc::clone(&seen));
+    let sink: yi_acp::LineSink = std::sync::Arc::new(move |frame: &Value| {
+        if let Ok(mut log) = record.lock() {
+            log.push(frame.clone());
+        }
+        let id = frame.get("id").and_then(Value::as_str).unwrap_or_default();
+        let sender = route
+            .lock()
+            .ok()
+            .and_then(|map| map.as_ref()?.get(id).cloned());
+        if let (Some(sender), Some(reply)) = (sender, reply.clone()) {
+            let mut answer = json!({"jsonrpc": "2.0", "id": id});
+            if let (Some(answer), Some(reply)) = (answer.as_object_mut(), reply.as_object()) {
+                answer.extend(reply.clone());
+            }
+            let _ = sender.send(answer);
+        }
+    });
+    (sink, seen)
+}
+
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+
+fn show_ask(address: &str) -> yi_runtime::ShowAsk<'_> {
+    yi_runtime::ShowAsk {
+        stop: None,
+        address,
+        cwd: std::path::Path::new("/repo"),
+        strength: yi_types::acp::AcpShowStrength::Front,
+    }
+}
+
+/// The request is written before the wait, names the session, the address as the model
+/// wrote it and the strength, and the client's answer comes back as it was given.
+#[test]
+fn show_bridge_writes_the_request_and_reads_the_clients_answer() -> TestResult {
+    use yi_types::acp::{AcpShowOutcome, AcpShowResult};
+    let pending: Pending = std::sync::Arc::new(std::sync::Mutex::new(Some(
+        std::collections::HashMap::new(),
+    )));
+    let reply = json!({"result": {"outcome": "tab", "note": "The user is typing there."}});
+    let (sink, seen) = showing(&pending, Some(reply));
+    let shower = yi_acp::bridge_shower("s1".to_owned(), sink, pending.clone(), 20);
+    let answer = shower(&show_ask("src/main.rs:12"));
+    let want = AcpShowResult {
+        outcome: AcpShowOutcome::Tab,
+        note: Some("The user is typing there.".to_owned()),
+    };
+    assert_eq!(answer, Some(want));
+    let log = seen.lock().map_err(|error| error.to_string())?;
+    let request = log.first().ok_or("no request was written")?;
+    assert_eq!(request["method"], "_yi/show");
+    assert_eq!(
+        request["params"],
+        json!({"sessionId": "s1", "address": "src/main.rs:12", "cwd": "/repo", "strength": "front"})
+    );
+    let left = pending.lock().map_err(|error| error.to_string())?;
+    assert!(left.as_ref().is_some_and(|asks| asks.is_empty()));
+    Ok(())
+}
+
+/// A show never holds a turn: with no answer it gives up after its polls, an error from a
+/// client that cannot show is no answer either, and a stopped session releases it at once.
+#[test]
+fn a_show_with_no_answer_gives_up_and_leaves_nothing_waiting() -> TestResult {
+    use std::sync::{Arc, Mutex};
+    let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
+    // A wait that never ends fails here in ten seconds, where it would hang the suite.
+    let within = |shower: yi_runtime::Shower, stopped: bool| {
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+            let ask = yi_runtime::ShowAsk {
+                stop: stopped.then_some(&stop),
+                ..show_ask("a.rs")
+            };
+            let _ = done.send(shower(&ask));
+        });
+        let limit = std::time::Duration::from_secs(10);
+        waited.recv_timeout(limit).map_err(|_| "still waiting")
+    };
+    let (silent, _) = showing(&pending, None);
+    let shower = yi_acp::bridge_shower("s1".to_owned(), silent, pending.clone(), 2);
+    assert_eq!(within(shower, false), Ok(None), "nobody answered");
+    let refusal = json!({"error": {"code": -32601, "message": "Method not found"}});
+    let (deaf, _) = showing(&pending, Some(refusal));
+    let shower = yi_acp::bridge_shower("s1".to_owned(), deaf, pending.clone(), 20);
+    assert_eq!(within(shower, false), Ok(None), "an error is no answer");
+    let (silent, _) = showing(&pending, None);
+    let shower = yi_acp::bridge_shower("s1".to_owned(), silent, pending.clone(), 100_000);
+    assert_eq!(within(shower, true), Ok(None), "the session was stopped");
+    let left = pending.lock().map_err(|error| error.to_string())?;
+    assert!(left.as_ref().is_some_and(|asks| asks.is_empty()));
+    Ok(())
+}
+
+/// A standard-ACP client sees a running tool's output as `_yi/tool_progress` chunks keyed by
+/// its call id; the same event still rides `_yi/event` verbatim (#2286).
+#[test]
+fn a_tool_execution_update_projects_to_tool_progress() -> TestResult {
+    let event = AgentEvent::ToolExecutionUpdate {
+        tool_call_id: "call_1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        args: serde_json::json!({}),
+        partial_result: yi_types::event::ToolResult {
+            content: vec![yi_types::message::Content::Text {
+                text: "héllo\n".to_owned(),
+                text_signature: None,
+            }],
+            details: serde_json::json!({"stream": "stdout"}),
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+    };
+    let mut ids = yi_acp::update::IdMap::default();
+    let updates = yi_acp::update::to_updates(&event, &mut ids);
+    let wire = yi_acp::update::update_notification("s", updates.into_iter().next().ok_or("none")?);
+    let update = &wire["params"]["update"];
+    assert_eq!(update["sessionUpdate"], "_yi/tool_progress");
+    assert_eq!(update["toolCallId"], "call_1");
+    assert_eq!(update["text"], "héllo\n");
+    assert_eq!(update["stream"], "stdout");
     Ok(())
 }

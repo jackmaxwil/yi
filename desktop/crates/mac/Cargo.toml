@@ -1,0 +1,15 @@
+[package]
+name = "yd-mac"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSString", "NSThread"] }
+objc2-app-kit = { workspace = true, features = ["NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSResponder", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView"] }
+thiserror = { workspace = true }

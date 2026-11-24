@@ -1,0 +1,27 @@
+{
+ "id": "graphite",
+ "name": "Graphite",
+ "note": "grey, nearly solid panes",
+ "dark": true,
+ "values": {
+  "accent": "#a9b0bd",
+  "needs_you": "#c9cdd6",
+  "ok": "#9fc7a8",
+  "bad": "#f58585",
+  "text.1": "#d5d6da",
+  "text.2": "#a7a9b0",
+  "text.3": "#82858d",
+  "code.keyword": "#c3c6ce",
+  "code.type": "#a9b0bd",
+  "code.string": "#b9c4b0",
+  "code.number": "#c9b9c4",
+  "code.comment": "#7a8196",
+  "font.text": "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+  "surface.pane": 0.62,
+  "surface.pane_active": 0.74,
+  "surface.window": 0.7,
+  "space.row": 20.0,
+  "space.line": 16.0,
+  "space.gutter": 8.0
+ }
+}

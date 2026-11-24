@@ -173,6 +173,7 @@ fn kinds(events: &[AgentEvent]) -> Vec<&'static str> {
             AgentEvent::ChildUpdate { .. } => "child_update",
             AgentEvent::LandingState { .. } => "landing_state",
             AgentEvent::Wait { .. } => "wait",
+            AgentEvent::Other(_) => "other",
         })
         .collect()
 }

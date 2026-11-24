@@ -33,6 +33,7 @@ impl AcpState {
             Arc::clone(&self.sink),
             Arc::clone(&self.pending),
         );
+        let shower = self.shower(&session_id);
         let (build, wake) = (Arc::clone(&self.build), self.wake.upgrade());
         let (done_tx, done) = std::sync::mpsc::channel();
         let id = session_id.clone();
@@ -42,7 +43,7 @@ impl AcpState {
                 yi_types::trace::name_thread("attach");
                 let built = {
                     let _span = yi_types::trace::span("acp.build_session").arg("session", &*id);
-                    build(Some(asker), Some(&id))
+                    build(Some(asker), shower, Some(&id))
                 };
                 let _ = done_tx.send(built);
                 if let Some(wake) = wake {

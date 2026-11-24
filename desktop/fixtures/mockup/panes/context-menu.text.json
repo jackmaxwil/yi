@@ -1,0 +1,30 @@
+{
+ "pane": "context-menu",
+ "frame": 14,
+ "strings": [
+  "rate_limit.rs line 18",
+  "yi://atlas-api/rate-limit-uploads/diff/src/middleware/rate_limit.rs#L18",
+  "Explain",
+  "Why is this here?",
+  "Is it safe?",
+  "Attach to chat",
+  "⏎",
+  "Ask Yi about this…",
+  "⌘K",
+  "Hand it to another agent",
+  "›",
+  "Find references",
+  "⌃ click",
+  "Which turn wrote this",
+  "turn 2",
+  "Put these lines back as they were",
+  "Stop here in the debugger",
+  "Make it a finding",
+  "Watch for this",
+  "Open in a new pane",
+  "Copy its address",
+  "⌘⇧C",
+  "Same menu on anything. Hold ⌥ for the system menu."
+ ],
+ "titles": []
+}

@@ -1,0 +1,20 @@
+[
+ [
+  "need",
+  "Rate-limit the upload endpoint",
+  "Wants to run cargo test. One press to allow.",
+  "needs you · now"
+ ],
+ [
+  "need",
+  "Why is cold start 900 ms?",
+  "Asks: profile the release build?",
+  "asks you · 11m"
+ ],
+ [
+  "work",
+  "Migrate sessions to UUIDs",
+  "Editing the migration. Nothing needed.",
+  "working · 3m"
+ ]
+]

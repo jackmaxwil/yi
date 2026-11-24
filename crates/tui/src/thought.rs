@@ -12,7 +12,17 @@ fn thought_style(theme: &Theme) -> ratatui::style::Style {
 }
 
 const THOUGHT_INDENT: &str = "  ";
-pub(crate) const FOLDED: &str = " · ctrl+o";
+const FOLDED: &str = " · ctrl+o";
+
+/// Invariant: ctrl+o advertises itself only where one press reaches the verbose view, which is
+/// Thinking mode; Normal needs two presses and Verbose is already there.
+pub(crate) fn fold_hint(mode: TranscriptMode) -> &'static str {
+    if mode == TranscriptMode::Thinking {
+        FOLDED
+    } else {
+        ""
+    }
+}
 
 /// A thought's one-line face, `thought · 24s · 8.3k chars · ctrl+o`, counted, never summarised;
 /// `cut` names what it hides from ctrl+o's verbose view, `took` the live ms replay lacks.
@@ -45,7 +55,7 @@ pub fn lines(
 ) -> Vec<Line<'static>> {
     let style = thought_style(theme);
     if mode != TranscriptMode::Verbose {
-        return vec![head("thought", markdown, took, FOLDED, theme)];
+        return vec![head("thought", markdown, took, fold_hint(mode), theme)];
     }
     let mut out = Vec::new();
     if header {

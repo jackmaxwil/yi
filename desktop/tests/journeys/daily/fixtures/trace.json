@@ -1,0 +1,68 @@
+{
+  "about": "A turn stops at an approval. The Trace pane is opened from the command box, its waiting step is opened, and Run it is pressed there: the ask is allowed and the turn finishes.",
+  "worker": true,
+  "empty": true,
+  "runs": [
+    {
+      "steps": [
+        {
+          "t": 3.0,
+          "type": "tap",
+          "key": "chat-8.composer.input"
+        },
+        {
+          "t": 3.2,
+          "type": "type",
+          "text": "run the command"
+        },
+        {
+          "t": 4.0,
+          "type": "key",
+          "name": "Enter"
+        },
+        {
+          "t": 7.0,
+          "type": "tap",
+          "key": "shell.command-box"
+        },
+        {
+          "t": 7.4,
+          "type": "type",
+          "text": "Show Trace"
+        },
+        {
+          "t": 8.2,
+          "type": "key",
+          "name": "Enter"
+        },
+        {
+          "t": 9.5,
+          "type": "tap",
+          "key": "trace-9.row.wait-c1"
+        },
+        {
+          "t": 10.5,
+          "type": "tap",
+          "key": "trace-9.detail.wait-c1.trace.run"
+        },
+        {
+          "t": 15.0,
+          "type": "mark",
+          "name": "end"
+        }
+      ],
+      "expect": {
+        "files": [
+          "one.txt"
+        ],
+        "keys": [
+          "trace-9.pane-frame"
+        ],
+        "texts": [
+          "echo one > one.txt",
+          "turn done"
+        ]
+      }
+    }
+  ]
+}
