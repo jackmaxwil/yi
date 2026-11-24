@@ -10,7 +10,7 @@ use crate::grid::place::{line_at, place};
 use crate::grid::saved::{Own, OwnId, Slug};
 use crate::grid::swap::{Spot, Zone, toward, zone_at};
 use crate::ids::{PaneId, ThreadId, WindowId};
-use crate::pane::{PaneKind, Place};
+use crate::pane::{Opens, PaneKind, Place};
 
 const NOMINAL: Size = Size {
     w: 1200.0,
@@ -155,6 +155,9 @@ pub struct Windows {
     /// front again when the window turns back. Not kept in the file.
     #[serde(skip)]
     pub fronts: BTreeMap<(WindowId, Option<ThreadId>), Vec<PaneId>>,
+    /// The person's word on kinds opening by themselves, as the settings say it. Not kept.
+    #[serde(skip)]
+    pub rules: BTreeMap<PaneKind, Opens>,
 }
 
 /// A grid as a file gives it, before anything has looked at it.
@@ -184,6 +187,7 @@ impl TryFrom<Unchecked> for Windows {
             have: file.have,
             shows: BTreeMap::new(),
             fronts: BTreeMap::new(),
+            rules: BTreeMap::new(),
         };
         grid.check()?;
         // A kept layout a file spoils reads as gone, as a saved one this build lacks does.
@@ -259,6 +263,43 @@ impl Windows {
     #[must_use]
     pub fn kind(&self, pane: PaneId) -> Option<PaneKind> {
         self.pane_of(pane).map(|pane| pane.kind)
+    }
+
+    /// Where `pane` goes: the place the person always opens its kind in, else its own.
+    #[must_use]
+    pub fn place_of(&self, pane: &Pane) -> Place {
+        match self.rules.get(&pane.kind) {
+            Some(Opens::Always(place)) => *place,
+            _ => pane.place(),
+        }
+    }
+
+    /// The place of the slot `pane` is in: where the first pane of its stack goes.
+    #[must_use]
+    pub fn slot_place(&self, pane: PaneId) -> Option<Place> {
+        let window = self.window_of(pane).or_else(|| self.home_of(pane))?;
+        let stack = self.window(window)?.layout.stack(pane);
+        let first = stack.first().copied().unwrap_or(pane);
+        let first = self.panes.iter().find(|other| other.id == first)?;
+        Some(self.place_of(first))
+    }
+
+    /// The kind of `pane` when a word on opening by itself can cover it: not the chat, nor
+    /// a pane about one thing.
+    #[must_use]
+    pub fn ruled(&self, pane: PaneId) -> Option<PaneKind> {
+        let found = self.panes.iter().find(|other| other.id == pane)?;
+        (found.kind != PaneKind::Chat && found.thing.is_none()).then_some(found.kind)
+    }
+
+    /// Whether a pane of `kind` opens by itself: the person's word, else the kind's rule.
+    #[must_use]
+    pub fn opens_alone(&self, kind: PaneKind) -> bool {
+        match self.rules.get(&kind) {
+            Some(Opens::Never) => false,
+            Some(Opens::Always(_)) => true,
+            None => kind.arrives(),
+        }
     }
 
     /// The thing `pane` is about, when it is about one.

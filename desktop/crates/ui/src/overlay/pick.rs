@@ -86,8 +86,8 @@ pub fn context(hub: &Hub) -> Option<&Context> {
 /// The pane a key belongs to: its first part is `<slug>-<pane id>`.
 pub fn pane_of(key: &str) -> Option<(PaneKind, PaneId)> {
     let (slug, id) = key.split('.').next()?.rsplit_once('-')?;
-    let kind = PaneKind::ALL.iter().find(|kind| kind.slug() == slug)?;
-    Some((*kind, PaneId(id.parse().ok()?)))
+    let kind = PaneKind::from_slug(slug)?;
+    Some((kind, PaneId(id.parse().ok()?)))
 }
 
 /// A thread's row in the sidebar or the folded strip: `shell.<form>.<thread id>.sidebar-row`.
@@ -101,6 +101,15 @@ fn thread_row(hub: &Hub, key: &str) -> Option<Thing> {
 /// A pane's tab, `<pane key>.tab-<tab id>.pane-tab`, named by its title.
 fn tab(hub: &Hub, kind: PaneKind, pane: PaneId, key: &str) -> Option<Thing> {
     let (_, id) = key.strip_suffix(".pane-tab")?.rsplit_once(".tab-")?;
+    // A tab that stands for another pane of the stack, `pane-<n>`, is that pane.
+    if let Some(other) = id.strip_prefix("pane-") {
+        let other = PaneId(other.parse().ok()?);
+        return Some(Thing {
+            label: hub.model.grid.kind(other)?.title().to_owned(),
+            address: Address::new(Kind::Pane, other.0.to_string()).ok()?,
+            excerpt: None,
+        });
+    }
     let id = TabId(id.parse().ok()?);
     let context = PaneCx {
         hub,

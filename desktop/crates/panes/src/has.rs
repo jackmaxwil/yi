@@ -6,7 +6,7 @@ use yd_core::feed::{FeedStatus, OPEN_FILES, Table};
 use yd_core::grid::step::GridMsg;
 use yd_core::ids::WindowId;
 use yd_core::msg::Msg;
-use yd_core::pane::PaneKind;
+use yd_core::pane::{Opens, PaneKind};
 use yd_core::row::Rows;
 use yd_ui::grid_view::drag::GLIDE;
 use yd_ui::win::{Hub, Win, dispatch};
@@ -52,8 +52,12 @@ fn has(hub: &Hub, window: WindowId, kind: PaneKind) -> bool {
 
 /// The kinds with something to show in `window`.
 pub fn kinds(hub: &Hub, window: WindowId) -> Vec<PaneKind> {
+    // A kind the person always opens has its pane to show, whatever is in it.
+    let words = hub.model.settings.opens();
+    let always = |kind: &PaneKind| matches!(words.get(kind), Some(Opens::Always(_)));
     let all = PaneKind::ALL.iter().copied();
-    all.filter(|kind| has(hub, window, *kind)).collect()
+    all.filter(|kind| always(kind) || has(hub, window, *kind))
+        .collect()
 }
 
 /// Tells the grid the session this window shows and its kinds when either changed, so its

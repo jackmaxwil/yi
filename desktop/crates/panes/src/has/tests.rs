@@ -40,3 +40,20 @@ fn a_kind_has_something_to_show_only_once_its_fixtures_are_in() -> Result<(), Bo
     }
     Ok(())
 }
+
+/// A kind the person always opens has its pane to show with nothing in it; a word of never
+/// gives a kind nothing.
+#[test]
+fn a_kind_always_opened_has_its_pane_to_show_with_nothing_in_it() -> Result<(), Box<dyn Error>> {
+    use yd_core::settings::schema::SettingValue;
+    use yd_core::settings::store::OPENS_ROW;
+    let hub = Hub::new(PANES, scenes().collect());
+    let mut hub = hub.try_borrow_mut()?;
+    let mut row = OPENS_ROW;
+    row.value = Some(SettingValue::Text("changes work\nweb never".into()));
+    hub.model.settings.rows.push(row);
+    let now = kinds(&hub, MAIN);
+    assert!(now.contains(&PaneKind::Changes), "always: {now:?}");
+    assert!(!now.contains(&PaneKind::Web), "never has nothing: {now:?}");
+    Ok(())
+}

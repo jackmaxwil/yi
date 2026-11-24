@@ -1,5 +1,7 @@
 //! The kinds of pane that ship built in, plus the one a script draws.
 
+use std::collections::BTreeMap;
+
 macro_rules! panes {
     ($($name:ident $slug:literal $title:literal $wide:literal),+ $(,)?) => {
         /// A built-in pane kind. A pane's module, scenes and fixtures are named by its slug.
@@ -11,6 +13,10 @@ macro_rules! panes {
 
             pub const fn slug(self) -> &'static str {
                 match self { $(PaneKind::$name => $slug),+ }
+            }
+
+            pub fn from_slug(slug: &str) -> Option<PaneKind> {
+                match slug { $($slug => Some(PaneKind::$name),)+ _ => None }
             }
 
             /// Whether the kind is about this Mac or the app, not a session: a pane of it
@@ -64,6 +70,64 @@ pub enum Place {
     Work,
     Side,
     Shelf,
+}
+
+impl Place {
+    pub const ALL: [Place; 4] = [Place::Chat, Place::Work, Place::Side, Place::Shelf];
+
+    /// The word a settings line names the place by.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Place::Chat => "chat",
+            Place::Work => "work",
+            Place::Side => "side",
+            Place::Shelf => "shelf",
+        }
+    }
+}
+
+/// The person's word on a kind of pane opening by itself, over the kind's own rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opens {
+    /// No rule opens it.
+    Never,
+    /// It is open in this place in every session, with something to show or not.
+    Always(Place),
+}
+
+impl Opens {
+    const NEVER: &'static str = "never";
+
+    /// The words of a settings text, a line a kind: `<pane> never` or `<pane> <place>`. The
+    /// chat has no word, and a line that says neither is passed over.
+    pub fn read(text: &str) -> BTreeMap<PaneKind, Opens> {
+        let word = |line: &str| {
+            let (pane, word) = line.trim().split_once(' ')?;
+            let kind = PaneKind::from_slug(pane)?;
+            let place = Place::ALL
+                .into_iter()
+                .find(|place| place.slug() == word.trim());
+            let word = match place {
+                Some(place) => Opens::Always(place),
+                None if word.trim() == Self::NEVER => Opens::Never,
+                None => return None,
+            };
+            (kind != PaneKind::Chat).then_some((kind, word))
+        };
+        text.lines().filter_map(word).collect()
+    }
+
+    /// The text [`Opens::read`] reads `words` back from.
+    pub fn write(words: &BTreeMap<PaneKind, Opens>) -> String {
+        let line = |(kind, word): (&PaneKind, &Opens)| {
+            let word = match word {
+                Opens::Never => Self::NEVER,
+                Opens::Always(place) => place.slug(),
+            };
+            format!("{} {word}", kind.slug())
+        };
+        words.iter().map(line).collect::<Vec<_>>().join("\n")
+    }
 }
 
 panes! {

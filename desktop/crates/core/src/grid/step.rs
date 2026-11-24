@@ -175,7 +175,8 @@ fn apply(grid: &mut Windows, change: GridMsg) -> Result<Vec<WindowOp>, GridError
                 Some(thread) => grid.shows.insert(window, thread),
                 None => grid.shows.remove(&window),
             };
-            for kind in arrived.into_iter().filter(|kind| kind.arrives()) {
+            let alone = |kind: &PaneKind| grid.opens_alone(*kind);
+            for kind in arrived.into_iter().filter(alone).collect::<Vec<_>>() {
                 // A rule with no room opens nothing: the rest of the telling still holds.
                 let mut tried = grid.clone();
                 if arrive(&mut tried, window, kind).is_ok() {
@@ -324,7 +325,7 @@ fn host(grid: &Windows, layout: &Layout, place: Place) -> Option<PaneId> {
     let placed = |held: &PaneId| {
         let here = !layout.pulled(*held) && grid.origin_of(*held).is_none();
         let first = grid.panes.iter().find(|pane| pane.id == first(*held));
-        here && first.map(Pane::place) == Some(place)
+        here && first.map(|pane| grid.place_of(pane)) == Some(place)
     };
     layout.areas.iter().map(|(pane, _)| *pane).find(placed)
 }
@@ -380,7 +381,7 @@ fn open(
 fn seat(grid: &mut Windows, id: WindowId, pane: PaneId) -> Result<bool, GridError> {
     let layout = &grid.window(id).ok_or(GridError::NoSuchWindow(id))?.layout;
     let found = grid.panes.iter().find(|other| other.id == pane);
-    let goes = found.ok_or(GridError::NoSuchPane(pane))?.place();
+    let goes = grid.place_of(found.ok_or(GridError::NoSuchPane(pane))?);
     if let Some(onto) = host(grid, layout, goes) {
         stack(&mut find(grid, id)?.layout, onto, pane)?;
         return Ok(true);

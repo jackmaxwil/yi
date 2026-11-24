@@ -71,7 +71,11 @@ pub fn step(model: &mut Model, msg: Msg) -> Vec<Effect> {
             vec![Effect::Source(feed, SourceCmd::Run(command))]
         }
         Msg::Source(feed, ask) => vec![Effect::Source(feed, ask)],
-        Msg::Grid(change) => grid_step::step(&mut model.grid, change),
+        Msg::Grid(change) => {
+            // The grid reads the person's word on what opens by itself as the settings say it.
+            model.grid.rules = model.settings.opens();
+            grid_step::step(&mut model.grid, change)
+        }
         Msg::Attach(change) => attach::step(&mut model.attached, change),
         Msg::Triage(change) => triage::step(model, change),
         Msg::Settings(change) => store::step(model, change),

@@ -7,8 +7,10 @@ pub mod value;
 use crate::ids::SettingKey;
 use crate::model::Model;
 use crate::msg::Effect;
+use crate::pane::{Opens, PaneKind};
 use crate::reduce::step::request;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use crate::settings::schema::{Control, Setting, SettingValue, Store};
 use crate::settings::yi;
@@ -29,6 +31,22 @@ pub const PROJECTS_ROW: Setting = Setting {
     value: None,
 };
 
+/// Which kinds of pane open by themselves, over their own rules: [`Opens::read`]'s text.
+pub const OPENS: &str = "panes.opens";
+pub const OPENS_ROW: Setting = Setting {
+    key: SettingKey::fixed(OPENS),
+    group: Cow::Borrowed("Layout"),
+    name: Cow::Borrowed("Panes that open by themselves"),
+    description: Cow::Borrowed(
+        "One line a pane: its name, a space, then never, or the place it is always open in \
+         (work, side, shelf, chat).",
+    ),
+    control: Control::Text,
+    store: Store::App,
+    default: Some(SettingValue::Text(Cow::Borrowed(""))),
+    value: None,
+};
+
 /// The app's own settings. Yi's are the server's rows, read through [`all`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Settings {
@@ -42,6 +60,24 @@ impl Settings {
             .iter()
             .find(|row| row.key.as_str() == key)?
             .effective()
+    }
+
+    /// The person's word on each kind of pane opening by itself.
+    pub fn opens(&self) -> BTreeMap<PaneKind, Opens> {
+        match self.value(OPENS) {
+            Some(SettingValue::Text(text)) => Opens::read(text),
+            _ => BTreeMap::new(),
+        }
+    }
+
+    /// The [`OPENS`] value with `kind`'s word set, or gone.
+    pub fn with_opens(&self, kind: PaneKind, word: Option<Opens>) -> SettingValue {
+        let mut words = self.opens();
+        match word {
+            Some(word) => words.insert(kind, word),
+            None => words.remove(&kind),
+        };
+        SettingValue::Text(Cow::Owned(Opens::write(&words)))
     }
 
     /// The known project folders, newest first, at most [`MAX_PROJECTS`].

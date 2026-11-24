@@ -12,16 +12,19 @@ pub mod state;
 #[cfg(test)]
 mod tests;
 
+use std::io::Write as _;
+
 use rune::{Cx, El, Icon, Tx, col, el, row};
 use yd_core::address::thing::Thing;
 use yd_core::address::uri::Address;
-use yd_core::command::by_kind::{SETTING_COPY, SETTING_RESET};
+use yd_core::command::by_kind::{self, PANE_ALWAYS, PANE_NEVER, SETTING_COPY, SETTING_RESET};
 use yd_core::command::table::{Route, Run, Target};
+use yd_core::grid::step::GridMsg;
 use yd_core::ids::{CommandId, PaneId, SettingKey};
 use yd_core::kind::Kind;
 use yd_core::model::Model;
-use yd_core::msg::Msg;
-use yd_core::pane::PaneKind;
+use yd_core::msg::{Msg, step};
+use yd_core::pane::{Opens, PaneKind};
 use yd_core::reduce::state::Link;
 use yd_core::reduce::step::commands::SETTINGS_READ;
 use yd_core::settings::store;
@@ -77,6 +80,38 @@ pub fn carry(win: &mut Win, tx: &mut Tx, command: CommandId, target: &Target) ->
             act::put(win, &SettingKey::new(setting.id()), None);
         }
         _ => return false,
+    }
+    true
+}
+
+/// "Always open here" and "Never open by itself" on a pane or its tab: the word is written to
+/// the settings file, or taken back when it was the one in force. True for either command.
+pub fn pane_word(win: &mut Win, _: &mut Tx, command: CommandId, target: &Target) -> bool {
+    if ![PANE_ALWAYS, PANE_NEVER].contains(&command) {
+        return false;
+    }
+    let (Target::Thing(address), Ok(mut hub)) = (target, win.hub.try_borrow_mut()) else {
+        return true;
+    };
+    let Some((pane, kind, word)) = by_kind::word(&hub.model.grid, command, address) else {
+        return true;
+    };
+    let settings = &hub.model.settings;
+    let word = Some(word).filter(|word| settings.opens().get(&kind) != Some(word));
+    let key = SettingKey::fixed(store::OPENS);
+    let set = store::SettingsMsg::Set(key.clone(), Some(settings.with_opens(kind, word)));
+    step(&mut hub.model, Msg::Settings(set));
+    if let Err(why) = file::keep(&mut hub, &key) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "yi-desktop: the word was not kept: {why}"
+        );
+    }
+    if matches!(word, Some(Opens::Always(_))) {
+        step(
+            &mut hub.model,
+            Msg::Grid(GridMsg::Across { pane, on: true }),
+        );
     }
     true
 }

@@ -71,6 +71,10 @@ pub fn init() -> Win {
             .settings
             .rows
             .push(yd_core::settings::store::PROJECTS_ROW);
+        hub.model
+            .settings
+            .rows
+            .push(yd_core::settings::store::OPENS_ROW);
         let here = std::env::current_dir()
             .ok()
             .and_then(|dir| dir.to_str().map(str::to_owned));
