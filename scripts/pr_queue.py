@@ -7,7 +7,7 @@
 Nothing is stored: the state is the `queue` label, the `queue/candidate` ref and that ref's statuses,
 so a crashed tick loses nothing. A red candidate stays until it is replaced, since it is the memory
 of what comes next. Base and retry markers ride the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
-import argparse, contextlib, datetime, functools, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time
+import argparse, contextlib, datetime, functools, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, urllib.parse
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -76,43 +76,53 @@ def step(obs, off=""):
     return next(((action, name) for name, holds, action in RULES if name != off and holds(obs)), ("none", "none"))
 
 
-STATE, FORGE_SECS = "yi/state", 60
+STATE, WOULD, FORGE_SECS = "yi/state", "yi/would", 60
 BLOCKED = lambda f: f["verdict"] == "blocked"
 CLEAN = lambda f: f["verdict"] in ("clean", "override") and f["gate"] == "green"
+
+
+def held(f):
+    """Incident: #2343, clean, green and queued, read `held` because the hold row came first, and the hold
+    only keeps the fixer out; so it names the state only where the fixer would otherwise own the PR."""
+    return "autofix:hold" in f["labels"] and next(row[1] for row in STATES if row[3] is not held and row[3](f)) == "fixer"
+
+
 # Invariant: a PR's state is the first row that holds, and a clock is its owner's measured p90 latency on the
-# 2026-10-20..11-24 forge record, or the code's own window where that owner is a timer.
+# 2026-10-20..11-24 forge record, or the code's own window where that owner is a timer. The last column is
+# the act the tick owes the state under QUEUE_ROWS; a row without one is someone else's to move.
 STATES = (
-    ("held", "person", 22, lambda f: "autofix:hold" in f["labels"]),
-    ("fixer working", "fixer", 1, lambda f: "autofix:working" in f["labels"]),
-    ("fixer failed", "fixer", 12, lambda f: "autofix:failed" in f["labels"]),
-    ("fixer asked", "fixer", 12, lambda f: "autofix" in f["labels"]),
-    ("fixer declined", "person", 22, lambda f: f["fix"] == "declined"),
-    ("fixer handed off", "person", 22, lambda f: f["fix"] == "handoff"),
-    ("based off main", "queue", 10, lambda f: f["base"] != "main"),
-    ("awaiting review", "review", 18, lambda f: f["verdict"] is None and not f["lost"]),
-    ("lost answers", "review", 1.2, lambda f: f["lost"] and not f["retries_spent"]),
-    ("lost answers, retries spent", "person", 22, lambda f: f["lost"]),
-    ("blocked round, queued", "queue", 0.25, lambda f: BLOCKED(f) and "queue" in f["labels"]),
-    ("blocked round, draft", "fixer", 12, lambda f: BLOCKED(f) and f["draft"]),
-    ("blocked round, ready", "fixer", 12, BLOCKED),
-    ("conflicted", "fixer", 12, lambda f: f["mergeable"] is False),
-    ("title red", "author", 22, lambda f: f["gate"] == "title"),
-    ("gate red", "fixer", 4, lambda f: f["gate"] == "red"),
-    ("gate pending", "gate", STALE_MINUTES / 60, lambda f: f["gate"] == "pending"),
-    ("queued", "queue", 1, lambda f: "queue" in f["labels"] and CLEAN(f)),
-    ("clean draft", "review", 8, lambda f: f["draft"] and CLEAN(f)),
-    ("clean, not queued", "person", 13, lambda f: not f["draft"] and CLEAN(f)),
-    ("unknown", "person", 0, lambda f: True),
+    ("held", "person", 22, held, None),
+    ("fixer working", "fixer", 1, lambda f: "autofix:working" in f["labels"], None),
+    ("fixer failed", "fixer", 12, lambda f: "autofix:failed" in f["labels"], None),
+    ("fixer asked", "fixer", 12, lambda f: "autofix" in f["labels"], None),
+    ("fixer declined", "person", 22, lambda f: f["fix"] == "declined", None),
+    ("fixer handed off", "person", 22, lambda f: f["fix"] == "handoff", None),
+    ("based off a closed branch", "queue", 0.25, lambda f: f["base"] != "main" and f.get("parent") == "closed", "repoint"),
+    ("based off main", "queue", 10, lambda f: f["base"] != "main", None),
+    ("awaiting review", "review", 18, lambda f: f["verdict"] is None and not f["lost"], None),
+    ("lost answers", "review", 1.2, lambda f: f["lost"] and not f["retries_spent"], None),
+    ("lost answers, retries spent", "person", 22, lambda f: f["lost"], None),
+    ("blocked round, queued", "queue", 0.25, lambda f: BLOCKED(f) and "queue" in f["labels"], None),
+    ("blocked round, draft", "fixer", 12, lambda f: BLOCKED(f) and f["draft"], None),
+    ("blocked round, ready", "fixer", 12, BLOCKED, None),
+    ("conflicted", "fixer", 12, lambda f: f["mergeable"] is False, None),
+    ("title red", "author", 22, lambda f: f["gate"] == "title", None),
+    ("gate red", "fixer", 4, lambda f: f["gate"] == "red", None),
+    ("gate pending", "gate", STALE_MINUTES / 60, lambda f: f["gate"] == "pending", None),
+    ("queued", "queue", 1, lambda f: "queue" in f["labels"] and CLEAN(f), None),
+    ("clean draft", "review", 8, lambda f: f["draft"] and CLEAN(f), "promote"),
+    ("clean, not queued", "person", 13, lambda f: not f["draft"] and CLEAN(f), "enqueue"),
+    ("unknown", "person", 0, lambda f: True, "say"),
 )
 
 
 def state_of(f, off=""):
-    """(state, owner, since, clock hours) of one PR's facts; nothing reads it to decide anything."""
-    name, owner, clock, _ = next((row for row in STATES if row[0] != off and row[3](f)), ("none", "person", 0, None))
+    """(state, owner, since, clock hours) of one PR's facts; only the rows' acts read it."""
+    name, owner, clock, *_ = next((row for row in STATES if row[0] != off and row[3](f)), ("none", "person", 0, None, None))
     return name, owner, f["since"], clock
 
 
-def facts(pr, notes, statuses, holds, who):
+def facts(pr, notes, statuses, holds, who, parent=None):
     """What `state_of` reads, from the listing's PR, its comments, its head's status rows and the round authors."""
     head = pr["head"]["sha"]
     seen = [a for a in pr_review.attempts_of(notes, who, pr["number"]) if holds(a["sha"], head)]
@@ -124,7 +134,7 @@ def facts(pr, notes, statuses, holds, who):
     fixes = [r for r in bot_meter.rows(notes) if r["kind"] == "yi-autofix" and r.get("from") == head[:12]]
     rounds = [a for a in seen if a.get("kind") == "round"]
     return {"labels": {label["name"] for label in pr.get("labels") or []}, "draft": pr["title"].startswith(forge_pr.DRAFT),
-            "base": pr["base"]["ref"], "gate": gate, "mergeable": pr.get("mergeable"), "since": max(times),
+            "base": pr["base"]["ref"], "parent": parent, "gate": gate, "mergeable": pr.get("mergeable"), "since": max(times),
             "fix": fixes[-1].get("verdict") if fixes else None,
             "lost": bool(seen) and pr_review.lost_attempt(seen[-1]), "retries_spent": len(seen) > pr_review.RETRIES,
             "verdict": rounds[-1]["verdict"] if rounds and not pr_review.lost_attempt(seen[-1]) else None}
@@ -141,48 +151,154 @@ def said(description):
     return description.split(" since ")[0], description.endswith(" parked")
 
 
-def assess(pr, who, notes):
-    """(state, owner, since, clock, the head's status rows) as the forge has them now."""
+def assess(pr, who, notes, parent=None):
+    """(state, owner, since, clock, the head's status rows, the facts, the round holds) as the forge has them now."""
     sha, base = pr["head"]["sha"], pr["base"]["ref"]
     rows = forge_pr.status_rows(forge_pr.repo(), sha, timeout=FORGE_SECS)
     if rows is None:
         raise SystemExit(forge_pr.UNREAD)
     merged = functools.cache(lambda: pr_review.holds_for(pr["number"], base))
     holds = lambda reviewed, head: pr_review.on_head(reviewed, head) or merged()(reviewed, head)
-    return (*state_of(facts(pr, notes, rows, holds, who)), rows)
+    found = facts(pr, notes, rows, holds, who, parent)
+    return (*state_of(found), rows, found, holds)
 
 
-def report(every, held=None):
-    """One `yi/state` status per open head, written only when what it says changed; `held` is the comments
-    the tick already read, by PR number."""
-    if os.environ.get("STATE_REPORT") != "on":
+def rows_mode(ask=False):
+    """QUEUE_ROWS as off, shadow or on: the job's environment, else the forge's variable when `ask`, for a job
+    that does not export it; any other word is said and read as off."""
+    told = os.environ.get("QUEUE_ROWS", "")
+    if not told and ask:
+        answer = forge_pr.fgj_api("GET", f"repos/{forge_pr.repo()}/actions/variables/QUEUE_ROWS", timeout=FORGE_SECS)
+        if isinstance(answer, dict) and "message" in answer:
+            print(f"queue: the forge did not read QUEUE_ROWS ({answer['message']}), so the rows stay off")
+        told = answer.get("data") or "" if isinstance(answer, dict) else ""
+    if told not in ("", "off", "shadow", "on"):
+        print(f"queue: QUEUE_ROWS reads {told!r}, none of off, shadow, on, so the rows stay off")
+    return told if told in ("shadow", "on") else "off"
+
+
+def parent_of(base, every):
+    """Where a stacked PR's base branch stands, and the PR to re-point from: open; closed (its PR into main merged
+    or closed, or the branch deleted); or branch, one no PR into main names, which only a person re-points."""
+    repo = forge_pr.repo()
+    if any(p["head"]["ref"] == base and (p["head"].get("repo") or {}).get("full_name") == repo for p in every):
+        return "open", None
+    path = urllib.parse.quote(base, safe="")
+    found = forge_pr.fgj_api("GET", f"repos/{repo}/pulls/main/{path}", timeout=FORGE_SECS)
+    if isinstance(found, dict) and found.get("number"):
+        return ("open" if found.get("state") == "open" else "closed"), found
+    if found is not None:
+        raise SystemExit(f"the forge did not say which PR has the branch {base}: {found}")
+    branch = forge_pr.fgj_api("GET", f"repos/{repo}/branches/{path}", timeout=FORGE_SECS)
+    if branch is None:
+        return "closed", {"head": {"ref": base, "repo": {"full_name": repo}}}
+    if not isinstance(branch, dict) or branch.get("name") != base:
+        raise SystemExit(f"the forge did not say whether the branch {base} exists: {branch}")
+    return "branch", None
+
+
+def marker(sha):
+    return f"<!-- yi-unknown {sha} -->"
+
+
+def owed(pr, state, notes, rows, holds, who):
+    """The act the tick owes this PR now, or None: its state's act, refused for what the act itself refuses,
+    so that shadow says only what `on` would do."""
+    act = next((row[4] for row in STATES if row[0] == state), None)
+    if act == "enqueue":
+        # Invariant: the row enqueues PRs opened by the owner's login alone, a subset of what the Mac loop offers.
+        mine = (pr.get("user") or {}).get("login") in MERGERS
+        return act if mine and eligible_problem(pr, forge_pr.job_states(forge_pr.as_jobs(rows))) is None else None
+    if act == "promote":
+        return act if pr_review.promotes(pr_review.rounds_of(notes, who, pr["number"]), pr["head"]["sha"], holds) else None
+    if act == "say":
+        return None if any(marker(pr["head"]["sha"]) in (c.get("body") or "") for c in notes) else act
+    return act
+
+
+def do(pr, act, notes, who, found, parent):
+    """Invariant: a label, title or base write carries no sha guard, so the act re-reads the head it judged and
+    refuses a moved one; each act is a no-op once done, so a second tick repeats nothing."""
+    number, judged = pr["number"], pr["head"]["sha"]
+    fresh = forge_pr.pull(number)
+    if fresh["head"]["sha"] != judged:
+        print(f"queue: #{number} skipped {act}: its head moved from {judged[:10]} to {fresh['head']['sha'][:10]} after the judgement")
+        return
+    if act == "enqueue":
+        if LABEL in {label["name"] for label in fresh.get("labels") or []}:
+            print(f"queue: #{number} skipped enqueue: it already carries `{LABEL}`")
+            return
+        set_label(number, LABEL, True)
+    elif act == "promote":
+        pr_review.promote(forge_pr.repo(), fresh, pr_review.rounds_of(notes, who, number))
+    elif act == "repoint":
+        if fresh["base"]["ref"] == "main":
+            return
+        retarget(parent)
+    else:
+        shown = ", ".join(f"{k}={sorted(v) if isinstance(v, set) else v}" for k, v in found.items())
+        comment(number, f"{marker(judged)}\nNo row of the queue's state table matches this pull request at {judged[:10]}, "
+                        f"so no bot is due to act on it. What it read: {shown}.")
+    print(f"queue: #{number} {act} at {judged[:10]}")
+
+
+def tend(pr, state, since, rows, notes, holds, who, found, parent, mode):
+    """Record the act this PR's state owes as its head's `yi/would`, and under `on` do it."""
+    act = owed(pr, state, notes, rows, holds, who)
+    when = datetime.datetime.fromtimestamp(since, datetime.timezone.utc).strftime("%m-%d %H:%M")
+    # Invariant: no `yi/would` reads as nothing owed, so a head gets one only once an act was owed on it.
+    if act or old_status(rows, WOULD):
+        post(pr, rows, WOULD, f"would {act} ({state} since {when}Z)" if act else f"owes nothing since {when}Z ({state})")
+    if act and mode == "on":
+        do(pr, act, notes, who, found, parent)
+
+
+def old_status(rows, context):
+    return next((row.get("description") or "" for row in rows if row.get("context") == context), "")
+
+
+def post(pr, rows, context, text):
+    """Write `text` as the head's `context` status unless the last one said as much; True when it wrote."""
+    if said(old_status(rows, context)) == said(text):
+        return False
+    answer = forge_pr.fgj_api("POST", f"repos/{forge_pr.repo()}/statuses/{pr['head']['sha']}",
+                              {"state": "success", "context": context, "description": text}, timeout=FORGE_SECS)
+    if not isinstance(answer, dict) or answer.get("context") != context:
+        raise SystemExit(f"the forge refused the status: {answer}")
+    return True
+
+
+def report(every, held=None, mode="off"):
+    """One `yi/state` status per open head under STATE_REPORT, and the rows' `yi/would` and acts under
+    QUEUE_ROWS, each written only when what it says changed; `held` is the comments the tick read, by PR."""
+    on = os.environ.get("STATE_REPORT") == "on"
+    if not on and mode == "off":
         return
     now, wrote, who = time.time(), 0, pr_review.authors()
     for pr in every:
         try:
             notes = (held or {}).get(pr["number"])
-            state, owner, since, clock, rows = assess(pr, who, pr_review.comments(forge_pr.repo(), pr["number"], FORGE_SECS) if notes is None else notes)
-            text = describe(state, owner, since, clock, now)
-            old = next((row.get("description") or "" for row in rows if row.get("context") == STATE), "")
-            if said(old) == said(text):
-                continue
-            answer = forge_pr.fgj_api("POST", f"repos/{forge_pr.repo()}/statuses/{pr['head']['sha']}",
-                                      {"state": "success", "context": STATE, "description": text}, timeout=FORGE_SECS)
-            if not isinstance(answer, dict) or answer.get("context") != STATE:
-                raise SystemExit(f"the forge refused the status: {answer}")
-            wrote += 1
+            notes = pr_review.comments(forge_pr.repo(), pr["number"], FORGE_SECS) if notes is None else notes
+            base = pr["base"]["ref"]
+            parent = parent_of(base, every) if mode != "off" and base != "main" else (None, None)
+            state, owner, since, clock, rows, found, holds = assess(pr, who, notes, parent[0])
+            wrote += on and post(pr, rows, STATE, describe(state, owner, since, clock, now))
+            if mode != "off":
+                tend(pr, state, since, rows, notes, holds, who, found, parent[1], mode)
         # Invariant: one PR's forge error, a timeout included, never ends the tick or the report for the others.
         except (Exception, SystemExit) as err:
             print(f"queue: no state for #{pr['number']}: {err}"[:300])
-    print(f"queue: state written on {wrote} of {len(every)} open heads")
+    if on:
+        print(f"queue: state written on {wrote} of {len(every)} open heads")
 
 
 def cmd_parked(args):
     """Every open PR past its state's clock, oldest first, from the forge as it is now; writes nothing."""
+    print(last_tick(time.time()))
     every, now, rows, who = listing(forge_pr.open_pulls(), "the open pull requests"), time.time(), [], pr_review.authors()
     for pr in every:
         try:
-            state, owner, since, clock, _ = assess(pr, who, pr_review.comments(forge_pr.repo(), pr["number"], FORGE_SECS))
+            state, owner, since, clock, *_ = assess(pr, who, pr_review.comments(forge_pr.repo(), pr["number"], FORGE_SECS))
         except (Exception, SystemExit) as err:
             print(f"#{pr['number']} unreadable: {err}"[:300])
             continue
@@ -192,6 +308,88 @@ def cmd_parked(args):
         print(row)
     print(f"{len(rows)} of {len(every)} open pull requests past their clock")
     return 0
+
+
+# Invariant: an autofix pass runs to its 90-minute timeout, so a run still going is alive that long; 45 minutes
+# is three missed autofix crons, and the record's longest gap between passes that each ran was 92 minutes.
+DARK_MINUTES, RUN_MINUTES, LOOKBACK_HOURS, PAGES = 45, 100, 6, 20
+
+
+def job_records(watched, now, want):
+    """`watched`'s job records, newest first, read page by page until `want(records)` holds, a record of any
+    job is older than LOOKBACK_HOURS, or PAGES pages are read."""
+    found, pages = [], []
+
+    def transport(method, path, payload):
+        answer = forge_pr.fgj_api(method, path, payload, timeout=FORGE_SECS)
+        rows = answer.get("workflow_runs") if isinstance(answer, dict) else None
+        if rows is None:
+            raise SystemExit(f"the forge did not list the job records: {answer}")
+        pages.append(path)
+        found.extend(r for r in rows if r.get("workflow_id") == watched)
+        old = any(now - pr_review.when(r["created_at"]) > LOOKBACK_HOURS * 3600 for r in rows)
+        return [] if want(found) or old or len(pages) >= PAGES else rows
+
+    list(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/actions/tasks?x=1"))
+    return sorted(found, key=lambda r: r["created_at"], reverse=True)
+
+
+def finished(records):
+    return [r for r in records if r["status"] in ("success", "failure")]
+
+
+def dark(records, now):
+    """Why a scheduled job is dark at `now`, from its records newest first; None while it runs."""
+    done = finished(records)
+    if len(done) >= 3 and all(r["status"] == "failure" for r in done[:3]):
+        return "its last three runs failed"
+    if not records:
+        return f"it has no run in the last {LOOKBACK_HOURS} h"
+    newest = records[0]
+    limit = RUN_MINUTES if newest["status"] in ("running", "waiting") else DARK_MINUTES
+    return f"it has not run since {newest['created_at']}" if (now - pr_review.when(newest["created_at"])) / 60 > limit else None
+
+
+def heartbeat(watched, mode=None):
+    """Keep one issue open while the other scheduled job is dark and close it once that job runs green: the queue
+    tick watches the fixer's pass and the pass the tick, so a dead job is reported by the live one."""
+    import pr_autofix
+
+    try:
+        if (rows_mode(ask=True) if mode is None else mode) == "off":
+            return
+        now, repo, title = time.time(), forge_pr.repo(), f"The {watched} job is dark"
+        records = job_records(watched, now, lambda found: len(finished(found)) >= 3)
+        why, have = dark(records, now), pr_autofix.red_issue(repo, None, title)
+        if have is False:
+            raise SystemExit("the forge did not list the open issues")
+        body = f"The scheduled `{watched}` job is dark: {why}. Its newest records:\n\n" + "".join(
+            f"- {r['created_at']} {r['status']}\n" for r in records[:5]) if why else ""
+        if why and not have:
+            ids = label_ids()
+            stones = api("GET", "milestones?state=open&limit=50") or []
+            stone = next((m["id"] for m in stones if isinstance(m, dict) and m.get("title") == "Forge plumbing"), None)
+            made = api("POST", "issues", {"title": title, "body": body, "milestone": stone,
+                                          "labels": [ids[n] for n in ("size:S", "area:forge-ci") if n in ids]})
+            print(f"heartbeat: {watched} is dark ({why}); opening its issue answered {(made or {}).get('number') or made}")
+        elif why and why not in (have.get("body") or ""):
+            api("PATCH", f"issues/{have['number']}", {"body": body})
+        elif have and not why and finished(records)[:1] and finished(records)[0]["status"] == "success":
+            api("PATCH", f"issues/{have['number']}", {"state": "closed"})
+            print(f"heartbeat: {watched} ran green again; #{have['number']} closed")
+    except (Exception, SystemExit) as err:
+        print(f"heartbeat: {watched} unread, so nothing is said of it: {err}"[:300])
+
+
+def last_tick(now):
+    """The first line of `just pr parked`: how long ago the queue's tick last ran to success."""
+    try:
+        ok = [r for r in job_records("queue.yml", now, lambda found: any(r["status"] == "success" for r in found)) if r["status"] == "success"]
+    except SystemExit as err:
+        return f"last successful queue tick: unread ({err})"
+    if not ok:
+        return f"last successful queue tick: none in the job records of the last {LOOKBACK_HOURS} h"
+    return f"last successful queue tick: {(now - pr_review.when(ok[0]['created_at'])) / 60:.0f} min ago, at {ok[0]['created_at']}"
 
 
 def git(*args, cwd=None, check=True):
@@ -285,20 +483,35 @@ def delete_ref():
     api("DELETE", "branches/" + CANDIDATE.replace("/", "%2F"))
 
 
-def enqueue_time(events):
+def enqueue_time(events, rowed=lambda: False):
     """When a merger last added the label; None when nobody allowed did, or it has since come off.
-    The forge lets any writer add one, and the timeline's body is "1" for an add."""
+    The forge lets any writer add one, and the timeline's body is "1" for an add. The bot's own add counts
+    only while `rowed()`, which asks whether the enqueue row would add it now."""
     at = None
     for event in events:
         if event.get("type") == "label" and (event.get("label") or {}).get("name") == LABEL:
-            allowed = (event.get("user") or {}).get("login") in MERGERS
+            login = (event.get("user") or {}).get("login")
+            allowed = login in MERGERS or (login == pr_review.BOT and event.get("body") == "1" and rowed())
             at = event.get("created_at") if event.get("body") == "1" and allowed else None
     return at
 
 
+def rowed(number):
+    """Invariant: a bot-added label is the owner's consent only through the enqueue row, so it counts while
+    QUEUE_ROWS is on and the row, judging the PR as if unlabelled, would add it at this moment."""
+    if rows_mode(ask=True) != "on":
+        return False
+    pr = forge_pr.pull(number)
+    bare = {**pr, "labels": [label for label in pr.get("labels") or [] if label["name"] != LABEL]}
+    who, notes = pr_review.authors(), pr_review.comments(forge_pr.repo(), number, FORGE_SECS)
+    state, _, _, _, rows, _, holds = assess(bare, who, notes)
+    return owed(bare, state, notes, rows, holds, who) == "enqueue"
+
+
 def enqueued_at(number):
     transport = lambda method, url, _: listing(forge_pr.fgj_api(method, url) or [], f"#{number}'s timeline")
-    return enqueue_time(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/timeline?x=1"))
+    events = forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/timeline?x=1")
+    return enqueue_time(events, functools.cache(lambda: rowed(number)))
 
 
 def queued_pulls(every=None):
@@ -652,7 +865,7 @@ def tick(mode):
             finish(obs)
     elif action == "paused":
         print(f"queue: paused on {obs['candidate'][:10]}, whose lanes read {obs['lanes']}; deleting {CANDIDATE} resumes")
-    report(obs["open"], obs["notes"])
+    report(obs["open"], obs["notes"], rows_mode())
     return 0
 
 
@@ -1269,15 +1482,20 @@ def state_cases(off=""):
         got = state_of(facts(case["pr"], case["comments"], case["statuses"], pr_review.on_head, {"yi-bot", "jack"}), off)[0]
         if got != case["state"]:
             bad.append(f"#{case['pr']['number']} at {case['at']}, {case['b_state']} for {case['gap_hours']} h, read {got}, not {case['state']}")
+    for case in json.loads(ROWS_RECORDED.read_text()):
+        parent = "closed" if case.get("parent") else None
+        found = facts(case["pr"], case["comments"], case["statuses"], pr_review.on_head, {"yi-bot", "jack"}, parent)
+        if case["state"] != "unknown" and (got := state_of(found, off)[0]) != case["state"]:
+            bad.append(f"{case['case']} read {got}, not {case['state']}")
     for want, change in STATE_CASES:
         if (got := state_of({**FACTS, **change}, off)[0]) != want:
             bad.append(f"{change} read {got}, not {want}")
     return bad
 
 
-def forge_double(statuses, refuse=(), pulls=(), hang=()):
+def forge_double(statuses, refuse=(), pulls=(), hang=(), tasks=()):
     """A forge for the tick and the report: the open listing, comment and timeline pages, combined statuses by
-    head, status posts kept; a path holding a `refuse` word answers an error, a `hang` word times out."""
+    head, status posts kept, job records; a path holding a `refuse` word answers an error, a `hang` word times out."""
     calls = []
 
     def answer(method, path, payload=None, timeout=None):
@@ -1293,10 +1511,12 @@ def forge_double(statuses, refuse=(), pulls=(), hang=()):
             return []
         if method == "GET" and path.endswith("/status"):
             return {"statuses": statuses.get(sha, [])}
+        if method == "GET" and "/actions/tasks?" in path:
+            return {"workflow_runs": list(tasks) if path.endswith("page=1") else []}
         if method == "POST" and "/statuses/" in path:
-            statuses.setdefault(sha, [])[:] = [s for s in statuses.get(sha, []) if s["context"] != STATE] + [
-                {"context": STATE, "status": payload["state"], "description": payload["description"]}]
-            return {"context": STATE, **payload}
+            statuses.setdefault(sha, [])[:] = [s for s in statuses.get(sha, []) if s["context"] != payload["context"]] + [
+                {"context": payload["context"], "status": payload["state"], "description": payload["description"]}]
+            return payload
         raise AssertionError(f"the report made a call it may not: {method} {path}")
     return answer, calls
 
@@ -1360,6 +1580,16 @@ def tick_call_cases():
         seen[switch] = calls
         if switch == "off" and [c for c in calls if "/issues/2/" in c[1] or "b" * 40 in c[1]]:
             bad.append(f"a tick with the report off read the unqueued PR: {calls}")
+    # Invariant: QUEUE_ROWS off, set or unset, leaves the tick's calls those of the tick before the rows existed.
+    answer, calls = forge_double({}, pulls=pulls)
+    with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            mock.patch.object(sys.modules[__name__], "git", mock.Mock(return_value=mock.Mock(stdout="", returncode=0))), \
+            mock.patch.dict(os.environ, {"MERGE_QUEUE": "off", "STATE_REPORT": "off", "QUEUE_ROWS": "off", "YI_ROUND_AUTHORS": "yi-bot"}), \
+            contextlib.redirect_stdout(io.StringIO()):
+        main([])
+        tick("on")
+    if calls != seen["off"]:
+        bad.append(f"QUEUE_ROWS off changed the tick's forge calls: {calls} against {seen['off']}")
     comments = {switch: [c[1] for c in calls if "/issues/1/comments" in c[1]] for switch, calls in seen.items()}
     if comments["on"] != comments["off"]:
         bad.append(f"the report read the queued PR's comments again: {comments}")
@@ -1382,12 +1612,18 @@ def parked_cases():
     """`just pr parked` prints the PRs past their clock, oldest first, and never one within it; it writes nothing."""
     now = time.time()
     pulls = [aged(1, "a" * 40, 30, now), aged(2, "b" * 40, 1, now), aged(3, "c" * 40, 40, now), aged(4, "d" * 40, 50, now)]
-    answer, calls = forge_double({}, pulls=pulls, hang={"issues/4/"})
+    stamp = lambda minutes: datetime.datetime.fromtimestamp(now - minutes * 60, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tasks = [{"workflow_id": "queue.yml", "status": "failure", "created_at": stamp(2)},
+             {"workflow_id": "autofix.yml", "status": "success", "created_at": stamp(4)},
+             {"workflow_id": "queue.yml", "status": "success", "created_at": stamp(7)}]
+    answer, calls = forge_double({}, pulls=pulls, hang={"issues/4/"}, tasks=tasks)
     with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
             mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot"}), contextlib.redirect_stdout(io.StringIO()) as out:
         cmd_parked(argparse.Namespace())
     printed = [line.split()[0] for line in out.getvalue().splitlines() if " h  " in line]
     bad = [] if printed == ["#3", "#1"] else [f"parked printed {printed}, not ['#3', '#1']: {out.getvalue()!r}"]
+    if not out.getvalue().startswith(f"last successful queue tick: 7 min ago, at {stamp(7)}\n"):
+        bad.append(f"parked did not open on the last successful tick's age: {out.getvalue()[:120]!r}")
     if "#4 unreadable" not in out.getvalue():
         bad.append(f"a PR whose comments timed out was not named unreadable: {out.getvalue()!r}")
     return bad + [f"parked wrote {c}" for c in calls if c[0] != "GET"]
@@ -1402,15 +1638,223 @@ def neutral_cases():
     pr = {"number": 7, "title": "t", "state": "open", "head": {"sha": "a" * 40}, "base": {"ref": "main"}, "labels": []}
     for rows in ([], lanes("success", "success", "success", "success"), lanes("success", "failure", "pending"), lanes("pending")):
         seen = []
-        for extra in ([], [mine]):
+        would = {"context": WOULD, "status": "success", "description": "would enqueue (clean, not queued since 11-22 10:04Z)"}
+        for extra in ([], [mine], [mine, would]):
             with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: {"statuses": rows + extra}), \
                     mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(forge_pr, "required", lambda: [*LANES, "title"]):
                 jobs = forge_pr.jobs_of(pr)
                 seen.append((forge_pr.decide(pr, jobs, [*LANES, "title"], False), lanes_state({"lanes": jobs}),
                              pr_autofix.red_lanes("o/r", pr["head"]["sha"]), forge_pr.rerun_waits(pr),
                              facts(pr | {"updated_at": "2026-11-22T10:04:00Z"}, [], rows + extra, pr_review.on_head, {"yi-bot"})))
-        if seen[0] != seen[1]:
-            bad.append(f"a yi/state status moved a decision on {rows}: {seen[0]} became {seen[1]}")
+        if any(found != seen[0] for found in seen):
+            bad.append(f"a yi/state or yi/would status moved a decision on {rows}: {seen}")
+    return bad
+
+
+ROWS_RECORDED = ROOT / "scripts/fixtures/queue_rows/recorded.json"
+JOBS_RECORDED = ROOT / "scripts/fixtures/queue_rows/tasks.json"
+
+
+def rows_forge(cases, moved=(), refuse=(), rebased=()):
+    """A forge holding recorded PRs as the rows read and write them: each write kept in `writes` and applied, a PR
+    in `moved` re-read with a new head and one in `rebased` on main, a path holding a `refuse` word answering an error."""
+    world = json.loads(json.dumps({str(c["pr"]["number"]): c for c in cases}))
+    writes, ids = [], {"queue": 1, "autofix": 2}
+    case = lambda n: world[str(n)]
+
+    def answer(method, path, payload=None, timeout=None):
+        rest = path.split("/", 3)[3]
+        if any(word in path for word in refuse):
+            return {"message": "500 database is locked"}
+        if method != "GET":
+            writes.append((method, rest, payload))
+        if rest.startswith("pulls?state=open"):
+            return [c["pr"] for c in world.values()] if rest.endswith("page=1") else []
+        if rest.startswith("pulls/main/"):
+            return next((c["parent"] for c in world.values() if c.get("parent", {}).get("head", {}).get("ref") == urllib.parse.unquote(rest[11:])), None)
+        if rest.startswith("branches/"):
+            return {"name": urllib.parse.unquote(rest[9:])}
+        if rest.startswith("labels?"):
+            return [{"name": name, "id": i} for name, i in ids.items()]
+        if rest.startswith("commits/"):
+            return {"statuses": next((c["statuses"] for c in world.values() if c["pr"]["head"]["sha"] == rest.split("/")[1]), [])}
+        if rest.startswith("statuses/"):
+            for c in world.values():
+                if c["pr"]["head"]["sha"] == rest.split("/")[1]:
+                    c["statuses"] = [s for s in c["statuses"] if s["context"] != payload["context"]] + [
+                        {"context": payload["context"], "status": payload["state"], "description": payload["description"]}]
+            return payload
+        number = int(rest.split("/")[1].split("?")[0])
+        if rest.startswith("pulls/") and method == "GET":
+            pr = json.loads(json.dumps(case(number)["pr"]))
+            pr = {**pr, "base": {"ref": "main"}} if number in rebased else pr
+            return {**pr, "head": {**pr["head"], "sha": "f" * 40}} if number in moved else pr
+        if rest.startswith("pulls/"):
+            pr = case(number)["pr"]
+            pr.update({k: v for k, v in payload.items() if k == "title"})
+            pr["base"] = {"ref": payload["base"]} if "base" in payload else pr["base"]
+            return pr
+        if rest.endswith("/labels"):
+            case(number)["pr"]["labels"].append({"name": next(n for n, i in ids.items() if i in payload["labels"])})
+            return []
+        if "/comments" in rest and method == "POST":
+            case(number)["comments"].append({"id": 10**9 + len(writes), "user": {"login": pr_review.BOT}, "body": payload["body"]})
+            return {"id": 1}
+        if "/comments" in rest:
+            return case(number)["comments"] if rest.endswith("page=1") else []
+        raise AssertionError(f"the rows made a call they may not: {method} {path}")
+    return answer, writes, world
+
+
+@contextlib.contextmanager
+def rows_world(cases, mode, moved=(), refuse=(), report_on="off", rebased=()):
+    answer, writes, world = rows_forge(cases, moved, refuse, rebased)
+    on_head = lambda number, base="main": pr_review.on_head
+    # The recording holds no PR that matches no row, so the stand-in's own label is put first for the last row's act.
+    odd = ("unknown", "person", 0, lambda f: "stand-in:unknown" in f["labels"], STATES[-1][4])
+    with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "apex/yi"), \
+            mock.patch.object(sys.modules[__name__], "STATES", (odd, *STATES)), mock.patch.object(pr_review, "holds_for", on_head), mock.patch.object(forge_pr, "cmd_update", lambda ns: 0), \
+            mock.patch.object(forge_pr, "cmd_rerun", lambda ns: 0), mock.patch.object(forge_pr, "required", lambda: [*LANES, "title"]), \
+            mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot,jack", "STATE_REPORT": report_on, "QUEUE_ROWS": mode}), \
+            contextlib.redirect_stdout(io.StringIO()) as said_out:
+        yield (lambda: report([c["pr"] for c in world.values()], mode=mode)), writes, said_out
+
+
+def rows_cases():
+    """Recorded moments through the rows: shadow writes `yi/would` alone and once, `on` does each owed act once
+    and only that, a moved head or a label already there is left alone, and one PR's error spares the rest."""
+    cases, bad = json.loads(ROWS_RECORDED.read_text()), []
+    owing = {c["pr"]["number"]: c["act"] for c in cases if c.get("act")}
+    kinds = {"enqueue": ("POST", "/labels"), "promote": ("PATCH", "pulls/"), "repoint": ("PATCH", "pulls/"), "say": ("POST", "/comments")}
+    acted = lambda writes: {int(w[1].split("/")[1]) for w in writes if not w[1].startswith("statuses/")}
+    for mode in ("shadow", "on"):
+        with rows_world(cases, mode) as (tick_rows, writes, said_out):
+            tick_rows()
+            first = list(writes)
+            tick_rows()
+        would = {c["pr"]["number"]: s["description"] for c in cases for s in c["statuses"] if s["context"] == WOULD}
+        if mode == "shadow":
+            if [w for w in first if w[0] != "POST" or not w[1].startswith("statuses/") or w[2]["context"] != WOULD]:
+                bad.append(f"shadow wrote more than yi/would: {[w for w in first if not w[1].startswith('statuses/')]}")
+            got = {n: d.split(" (")[0].removeprefix("would ") for n, d in would_of(first).items()}
+            if got != owing:
+                bad.append(f"shadow recorded {got}, not the owed {owing}")
+        else:
+            for n, act in owing.items():
+                method, part = kinds[act]
+                if not [w for w in first if w[0] == method and part in w[1] and f"/{n}" in w[1]]:
+                    bad.append(f"on did not {act} #{n}: {[w for w in first if not w[1].startswith('statuses/')]}")
+            if acted(first) - set(owing) - {c["pr"]["number"] for c in cases if c.get("act") == "repoint"}:
+                bad.append(f"on wrote to a PR that owed nothing: {acted(first) - set(owing)}")
+        done = {(w[0], w[1]) for w in first if not w[1].startswith("statuses/")}
+        again = [w for w in writes[len(first):] if (w[0], w[1]) in done]
+        if again or (mode == "shadow" and writes[len(first):]):
+            bad.append(f"a second {mode} tick wrote again: {writes[len(first):]}")
+    enqueue = next(n for n, act in owing.items() if act == "enqueue")
+    with rows_world(cases, "on", moved={enqueue}) as (tick_rows, writes, said_out):
+        tick_rows()
+    if [w for w in writes if w[1].endswith("/labels")] or "head moved" not in said_out.getvalue():
+        bad.append(f"a head that moved after the judgement was enqueued anyway: {writes}, {said_out.getvalue()!r}")
+    raced = [c if c["pr"]["number"] != enqueue else {**c, "pr": {**c["pr"], "labels": c["pr"]["labels"] + [{"name": LABEL}]}} for c in cases]
+    with rows_world(raced, "on") as (tick_rows, writes, said_out), mock.patch.object(sys.modules[__name__], "owed", lambda *a: "enqueue"):
+        tick_rows()
+    if [w for w in writes if w[1].endswith(f"{enqueue}/labels")]:
+        bad.append(f"a PR already carrying `{LABEL}` from the Mac loop was labelled again: {writes}")
+    with rows_world(cases, "on", refuse={f"issues/{enqueue}/comments"}) as (tick_rows, writes, said_out):
+        tick_rows()
+    if acted(writes) != set(owing) - {enqueue} or f"no state for #{enqueue}" not in said_out.getvalue():
+        bad.append(f"one PR's refused read stopped the others: acted on {acted(writes)}, {said_out.getvalue()!r}")
+    child = next(c for c in cases if c.get("act") == "repoint")
+    with rows_world(cases, "on", rebased={child["pr"]["number"]}) as (tick_rows, writes, said_out):
+        tick_rows()
+    if [w for w in writes if w[0] == "PATCH" and "base" in (w[2] or {})]:
+        bad.append(f"a child the queue's own landing re-pointed in the meantime was re-pointed again: {writes}")
+    parent = child["parent"]
+    open_parent = {"case": "the parent still open", "pr": {**parent, "state": "open", "title": "t", "labels": [], "base": {"ref": "main"},
+                   "head": {**parent["head"], "sha": "3" * 40}, "user": {"login": "jack"}, "updated_at": child["pr"]["updated_at"]},
+                   "comments": [], "statuses": []}
+    with rows_world([child, open_parent], "on") as (tick_rows, writes, said_out):
+        tick_rows()
+    if [w for w in writes if not w[1].startswith("statuses/")]:
+        bad.append(f"a child whose parent is still open was acted on: {writes}")
+    stranger = [{**c, "pr": {**c["pr"], "user": {"login": "someone"}}} for c in cases if c.get("act") == "enqueue"]
+    with rows_world(stranger, "on") as (tick_rows, writes, said_out):
+        tick_rows()
+    if writes:
+        bad.append(f"a clean PR from a login outside MERGERS was acted on: {writes}")
+    return bad
+
+
+def would_of(writes):
+    return {int(next(c for c in json.loads(ROWS_RECORDED.read_text()) if c["pr"]["head"]["sha"] == w[1].split("/")[1])["pr"]["number"]): w[2]["description"]
+            for w in writes if w[1].startswith("statuses/") and w[2]["context"] == WOULD}
+
+
+def consent_cases():
+    """A bot-added `queue` label is consent only while QUEUE_ROWS is on and the row would add it now."""
+    cases, bad = json.loads(ROWS_RECORDED.read_text()), []
+    enqueue = next(c["pr"]["number"] for c in cases if c.get("act") == "enqueue")
+    held = next(c["pr"]["number"] for c in cases if c["state"] == "held")
+    added = lambda who: [{"type": "label", "label": {"name": LABEL}, "user": {"login": who}, "body": "1", "created_at": "t"}]
+    for mode, number, want in (("on", enqueue, "t"), ("shadow", enqueue, None), ("off", enqueue, None), ("on", held, None)):
+        with rows_world(cases, mode) as _:
+            got = enqueue_time(added(pr_review.BOT), lambda: rowed(number))
+        if got != want:
+            bad.append(f"a bot-added label on #{number} under QUEUE_ROWS {mode} read {got}, not {want}")
+    if enqueue_time(added("someone"), lambda: True) is not None:
+        bad.append("a label from a login neither in MERGERS nor the bot's was honoured")
+    return bad
+
+
+def heartbeat_cases():
+    """The recorded dark windows: the queue's tick dark by 11:18Z on 11-04 and by 07:15Z on 11-18 as the fixer's
+    pass would read it, alive again once it ran green; the issue opens once, is not rewritten, and closes."""
+    recs, bad, when = json.loads(JOBS_RECORDED.read_text()), [], pr_review.when
+    seen = lambda job, t: [dict(r, status=r["status"] if when(r["updated_at"]) <= t else "running") for r in recs
+                           if r["workflow_id"] == job and when(r["created_at"]) <= t]
+    for at, job, want in (("2026-11-04T11:00:37Z", "queue.yml", None), ("2026-11-04T11:18:27Z", "queue.yml", "its last three runs failed"),
+                          ("2026-11-04T17:00:36Z", "queue.yml", None), ("2026-11-18T07:15:37Z", "queue.yml", "its last three runs failed"),
+                          ("2026-11-18T12:00:37Z", "queue.yml", None), ("2026-11-04T11:35:39Z", "autofix.yml", "its last three runs failed"),
+                          ("2026-11-04T10:30:00Z", "autofix.yml", None)):
+        if (got := dark(seen(job, when(at)), when(at))) != want:
+            bad.append(f"{job} at {at} read dark={got!r}, not {want!r}")
+    running = [{"created_at": "2026-11-04T09:00:00Z", "status": "running"}]
+    if dark(running, when("2026-11-04T10:30:00Z")) or not dark(running, when("2026-11-04T11:00:00Z")):
+        bad.append("a pass still running inside its 90-minute timeout read dark, or one past it read alive")
+    issues, calls = [], []
+    def answer(method, path, payload=None, timeout=None):
+        calls.append((method, path))
+        rest = path.split("/", 3)[3]
+        if rest.startswith("actions/tasks"):
+            return {"workflow_runs": state["records"] if rest.endswith("page=1") else []}
+        if rest.startswith("issues?state=open"):
+            return [i for i in issues if i["state"] == "open"]
+        if rest.startswith(("labels?", "milestones?")):
+            return [{"name": "area:forge-ci", "id": 5}, {"name": "size:S", "id": 6}] if rest.startswith("labels") else []
+        if method == "POST":
+            issues.append({**payload, "number": 9, "state": "open", "user": {"login": pr_review.BOT}})
+            return issues[-1]
+        if method == "PATCH":
+            issues[-1].update(payload)
+            return issues[-1]
+        raise AssertionError(f"the heartbeat made a call it may not: {method} {path}")
+    failing = [r for r in seen("queue.yml", when("2026-11-04T11:18:27Z"))]
+    green = seen("queue.yml", when("2026-11-04T17:00:36Z"))
+    state = {}
+    with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            contextlib.redirect_stdout(io.StringIO()):
+        for records, at in ((failing, "2026-11-04T11:18:27Z"), (failing, "2026-11-04T11:23:27Z"), (green, "2026-11-04T17:00:36Z")):
+            state["records"] = sorted(records, key=lambda r: r["created_at"], reverse=True)
+            with mock.patch.object(time, "time", lambda: when(at)):
+                heartbeat("queue.yml", "shadow")
+        opened = [c for c in calls if c[0] == "POST"]
+        state["records"] = failing
+        before = len(calls)
+        heartbeat("queue.yml", "off")
+    if len(opened) != 1 or [c for c in calls if c[0] == "PATCH"] != [("PATCH", "repos/o/r/issues/9")] or issues[0]["state"] != "closed":
+        bad.append(f"the heartbeat did not open once, leave it, then close it green: {calls}, {issues}")
+    if len(calls) != before:
+        bad.append("a heartbeat under QUEUE_ROWS off asked the forge")
     return bad
 
 
@@ -1419,7 +1863,7 @@ def offline_cases():
     the guardrails lane installs no fgj."""
     cases = (rule_cases, git_cases, build_cases, record_cases, landing_cases, shadow_cases, forge_cases, queue_verb_cases,
              batch_cases, conflict_cases, green_cases, candidate_gate_cases, state_cases, report_cases, neutral_cases,
-             tick_call_cases, parked_cases)
+             tick_call_cases, parked_cases, rows_cases, consent_cases, heartbeat_cases)
     bad = []
     with mock.patch.object(forge_pr, "fgj_api", side_effect=RuntimeError("fgj")):
         for case in cases:
@@ -1442,6 +1886,16 @@ def selfcheck():
                        ("green batch of four", lambda: green_cases("K")), ("landed batch recovery", lambda: green_cases("FORK"))):
         if not call():
             bad.append(f"{name} passes with its new behavior disabled, so its scenario refutes nothing")
+    for act in ("enqueue", "promote", "repoint", "say"):
+        with mock.patch.object(sys.modules[__name__], "STATES", tuple(row[:4] + (None if row[4] == act else row[4],) for row in STATES)):
+            if not rows_cases():
+                bad.append(f"the `{act}` act disabled and every rows case still passes, so it refutes nothing")
+    for name, patch in (("the owner-only enqueue", mock.patch.object(sys.modules[__name__], "MERGERS", MERGERS | {"someone"})),
+                        ("the switch on bot consent", mock.patch.object(sys.modules[__name__], "rows_mode", lambda ask=False: "on")),
+                        ("the three-failure rule", mock.patch.object(sys.modules[__name__], "finished", lambda records: []))):
+        with patch:
+            if not (rows_cases() + consent_cases() + heartbeat_cases()):
+                bad.append(f"{name} disabled and every case still passes, so it refutes nothing")
     add = lambda who, at: {"type": "label", "label": {"name": LABEL}, "user": {"login": who}, "body": "1", "created_at": at}
     drop = {"type": "label", "label": {"name": LABEL}, "user": {"login": "jack"}, "body": ""}
     if enqueue_time([add("jack", "t1"), add("jack", "t2")]) != "t2":
@@ -1462,12 +1916,13 @@ def selfcheck():
 def main(argv):
     if "--selfcheck" in argv:
         return selfcheck()
-    mode = os.environ.get("MERGE_QUEUE", "off")
+    mode, rows = os.environ.get("MERGE_QUEUE", "off"), rows_mode()
+    heartbeat("autofix.yml", rows)
     if mode not in ("shadow", "on"):
-        print(f"queue: MERGE_QUEUE is {mode}; nothing to do but the state report")
+        print(f"queue: MERGE_QUEUE is {mode}; nothing to do but the state report and the rows")
         # Invariant: an off queue takes no queue action, so the report reads the listing itself.
-        if os.environ.get("STATE_REPORT") == "on":
-            report(listing(forge_pr.open_pulls(), "the open pull requests"))
+        if os.environ.get("STATE_REPORT") == "on" or rows != "off":
+            report(listing(forge_pr.open_pulls(), "the open pull requests"), mode=rows)
         return 0
     return tick(mode)
 

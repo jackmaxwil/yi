@@ -1320,14 +1320,14 @@ RED_TITLE, RED_TEST = "The test lane of {} is red", re.compile(r"^- `([\w:.-]+) 
 NO_TESTS_RAN = 4
 
 
-def red_issue(repo, base_ref):
-    """The bot's one open issue saying this base is red, None for none, False when the forge did not
-    say. Not `q`: a search page of a 2,000-issue repo can miss it, which reads as a green base."""
+def red_issue(repo, base_ref, title=None):
+    """The bot's one open issue saying this base is red, or carrying `title`; None for none, False when the forge
+    did not say. Not `q`: a search page of a 2,000-issue repo can miss it, which reads as a green base."""
     found = forge_pr.fgj_api("GET", f"repos/{repo}/issues?state=open&type=issues&labels=area:forge-ci"
                                     f"&created_by={pr_review.BOT}&limit=50")
     if not isinstance(found, list):
         return False
-    return next((i for i in found if i.get("title") == RED_TITLE.format(base_ref)
+    return next((i for i in found if i.get("title") == (title or RED_TITLE.format(base_ref))
                  and (i.get("user") or {}).get("login") == pr_review.BOT), None)
 
 
@@ -1638,6 +1638,7 @@ def cmd_autofix(args):
         pr = forge_pr.pull(forge_pr.pull_number(args.number))
         print(f"#{pr['number']}: {attempt(repo, pr, ids, asked=True)}")
         return 0
+    pr_queue.heartbeat("queue.yml")
     pulls = forge_pr.open_pulls()
     if not isinstance(pulls, list):
         print(f"autofix: the forge did not list the pull requests: {(pulls or {}).get('message')}")

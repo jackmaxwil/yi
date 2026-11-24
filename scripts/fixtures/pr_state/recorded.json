@@ -586,7 +586,7 @@
 "at": "2026-11-05T02:10:31Z",
 "gap_hours": 25.1,
 "b_state": "D:hold",
-"state": "held",
+"state": "awaiting review",
 "pr": {
 "number": 1837,
 "title": "WIP: Refuse a start whose check is not a string",
