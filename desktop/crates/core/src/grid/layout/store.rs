@@ -53,13 +53,9 @@ pub(crate) mod thing {
 
 /// The place a pane was moved to, as its word; a word that names no place is no move.
 pub(crate) mod place {
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer};
 
     use crate::pane::Place;
-
-    pub fn serialize<S: Serializer>(at: &Option<Place>, to: S) -> Result<S::Ok, S::Error> {
-        to.serialize_str(at.map(Place::slug).unwrap_or_default())
-    }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Option<Place>, D::Error> {
         Ok(Place::named(&String::deserialize(from)?))
@@ -117,11 +113,13 @@ pub(crate) mod kind {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<PaneKind, D::Error> {
-        let slug = String::deserialize(from)?;
-        let found = PaneKind::ALL.iter().find(|kind| kind.slug() == slug);
-        found
-            .copied()
-            .ok_or_else(|| D::Error::custom("a kind of pane this build does not have"))
+        read(&String::deserialize(from)?)
+    }
+
+    /// The kind `slug` names, or the error that refuses the file.
+    pub fn read<E: Error>(slug: &str) -> Result<PaneKind, E> {
+        PaneKind::from_slug(slug)
+            .ok_or_else(|| E::custom("a kind of pane this build does not have"))
     }
 }
 
@@ -140,13 +138,9 @@ pub(crate) mod kinds {
         from: D,
     ) -> Result<Vec<(PaneKind, Area)>, D::Error> {
         let list = Vec::<(String, Area)>::deserialize(from)?;
-        let kind = |slug: &str| PaneKind::ALL.iter().copied().find(|k| k.slug() == slug);
-        let read = list.into_iter().map(|(slug, area)| match kind(&slug) {
-            Some(kind) => Ok((kind, area)),
-            None => Err(serde::de::Error::custom(
-                "a kind of pane this build does not have",
-            )),
-        });
+        let read = list
+            .into_iter()
+            .map(|(slug, area)| super::kind::read::<D::Error>(&slug).map(|kind| (kind, area)));
         read.collect()
     }
 }

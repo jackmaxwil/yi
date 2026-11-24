@@ -782,7 +782,7 @@ fn build_engine(
 ) -> Fallible<PlanEngine> {
     let engine = PlanEngine::new(store.clone(), stub.clone());
     // The width no longer follows the host (#468), so a fixture pins it directly and the
-    // default rule is asserted in plan_ops::width_is_the_family_cap_not_the_host.
+    // default rule is asserted in plan_ops::width_is_unbounded_until_a_ceiling_is_set.
     let Some(raw) = doc.get("width") else {
         return Ok(engine);
     };

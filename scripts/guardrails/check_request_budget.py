@@ -9,6 +9,7 @@ role's first request in a bare workspace (root, leaf root child, reader,
 worker) is ratcheted too: the root's prompt alone let a child prefix grow
 unseen."""
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -33,7 +34,8 @@ def measure():
     out = subprocess.run(
         ["cargo", "test", "-q", "--workspace", "--test", "request_budget",
          "report_the_prefix_size", "--", "--nocapture"],
-        cwd=ROOT, capture_output=True, text=True)
+        cwd=ROOT, capture_output=True, text=True,
+        env={**os.environ, "YI_ADMISSION_SUSPENDED": "1"})
     if out.returncode != 0:
         fail([f"request_budget test failed:\n{out.stdout}{out.stderr}"], "request_budget")
     found = re.search(r"REQUEST_PREFIX system=(\d+) tools=(\d+) total=(\d+)", out.stdout)
