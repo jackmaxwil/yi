@@ -26,4 +26,6 @@ jobs:
         with:
           shared-key: dist-suite
           cache-on-failure: true
-      - run: just dist-suite
+      # Incident: a fat-LTO test link takes most of the job's 5g alone, and two at once were
+      # SIGKILLed every night from 11-18; one build job links one binary at a time.
+      - run: just dist-suite --build-jobs 1

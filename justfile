@@ -261,14 +261,14 @@ postmerge: journeys
 
 # The suite against the profile that ships, unwind forced, which nothing else
 # covers because the shipping profile aborts. Nightly in CI (`dist-suite.yml`).
-dist-suite:
+dist-suite *args:
     #!/usr/bin/env bash
     set -euo pipefail
     export CARGO_PROFILE_DIST_PANIC=unwind
     # Incident: plain threaded `cargo test` failed this lane every night with the same 8-15
     # tests, each racing another through HOME; the suite's runner is one process per test.
     if command -v cargo-nextest >/dev/null; then
-      cargo nextest run --workspace --cargo-profile dist
+      cargo nextest run --workspace --cargo-profile dist {{args}}
     else
       scripts/test_tmp.sh cargo test --workspace --profile dist -- --test-threads=1
     fi
