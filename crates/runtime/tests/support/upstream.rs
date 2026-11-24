@@ -14,17 +14,6 @@ use yi_types::model::Model;
 
 pub(crate) const ROOT_ID: &str = "root-7";
 
-/// Every host this process builds weighs a roomy machine, never the live one.
-pub(crate) fn calm_host() {
-    yi_runtime::admission::fix_sample(yi_runtime::admission::HostSample {
-        cpus: std::num::NonZeroUsize::MIN.saturating_add(7),
-        load1_milli: Some(1_000),
-        mem_free_kib: Some(16 << 20),
-        disk_free_kib: Some(100 << 20),
-        disk_size_kib: Some(500 << 20),
-    });
-}
-
 pub(crate) type Tools = Arc<dyn Fn() -> Vec<Arc<dyn yi_tools::Tool>> + Send + Sync>;
 
 pub(crate) fn key() -> yi_runtime::auth::Resolved {
@@ -111,7 +100,7 @@ pub(crate) fn root_at(
         host.attach(slot, yi_runtime::unattended_fragment().to_owned());
         session.install_extensions(host);
     }
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {

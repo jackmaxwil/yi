@@ -69,7 +69,7 @@ pub(crate) fn walled_session(w: Wired<'_>) -> yi_runtime::AgentSession {
         },
         Arc::clone(&provider),
     );
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
@@ -107,7 +107,7 @@ pub(crate) fn root_wiring(
     provider: Arc<yi_runtime::ProviderStream>,
     root: &std::path::Path,
 ) -> yi_runtime::RuntimeWiring {
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     yi_runtime::RuntimeWiring {
         provider,
         system_prompt: "sys".to_owned(),

@@ -131,10 +131,19 @@ pub(crate) fn sample_from(
 
 static FIXED: std::sync::OnceLock<HostSample> = std::sync::OnceLock::new();
 
+const ROOMY: HostSample = HostSample {
+    cpus: NonZeroUsize::MIN.saturating_add(7),
+    load1_milli: Some(1_000),
+    mem_free_kib: Some(16 * 1024 * 1024),
+    disk_free_kib: Some(100 * 1024 * 1024),
+    disk_size_kib: Some(500 * 1024 * 1024),
+};
+
 /// Incident: 68 tests failed on a loaded Mac and one forge run in eight on its shared VM, each
-/// refused by the live load; a test feeds its process this sample, which no binary path sets.
-pub fn fix_sample(sample: HostSample) {
-    let _first_wins = FIXED.set(sample);
+/// refused by the live load; a test fixes its process to a roomy host, which no binary path does.
+#[doc(hidden)]
+pub fn fix_roomy_sample() {
+    let _first_wins = FIXED.set(ROOMY);
 }
 
 pub fn check(lanes_volume: &Path, live: usize) -> Result<(), Refusal> {
@@ -222,13 +231,7 @@ mod tests {
     use super::*;
 
     fn roomy() -> HostSample {
-        HostSample {
-            cpus: NonZeroUsize::new(8).unwrap_or(NonZeroUsize::MIN),
-            load1_milli: Some(1_000),
-            mem_free_kib: Some(16 * 1024 * 1024),
-            disk_free_kib: Some(100 * 1024 * 1024),
-            disk_size_kib: Some(500 * 1024 * 1024),
-        }
+        ROOMY
     }
 
     #[test]

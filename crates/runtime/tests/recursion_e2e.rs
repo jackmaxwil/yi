@@ -196,7 +196,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let hook_source = Arc::clone(&during_build);
     let receivers: Arc<Mutex<std::collections::HashMap<String, HostRegistry>>> = Arc::default();
     let receiver_sink = Arc::clone(&receivers);
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
         depth,
@@ -1584,7 +1584,7 @@ fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<AskingFamily> {
     let root = Scratch::new("yi-ask-parent")?;
     let store = support::memory_store("ask-parent");
     let kept = store.clone();
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
@@ -2449,7 +2449,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
     let (counted, dir) = (Arc::clone(&builds), root.to_path_buf());
     let store = support::memory_store("kernel-death");
     let (events, _keep) = tokio::sync::broadcast::channel(256);
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
@@ -3863,7 +3863,7 @@ fn wired_scripted(
         session.events_sender(),
     )
     .with_sandbox(sandbox);
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {

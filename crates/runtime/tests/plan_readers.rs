@@ -50,7 +50,7 @@ fn rig(answer: &'static str) -> Result<Rig, Box<dyn Error>> {
     let built: Built = Arc::default();
     let sink = Arc::clone(&built);
     let (cwd, home) = (ws.clone(), root.join("home"));
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
@@ -354,7 +354,7 @@ fn wired(root: &Scratch) -> Result<(AgentSession, Arc<ProviderStream>), Box<dyn 
     );
     session.attach_store(crate::support::memory_store("plan-endings"))?;
     let home = std::env::var_os("HOME").ok_or("HOME is unset")?;
-    crate::upstream::calm_host();
+    yi_runtime::admission::fix_roomy_sample();
     yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
