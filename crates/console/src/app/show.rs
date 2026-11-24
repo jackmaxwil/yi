@@ -50,11 +50,11 @@ impl App {
             .flatten();
         match (value.get("id"), show) {
             (Some(id), Some(params)) => self.show(outbound, id, &params),
-            (id, _) => {
+            (_, _) => {
                 self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
-                // Incident: a request the console did not know went unanswered, and a worker
-                // that waits on its answer waited until the turn was stopped.
-                if let Some(id) = id {
+                if method == yi_types::acp::SHOW_METHOD
+                    && let Some(id) = value.get("id")
+                {
                     let error = json!({"code": -32601, "message": "Method not found"});
                     let _ = outbound.send(&json!({"jsonrpc": "2.0", "id": id, "error": error}));
                 }

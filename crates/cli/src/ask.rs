@@ -50,7 +50,8 @@ pub(super) fn run(args: &Args) -> i32 {
         // Every spelling of a headless ask (`ask`, bare prompt words) lands here: no tty, no asker.
         match build_session(
             args,
-            (asker, None),
+            asker,
+            None,
             Some(&target.id),
             false,
             [!interactive, true],
