@@ -261,21 +261,22 @@ fn the_schema_dir_is_git_ignored_after_a_publish() -> TestResult {
     Ok(())
 }
 
+/// Dies with a fixed count bounding fan-out when no ceiling is set: the default must be no
+/// bound, and either set ceiling must bound it, the smaller winning.
 #[test]
-fn width_is_the_family_cap_not_the_host() -> TestResult {
-    // This replaces width_clamps_low_and_high, which pinned width(1) = 1 and width(2) = 1.
-    // That rule made fan-out unavailable in a 2-core container, which is every machine the
-    // evals and CI run on, and no lever could raise it (#468). The width now measures what
-    // actually bounds delegated children, and never the host's cores.
-    let levers = yi_runtime::levers::get();
-    assert_eq!(
-        dispatch_width().get(),
-        levers.family_max_children.min(levers.plan_width_max)
-    );
-    assert!(
-        dispatch_width().get() > 1,
-        "a small host must still admit fan-out"
-    );
+fn width_is_unbounded_until_a_ceiling_is_set() -> TestResult {
+    use yi_runtime::levers::Levers;
+    assert_eq!(dispatch_width(&Levers::DEFAULT), None);
+    let plan = Levers {
+        plan_width_max: 3,
+        ..Levers::DEFAULT
+    };
+    assert_eq!(dispatch_width(&plan), NonZeroUsize::new(3));
+    let both = Levers {
+        family_max_children: 2,
+        ..plan
+    };
+    assert_eq!(dispatch_width(&both), NonZeroUsize::new(2));
     Ok(())
 }
 

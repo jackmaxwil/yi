@@ -375,9 +375,42 @@ pub struct AcpYiMeta {
     /// What the person typed in the entry a `before` fork left out, to ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefill: Option<String>,
+    /// The child that raised a `session/request_permission`; absent for the root session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asker: Option<AcpAsker>,
     /// Present when the session has a rewriter model: the length its composer control starts at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rewriter: Option<crate::config::RewriteLength>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAsker {
+    pub child_id: String,
+}
+
+/// `_yi/pending` result: the permission requests still waiting for an answer, each in the
+/// shape it was sent in and answerable by its original `requestId`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AcpPendingResult {
+    pub requests: Vec<AcpPendingRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPendingRequest {
+    pub request_id: String,
+    pub session_id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub options: Vec<AcpPermissionOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<AcpPermissionSubject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<u64>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<AcpMeta>,
 }
 
 /// `_yi/fork` params: a new session branched from `entryId`, leaving it out (`before`) or
@@ -462,6 +495,8 @@ pub struct AcpPermissionParams {
     pub options: Vec<AcpPermissionOption>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<AcpPermissionSubject>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<AcpMeta>,
 }
 
 /// What an ask is about; a diff under approval rides as the tool call's content.

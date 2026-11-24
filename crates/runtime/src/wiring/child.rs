@@ -15,7 +15,7 @@ pub(crate) fn child_factory(
             .cwd
             .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
         let below = RuntimeWiring {
-            broker: child_broker(&wiring, &build.wall, &child_cwd),
+            broker: child_broker(&wiring, &build.wall, &child_cwd, &build.link.child_name),
             depth: wiring.depth.saturating_add(1),
             rlm_dir: build.session_dir.to_path_buf(),
             family_dir: Some(wiring.family_dir()),
@@ -78,6 +78,11 @@ fn child_broker(
     wiring: &RuntimeWiring,
     wall: &crate::wall::Wall,
     cwd: &Path,
+    name: &str,
 ) -> Option<Arc<crate::permission::PermissionBroker>> {
-    (wiring.broker.as_ref()).map(|broker| Arc::new(broker.for_child(wall, cwd)))
+    (wiring.broker.as_ref()).map(|broker| {
+        let child = broker.for_child(wall, cwd);
+        child.set_agent(name.to_owned());
+        Arc::new(child)
+    })
 }

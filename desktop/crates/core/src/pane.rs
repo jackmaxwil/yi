@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 macro_rules! panes {
-    ($($name:ident $slug:literal $title:literal),+ $(,)?) => {
+    ($($name:ident $slug:literal $title:literal $wide:literal),+ $(,)?) => {
         /// A built-in pane kind. A pane's module, scenes and fixtures are named by its slug.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub enum PaneKind { $($name),+ }
@@ -15,14 +15,14 @@ macro_rules! panes {
                 match self { $(PaneKind::$name => $slug),+ }
             }
 
+            pub fn from_slug(slug: &str) -> Option<PaneKind> {
+                match slug { $($slug => Some(PaneKind::$name),)+ _ => None }
+            }
+
             /// Whether the kind is about this Mac or the app, not a session: a pane of it
             /// the person opens shows in every session of its window.
             pub const fn wide(self) -> bool {
-                use PaneKind::{Assets, Containers, Daemons, LanguageServers, Plugins, Settings, Themes, Vms};
-                matches!(
-                    self,
-                    Assets | Containers | Daemons | LanguageServers | Plugins | Settings | Themes | Vms
-                )
+                match self { $(PaneKind::$name => $wide),+ }
             }
 
             /// Whether a window opens a pane of the kind by itself, as a quiet tab, the first
@@ -104,7 +104,7 @@ impl Opens {
     pub fn read(text: &str) -> BTreeMap<PaneKind, Opens> {
         let word = |line: &str| {
             let (pane, word) = line.trim().split_once(' ')?;
-            let kind = PaneKind::ALL.iter().find(|kind| kind.slug() == pane)?;
+            let kind = PaneKind::from_slug(pane)?;
             let place = Place::ALL
                 .into_iter()
                 .find(|place| place.slug() == word.trim());
@@ -113,7 +113,7 @@ impl Opens {
                 None if word.trim() == Self::NEVER => Opens::Never,
                 None => return None,
             };
-            (*kind != PaneKind::Chat).then_some((*kind, word))
+            (kind != PaneKind::Chat).then_some((kind, word))
         };
         text.lines().filter_map(word).collect()
     }
@@ -132,13 +132,13 @@ impl Opens {
 }
 
 panes! {
-    Chat "chat" "Chat", Files "files" "Files", Changes "changes" "Changes",
-    Code "code" "Code", Terminal "terminal" "Terminal", Web "web" "Web app",
-    Remote "remote" "Remote desktop", Report "report" "Report", Design "design" "Design",
-    Agents "agents" "Agents", Trace "trace" "Trace", Logs "logs" "Logs",
-    Findings "findings" "Findings", Assets "assets" "Assets",
-    Containers "containers" "Containers", Vms "vms" "VMs", Daemons "daemons" "Daemons",
-    Debugger "debugger" "Debugger", LanguageServers "lsp" "Language servers",
-    Plugins "plugins" "Plugins", Settings "settings" "Settings", Themes "themes" "Themes",
-    PluginKit "plugin-kit" "Plugin kit", Script "script" "Script", IPython "ipython" "IPython",
+    Chat "chat" "Chat" false, Files "files" "Files" false, Changes "changes" "Changes" false,
+    Code "code" "Code" false, Terminal "terminal" "Terminal" false, Web "web" "Web app" false,
+    Remote "remote" "Remote desktop" false, Report "report" "Report" false, Design "design" "Design" false,
+    Agents "agents" "Agents" false, Trace "trace" "Trace" false, Logs "logs" "Logs" false,
+    Findings "findings" "Findings" false, Assets "assets" "Assets" true,
+    Containers "containers" "Containers" true, Vms "vms" "VMs" true, Daemons "daemons" "Daemons" true,
+    Debugger "debugger" "Debugger" false, LanguageServers "lsp" "Language servers" true,
+    Plugins "plugins" "Plugins" true, Settings "settings" "Settings" true, Themes "themes" "Themes" true,
+    PluginKit "plugin-kit" "Plugin kit" false, Script "script" "Script" false, IPython "ipython" "IPython" false,
 }
