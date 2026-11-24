@@ -1,4 +1,6 @@
 ---
+version: 0.1108.0
+decisions: D614
 issue: Refs #2309
 growth: +929 the tool and what it tells the model (runtime 241), the wait for a client's answer and the daemon's relay (acp 249), the console's answer with its address reader and its idle rule (console 332), the wire shapes (types 48) and the session builder's extra argument (cli 14), about four lines in ten being the unit tests beside them; weighed for deletion: the permission bridge's pending map and line sink carry the request instead of a second channel, the daemon's parking is skipped rather than extended, the console reuses its editor panel and its bottom-row notice instead of a new surface, the session keeps one slot for what a front end hands it where it had one for the rewriter, and an address reader shared with Yi Desktop through yi-types was rejected because yi-types holds shapes only
 cut: none crates/acp/src/daemon.rs
