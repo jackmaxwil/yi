@@ -386,6 +386,7 @@ fn family_root(
     let provider = Arc::new(ProviderStream::new(None));
     let mut session = new_session(&provider);
     let gate = broker(&session, project, sandbox, asker);
+    yi_runtime::admission::fix_roomy_sample();
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {

@@ -197,6 +197,7 @@ fn family_build(
     let unplugged = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let plug = Arc::clone(&unplugged);
     let (events, _keep) = tokio::sync::broadcast::channel(256);
+    yi_runtime::admission::fix_roomy_sample();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
         depth,
