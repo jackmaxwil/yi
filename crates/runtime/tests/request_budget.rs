@@ -155,6 +155,7 @@ fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
         },
         Arc::clone(&provider),
     );
+    yi_runtime::admission::fix_roomy_sample();
     yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {

@@ -100,6 +100,7 @@ pub(crate) fn root_at(
         host.attach(slot, yi_runtime::unattended_fragment().to_owned());
         session.install_extensions(host);
     }
+    yi_runtime::admission::fix_roomy_sample();
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
