@@ -102,6 +102,7 @@ pub(crate) fn family_with(
     let prompts: Arc<Mutex<Vec<String>>> = Arc::default();
     let prompts_sink = Arc::clone(&prompts);
     let (cwd, home) = (workspace.clone(), root.join("home"));
+    crate::upstream::calm_host();
     let host = SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,

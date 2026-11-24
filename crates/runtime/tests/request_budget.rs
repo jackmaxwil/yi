@@ -155,6 +155,7 @@ fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
         },
         Arc::clone(&provider),
     );
+    crate::upstream::calm_host();
     yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {

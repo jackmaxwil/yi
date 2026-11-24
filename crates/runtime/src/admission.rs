@@ -129,8 +129,17 @@ pub(crate) fn sample_from(
     }
 }
 
+static FIXED: std::sync::OnceLock<HostSample> = std::sync::OnceLock::new();
+
+/// Incident: 68 tests failed on a loaded Mac and one forge run in eight on its shared VM, each
+/// refused by the live load; a test feeds its process this sample, which no binary path sets.
+pub fn fix_sample(sample: HostSample) {
+    let _first_wins = FIXED.set(sample);
+}
+
 pub fn check(lanes_volume: &Path, live: usize) -> Result<(), Refusal> {
-    match admit(&sample(lanes_volume), live) {
+    let host = FIXED.get().copied().unwrap_or_else(|| sample(lanes_volume));
+    match admit(&host, live) {
         Admission::Admit => Ok(()),
         Admission::Refuse(refusal) => Err(refusal),
     }
