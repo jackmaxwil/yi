@@ -1288,6 +1288,8 @@ def rerun_cases(off=""):
         def api(method, path, payload=None, timeout=None):
             if timeout is None:
                 raise RuntimeError(f"{method} {path} read with no timeout")
+            if len(acts) + clock[0] > 10 ** 4:
+                raise RuntimeError("the rerun kept reading the PR for hours")
             if read == "prehang" and not acts or read == "hang" and acts:
                 clock[0] += timeout
                 raise subprocess.TimeoutExpired("fgj", timeout)
