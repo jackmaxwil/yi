@@ -511,10 +511,9 @@ def cmd_edit(args):
     return 0
 
 
-def comment(number, text, timeout=None, where=None):
-    """Post `text` on the pull request in `where` (this checkout's repository by default); the forge's answer,
-    which carries an `id` once it took it."""
-    return fgj_api("POST", f"repos/{where or repo()}/issues/{number}/comments", {"body": text}, timeout=timeout)
+def comment(number, text, timeout=None):
+    """Post `text` on the pull request; the forge's answer, which carries an `id` once it took it."""
+    return fgj_api("POST", f"repos/{repo()}/issues/{number}/comments", {"body": text}, timeout=timeout)
 
 
 def undraft(number, title, timeout=None):

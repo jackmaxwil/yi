@@ -1685,10 +1685,10 @@ def shared_wait(repo, ids, pr, notes, lanes, seen, post, labels):
     return "rerun" if rerun_head(pr, post) else "handoff"
 
 
-def poster(repo, number):
+def poster(number):
     """A ledger row writer for one PR: True once the forge took the comment, which a row's act waits on."""
     return lambda body: (lambda said: isinstance(said, dict) and bool(said.get("id")))(
-        forge_pr.comment(number, body, pr_queue.FORGE_SECS, repo))
+        forge_pr.comment(number, body, pr_queue.FORGE_SECS))
 
 
 def rerun_head(pr, post, kind="gate"):
@@ -1809,7 +1809,7 @@ def attempt(repo, pr, ids, asked=False, seen=None, day=0.0):
         return "waiting"
     lanes = [] if conflicted or blocked or stale else red_lanes(repo, pr["head"]["sha"])
 
-    post = poster(repo, number)
+    post = poster(number)
     # A person's `autofix` label and `just pr autofix N` ask for a try past an outage or a red base, as past the quiet wait.
     if lanes and not asked and not labels & {"autofix", "autofix:failed"}:
         try:
@@ -1973,7 +1973,7 @@ def tidy(repo, pr):
         return False
     gone = sorted(set(CITED.findall(pr["body"])) - set(CITED.findall(body)), key=int)
     forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{pr['number']}", {"body": body})
-    post = poster(repo, pr["number"])
+    post = poster(pr["number"])
     # Invariant: a rerun's row goes first and is the head's rerun every rerunning path counts; refused, nothing reruns.
     if not post(f"<!-- yi-autofix -->\n<!-- yi-autofix-meta pr={pr['number']} kind=title from={pr['head']['sha'][:12]} verdict=rerun -->\n"
                 f"Autofix took the citations of closed issues {', '.join('#' + n for n in gone)} out of the body; the checks rerun."):
@@ -4275,7 +4275,7 @@ def checks():
             if reached != [11]:
                 errs.append(f"a pass whose first tidy timed out reached {reached}, not the next PR")
             forge_pr.fgj_api = lambda method, path, payload=None, timeout=None: {"id": 1} if timeout else {"message": "no timeout"}
-            if not poster("o/r", 7)("row"):
+            if not poster(7)("row"):
                 errs.append("a ledger row was posted with no timeout, so a slow forge holds the pass")
             # A PR the new reads could not finish costs its own pass, never the quota; a model call the day cap met
             # raises one sign and holds the day's later fixes.
