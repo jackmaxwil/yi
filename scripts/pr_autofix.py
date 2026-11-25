@@ -810,11 +810,34 @@ def lane_back(records, head, lane, after):
                 and r.get("status") == "success" and r.get("head_sha") != head and pr_review.when(r["created_at"]) > after), default=None)
 
 
-def shared_red(records, heads, head, lane, base=None, off=""):
+# Invariant: a red is shared by the first verdict whose named conditions all hold over its facts; the selfcheck
+# drops one name at a time from these tables and sees a recorded case fail for that name alone.
+SHARED = (("swept", ("sweep",)), ("base", ("base",)), ("burst", ("burst", "trunk")))
+CONDITIONS = {
+    "sweep": lambda f: len(f["swept"]) >= BURST_HEADS and len({r.get("workflow_id") for r in f["swept"]}) > 1,
+    # Invariant: the gate path reruns a red test lane's failing tests at the base and waits only on those it fails too;
+    # a lane without test names has the base's red alone, a wait one rerun bounds once the base is green.
+    "base": lambda f: f["base"] == "failure" and f["lane"] != "test",
+    "burst": lambda f: len({r["head_sha"] for r in f["burst"]}) >= BURST_HEADS,
+    # Incident: 136 of 359 ordinary-day reds read as bursts, and 11 PR-owned reds on 11-06 as the candidate's; a burst
+    # needs the lane red on main too, which none of those PRs' own reds had (bot-audit G finding 1, I finding 3).
+    "trunk": lambda f: any(r.get("head_branch") == "main" and r.get("name") in (f["job"], f"warm ({f['lane']})") and f["near"](r, BURST_SECS)
+                           for r in f["fails"]),
+    "passed": lambda f: lane_back(f["records"], f["head"], f["lane"], f["end"]) is not None,
+}
+# Incident: #1827's guardrails read swept beside two review verdicts, and #1979's every job failed at its own
+# creation; a review job and the head's other workflows die with its code, so neither marks the runners.
+SWEEP_SKIPS = {
+    "review": lambda r, f: r.get("workflow_id") == "review.yml",
+    "own": lambda r, f: r.get("head_sha") == f["head"] and r.get("workflow_id") != f["mine"].get("workflow_id"),
+}
+
+
+def shared_red(records, heads, head, lane, base=None):
     """Whether `head`'s red `lane` is shared, from job records and the open heads (sha to PR) alone, with no log: None
     for the head's own, {} when no record shows its red, else how (base, burst or swept), the PRs red with it, the
     jobs swept with it, and whether the lane has run green elsewhere since it ended. `base` is that lane's state at
-    the base's tip; `off` disables one condition."""
+    the base's tip."""
     when, job = pr_review.when, f"gate ({lane})"
     fails = [r for r in records if r.get("status") == "failure"]
     mine = max((r for r in fails if r.get("name") == job and r.get("head_sha") == head), key=lambda r: r["updated_at"], default=None)
@@ -822,23 +845,16 @@ def shared_red(records, heads, head, lane, base=None, off=""):
         return {}
     at = when(mine["updated_at"])
     near = lambda r, secs: abs(when(r["updated_at"]) - at) <= secs
-    burst = [r for r in fails if r.get("name") == job and r.get("head_sha") in {*heads, head} and near(r, BURST_SECS)]
-    # Incident: 136 of 359 ordinary-day reds read as bursts, and 11 PR-owned reds on 11-06 as the candidate's; a burst
-    # needs the lane red on main too, which none of those PRs' own reds had (bot-audit G finding 1, I finding 3).
-    trunk = off == "trunk" or any(r.get("head_branch") == "main" and r.get("name") in (job, f"warm ({lane})") and near(r, BURST_SECS) for r in fails)
-    # Incident: #1827's guardrails read swept beside two review verdicts, and #1979's every job failed at its own
-    # creation; a review job and the head's other workflows die with its code, so neither marks the runners.
-    swept = [r for r in fails if near(r, SWEEP_SECS) and (r.get("workflow_id") != "review.yml" or off == "review")
-             and (r.get("head_sha") != head or r.get("workflow_id") == mine.get("workflow_id") or off == "own")]
+    f = {"records": records, "fails": fails, "head": head, "lane": lane, "job": job, "base": base, "mine": mine, "near": near,
+         "burst": [r for r in fails if r.get("name") == job and r.get("head_sha") in {*heads, head} and near(r, BURST_SECS)]}
+    f["swept"] = [r for r in fails if near(r, SWEEP_SECS) and not any(skip(r, f) for skip in SWEEP_SKIPS.values())]
     # Invariant: a sweep goes first, since the runners dying under the base's own run is no red a base fix ends.
-    how = ("swept" if len(swept) >= BURST_HEADS and len({r.get("workflow_id") for r in swept}) > 1 and off != "swept"
-           else "base" if base == "failure" and off != "base"
-           else "burst" if len({r["head_sha"] for r in burst}) >= BURST_HEADS and trunk and off != "burst" else None)
+    how = next((name for name, needs in SHARED if all(CONDITIONS[c](f) for c in needs)), None)
     if how is None:
         return None
-    end = max(when(r["updated_at"]) for r in burst) if how == "burst" else at
-    return {"how": how, "with": sorted({heads[r["head_sha"]] for r in burst if r["head_sha"] != head}) if how == "burst" else [],
-            "jobs": len(swept), "passed": off == "passed" or lane_back(records, head, lane, end) is not None}
+    f["end"] = max(when(r["updated_at"]) for r in f["burst"]) if how == "burst" else at
+    return {"how": how, "with": sorted({heads[r["head_sha"]] for r in f["burst"] if r["head_sha"] != head}) if how == "burst" else [],
+            "jobs": len(f["swept"]), "passed": CONDITIONS["passed"](f)}
 
 
 # The test lane as `just lane test` runs it, without stopping at the first failure, so one run
@@ -1393,7 +1409,7 @@ def render(n, fields, verdict, reason="", status="", meter=None):
                   "bot changes from the fixer needs them.", "", reason.strip()]
     elif verdict == "base-red":
         lines += ["**Autofix is waiting on the base**, not stopped: this gate cannot go green until its base does. No label is "
-                  "set and no retry is spent; once the base is green the fixer merges it here.", "", reason.strip()]
+                  "set and no retry is spent; once the base is green the gate reruns here once, and a lane still red is fixed like any other.", "", reason.strip()]
     elif verdict == "handoff":
         now = {"bots": "", "rerun": f"; `just pr rerun {n}` reruns it"}.get(fields.get("stop"), "; `just pr autofix N` tries now")
         lines += ["**Autofix handed this to a person**, not failed; " + fields["retry"] + now + ".", "", "```", reason.strip(), "```"]
@@ -1628,7 +1644,11 @@ def shared_wait(repo, ids, pr, notes, lanes, seen, post, labels):
     # A lane this head's comment called shared stays so once its burst's heads have moved on.
     told = dict(item.partition(":")[::2] for row in said for item in (row.get("lanes") or "").split(",") if item)
     found = {lane: shared_red(seen["records"], seen["heads"], sha, lane, seen["bases"][base_ref, lane]) for lane in lanes}
-    found = {lane: {} if got is None and lane in told else got for lane, got in found.items()}
+    # Invariant: a lane a base-red row named reads shared once that base is green, so the head reruns once; red again,
+    # it takes today's path, so a red base holds a head's own red for the base's red time and one rerun at most.
+    based = {item.split("#")[0] for row in head_rows(notes, sha, "base-red") for item in (row.get("lanes") or "").split(",") if item}
+    found = {lane: {} if got is None and lane in told else {"how": "based", "passed": True}
+             if got is None and lane in based and seen["bases"][base_ref, lane] == "success" else got for lane, got in found.items()}
     # Invariant: one red lane of the head's own makes every lane its own, so a shared lane never hides it.
     if any(got is None for got in found.values()) or not said and not all(found.values()):
         return None
@@ -1636,10 +1656,12 @@ def shared_wait(repo, ids, pr, notes, lanes, seen, post, labels):
     if red:
         return base_wait(repo, ids, pr, notes, red, seen, post)
     since = min(pr_review.when(row.get("at")) for row in said) if said else 0.0
-    why = "; ".join(f"`gate ({lane})` went red here, on " + ", ".join(f"#{n}" for n in got["with"]) + " and on main "
-                    f"within {BURST_SECS // 60} minutes of this head's red" if got["how"] == "burst" else f"`gate ({lane})` "
-                    f"failed within {SWEEP_SECS} s of {got['jobs'] - 1} other job(s) across workflows, the mark the runners dying "
-                    "under them leaves" for lane, got in found.items() if got) or "as this head said before"
+    says = {"burst": lambda got: "went red here, on " + ", ".join(f"#{n}" for n in got["with"]) + f" and on main within {BURST_SECS // 60} "
+                                 "minutes of this head's red",
+            "swept": lambda got: f"failed within {SWEEP_SECS} s of {got['jobs'] - 1} other job(s) across workflows, the mark the "
+                                 "runners dying under them leaves",
+            "based": lambda got: f"was red at the tip of {base_ref} too, which is green again"}
+    why = "; ".join(f"`gate ({lane})` " + says[got["how"]](got) for lane, got in found.items() if got) or "as this head said before"
     back = all(got.get("passed") or said and lane_back(seen["records"], sha, lane, since) is not None for lane, got in found.items())
     # Invariant: a person's draft is theirs and a PR the queue will build is the queue's, so either gets the comment alone;
     # any other queued PR is not, since the queue skips a red gate and keeps the label, and nothing else reruns it.
@@ -2912,8 +2934,8 @@ def recorded(name, at, extra=()):
     return [dict(r, status="running") if r["updated_at"] > at else r for r in seen], heads
 
 
-def outage_cases(off=""):
-    """shared_red over recorded job records, each case the verdict a pass must reach; `off` disables one condition."""
+def outage_cases():
+    """shared_red over recorded job records, each case the verdict a pass must reach."""
     bad, when, slices = [], pr_review.when, json.loads((OUTAGE / "tasks.json").read_text())["slices"]
     moved = lambda r, secs, **kw: dict(r, created_at=ISO(when(r["created_at"]) + secs), updated_at=ISO(when(r["updated_at"]) + secs), **kw)
     lone = {r["id"]: r for r in slices["own-11-14"]}
@@ -2947,7 +2969,11 @@ def outage_cases(off=""):
              ("a red on two PRs in half an hour", "own-11-14", at11, (), "0c78ce91", "test", None, None),
              ("a lone red over a green base", "own-11-14", at11, (), "0c78ce91", "test", "success", None),
              ("a lone red over a base the forge did not say", "own-11-14", at11, (), "0c78ce91", "test", forge_pr.UNREAD, None),
-             ("a lone red over a red base", "own-11-14", at11, (), "0c78ce91", "test", "failure", ("base", [], False)),
+             ("a lone test red over a red base, which the gate path compares test by test", "own-11-14", at11, (), "0c78ce91", "test", "failure", None),
+             ("#2064's test lane over main's red one, its next commit its own", "own-base-11-07", "2026-11-07T13:28:30Z", (), "9542349d", "test", "failure", None),
+             ("#2123's guardrails over main's red guardrails", "base-11-09", "2026-11-09T05:39:39Z", (), "814cd33f", "guardrails", "failure", ("base", [], False)),
+             ("#2123's guardrails over a main the forge did not say", "base-11-09", "2026-11-09T05:39:39Z", (), "814cd33f", "guardrails", forge_pr.UNREAD, None),
+             ("the rollback's sweep over main's red lint lane", "kill-11-24", at24, (), "bfe679dd", "lint", "failure", ("swept", [], False)),
              ("a third PR red half an hour apart, main red", "own-11-14", at11, third(BURST_SECS) + trunk(0), "0c78ce91", "test", None, ("burst", [2205, 9999], False)),
              ("a third PR red a second past half an hour", "own-11-14", at11, third(BURST_SECS + 1) + trunk(0), "0c78ce91", "test", None, None),
              ("three PRs red, main red half an hour before", "own-11-14", at11, third(0) + trunk(BURST_SECS), "0c78ce91", "test", None, ("burst", [2205, 9999], False)),
@@ -2957,16 +2983,16 @@ def outage_cases(off=""):
     for name, piece, at, extra, prefix, lane, base, want in cases:
         records, heads = recorded(piece, at, extra)
         head = next(sha for sha in heads if sha.startswith(prefix))
-        got = shared_red(records, heads, head, lane, base, off)
+        got = shared_red(records, heads, head, lane, base)
         got = got and (got["how"], got["with"], got["passed"])
         if got != want:
             bad.append(f"{name}: {piece} read {got}, not {want}")
     one, heads = recorded("kill-11-24", at24)
-    if shared_red([r for r in one if r["workflow_id"] == "pr.yml"], heads, next(s for s in heads if s.startswith("bfe679dd")), "lint", None, off):
+    if shared_red([r for r in one if r["workflow_id"] == "pr.yml"], heads, next(s for s in heads if s.startswith("bfe679dd")), "lint", None):
         bad.append("one PR's three lanes failed in one second, with no other workflow beside them, read as a sweep")
     records, heads = recorded("burst-11-06", "2026-11-06T19:00:00Z")
     back = lane_back(records, next(s for s in heads if s.startswith("4a745fbf")), "guardrails", when("2026-11-06T18:06:50Z"))
-    if back != when("2026-11-06T18:52:24Z") and off != "passed":
+    if back != when("2026-11-06T18:52:24Z"):
         bad.append(f"the guardrails lane next ran green elsewhere at {back and ISO(back)}, not #1974's 18:52:24 run")
     records, heads = recorded("kill-11-24", "2026-11-24T13:05:00Z")
     if lane_back(records, next(s for s in heads if s.startswith("bfe679dd")), "lint", when("2026-11-24T12:54:36Z")) is not None:
@@ -2975,6 +3001,20 @@ def outage_cases(off=""):
     if lane_back(records, "27bbb568", "guardrails", when("2026-11-06T22:41:33Z")) is not None:
         bad.append("main's skipped guardrails run counted as that lane running green")
     return bad
+
+
+def refuted_conditions():
+    """The shared-red conditions whose removal no recorded case notices: a verdict's condition made never true, the
+    main-red and passed conditions made always true, a sweep's skip dropped."""
+    left = []
+    for name, value in (("sweep", False), ("base", False), ("burst", False), ("trunk", True), ("passed", True)):
+        with mock.patch.dict(CONDITIONS, {name: lambda f, value=value: value}):
+            left += [] if outage_cases() else [name]
+    for name in list(SWEEP_SKIPS):
+        with mock.patch.dict(SWEEP_SKIPS):
+            del SWEEP_SKIPS[name]
+            left += [] if outage_cases() else [name]
+    return left
 
 
 def outage_flow_selfcheck():
@@ -3007,8 +3047,8 @@ def outage_flow_selfcheck():
                 raise subprocess.TimeoutExpired("fgj", timeout)
             if m.group(1) != "c0":
                 return {"statuses": forge["statuses"].get(m.group(1), [])}
-            said = "Failing after 9m" if forge["base"] == "failure" else "Successful in 9m"
-            return {"statuses": [{"context": f"postmerge / warm ({lane}) (push)", "status": forge["base"], "description": said} for lane in LANES]}
+            state, said = {"failure": ("failure", "Failing after 9m"), "cancelled": ("failure", "Has been cancelled")}.get(forge["base"], ("success", "Successful in 9m"))
+            return {"statuses": [{"context": f"postmerge / warm ({lane}) (push)", "status": state, "description": said} for lane in LANES]}
         if method == "GET" and "/files?" in path:
             if forge["files"] is None:
                 raise subprocess.TimeoutExpired("fgj", pr_queue.FORGE_SECS)
@@ -3153,23 +3193,47 @@ def outage_flow_selfcheck():
         if said != "handoff" or "stop=rerun" not in posted[-1] or again != "waiting":
             errs.append(f"a flake's rerun the forge refused read {said}, then {again}: {posted[-1][-200:]!r}")
         notes[:], quiet["for"] = [], 0
-        # A red at main's tip: one unsized issue per lane, found by the alarm label, and one comment per lane and issue.
-        forge["base"], module.red_lanes = "failure", lambda repo, sha: ["guardrails", "test"]
-        said = pass_attempt(pr2, own)
-        titles = sorted(i["title"] for i in issues)
-        if said != "base-red" or titles != [RED_TITLE.format(lane, "main") for lane in ("guardrails", "test")] or "verdict=base-red" not in posted[-1]:
-            errs.append(f"lanes red at main's tip read {said} with issues {titles}")
+        # Main's red test lane is left to the gate path, which reruns the head's failing tests at main and waits only on
+        # those main fails too; #2064's next commit after its red over main's was its own.
+        forge["base"], quiet["for"], count = "failure", 0, len(posted)
+        ownbase = recorded("own-base-11-07", "2026-11-07T13:28:30Z")
+        pr6 = dict(pr, number=2064, head=dict(pr["head"], sha=next(s for s in ownbase[1] if s.startswith("9542349d"))))
+        for one, found, lanes in ((pr2, own, ["guardrails", "test"]), (pr6, ownbase, ["test"])):
+            module.red_lanes = lambda repo, sha, lanes=lanes: lanes
+            if pass_attempt(one, found) != "wait" or issues or len(posted) != count:
+                errs.append(f"#{one['number']}'s test lane red over main's waited on main, past the gate's comparison of its tests: {posted[count:]}")
+        # A lane with no test names waits on main's red: one unsized issue per lane, found by the alarm label, and one
+        # comment per lane and issue. #2123 on 11-09, guardrails red beside main's; its next commit was its own.
+        based = recorded("base-11-09", "2026-11-09T05:39:39Z")
+        pr5 = dict(pr, number=2123, head=dict(pr["head"], sha=next(s for s in based[1] if s.startswith("814cd33f"))))
+        module.red_lanes, notes[:] = (lambda repo, sha: ["guardrails"]), []
+        said, titles = pass_attempt(pr5, based), sorted(i["title"] for i in issues)
+        if said != "base-red" or titles != [RED_TITLE.format("guardrails", "main")] or "verdict=base-red" not in posted[-1]:
+            errs.append(f"guardrails red at main's tip read {said} with issues {titles}")
         if any(i.get("milestone") or i["labels"] != [9] for i in issues):
             errs.append(f"a red-main issue carries a size or a milestone, which folds an alarm into a due date: {issues}")
         notes[:], count = [row()], len(posted)
-        if pass_attempt(pr2, own) != "waiting" or len(posted) != count or calls:
-            errs.append("a head waiting on main's red lanes commented again or paid a model")
+        if pass_attempt(pr5, based) != "waiting" or len(posted) != count or calls:
+            errs.append("a head waiting on main's red lane commented again or paid a model")
         issues[0]["state"] = "closed"
-        if pass_attempt(pr2, own) != "base-red" or len(issues) != 3 or "#52" not in posted[-1]:
+        if pass_attempt(pr5, based) != "base-red" or len(issues) != 2 or "#51" not in posted[-1]:
             errs.append(f"a lane whose issue was closed while main stays red waited on the closed issue: {posted[-1][-200:]!r}")
+        # The wait's bound: once main's lane is green the head reruns once, and red again it takes today's path at once.
+        # A main whose run of the lane was cancelled says nothing, so no rerun is spent on it.
+        forge["base"], notes[:] = "cancelled", [row()]
+        if pass_attempt(pr5, based) == "rerun" or "2123" in reruns:
+            errs.append("a head waiting on main's red lane was rerun on a main the forge did not say was green")
+        forge["base"] = "success"
+        if pass_attempt(pr5, based) != "rerun" or reruns[-1:] != ["2123"] or "verdict=rerun" not in posted[-1]:
+            errs.append(f"a head red beside main's red lane was not rerun once main went green: reruns {reruns}, {posted[-1][-200:]!r}")
+        notes.append(row())
+        if pass_attempt(pr5, based) != "wait" or reruns.count("2123") != 1:
+            errs.append(f"a head still red after main went green and its rerun waited on main again: reruns {reruns}")
+        forge["base"] = "failure"
         # A stacked PR's parent branch red is that PR's own: its child waits on it with a comment and no issue.
         # Its parent's open head is the branch's tip, so the comment names that PR and the state report waits on its author.
         stacked, made, notes[:] = dict(pr2, base={"ref": "jack/parent"}, updated_at=ISO(time.time())), len(issues), []
+        module.red_lanes = lambda repo, sha: ["guardrails"]
         forge["tip"] = next(s for s, n in own[1].items() if n == 2205)
         if pass_attempt(stacked, own) != "base-red" or len(issues) != made or "jack/parent" not in posted[-1] or "#2205" not in posted[-1]:
             errs.append(f"a red parent branch opened an issue or did not name its PR: {len(issues) - made} issue(s), {posted[-1][-200:]!r}")
@@ -3405,8 +3469,7 @@ def checks():
     try:
         PASSWD = box / "passwd"
         errs = merge_selfcheck() + gate_selfcheck() + waits_selfcheck() + confined_selfcheck() + base_lane_selfcheck()
-        errs += [f"the shared-red rule's {name} condition disabled and every case still passes"
-                 for name in ("base", "burst", "swept", "passed", "trunk", "review", "own") if not outage_cases(name)]
+        errs += [f"the shared-red rule's {name} condition disabled and every case still passes" for name in refuted_conditions()]
         errs += outage_cases() + outage_flow_selfcheck() + tier_selfcheck() + day_sign_selfcheck() + foreign_status_cases()
         module = sys.modules[__name__]
         for name, off in (("the bots rule", mock.patch.object(pr_queue, "bots", lambda number: False)),

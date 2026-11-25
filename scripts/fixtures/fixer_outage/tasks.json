@@ -1,5 +1,5 @@
 {
- "source": "bot-audit raw/tasks.json (actions/tasks, fetched 2026-11-24), cut by updated_at window; records unedited. skipped-11-06 is two records alone, the candidate's guardrails red and main's next run of that lane, which was skipped; told-11-03 is #2003's guardrails burst (#1733, #2002 and main's two reds) and that lane's next green on another commit, at 19:16",
+ "source": "bot-audit raw/tasks.json (actions/tasks, fetched 2026-11-24), cut by updated_at window; records unedited. skipped-11-06 is two records alone, the candidate's guardrails red and main's next run of that lane, which was skipped; told-11-03 is #2003's guardrails burst (#1733, #2002 and main's two reds) and that lane's next green on another commit, at 19:16; own-base-11-07 is #2064's test red beside main's red warm (test), its next commit its own and still red; base-11-09 is #2123's guardrails red beside main's red warm (guardrails), its next commit its own and green",
  "slices": {
   "kill-11-24": [
    {
@@ -3282,6 +3282,100 @@
     "created_at": "2026-11-03T19:16:53Z",
     "updated_at": "2026-11-03T19:22:32Z",
     "run_started_at": "2026-11-03T19:16:53Z"
+   }
+  ],
+  "own-base-11-07": [
+   {
+    "id": 46185,
+    "name": "warm (test)",
+    "head_branch": "main",
+    "head_sha": "b34d9ce036bcccb53eff5f010782a6c5411cad1d",
+    "run_number": 16764,
+    "event": "push",
+    "display_title": "Record the change files main landed",
+    "status": "failure",
+    "workflow_id": "postmerge.yml",
+    "url": "https://git.example.invalid/apex/yi/actions/runs/16764",
+    "created_at": "2026-11-07T12:37:36Z",
+    "updated_at": "2026-11-07T12:54:36Z",
+    "run_started_at": "2026-11-07T12:37:36Z"
+   },
+   {
+    "id": 46212,
+    "name": "gate (test)",
+    "head_branch": "#2061",
+    "head_sha": "102100db70293cdd27224b7f5591ba0679e26e76",
+    "run_number": 16777,
+    "event": "pull_request",
+    "display_title": "Merge remote-tracking branch 'origin/main' into HEAD",
+    "status": "failure",
+    "workflow_id": "pr.yml",
+    "url": "https://git.example.invalid/apex/yi/actions/runs/16777",
+    "created_at": "2026-11-07T13:04:01Z",
+    "updated_at": "2026-11-07T13:13:06Z",
+    "run_started_at": "2026-11-07T13:04:01Z"
+   },
+   {
+    "id": 46225,
+    "name": "gate (test)",
+    "head_branch": "#2064",
+    "head_sha": "9542349d58a85f41bf277f47ee6e1aeeddcc4a8b",
+    "run_number": 16781,
+    "event": "pull_request",
+    "display_title": "Merge remote-tracking branch 'origin/main' into HEAD",
+    "status": "failure",
+    "workflow_id": "pr.yml",
+    "url": "https://git.example.invalid/apex/yi/actions/runs/16781",
+    "created_at": "2026-11-07T13:09:07Z",
+    "updated_at": "2026-11-07T13:13:30Z",
+    "run_started_at": "2026-11-07T13:09:07Z"
+   }
+  ],
+  "base-11-09": [
+   {
+    "id": 47775,
+    "name": "gate (guardrails)",
+    "head_branch": "#2123",
+    "head_sha": "814cd33fbc53b9650ad8df0769d01fe4a4f23868",
+    "run_number": 17710,
+    "event": "pull_request",
+    "display_title": "Declare the files this branch shares with other open pull requests",
+    "status": "failure",
+    "workflow_id": "pr.yml",
+    "url": "https://git.example.invalid/apex/yi/actions/runs/17710",
+    "created_at": "2026-11-09T05:22:00Z",
+    "updated_at": "2026-11-09T05:24:39Z",
+    "run_started_at": "2026-11-09T05:22:00Z"
+   },
+   {
+    "id": 47780,
+    "name": "gate (guardrails)",
+    "head_branch": "#2124",
+    "head_sha": "31ce1c7601d75f97e7dc3177f1b0603f18ad4228",
+    "run_number": 17713,
+    "event": "pull_request",
+    "display_title": "Declare the files this branch shares with the newly opened pull requests",
+    "status": "failure",
+    "workflow_id": "pr.yml",
+    "url": "https://git.example.invalid/apex/yi/actions/runs/17713",
+    "created_at": "2026-11-09T05:24:53Z",
+    "updated_at": "2026-11-09T05:27:13Z",
+    "run_started_at": "2026-11-09T05:24:53Z"
+   },
+   {
+    "id": 47795,
+    "name": "warm (guardrails)",
+    "head_branch": "main",
+    "head_sha": "2cf3c424c900ffe89e09d060f3f87878f2b7af9d",
+    "run_number": 17723,
+    "event": "push",
+    "display_title": "Record the change files main landed",
+    "status": "failure",
+    "workflow_id": "postmerge.yml",
+    "url": "https://git.example.invalid/apex/yi/actions/runs/17723",
+    "created_at": "2026-11-09T05:35:52Z",
+    "updated_at": "2026-11-09T05:38:05Z",
+    "run_started_at": "2026-11-09T05:35:52Z"
    }
   ]
  }
