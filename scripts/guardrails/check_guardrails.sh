@@ -115,8 +115,8 @@ run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_behavior.py
 if [ "$FAST" -eq 1 ]; then
-  run echo "skip scan (--fast: pinned external scanners run in the full lane)"
-  run echo "skip scan selfcheck (--fast: pinned external scanners run in the full lane)"
+  run "$PY" scripts/guardrails/check_scan.py --changed
+  run echo "skip scan gitleaks, zizmor and the scan selfcheck (--fast: run python3 scripts/guardrails/check_scan.py)"
 else
   run "$PY" scripts/guardrails/check_scan.py
   run "$PY" scripts/guardrails/check_scan.py --selfcheck
@@ -200,6 +200,12 @@ run "$PY" scripts/forge_pr.py --selfcheck
 # delta range and the fixer's wall; only this flag walks them without a forge or a model.
 run "$PY" scripts/pr_review.py --selfcheck
 run "$PY" scripts/intake/bridge.py --selfcheck
+# Incident: the journey ran only after merge, so it sat broken on main for weeks and then took a
+# broken change no pull-request check could see. It runs here as a root container does: no identity.
+mkdir -p "$OUT/bare-home"
+run env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \
+  HOME="$OUT/bare-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true "$PY" scripts/intake/journey.py
 # The autofixer pushes to people's branches, so its table, its wall and its marker check are
 # proved here on a scratch merge with a stand-in model, never a forge.
 run "$PY" scripts/pr_autofix.py --selfcheck

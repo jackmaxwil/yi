@@ -18,7 +18,7 @@ import threading
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import BASE, ROOT, fail, is_public_mirror, may_skip, test_mask
+from _common import BASE, ROOT, fail, is_public_mirror, may_skip, scratch_repo, test_mask
 from check_public_surface import rule_lines, unscanned
 
 BASELINE = BASE / "scan.json"
@@ -38,6 +38,7 @@ _INSTALL_LOCK = threading.Lock()
 FIXTURES = ROOT / "scripts/scan/fixtures"
 RULES = ROOT / "scripts/scan/rules"
 SCAN_ROOTS = ("evals", "scripts", "python", "crates")
+EXCLUDED_TREES = ("scripts/scan/fixtures", "crates/**/tests")
 ZIZMOR_CASES = {
     "unpinned.yml": {"unpinned-uses", "artipacked"},
     "template-injection.yml": {"template-injection"},
@@ -160,8 +161,48 @@ def semgrep_args(paths, fixtures=False):
     args = ["scan", "--config", str(RULES / "semgrep"), "--json", "--metrics=off", "--disable-version-check",
             "--timeout", str(SEMGREP_TIMEOUT)]
     if not fixtures:
-        args += ["--exclude", "scripts/scan/fixtures", "--exclude", "crates/**/tests"]
+        args += [flag for tree in EXCLUDED_TREES for flag in ("--exclude", tree)]
     return [*args, *map(str, paths)]
+
+
+def scannable(paths):
+    """Incident: `--fast` skipped every scanner, so a commit breaking a semgrep rule passed the hook and
+    failed on the forge. Invariant: semgrep ignores `--exclude` for a path named as a target, so the exclusions apply here."""
+    return [p for p in paths if p.split("/", 1)[0] in SCAN_ROOTS and p.endswith((".py", ".rs"))
+            and not any(fnmatch.fnmatch(p, f"{tree}/*") for tree in EXCLUDED_TREES)]
+
+
+def changed_files(root=ROOT):
+    """Staged, unstaged and committed changes against origin/main, or HEAD when there is no origin/main."""
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, check=False, timeout=60)
+    base = "origin/main" if git("rev-parse", "--verify", "-q", "origin/main").returncode == 0 else "HEAD"
+    proc = git("diff", "-z", "--name-only", "--diff-filter=ACMR", base)
+    if proc.returncode:
+        raise RuntimeError(f"git diff {base} failed: {proc.stderr.decode(errors='replace').strip()}")
+    names = [name.decode("utf-8", "surrogateescape") for name in proc.stdout.split(b"\0") if name]
+    return [p for p in scannable(names) if (root / p).is_file()]
+
+
+def changed_files_errors():
+    odd = ("scripts/with space.py", "scripts/na\u00efve.py")
+    seed = {"scripts/kept.py": "a = 1\n", "crates/x/src/lib.rs": "fn a() {}\n", "docs/n.py": "a = 1\n",
+            "scripts/scan/fixtures/semgrep/f.py": "a = 1\n", "crates/x/tests/t.rs": "fn a() {}\n",
+            "scripts/gone.py": "a = 1\n", **{name: "a = 1\n" for name in odd}}
+    with scratch_repo("scan-changed-", seed) as (root, run):
+        git = lambda *args: run("git", "-c", "user.name=t", "-c", "user.email=t@t", *args)
+        git("update-ref", "refs/remotes/origin/main", "main")
+        for name in ("crates/x/src/lib.rs", "docs/n.py", "scripts/scan/fixtures/semgrep/f.py", "crates/x/tests/t.rs"):
+            (root / name).write_text("a = 2\n")
+        git("commit", "-qam", "committed")
+        (root / odd[0]).write_text("a = 2\n")
+        (root / odd[1]).write_text("a = 2\n")
+        git("add", odd[1])
+        (root / "scripts/kept.py").write_text("a = 2\n")
+        (root / "scripts/gone.py").unlink()
+        got = sorted(changed_files(root))
+    want = sorted(["crates/x/src/lib.rs", "scripts/kept.py", *odd])
+    return [] if got == want else [f"changed_files() returned {got}, want {want}"]
 
 
 def semgrep_errors(errors):
@@ -654,6 +695,7 @@ def main(argv):
     parser.add_argument("--selfcheck", action="store_true")
     parser.add_argument("--update", action="store_true")
     parser.add_argument("--history", action="store_true")
+    parser.add_argument("--changed", action="store_true", help="semgrep only, over the files changed since origin/main")
     args = parser.parse_args(argv)
     strict = bool(os.environ.get("CI"))
     if args.selfcheck:
@@ -681,7 +723,17 @@ def main(argv):
         for off in sorted(checks):
             if not selfcheck(off, fixtures):
                 errors.append(f"selfcheck passes with the {off} check disabled")
+        errors += changed_files_errors()
         fail(errors, "scan selfcheck")
+        return
+    if args.changed:
+        files = changed_files()
+        if not files:
+            print("ok   scan --changed (no .py or .rs file changed)")
+            return
+        findings, tools = gather({"semgrep": lambda: semgrep(files)}, strict)
+        errors, _ = baseline_problems(findings, {key: n for key, n in load_baseline().items() if key[0] in tools})
+        fail(errors, f"scan --changed ({len(files)} files, {len(findings)} findings; gitleaks and zizmor run in the full lane)")
         return
     findings, tools = gather(normal_tasks(args.history), strict)
     if args.update:
