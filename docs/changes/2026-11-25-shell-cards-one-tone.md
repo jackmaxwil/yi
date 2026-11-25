@@ -1,0 +1,8 @@
+---
+issue: Refs #2163
+decision: a tool result that is not a file read, an edit, a search or a streaming write or cell is drawn in one dim tone, never typed by its content | a shell card chose each row's colour from the row's own shape, so one `grep -n` result showed grey context rows, white hit rows and magenta `--- label` rows together | reversible by restoring the `sniff(preview)` arm in the tool card body
+ledger~: TUI | other output by what it holds (JSON, a diff, a shebang), | a notebook cell's output by what it holds (JSON, a diff, a shebang) while a shell command's and every other tool's output is one dim tone, a row clipped to its first screen lines says so in that tone,
+cut: crates/tui/tests/result_paint.rs | fn shell_json_output_is_coloured() { | a shell card is one grey tone, so its JSON is no longer coloured; the notebook test keeps the JSON case
+cut: crates/tui/src/result_paint.rs | _ => sniff(preview), | the owner asked for shell cards in one grey tone; guessing a grammar from the first row is what mixed three tones in one card
+---
+A shell card is one grey tone. Its rows were coloured one at a time by their shape: a row that began `163:` was drawn as a numbered file row in the bright tone, a first row that began `--- ` turned the whole card into a diff, and the rest stayed grey. Only a read, an edit and a search number their rows now, no other tool's output is typed by its content, and `--- ` alone no longer reads as a diff anywhere. The `… 2 of 3 rows` notice under a clipped row had lost its dim style inside every card and was drawn bright; a card now keeps a row's own style. The colour codes a program prints and the file-path hue are unchanged.

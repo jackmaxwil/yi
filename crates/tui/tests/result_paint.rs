@@ -96,6 +96,7 @@ fn painter_types_untyped_output_by_its_content() {
     assert!(sniff(&rows("diff --git a/x b/x\n@@ -1 +1 @@")).is_some());
     assert!(sniff(&rows("#!/usr/bin/env python3\nprint(1)")).is_some());
     assert!(sniff(&rows("[1/3] Compiling yi-tui")).is_none());
+    assert!(sniff(&rows("--- time crates\ncrates/x.rs:1:fn f() {}")).is_none());
     assert!(sniff(&rows("total 8\ndrwxr-xr-x  2 me  staff")).is_none());
     assert!(sniff(&rows("[[package]]\nname = \"yi\"")).is_none());
 }
@@ -297,25 +298,19 @@ fn shell_colour_codes_render_as_colour() {
 }
 
 #[test]
-fn shell_json_output_is_coloured() {
-    let spans = done("bash", "curl", &["{\"name\": \"yi\", \"count\": 3}"]);
-    assert!(carries(&spans, "3", Token::Number), "{spans:?}");
+fn shell_rows_are_one_tone_whatever_their_shape() {
+    let rows = ["--- kimi", "163:let x = 4;", &"x".repeat(2400)];
+    let spans = done("bash", "x", &rows);
+    let dim = Some(theme().dim);
+    let grey = |row: &str| spans.iter().any(|(t, s)| t.contains(row) && s.fg == dim);
+    assert!(rows.into_iter().take(2).all(grey), "{spans:?}");
+    assert!(grey("… 24 of 27 rows"), "{spans:?}");
 }
 
 #[test]
 fn shell_digest_drops_colour_codes() {
     let digest = ToolCell::digest_of("bash", "\u{1b}[32mok\u{1b}[0m 3 passed", &json!({}), false);
     assert_eq!(digest.as_deref(), Some("ok 3 passed"));
-}
-
-#[test]
-fn malformed_json_cut_mid_string_still_colours_what_parsed() {
-    let spans = done(
-        "bash",
-        "curl",
-        &["{\"name\": \"yi\", \"items\": [1, 2.5, \"thr"],
-    );
-    assert!(carries(&spans, "2.5", Token::Number), "{spans:?}");
 }
 
 #[test]
@@ -357,7 +352,7 @@ fn notebook_output_colours_codes_and_json() {
     let details = json!({
         "code": "print(r)",
         "stdout": "\u{1b}[31mFAILED\u{1b}[0m tests/test_a.py:12\n",
-        "result": "{\"rows\": 4}",
+        "result": "{\"rows\": 4, \"name\": \"thr",
     });
     let spans = card("ipython", "print(r)", &[], ToolStatus::Done, details);
     assert!(!shows_escape(&spans), "{spans:?}");

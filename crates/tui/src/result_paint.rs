@@ -61,7 +61,7 @@ pub fn sniff(rows: &[String]) -> Option<Lang> {
     if first.starts_with('{') || opens_array || (first.starts_with('[') && parses()) {
         return highlight::lang_for("json");
     }
-    highlight::lang_for_first_line(first)
+    highlight::lang_for_first_line(first).filter(|_| !first.starts_with("--- "))
 }
 
 pub fn text_spans(row: &str, theme: &Theme, base: Style) -> Vec<Span<'static>> {
@@ -235,8 +235,7 @@ pub(crate) fn body(
         _ if anchored || streamed => highlight::lang_for(subject)
             .filter(|_| !subject.is_empty())
             .or_else(|| sniff(&bodies(preview))),
-        _ if searchy => None,
-        _ => sniff(preview),
+        _ => None,
     };
     let mut painter = Painter::new(lang);
     let mut next: Option<u64> = None;
@@ -286,8 +285,9 @@ pub(crate) fn body(
                     .then(|| crate::rows::context_numbered(raw))
                     .flatten()
                     .map(|(number, row)| (number, '-', row))
-            });
-        if !streamed && let Some((number, sep, row)) = numbered {
+            })
+            .filter(|_| anchored || searchy);
+        if let Some((number, sep, row)) = numbered {
             let at = number.parse::<u64>().ok();
             if at.is_none() || at != next {
                 painter.restart();
@@ -309,16 +309,12 @@ pub(crate) fn body(
         if anchored {
             continue;
         }
-        if searchy {
-            painter.restart();
-            out.push(Line::from(text_spans(raw, theme, dim)));
+        if streamed {
+            out.push(Line::from(painter.row(raw, theme, text)));
             continue;
         }
-        out.push(Line::from(painter.row(
-            raw,
-            theme,
-            if streamed { text } else { dim },
-        )));
+        painter.restart();
+        out.push(Line::from(text_spans(raw, theme, dim)));
     }
     out
 }
