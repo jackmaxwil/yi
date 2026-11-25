@@ -7,7 +7,7 @@ use yd_core::kind::Kind;
 use yd_core::reduce::threads::Thread;
 use yd_ui::win::Hub;
 
-use crate::chat::messages::{Block, line, said};
+use crate::chat::messages::{Block, line};
 use crate::chat::tools::target;
 
 /// The most characters of what was said that go with an attached message, and that name it.
@@ -20,7 +20,8 @@ fn message(thread: &Thread, at: &str, kind: Kind) -> Option<Thing> {
     let message = thread.transcript.messages.get(at.parse::<usize>().ok()?)?;
     let entry = message.entry.as_ref()?;
     let id = format!("{}/{}", thread.id.as_str(), entry.as_str());
-    let words = said(message)?
+    let words = message
+        .said()?
         .blocks
         .into_iter()
         .find_map(|block| match block {

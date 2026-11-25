@@ -22,10 +22,10 @@ yd-ui = { path = "crates/ui" }
 yd-panes = { path = "crates/panes" }
 yd-mac = { path = "crates/mac" }
 # Rune's default features minus ogg-audio (MPL-2.0 codecs this app never plays) and dbus (Linux only).
-rune = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc", default-features = false, features = ["accessibility", "embedded-fonts", "metal-backend", "svg", "native-file-dialog"] }
-rune-kit = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc", features = ["markdown"] }
-rune-luau = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
-rune-notify = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
+rune = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841", default-features = false, features = ["accessibility", "embedded-fonts", "metal-backend", "svg", "native-file-dialog"] }
+rune-kit = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841", features = ["markdown"] }
+rune-luau = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841" }
+rune-notify = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841" }
 yi-types = { path = "../crates/types" }
 # Yi's client-local browser crate: Chrome frames for the web pane.
 yi-browser = { path = "../crates/browser" }
@@ -89,8 +89,8 @@ overflow-checks = true
 # Rune's five patched crates: a dependency's `[patch]` does not reach the workspace that
 # depends on it, so an app that builds Rune repeats them.
 [patch.crates-io]
-wgpu-hal = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
-winit = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
-parley_engine = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
-accesskit_windows = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
-accesskit_macos = { git = "https://github.com/jackmaxwil/rune", rev = "826baf804d14859388f4f24998786b62811c34fc" }
+wgpu-hal = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841" }
+winit = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841" }
+parley_engine = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841" }
+accesskit_windows = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841" }
+accesskit_macos = { git = "https://github.com/jackmaxwil/rune", rev = "1fab9bb198b9ae935b976c8c0a5d0bb516cb6841" }

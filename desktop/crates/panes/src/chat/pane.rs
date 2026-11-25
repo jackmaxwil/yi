@@ -7,7 +7,9 @@ mod scenes;
 #[cfg(test)]
 mod tests;
 
-use rune::{Cx, El, ScrollSpec, Tx, col, el, row, spacer};
+use std::cell::RefCell;
+
+use rune::{Cx, El, GrowthSpec, ScrollSpec, Tx, col, el, row, spacer};
 use yd_core::ids::{PaneId, ThreadId};
 use yd_core::pane::PaneKind;
 use yd_core::reduce::threads::{Run as State, Thread};
@@ -18,7 +20,7 @@ use yd_ui::grid_view::view::alone;
 use yd_ui::kit::chip::{Chip, chip};
 use yd_ui::overlay::pick::Finder;
 use yd_ui::pane::{PaneCx, PaneDef, Scene, Stage};
-use yd_ui::theme::look::colour;
+use yd_ui::theme::look::{colour, stamp};
 use yd_ui::win::{Hub, Win};
 
 use crate::chat::approval::{Card, queue};
@@ -217,6 +219,8 @@ fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
             now: model.now,
             held: !waiting.is_empty(),
             moving: running && !cx.is_reduced_motion(),
+            stamp: stamp(tokens),
+            names: RefCell::default(),
         }
         .conversation(),
         (Some(_), None) => vec![child::missing(&key, tokens, agent)],
@@ -237,7 +241,15 @@ fn view(pane: &PaneCx<'_>, cx: &mut Cx<Win>) -> El {
             stick_bottom: chat.is_none_or(|chat| chat.steps.is_empty()),
         })
         .on_at_bottom(move |win: &mut Win, at_tail| chat_mut(win, id, |chat| chat.away = !at_tail))
-        .child(reading(col()).py(6.0).gap(8.0).children(items));
+        // The framework's timeline: a row that grows glides, and the pinned tail follows it.
+        .child(
+            reading(col())
+                .key(format!("{key}.timeline"))
+                .py(6.0)
+                .gap(8.0)
+                .growth(GrowthSpec::default())
+                .children(items),
+        );
     let jump = jump(tokens, &key, id, follow, chat.is_some_and(|chat| chat.away));
     let card = thread.and_then(|thread| {
         Card {

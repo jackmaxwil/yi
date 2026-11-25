@@ -22,7 +22,7 @@ use yd_ui::theme::look::{BODY, LABEL, META, colour};
 use yd_ui::win::{Hub, Win, dispatch};
 
 use crate::chat::composer::{Composer, Form, Send, drawn};
-use crate::chat::messages::{line, model_name, said};
+use crate::chat::messages::{line, model_name};
 
 /// Opens a chat pane on a child agent beside its parent's, or brings the open one forward.
 pub const OPEN: CommandId = CommandId("agents.open-chat");
@@ -192,7 +192,7 @@ fn state(agent: &Agent) -> String {
 fn model(thread: &Thread, agent: &Agent) -> Option<String> {
     let messages = agent.transcript.messages.iter().rev();
     let said = messages
-        .filter_map(said)
+        .filter_map(|message| message.said())
         .find(|said| !said.user && !said.model.is_empty())?;
     Some(model_name(thread, &said.model))
 }

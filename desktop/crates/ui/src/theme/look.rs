@@ -1,9 +1,11 @@
 //! Token values as Rune colours and text styles, and the tokens mapped onto Rune's `Kit`.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use rune::{Color, Family, TextStyle};
 use rune_kit::{Kit, PaletteSeed, Radius};
 use yd_core::row::Tone;
-use yd_core::tokens::{Rgba, Tokens, rgba};
+use yd_core::tokens::{Rgba, ThemeValue, Tokens, rgba};
 
 use crate::theme::scale::{
     HOVER, MEDIUM, RADIUS_BADGE, RADIUS_BUTTON, RADIUS_CARD, RADIUS_CHIP, RADIUS_MENU, SEMIBOLD,
@@ -27,6 +29,26 @@ pub const READ_QUOTE: TextStyle = TextStyle::new(14.5, 400.0).lh(21.0);
 pub const READ_PROSE: TextStyle = TextStyle::new(13.5, 400.0).lh(21.6);
 pub const READ_COMMAND: TextStyle = TextStyle::new(13.0, 400.0).lh(26.0).family(CODE);
 pub const READ_SMALL: TextStyle = TextStyle::new(12.0, 400.0);
+
+/// A number that moves when any token does, so what a view keeps is drawn again in a new theme.
+pub fn stamp(tokens: &Tokens) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    let named = tokens.values();
+    let named = named.iter().map(|(name, value)| (*name, value));
+    let extra = tokens
+        .extra
+        .iter()
+        .map(|(name, value)| (name.as_str(), value));
+    for (name, value) in named.chain(extra) {
+        name.hash(&mut hasher);
+        match value {
+            ThemeValue::Flag(flag) => flag.hash(&mut hasher),
+            ThemeValue::Number(number) => number.to_bits().hash(&mut hasher),
+            ThemeValue::Text(text) => text.hash(&mut hasher),
+        }
+    }
+    hasher.finish()
+}
 
 /// A token colour in Rune's linear light. Rune's own reader is the safe one: it never panics.
 pub fn colour(value: Rgba) -> Color {
