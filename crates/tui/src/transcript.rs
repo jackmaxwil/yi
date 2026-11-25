@@ -40,7 +40,7 @@ pub fn show_controls(text: &str) -> String {
 /// the screen. A diff carries neither the `syntax:` verdicts nor the trailing ripwire block.
 pub(crate) fn result_preview(text: &str, details: &Value) -> Vec<String> {
     if details.get("patch").is_none() {
-        return preview_lines(text, 12, 6);
+        return preview_lines(text, 80, 40);
     }
     let header = |line: &str| line.starts_with('[') && line.ends_with(']') && line.contains('#');
     let files = text.lines().filter(|line| header(line)).count();
@@ -148,7 +148,11 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
     (done == total && total.parse::<u64>().ok()? > 0).then(|| format!("Todos {total}/{total}"))
 }
 
-pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
+pub(crate) fn card_head(tool: &str, args: &Value) -> String {
+    crate::cell::ToolCell::summary_of(tool, &arg_summary(tool, args, true))
+}
+
+pub(crate) fn arg_summary(tool: &str, args: &Value, whole: bool) -> String {
     if tool == "ask_user"
         && let Some(question) = crate::question::Question::from_args(args)
     {
@@ -174,12 +178,14 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
     };
     match arg.and_then(Value::as_str) {
         Some(text) => {
-            let first = text.lines().next().unwrap_or("");
-            let mut text = first.split_whitespace().collect::<Vec<_>>().join(" ");
-            if text.chars().count() > 120 {
-                text = text.chars().take(120).collect::<String>() + "…";
-            }
-            text
+            let whole = whole && tool == "bash";
+            let shown = if whole {
+                text
+            } else {
+                text.lines().next().unwrap_or("")
+            };
+            let text = shown.split_whitespace().collect::<Vec<_>>().join(" ");
+            crate::wrap::clipped(&text, if whole { usize::MAX } else { 120 })
         }
         None => String::new(),
     }

@@ -45,7 +45,7 @@ fn last_tool_of(session: &ChildFeed) -> Option<String> {
                     name, arguments, ..
                 } => {
                     let args = serde_json::Value::Object(arguments.clone());
-                    let summary = arg_summary(name, &args);
+                    let summary = arg_summary(name, &args, false);
                     Some(if summary.is_empty() {
                         name.clone()
                     } else {

@@ -293,7 +293,7 @@ TUI | `streaming::a_live_thought_window_never_outgrows_its_rows_below_a_viewport
 TUI | `streaming::every_recorded_thought_settles_as_one_counted_row` (T0)
 TUI | `toolcells::a_card_one_row_past_its_budget_shows_whole_and_two_past_is_cut` (T0)
 TUI | `toolcells::a_recorded_sessions_results_fill_their_budgets` (T0)
-TUI | `drive::pressing_a_folded_thought_opens_it_beside_the_chat` (T2)
+TUI | `drive::pressing_a_folded_thought_opens_it_in_place` (T2)
 TUI | `toolcells::a_lone_read_shows_live_as_the_cell_it_commits` (T0)
 TUI | `toolcells::a_source_wider_than_the_row_is_cut_with_an_ellipsis` (T0)
 TUI child cards | `tui_e2e::a_card_lands_under_the_cell_its_record_names` (T0)
@@ -783,3 +783,5 @@ desktop app | `desktop/tests/journeys/daily/fixtures/prompt.json` (T2: `just jou
 TUI | `rewrite_drive::enter_shows_the_rewrite_over_the_typed_words_and_a_second_enter_sends_both`
 model show tool | `acp_protocol::a_client_that_can_show_is_asked_and_the_model_reads_what_happened`
 model show tool | `drive::a_show_opens_the_file_beside_the_chat_and_is_answered`
+TUI | `pane_scroll::a_pressed_card_opens_whole_where_it_stands_and_folds_back` (T0)
+TUI | `toolcells::a_long_command_shows_whole_and_one_past_its_cards_rows_is_cut` (T0)

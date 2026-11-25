@@ -1358,8 +1358,8 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   streams its newest rows in a window of rows/4 (4..=12, never shrinking while live) under
   `thinking · <elapsed> · <chars>`, which adds `last N rows · ctrl+o` once the window cuts;
   settled, it commits one `thought · <elapsed> · <chars> · ctrl+o` row, never a model summary.
-  Verbose (ctrl+o) keeps thoughts whole; the console opens a folded thought beside the chat on a
-  press.
+  Verbose (ctrl+o) keeps thoughts whole; in the console a press on a folded thought or a tool card
+  opens that one cell whole where it stands, and the next press folds it.
 - A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, rows/6
   result rows (4..=12, doubled for a failed call; the whole result when it is at most one row
   more) then `… N more lines` when collapsed, a failed cut keeping its tail after that count. Running tool cards reserve that bounded preview

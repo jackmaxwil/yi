@@ -255,9 +255,6 @@ impl App {
                 let Some(code) = code else { return };
                 return self.run_in_terminal(looking, pane, &code);
             }
-            Some((_, crate::render::Hit::Thought(pane, cell))) => {
-                return self.open_thought(pane, cell);
-            }
             Some((_, crate::render::Hit::Fold(root))) => {
                 self.state.fold_from_header(&root);
                 self.state.zone = Zone::Sidebar;
@@ -516,6 +513,14 @@ impl App {
                     if drag.moved && !self.selected.is_empty() {
                         let text = std::mem::take(&mut self.selected);
                         self.copy_out(&text);
+                    } else if !drag.moved
+                        && let Some(pane) = self.state.panes.get_mut(&drag.pane)
+                        && let PaneContent::Session {
+                            chat: Some(chat), ..
+                        } = &mut pane.content
+                        && let Some(cell) = chat.app.pane_row(y).flatten().map(|row| row.0)
+                    {
+                        chat.app.toggle_open(cell);
                     }
                 }
             }

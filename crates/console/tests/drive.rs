@@ -6392,10 +6392,10 @@ fn resume_thought(frame: &Value) -> Vec<Value> {
     ]
 }
 
-/// Dies when a settled thought's fold is all the console offers: the press on its row opens the
-/// whole thought in a pane beside the chat, where scrollback could never re-render it.
+/// Dies when a settled thought's fold is all the console offers, or when the press that opens it
+/// takes half the chat for a pane: the whole thought is drawn where its fold row stood.
 #[test]
-fn pressing_a_folded_thought_opens_it_beside_the_chat() -> TestResult {
+fn pressing_a_folded_thought_opens_it_in_place() -> TestResult {
     let script = |press: &str| {
         format!("wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 thought · \n{press}quit\n")
     };
@@ -6430,8 +6430,9 @@ fn pressing_a_folded_thought_opens_it_beside_the_chat() -> TestResult {
         opened
             .lines()
             .any(|row| row.contains("The manifest names the crate")),
-        "no thought pane after the press: {opened}"
+        "the thought is not open after the press: {opened}"
     );
+    assert!(!opened.contains("¶"), "a pane opened: {opened}");
     Ok(())
 }
 
