@@ -15,7 +15,8 @@ permissions:
 jobs:
   dist-suite:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Incident: one build job at a time fits the job's memory, and its fat-LTO links then ran past 40 minutes on 3 CPUs.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
