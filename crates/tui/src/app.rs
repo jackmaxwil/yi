@@ -20,7 +20,7 @@ use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
 use crate::motion::elapsed_ms;
 use crate::port::SessionPort;
-use crate::transcript::{arg_summary, result_preview, text_of, user_text};
+use crate::transcript::{arg_summary, arg_whole, result_preview, text_of, user_text};
 use crate::tree::TreeView;
 use crate::{orb, term};
 pub enum UiEvent {
@@ -680,7 +680,7 @@ impl App {
                     name: tool_name.clone(),
                     call_id: tool_call_id.clone(),
                     status: ToolStatus::Running,
-                    summary: ToolCell::summary_of(&tool_name, &arg_summary(&tool_name, &args)),
+                    summary: ToolCell::summary_of(&tool_name, &arg_whole(&tool_name, &args)),
                     digest: None,
                     preview: Vec::new(),
                     elapsed_ms: 0,

@@ -476,11 +476,32 @@ fn a_failed_card_opens_with_a_cross_and_keeps_its_reason() -> TestResult {
     Ok(())
 }
 
-/// The head cut at 60 characters while the row had room to 120 and wraps past it.
+/// The head cut at 120 characters whatever the width, and dropped every line after the first.
 #[test]
-fn a_long_command_keeps_its_head_to_one_hundred_and_twenty() -> TestResult {
+fn a_long_command_shows_whole_and_one_past_its_cards_rows_is_cut() -> TestResult {
     let mut app = app();
-    let command = format!("grep -rn {} crates/*/src --include='*.rs'", "x".repeat(70));
+    app.set_rows(24);
+    let room = yi_tui::card::body_width(78) * yi_tui::budget::card_rows(24, false) - 1;
+    let fits = "y".repeat(room - 2);
+    started(&mut app, "b1", "bash", &fits);
+    ended(&mut app, "b1", "bash", "");
+    let rows = flat(&app.reflowed(80)).join("");
+    assert!(
+        !rows.contains('…'),
+        "a head that fills its rows is whole: {rows}"
+    );
+    started(&mut app, "b2", "bash", &format!("{fits}y"));
+    ended(&mut app, "b2", "bash", "");
+    let rows = flat(&app.reflowed(80)).join("");
+    assert!(
+        rows.contains("y…"),
+        "one character past them is cut: {rows}"
+    );
+    let mut app = self::app();
+    let command = format!(
+        "grep -rn {} crates/*/src\n  --include='*.rs'",
+        "x".repeat(170)
+    );
     started(&mut app, "b0", "bash", &command);
     ended(&mut app, "b0", "bash", "");
     let joined = flat(&app.take_commits()).join("\n");
@@ -488,7 +509,7 @@ fn a_long_command_keeps_its_head_to_one_hundred_and_twenty() -> TestResult {
         joined.contains("crates/*/src --include='*.rs'"),
         "the head wraps instead of cutting: {joined}"
     );
-    assert!(joined.contains(&"x".repeat(70)), "{joined}");
+    assert!(joined.contains(&"x".repeat(60)), "{joined}");
     assert!(!joined.contains('…'), "{joined}");
     Ok(())
 }
@@ -974,14 +995,14 @@ fn card_at_its_budget(screen: u16, budget: usize) -> TestResult {
     Ok(())
 }
 
-/// Dies on a cut that ran past the runtime's own elision row: a failed 40-line result keeps
-/// twelve head rows, that row and six tail rows, and a 48-row screen's failed budget is sixteen,
+/// Dies on a cut that ran past the runtime's own elision row: a failed 130-line result keeps
+/// eighty head rows, that row and forty tail rows, and a 48-row screen's failed budget is sixteen,
 /// so the card drew two counts, or hid the tail where a command's error is; it keeps both ends.
 #[test]
 fn a_failed_card_cut_past_the_runtime_elision_counts_once() -> TestResult {
     let mut app = app();
     app.set_rows(48);
-    let text: Vec<String> = (1..=40).map(|n| format!("row {n}")).collect();
+    let text: Vec<String> = (1..=130).map(|n| format!("row {n}")).collect();
     started(&mut app, "b0", "bash", "seq");
     ended_with(
         &mut app,
@@ -999,13 +1020,13 @@ fn a_failed_card_cut_past_the_runtime_elision_counts_once() -> TestResult {
     let count = counts
         .first()
         .map_or("", |row| row.trim_start_matches('│').trim());
-    assert_eq!(count, "… 25 more lines", "{rows:#?}");
+    assert_eq!(count, "… 115 more lines", "{rows:#?}");
     let shown: Vec<&str> = (rows.iter())
         .map(|row| row.trim_start_matches('│').trim())
         .filter(|row| row.starts_with("row "))
         .collect();
-    let mut want: Vec<String> = (1..=12).map(|n| format!("row {n}")).collect();
-    want.extend((38..=40).map(|n| format!("row {n}")));
+    let mut want: Vec<String> = (1..=7).map(|n| format!("row {n}")).collect();
+    want.extend((123..=130).map(|n| format!("row {n}")));
     let body = shown.get(shown.len().saturating_sub(want.len())..);
     assert_eq!(
         body,

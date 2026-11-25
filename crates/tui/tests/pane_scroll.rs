@@ -693,3 +693,32 @@ fn composer_bottom_uses_the_panes_bottom_at_a_nonzero_offset() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies when a press cannot open one card: its result stays behind `… N more lines` until the
+/// whole transcript is switched to verbose, or once open it cannot be folded back.
+#[test]
+fn a_pressed_card_opens_whole_where_it_stands_and_folds_back() -> TestResult {
+    let mut app = app();
+    app.commit_cell(&tool("t", 9));
+    let mut scroll = 0;
+    let shows = |app: &mut App, scroll: &mut usize| {
+        let (rows, _) = paint(app, scroll);
+        (rows.iter().any(|row| row.contains("out t 8")), rows)
+    };
+    let (whole, rows) = shows(&mut app, &mut scroll);
+    assert!(!whole, "the card is cut to its budget: {rows:#?}");
+    let y = (0u16..).zip(&rows).find(|(_, row)| row.contains("out t 0"));
+    let cell = y
+        .and_then(|(y, _)| app.pane_row(y).flatten())
+        .map(|row| row.0);
+    app.toggle_open(cell.ok_or("no cell under the card's row")?);
+    let (whole, rows) = shows(&mut app, &mut scroll);
+    assert!(
+        whole && !rows.iter().any(|row| row.contains("more lines")),
+        "{rows:#?}"
+    );
+    app.toggle_open(cell.ok_or("no cell under the card's row")?);
+    let (whole, rows) = shows(&mut app, &mut scroll);
+    assert!(!whole, "a second press folds it: {rows:#?}");
+    Ok(())
+}

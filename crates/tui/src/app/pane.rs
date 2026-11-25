@@ -2,7 +2,6 @@ use ratatui::layout::Rect;
 
 use super::App;
 use crate::render::Chip;
-use crate::transcript::Said;
 
 /// What the last pane paint drew: its top row and left column, and for each row its transcript
 /// cell (`None` on the live turn) and run chip.
@@ -38,12 +37,11 @@ impl App {
             .collect()
     }
 
-    /// Everything on the last paint a press or a hover can land on: run chips, folded
-    /// thoughts and the improve control's positions.
+    /// Everything on the last paint a press or a hover can land on: run chips and the improve
+    /// control's positions.
     pub fn chat_hits(&self) -> crate::hits::ChatHits {
         crate::hits::ChatHits {
             runs: self.run_chips(),
-            thoughts: self.folded_thoughts(),
             improve: self.rewrite_slots(),
         }
     }
@@ -77,32 +75,10 @@ impl App {
             .collect()
     }
 
-    /// Each folded thought on the last paint: its fold, the last row its cell drew, and the cell,
-    /// so a press can open the whole thought where a scrollback row cannot.
-    pub fn folded_thoughts(&self) -> Vec<(Rect, usize)> {
-        if self.mode == crate::cell::TranscriptMode::Verbose {
-            return Vec::new();
-        }
-        let rows = &self.pane_rows;
-        let width = u16::try_from(self.width).unwrap_or(u16::MAX);
-        let mut out: Vec<(Rect, usize)> = Vec::new();
-        for (at, row) in rows.rows.iter().enumerate() {
-            let Some((cell, _)) = row else { continue };
-            let thought = matches!(self.history.said(*cell), Some((Said::Thought, _)));
-            let Some(y) = u16::try_from(at)
-                .ok()
-                .and_then(|at| at.checked_add(rows.top))
-            else {
-                continue;
-            };
-            if out.last().is_some_and(|(_, last)| last == cell) {
-                out.pop();
-            }
-            if thought {
-                out.push((Rect::new(rows.left, y, width, 1), *cell));
-            }
-        }
-        out
+    /// A press on transcript cell `index` opens it whole where it stands, or folds it back.
+    pub fn toggle_open(&mut self, index: usize) {
+        self.history.toggle(index);
+        self.scheduler.request();
     }
 
     /// The shell block the nth run chip of `cell` stands for, parsed from the answer once.

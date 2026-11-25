@@ -16,7 +16,7 @@ use crate::app::App;
 use crate::cell::{Cell, ToolCell, ToolStatus};
 use crate::hud::GoalView;
 use crate::plantree::PlanTreeView;
-use crate::transcript::{arg_summary, text_of, user_text};
+use crate::transcript::{arg_whole, text_of, user_text};
 use crate::tree::{TreeFilter, TreeView};
 use serde_json::Value;
 use yi_types::message::{AgentMessage, Content};
@@ -509,7 +509,7 @@ impl App {
                         name: tool_name.clone(),
                         call_id: tool_call_id.clone(),
                         status: ToolStatus::Running,
-                        summary: ToolCell::summary_of(tool_name, &arg_summary(tool_name, args)),
+                        summary: ToolCell::summary_of(tool_name, &arg_whole(tool_name, args)),
                         digest: None,
                         preview: Vec::new(),
                         elapsed_ms: 0,

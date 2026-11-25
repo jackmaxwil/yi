@@ -13,6 +13,8 @@ pub struct History {
     cells: VecDeque<Cell>,
     /// Cells before this index are closed: a new message never merges into the last one's.
     sealed: usize,
+    /// Cells a press opened: each draws as the verbose mode draws it, whatever the mode is.
+    opened: std::collections::BTreeSet<usize>,
     rendered: Mutex<Rendered>,
 }
 
@@ -144,6 +146,7 @@ fn join(
 impl History {
     pub fn clear(&mut self) {
         self.cells.clear();
+        self.opened.clear();
         self.sealed = 0;
         *self
             .rendered
@@ -207,12 +210,19 @@ impl History {
             };
         }
         // Appended cells render newest-first up to the cap, never a whole replay chunk.
+        let mode = |index: usize| {
+            if self.opened.contains(&index) {
+                TranscriptMode::Verbose
+            } else {
+                mode
+            }
+        };
         let done = rendered.start.saturating_add(rendered.rows.len());
         let mut fresh = VecDeque::new();
         let (mut index, mut held) = (self.cells.len(), 0_usize);
         while index > done && held <= cap {
             index -= 1;
-            let rows = rendered.cell_rows((&self.cells, index), width, theme, mode, open);
+            let rows = rendered.cell_rows((&self.cells, index), width, theme, mode(index), open);
             held = held.saturating_add(kept_rows(&rows));
             fresh.push_front(rows);
         }
@@ -233,7 +243,7 @@ impl History {
         while (held <= cap || rendered.start > back_to) && rendered.start > 0 {
             rendered.start -= 1;
             let start = rendered.start;
-            let rows = rendered.cell_rows((&self.cells, start), width, theme, mode, open);
+            let rows = rendered.cell_rows((&self.cells, start), width, theme, mode(start), open);
             held = held.saturating_add(kept_rows(&rows));
             rendered.rows.push_front(rows);
         }
@@ -264,6 +274,17 @@ impl History {
                 .unwrap_or_else(PoisonError::into_inner) = Rendered::default();
         }
         blanked
+    }
+
+    /// Opens the cell at `index` whole where it stands, or folds it back; every row is redrawn.
+    pub fn toggle(&mut self, index: usize) {
+        if !self.opened.remove(&index) {
+            self.opened.insert(index);
+        }
+        *self
+            .rendered
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner) = Rendered::default();
     }
 
     pub fn last(&self) -> Option<&Cell> {

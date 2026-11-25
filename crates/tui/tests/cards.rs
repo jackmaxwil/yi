@@ -189,15 +189,24 @@ fn a_tool_only_assistant_entry_summarizes_its_calls() -> TestResult {
 
 #[test]
 fn a_long_result_keeps_head_and_tail_in_verbose() -> TestResult {
-    let text: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+    let text: Vec<String> = (1..=130).map(|n| format!("line {n}")).collect();
     let rows = verbose_rows(&text.join("\n"));
-    for needle in ["line 1", "line 12", "… 22 more lines", "line 35", "line 40"] {
+    for needle in [
+        "line 1",
+        "line 80",
+        "… 10 more lines",
+        "line 91",
+        "line 130",
+    ] {
         assert!(
             rows.iter().any(|r| r.contains(needle)),
             "{needle}: {rows:?}"
         );
     }
-    assert!(!rows.iter().any(|r| r.contains("line 20")), "{rows:?}");
+    assert!(!rows.iter().any(|r| r.contains("line 85")), "{rows:?}");
+    let whole: Vec<String> = (1..=120).map(|n| format!("line {n}")).collect();
+    let rows = verbose_rows(&whole.join("\n"));
+    assert!(!rows.iter().any(|r| r.contains("more lines")), "{rows:?}");
     Ok(())
 }
 
@@ -209,22 +218,26 @@ fn a_json_blob_is_pretty_printed_before_capping() -> TestResult {
 }
 
 #[test]
-fn an_over_wide_line_folds_to_two_rows_and_names_what_it_hid() -> TestResult {
+fn an_over_wide_line_folds_to_its_cards_rows_and_names_what_it_hid() -> TestResult {
     let mut app = app();
     ran(&mut app, "c1", &"x".repeat(600), false);
     let rows = flat(&app.reflowed(80));
     assert_eq!(
         rows.iter().filter(|r| r.contains("xxxx")).count(),
-        2,
+        4,
         "the digest repeats the body row, so one line folds: {rows:?}"
     );
     assert_eq!(
         rows.iter()
-            .filter(|r| r.contains("… 2 of 9 rows, 1 KB"))
+            .filter(|r| r.contains("… 4 of 9 rows, 1 KB"))
             .count(),
         1,
         "{rows:?}"
     );
+    let mut app = self::app();
+    ran(&mut app, "c1", &"x".repeat(280), false);
+    let rows = flat(&app.reflowed(80));
+    assert!(!rows.iter().any(|r| r.contains(" rows, ")), "{rows:?}");
     Ok(())
 }
 
@@ -251,16 +264,16 @@ fn a_failed_calls_reason_is_not_folded_to_two_rows() -> TestResult {
 }
 
 #[test]
-fn a_failed_calls_collapsed_rows_still_fold_to_two() -> TestResult {
+fn a_failed_calls_collapsed_rows_fold_to_the_rows_its_card_has_left() -> TestResult {
     let mut app = app();
     ran(&mut app, "c1", &format!("boom\n{}", "e".repeat(600)), true);
     let rows = flat(&app.reflowed(80));
     assert_eq!(
         rows.iter().filter(|r| r.contains("eee")).count(),
-        2,
-        "only the reason is revealed; a collapsed row folds as main folds it: {rows:?}"
+        7,
+        "the row after `boom` takes the seven rows a failed card of eight has left: {rows:?}"
     );
-    assert!(rows.iter().any(|r| r.contains("… 2 of")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains("… 7 of 9")), "{rows:?}");
     Ok(())
 }
 

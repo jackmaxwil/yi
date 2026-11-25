@@ -6,7 +6,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::colors::{ColorTier, Theme, name_accent};
 use crate::diffview::{self, DiffBudget};
 use crate::markdown;
-use crate::wrap::wrap_line;
+use crate::wrap::{capped, wrap_line};
 use yi_types::status_mark::StatusMark;
 use yi_types::subagent::{ChildActivity, ChildFlag};
 
@@ -221,29 +221,6 @@ pub(crate) fn subject_of<'a>(name: &str, summary: &'a str) -> &'a str {
 const ELIDED_ROWS: usize = 2;
 const REVEAL_ROWS: usize = 24;
 
-/// A row past the kept screen lines is generated, not written: the elision names kept of total.
-fn capped(
-    line: &Line<'static>,
-    width: usize,
-    indent: &str,
-    theme: &Theme,
-    keep: usize,
-) -> Vec<Line<'static>> {
-    let mut rows = wrap_line(line, width, indent);
-    if rows.len() <= keep {
-        return rows;
-    }
-    let total = rows.len();
-    let bytes: usize = line.spans.iter().map(|s| s.content.len()).sum();
-    rows.truncate(keep);
-    let elided = format!(
-        "{indent}… {keep} of {total} rows, {} KB",
-        bytes.div_ceil(1024)
-    );
-    rows.push(Line::styled(elided, theme.dim_style()));
-    rows
-}
-
 pub(crate) fn glyph(tool: &str) -> char {
     match tool {
         "bash" => '$',
@@ -339,9 +316,15 @@ impl ToolCell {
             ToolStatus::Denied => vec![Span::styled("⊘ ", style)],
             ToolStatus::Done => Vec::new(),
         };
-        spans.extend(self.summary_spans(theme, style));
         let (chips, digest) = self.chips(theme);
         let inner = crate::card::body_width(width);
+        let budget = crate::budget::card_rows(theme.rows, failed);
+        let room = inner.saturating_mul(budget).saturating_sub(1);
+        let mut head = self.summary.clone();
+        if !expanded && head.chars().count() > room {
+            head = head.chars().take(room).collect::<String>() + "…";
+        }
+        spans.extend(self.summary_spans(&head, theme, style));
         let revealed = if expanded || failed {
             REVEAL_ROWS
         } else {
@@ -355,7 +338,6 @@ impl ToolCell {
                 (Vec::new(), false)
             } else {
                 let body = self.body(theme);
-                let budget = crate::budget::card_rows(theme.rows, failed);
                 let keep = crate::budget::shown_rows(budget, body.len());
                 let cut = keep < body.len();
                 let elision = |row: &Line| {
@@ -441,8 +423,11 @@ impl ToolCell {
                 0
             };
             let shown = !preview.is_empty();
+            let mut left = budget;
             for line in preview {
-                body.extend(capped(&line, inner, "     ", theme, ELIDED_ROWS));
+                let rows = capped(&line, inner, "     ", theme, left.max(ELIDED_ROWS));
+                left = left.saturating_sub(rows.len());
+                body.extend(rows);
             }
             if shown && hidden > 0 {
                 body.push(Line::from(Span::styled(
@@ -518,14 +503,14 @@ impl ToolCell {
 
     /// A shell command is code, so it renders as code rather than as a tool
     /// argument: a dim `$` then the command itself, highlighted.
-    fn summary_spans(&self, theme: &Theme, style: Style) -> Vec<Span<'static>> {
-        let command = self.summary.strip_prefix("$ ");
+    fn summary_spans(&self, summary: &str, theme: &Theme, style: Style) -> Vec<Span<'static>> {
+        let command = summary.strip_prefix("$ ");
         let Some((mut lang, command)) = crate::highlight::lang_for("bash").zip(command) else {
             let name = Style::default()
                 .fg(crate::card::tool_hue(theme, &self.name))
                 .add_modifier(Modifier::BOLD);
             let label = label(&self.name);
-            return match self.summary.split_once(label.as_str()) {
+            return match summary.split_once(label.as_str()) {
                 Some((glyph, rest)) => {
                     let mut spans = vec![Span::styled(format!("{glyph}{label}"), name)];
                     // Incident: the label's trailing space hid every path from the split.
@@ -537,7 +522,7 @@ impl ToolCell {
                     }
                     spans
                 }
-                None => vec![Span::styled(self.summary.clone(), style)],
+                None => vec![Span::styled(summary.to_owned(), style)],
             };
         };
         let mut spans = vec![Span::styled("$ ".to_owned(), theme.dim_style())];

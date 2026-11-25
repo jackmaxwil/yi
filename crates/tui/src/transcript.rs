@@ -40,7 +40,7 @@ pub fn show_controls(text: &str) -> String {
 /// the screen. A diff carries neither the `syntax:` verdicts nor the trailing ripwire block.
 pub(crate) fn result_preview(text: &str, details: &Value) -> Vec<String> {
     if details.get("patch").is_none() {
-        return preview_lines(text, 12, 6);
+        return preview_lines(text, 80, 40);
     }
     let header = |line: &str| line.starts_with('[') && line.ends_with(']') && line.contains('#');
     let files = text.lines().filter(|line| header(line)).count();
@@ -146,6 +146,14 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
     let (done, rest) = counts.split_once('/')?;
     let total = rest.split(|c: char| !c.is_ascii_digit()).next()?;
     (done == total && total.parse::<u64>().ok()? > 0).then(|| format!("Todos {total}/{total}"))
+}
+
+/// A tool card's head: a shell command whole, every other tool as one row names it.
+pub(crate) fn arg_whole(tool: &str, args: &Value) -> String {
+    match args.get("command").and_then(Value::as_str) {
+        Some(command) if tool == "bash" => command.split_whitespace().collect::<Vec<_>>().join(" "),
+        _ => arg_summary(tool, args),
+    }
 }
 
 pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {

@@ -5,7 +5,7 @@ use yi_types::event::Wait;
 
 use crate::cell::{ToolCell, ToolStatus};
 use crate::motion::elapsed_ms;
-use crate::transcript::{arg_summary, show_controls};
+use crate::transcript::{arg_whole, show_controls};
 
 #[derive(Debug, Clone)]
 pub struct Pen {
@@ -40,7 +40,7 @@ impl Pen {
             name: self.name.clone(),
             call_id: String::new(),
             status: ToolStatus::Running,
-            summary: ToolCell::summary_of(&self.name, &arg_summary(&self.name, &args)),
+            summary: ToolCell::summary_of(&self.name, &arg_whole(&self.name, &args)),
             digest: (lines.len() > 1).then(|| format!("{} lines so far", lines.len())),
             preview: lines
                 .iter()

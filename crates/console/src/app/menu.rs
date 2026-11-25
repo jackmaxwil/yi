@@ -387,22 +387,6 @@ impl App {
         })
     }
 
-    pub(super) fn open_thought(&mut self, pane: PaneId, cell: usize) {
-        self.pending_close = None;
-        let source = match self.state.panes.get(&pane).map(|pane| &pane.content) {
-            Some(PaneContent::Session {
-                chat: Some(chat), ..
-            }) => match chat.app.said(cell) {
-                Some((yi_tui::transcript::Said::Thought, source)) => Some(source.to_owned()),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(source) = source {
-            self.read_beside(pane, "thought".to_owned(), source);
-        }
-    }
-
     fn read_beside(&mut self, pane: PaneId, path: String, source: String) {
         let workdir = self.session_dir();
         let content = PaneContent::Markdown {

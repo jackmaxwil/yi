@@ -6,6 +6,5 @@ use yi_types::config::RewriteLength;
 pub struct ChatHits {
     /// Each run chip: where it stands, its cell and its ordinal among that cell's shell blocks.
     pub runs: Vec<(Rect, usize, usize)>,
-    pub thoughts: Vec<(Rect, usize)>,
     pub improve: Vec<(Rect, Option<RewriteLength>)>,
 }

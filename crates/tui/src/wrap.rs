@@ -9,6 +9,29 @@ pub(crate) struct Cell {
     pub(crate) width: usize,
 }
 
+/// A row past the kept screen lines is generated, not written: the elision names kept of total.
+pub(crate) fn capped(
+    line: &Line<'static>,
+    width: usize,
+    indent: &str,
+    theme: &crate::colors::Theme,
+    keep: usize,
+) -> Vec<Line<'static>> {
+    let mut rows = wrap_line(line, width, indent);
+    if rows.len() <= keep {
+        return rows;
+    }
+    let total = rows.len();
+    let bytes: usize = line.spans.iter().map(|s| s.content.len()).sum();
+    rows.truncate(keep);
+    let elided = format!(
+        "{indent}… {keep} of {total} rows, {} KB",
+        bytes.div_ceil(1024)
+    );
+    rows.push(Line::styled(elided, theme.dim_style()));
+    rows
+}
+
 /// One row: a line wider than `width` keeps what fits before a closing `…`.
 pub fn fit(line: Line<'static>, width: usize) -> Line<'static> {
     let cells = flatten(&line);
