@@ -3462,6 +3462,13 @@ def checks():
             row = next((body["body"] for _, body in patched if "body" in (body or {}) and "yi-autofix-meta" in body["body"]), "")
             if "verdict=rerun" not in row or "from=abc" not in row or ran != ([] if refused else [len(patched)]):
                 errs.append(f"a tidy {'refused' if refused else 'allowed'} its comment wrote {row[:120]!r} and reran {ran}")
+        # A reopen the forge refuses after the tidy's row is said once more, in its words, as for any rerun.
+        forge_pr.cmd_rerun, patched[:] = (lambda ns: print("#1 is left CLOSED: the forge refused the reopen three times") or 1), []
+        with contextlib.redirect_stdout(io.StringIO()):
+            done = tidy("o/r", {"number": 1, "body": "Closes #1. Refs #2.", "head": {"sha": "abc"}})
+        rows = [body["body"] for _, body in patched if "yi-autofix-meta" in (body or {}).get("body", "")]
+        if done or len(rows) != 2 or "kind=title" not in rows[1] or "stop=rerun" not in rows[1] or "left CLOSED" not in rows[1]:
+            errs.append(f"a tidy whose reopen the forge refused read {done} and said {[r[-160:] for r in rows]}")
     finally:
         forge_pr.fgj_api, forge_pr.repo, forge_pr.cmd_rerun = real_api, real_repo, real_rerun
     fresh = {"n": 3, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness"}]}
