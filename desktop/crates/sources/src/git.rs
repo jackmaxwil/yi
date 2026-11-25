@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn a_sessions_checkout_is_named_and_shows_its_edits_against_the_base()
     -> Result<(), Box<dyn Error>> {
-        if old_git() {
+        if old_git()? {
             return Ok(());
         }
         let at = repo("checkout")?;

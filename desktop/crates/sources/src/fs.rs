@@ -288,21 +288,33 @@ pub(crate) mod tests {
         Ok(at)
     }
 
-    /// True, saying so, where git cannot list worktrees with `-z` (new in 2.36): the test has nothing to run.
-    /// Incident: the forge image's git is 2.34, and six tests of a session's checkout failed there.
-    pub(crate) fn old_git() -> bool {
-        static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let old = *OLD.get_or_init(|| {
-            let probe = scratch("git-z").and_then(|at| {
-                sh(&at, &["init", "-q"])?;
-                sh(&at, &["worktree", "list", "--porcelain", "-z"])
-            });
-            probe.is_err()
-        });
+    /// Whether this git cannot list worktrees with `-z` (new in 2.36), which it says: the test has
+    /// nothing to run. Incident: the forge's git is 2.34. Any other failure is the test's own.
+    pub(crate) fn old_git() -> Result<bool, Box<dyn Error>> {
+        static OLD: std::sync::OnceLock<Result<bool, String>> = std::sync::OnceLock::new();
+        let probe = || -> Result<bool, Box<dyn Error>> {
+            let at = scratch("git-z")?;
+            sh(&at, &["init", "-q"])?;
+            #[allow(clippy::disallowed_methods, reason = "a test asks git what it can do")]
+            let out = Command::new("/usr/bin/git")
+                .arg("-C")
+                .arg(&at)
+                .args(["worktree", "list", "--porcelain", "-z"])
+                .output()?;
+            let said = String::from_utf8_lossy(&out.stderr);
+            match (out.status.success(), said.contains("unknown switch")) {
+                (true, _) => Ok(false),
+                (false, true) => Ok(true),
+                (false, false) => Err(format!("git worktree list -z failed: {said}").into()),
+            }
+        };
+        let old = OLD
+            .get_or_init(|| probe().map_err(|e| e.to_string()))
+            .clone()?;
         if old {
             eprintln!("skipped: this git has no `worktree list -z`, new in 2.36");
         }
-        old
+        Ok(old)
     }
 
     /// `git` in `at`, for setting a scratch repository up.

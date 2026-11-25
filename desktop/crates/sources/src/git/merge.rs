@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn a_checkouts_commits_merge_into_the_project_folder_once_asked() -> Result<(), Box<dyn Error>>
     {
-        if old_git() {
+        if old_git()? {
             return Ok(());
         }
         let (home, lane) = project("merge")?;
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn a_project_folder_with_edits_or_on_another_branch_takes_no_merge()
     -> Result<(), Box<dyn Error>> {
-        if old_git() {
+        if old_git()? {
             return Ok(());
         }
         let (home, lane) = project("merge-dirty")?;
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn a_conflict_is_left_as_git_left_it_and_says_where() -> Result<(), Box<dyn Error>> {
-        if old_git() {
+        if old_git()? {
             return Ok(());
         }
         let (home, lane) = project("merge-conflict")?;
@@ -283,7 +283,7 @@ mod tests {
     /// agent's files, which it had not committed.
     #[test]
     fn uncommitted_work_in_the_checkout_is_named_as_the_reason() -> Result<(), Box<dyn Error>> {
-        if old_git() {
+        if old_git()? {
             return Ok(());
         }
         let (_, lane) = project("merge-uncommitted")?;
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn the_row_says_what_a_merge_would_take_before_it_is_asked() -> Result<(), Box<dyn Error>> {
-        if old_git() {
+        if old_git()? {
             return Ok(());
         }
         let (_, lane) = project("merge-row")?;

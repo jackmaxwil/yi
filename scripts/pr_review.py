@@ -1205,9 +1205,10 @@ GATE_LANES = ("gate (desktop)", "gate (guardrails)", "gate (lint)", "gate (test)
 
 
 def head_lanes(jobs, lanes=GATE_LANES):
-    """Invariant: a head pushed before the desktop lane existed has no status for it and waits on
-    nothing there; the queue's candidate is built on main, so it always runs the lane."""
-    return [lane for lane in lanes if lane != "gate (desktop)" or lane in jobs]
+    """Invariant: one push creates a status for every lane of the gate at once, so a head whose
+    other lanes all have one and whose desktop lane has none was pushed before that lane existed."""
+    predates = "gate (desktop)" not in jobs and all(lane in jobs for lane in GATE_LANES if lane != "gate (desktop)")
+    return [lane for lane in lanes if lane != "gate (desktop)" or not predates]
 
 
 def promote(repo, pr, rounds):

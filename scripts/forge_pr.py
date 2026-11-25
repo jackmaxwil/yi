@@ -1055,6 +1055,9 @@ def selfcheck():
     assert code == 1 and not posts, "a red gate (test) on the head is not merged even when the rule does not list it"
     code, posts = merge_on_fake_forge(listed, dict(green, **{"gate (desktop)": "failure"}))
     assert code == 1 and not posts, "a red gate (desktop) on the head is not merged: the forge is where the app is built"
+    before = {job: s for job, s in green.items() if job != "gate (desktop)"}
+    code, posts = merge_on_fake_forge(listed, before)
+    assert code == 0 and len(posts) == 1, "a head pushed before the desktop lane existed waits on a lane that never runs"
     code, posts = merge_on_fake_forge(listed, {job: s for job, s in green.items() if job != "gate (lint)"})
     assert code == 2 and not posts, "a gate that has not run on the head is not merged"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
