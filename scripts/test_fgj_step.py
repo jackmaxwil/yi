@@ -19,9 +19,9 @@ SUM = hashlib.sha256(GOOD).hexdigest()
 PINNED = "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39"
 
 
-def step(name, text=None):
+def step(name):
     """The run script of the `install fgj` step in a workflow's only job, dedented."""
-    text = text if text is not None else (ROOT / f".forgejo/workflows/{name}.yml").read_text()
+    text = (ROOT / f".forgejo/workflows/{name}.yml").read_text()
     job = workflow_job(text, name)
     found = workflow_step(workflow_steps(job), "install fgj").splitlines()
     body = found[found.index("        run: |") + 1:]
