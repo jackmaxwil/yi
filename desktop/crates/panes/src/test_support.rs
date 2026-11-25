@@ -1,7 +1,7 @@
 //! What more than one pane's tests do to a drawn window.
 use std::error::Error;
 
-use rune::Runtime;
+use rune::{Key, KeyEvent, Mods, Runtime};
 use yd_ui::win::Win;
 
 /// Presses and lets go at the middle of the live element keyed `key`, then settles as told.
@@ -20,4 +20,16 @@ pub(crate) fn tap(
     rt.pointer_up(x, y);
     settle(rt);
     Ok(())
+}
+
+/// Strikes `key`, with the system's own main key held when `cmd`: ⌘ on a Mac, Ctrl elsewhere.
+pub(crate) fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {
+    let mods = Mods {
+        cmd,
+        logo: cmd && cfg!(target_os = "macos"),
+        ctrl: cmd && !cfg!(target_os = "macos"),
+        ..Mods::default()
+    };
+    rt.key(KeyEvent { key, mods });
+    rt.frame(0.016);
 }

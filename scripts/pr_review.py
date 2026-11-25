@@ -1204,13 +1204,19 @@ def walled(paths):
 GATE_LANES = ("gate (desktop)", "gate (guardrails)", "gate (lint)", "gate (test)")
 
 
+def head_lanes(jobs, lanes=GATE_LANES):
+    """Invariant: a head pushed before the desktop lane existed has no status for it and waits on
+    nothing there; the queue's candidate is built on main, so it always runs the lane."""
+    return [lane for lane in lanes if lane != "gate (desktop)" or lane in jobs]
+
+
 def promote(repo, pr, rounds):
     """Take a draft that `promotes` and whose gate lanes passed on its head out of draft; True when it left."""
     title, number = pr.get("title", ""), pr["number"]
     if not (title.startswith(DRAFT) and promotes(rounds, pr["head"]["sha"], holds_for(number, pr["base"]["ref"]))):
         return False
     jobs = forge_pr.jobs_of(pr)
-    waiting = [lane for lane in GATE_LANES if jobs.get(lane) != "success"]
+    waiting = [lane for lane in head_lanes(jobs) if jobs.get(lane) != "success"]
     if waiting:
         print(f"#{number}: stays a draft until its gate passes: " + ", ".join(f"{lane} {jobs.get(lane, 'not run')}" for lane in waiting))
         return False

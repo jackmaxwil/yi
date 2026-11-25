@@ -1,8 +1,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 bin := "target/debug/yi-desktop"
-# Incident: the forge image's `python3` is 3.10, which has no tomllib; the root `desktop` lane names a newer one.
-py := env_var_or_default("PY", "python3")
+# Incident: the forge image's `python3` is 3.10, which has no tomllib; the repo's ladder finds a newer one.
+py := `../scripts/py.sh`
 
 fmt:
     cargo fmt
@@ -20,8 +20,8 @@ har:
 colours:
     {{py}} tools/gate/colours.py --selfcheck && {{py}} tools/gate/colours.py
 
-test:
-    cargo test --workspace
+test *FLAGS:
+    cargo test --workspace {{FLAGS}}
 
 # Every registered scene, rendered headless; any failed render fails the recipe.
 scenes:
@@ -40,10 +40,14 @@ journey *NAMES:
 supply:
     status=0; cargo deny check || status=1; cargo audit || status=1; exit $status
 
-# What a machine with no Mac can judge: every gate but the pictures. The forge runs it on Linux.
-gate: fmt-check lint har colours test
+# The gates that build no test: format, lint and the two source scans.
+static: fmt-check lint har colours
 
-check: gate scenes
+# What a machine with no Mac can judge: every gate but the pictures. The forge runs it on Linux,
+# its tests on the `gate` profile.
+gate: static (test "--profile gate")
+
+check: static test scenes
 
 # Lay out target/package/Yi Desktop.app (unsigned, the build without tooling) and prove a tooling
 # build kept beside it starts headless from inside the bundle.

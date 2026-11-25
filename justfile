@@ -190,11 +190,10 @@ desktop:
     # Incident: without xkbcommon the app's test binaries do not link, and with no system font to
     # find, the code view's tests measure nothing: ten failed in a bare Ubuntu 22.04.
     need="libxkbcommon-dev fontconfig fonts-dejavu-core"
-    if [ "$(uname)" = Linux ] && ! dpkg -s $need >/dev/null 2>&1; then
+    if command -v dpkg >/dev/null && ! dpkg -s $need >/dev/null 2>&1; then
       apt-get update -qq && apt-get install -y -qq --no-install-recommends $need
     fi
-    PY=$(scripts/py.sh)
-    cd desktop && rustup show active-toolchain && PY="$PY" just gate
+    cd desktop && rustup show active-toolchain && just gate
 
 # Tier 3, every version tag: check the tag against the version of record, then the artifact.
 prerelease version:

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::error::Error;
 use std::rc::Rc;
 
-use rune::{ElementInfo, Env, Key, KeyEvent, Mods, Runtime};
+use rune::{ElementInfo, Env, Key, Runtime};
 use yd_core::ids::WindowId;
 use yd_core::msg::Effect;
 use yd_core::row::{Value, rows_from_json};
@@ -13,6 +13,7 @@ use yd_ui::pane::{PaneCx, PaneDef, SCENE_PANE};
 use yd_ui::win::{Hub, Win};
 
 use super::{DEF, scenes};
+use crate::test_support::press;
 
 type Check = Result<(), Box<dyn Error>>;
 
@@ -59,17 +60,6 @@ fn find<'a>(tree: &'a [ElementInfo], key: &str) -> Result<&'a ElementInfo, Box<d
 
 fn tap(rt: &mut Runtime<Win>, key: &str) -> Check {
     crate::test_support::tap(rt, key, settle)
-}
-
-fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {
-    let mods = Mods {
-        cmd,
-        logo: cmd && cfg!(target_os = "macos"),
-        ctrl: cmd && !cfg!(target_os = "macos"),
-        ..Mods::default()
-    };
-    rt.key(KeyEvent { key, mods });
-    rt.frame(0.016);
 }
 
 /// Replaces everything in the text view with `words`.

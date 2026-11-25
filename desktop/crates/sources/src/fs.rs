@@ -288,6 +288,23 @@ pub(crate) mod tests {
         Ok(at)
     }
 
+    /// True, saying so, where git cannot list worktrees with `-z` (new in 2.36): the test has nothing to run.
+    /// Incident: the forge image's git is 2.34, and six tests of a session's checkout failed there.
+    pub(crate) fn old_git() -> bool {
+        static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let old = *OLD.get_or_init(|| {
+            let probe = scratch("git-z").and_then(|at| {
+                sh(&at, &["init", "-q"])?;
+                sh(&at, &["worktree", "list", "--porcelain", "-z"])
+            });
+            probe.is_err()
+        });
+        if old {
+            eprintln!("skipped: this git has no `worktree list -z`, new in 2.36");
+        }
+        old
+    }
+
     /// `git` in `at`, for setting a scratch repository up.
     pub(crate) fn sh(at: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
         #[allow(

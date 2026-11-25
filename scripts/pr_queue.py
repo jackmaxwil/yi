@@ -1400,7 +1400,7 @@ def neutral_cases():
     lanes = lambda *states: [{"context": f"pr / {job} (pull_request)", "status": state} for job, state in zip((*LANES, "title"), states)]
     mine = {"context": STATE, "status": "success", "description": "unknown, waiting on person since 11-22 10:04Z (26 h, clock 0 h) parked"}
     pr = {"number": 7, "title": "t", "state": "open", "head": {"sha": "a" * 40}, "base": {"ref": "main"}, "labels": []}
-    for rows in ([], lanes("success", "success", "success", "success"), lanes("success", "failure", "pending"), lanes("pending")):
+    for rows in ([], lanes(*["success"] * (len(LANES) + 1)), lanes("success", "failure", "pending"), lanes("pending")):
         seen = []
         for extra in ([], [mine]):
             with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: {"statuses": rows + extra}), \
