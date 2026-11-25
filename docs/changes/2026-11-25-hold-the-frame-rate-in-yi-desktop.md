@@ -4,6 +4,8 @@ cut: none desktop/crates/panes/src/chat/messages.rs
 cut: none desktop/crates/ui/src/list/view.rs
 cut: none desktop/tests/budgets/run.py
 cut: none desktop/Cargo.toml
+cut: none desktop/crates/app/tests/budgets.rs
+cut: none desktop/crates/panes/src/chat_doc/view.rs
 ---
 Yi Desktop holds the display's frame rate with its glass on, a long conversation no longer slows every keystroke and every streamed word, and a streaming answer eases in.
 
