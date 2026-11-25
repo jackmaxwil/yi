@@ -1,4 +1,6 @@
 ---
+version: 0.1131.0
+decisions: D619
 issue: Refs #2163
 decision: a tool result that is not a file read, an edit, a search or a streaming write or cell is drawn in one dim tone, never typed by its content, with the colour codes its program printed dropped and no hue on its file paths | a shell card chose each row's colour from the row's own shape, so one `grep -n` result showed grey context rows, white hit rows and magenta `--- label` rows together; asked whether a program's own colours and the path hue should stay, the owner answered "All grey, no exceptions" | reversible by restoring the `sniff(preview)` arm and `text_spans` in the tool card body
 ledger~: TUI | other output by what it holds (JSON, a diff, a shebang), the colour codes a program printed as colour, and file paths, `path:line` included, in the hue prose gives a path | a notebook cell's output by what it holds (JSON, a diff, a shebang), with the colour codes its program printed as colour and its file paths, `path:line` included, in the hue prose gives a path, while a shell command's and every other tool's output is one dim tone that drops the program's colour codes and takes no path hue, and a row clipped to its first screen lines says so in that tone
