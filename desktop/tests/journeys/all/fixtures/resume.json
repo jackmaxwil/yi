@@ -1,5 +1,5 @@
 {
- "about": "A turn waits on an approval and the app is quit and started again with no record of the ask: the server does not ask again after a reconnect, so the thread comes back with its step said to be lost and the run held, nobody is told it needs them, and a prompt typed to it says why it is not sent.",
+ "about": "A turn waits on an approval and the app is quit and started again with no record of the ask: the server sends the unanswered request again to the new client, so the approval card comes back and the thread is said to need you, and once the app is started again and Enter answers it the command runs and nothing says the approval was lost.",
  "worker": true,
  "empty": true,
  "runs": [
@@ -38,21 +38,6 @@
   {
    "steps": [
     {
-     "t": 5,
-     "type": "tap",
-     "key": "chat-8.composer.input"
-    },
-    {
-     "t": 5.2,
-     "type": "type",
-     "text": "please continue"
-    },
-    {
-     "t": 6.0,
-     "type": "key",
-     "name": "Enter"
-    },
-    {
      "t": 8,
      "type": "mark",
      "name": "end"
@@ -61,17 +46,51 @@
    "expect": {
     "texts": [
      "run the command",
-     "warm up"
+     "warm up",
+     "Run a command",
+     "Deny"
     ],
     "contains": [
-     "This approval was lost when the app quit. Yi is still waiting on it",
-     "not sent, a lost approval holds the run · please continue"
+     "1 need you"
     ],
     "absent": [
      "one.txt"
     ],
     "absent_texts": [
-     "1 need you"
+     "This approval was lost when the app quit. Yi is still waiting on it, and Stop does not free it: the run stays held until yi serve restarts."
+    ]
+   }
+  },
+  {
+   "steps": [
+    {
+     "t": 5,
+     "type": "tap",
+     "key": "chat-8.composer.input"
+    },
+    {
+     "t": 6.0,
+     "type": "key",
+     "name": "Enter"
+    },
+    {
+     "t": 10,
+     "type": "mark",
+     "name": "end"
+    }
+   ],
+   "expect": {
+    "files": [
+     "one.txt"
+    ],
+    "texts": [
+     "run the command",
+     "echo one > one.txt",
+     "turn done"
+    ],
+    "absent_texts": [
+     "1 need you",
+     "This approval was lost when the app quit. Yi is still waiting on it, and Stop does not free it: the run stays held until yi serve restarts."
     ]
    }
   }
