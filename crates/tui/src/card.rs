@@ -155,7 +155,7 @@ pub fn card(
         spans.extend(
             row.spans
                 .into_iter()
-                .map(|span| Span::styled(span.content, ground.patch(span.style))),
+                .map(|span| Span::styled(span.content, ground.patch(row.style).patch(span.style))),
         );
         spans.push(Span::styled(" ".repeat(inner.saturating_sub(used)), ground));
         rows.push(Line::from(spans));
