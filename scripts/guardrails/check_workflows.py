@@ -8,6 +8,8 @@ Incident: `if: ... startsWith(title, 'WIP: ')` failed three review runs before a
 import re, shutil, subprocess, sys, pathlib, tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail
+sys.path.insert(0, str(ROOT / "scripts"))
+from forge_pr import WEB  # noqa: E402
 
 KEY = re.compile(r"^\s*(?:-\s+)?[\w.$-]+:(?:\s+(.*))?$")
 BLOCK = re.compile(r"^[|>][-+0-9]*\s*(#.*)?$")
@@ -17,6 +19,9 @@ SKIP = re.compile(r"\[\s*(?:skip[ _-]?ci|ci[ _-]?skip|no[ _-]?ci|skip[ _-]?actio
 JOBS = re.compile(r"^  ([\w-]+):\s*$")
 RUNNER = re.compile(r"^    runs-on:(?:\s+(.*?))?\s*$")
 ITEM = re.compile(r"^\s+-\s+(.*?)\s*$")
+USES = re.compile(r"^\s*(?:-\s+)?uses:\s*['\"]?([^\s'\"#]+)")
+MIRROR = f"{WEB}/the image registry/"
+FORGE = ("./", MIRROR)
 CHOSEN = re.compile(r"\$\{\{ contains\([^{}()&|]*\) && '([\w-]+)' \|\| '([\w-]+)' \}\}")
 
 
@@ -47,6 +52,15 @@ def silenced(text, off=""):
         return []
     return [(n, line.strip()) for n, line in enumerate(text.splitlines(), 1)
             if not line.lstrip().startswith("#") and SKIP.search(line)]
+
+
+def outside(text, off=""):
+    """Steps fetched from anywhere but the forge's public organisation: the runner clones a step signed out,
+    and a job whose step host is down or private dies at set-up, before any step."""
+    if off == "outside":
+        return []
+    return [(n, m.group(1)) for n, line in enumerate(text.splitlines(), 1)
+            if (m := USES.match(line)) and not m.group(1).startswith(FORGE)]
 
 
 def label(value):
@@ -188,11 +202,11 @@ def recorder_isolation(text, off=""):
     """The recorder builds untrusted landed code; only its artifact-fed push job may hold the main token."""
     record, push = workflow_job(text, "record"), workflow_job(text, "push")
     steps, push_steps = workflow_steps(record), workflow_steps(push)
-    checkout = workflow_step(steps, "uses: actions/checkout@")
+    checkout = workflow_step(steps, f"uses: {MIRROR}actions-checkout@")
     ratchet = workflow_step(steps, "run: python3 scripts/forge_pr.py ratchet --forge-measured")
     bundle = workflow_step(steps, 'run: git bundle create "$RUNNER_TEMP/recorder.bundle" HEAD')
-    upload = workflow_step(steps, "uses: actions/upload-artifact@")
-    download = workflow_step(push_steps, "uses: actions/download-artifact@")
+    upload = workflow_step(steps, f"uses: {MIRROR}actions-upload-artifact@")
+    download = workflow_step(push_steps, f"uses: {MIRROR}actions-download-artifact@")
     errs = []
 
     def want(name, condition, message):
@@ -205,7 +219,7 @@ def recorder_isolation(text, off=""):
          and "token: ${{ secrets.RECORDER_TOKEN }}" in checkout and record.count("RECORDER_TOKEN") == 1,
          "the recorder checkout alone may read its token and must not persist it")
     want("record-toolchain", workflow_step(steps, "run: rustup show")
-         and workflow_step(steps, "uses: Swatinem/rust-cache@"), "the dist build needs its toolchain and cache")
+         and workflow_step(steps, f"uses: {MIRROR}swatinem-rust-cache@"), "the dist build needs its toolchain and cache")
     want("record-ratchet", ratchet and "id: ratchet" in ratchet and "continue-on-error: true" in ratchet
          and all(name in ratchet for name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")),
          "the ratchet step needs an id, continue-on-error and all four Git identity values")
@@ -219,7 +233,7 @@ def recorder_isolation(text, off=""):
          and "if: vars.RECORD_CHANGES == 'on' && github.event.head_commit.author.name != 'yi-queue'" in push,
          "the push job must depend on record and use its enable condition")
     want("push-download", download and "name: recorder" in download and "path: ${{ runner.temp }}" in download
-         and not workflow_step(push_steps, "uses: actions/checkout@"),
+         and not workflow_step(push_steps, f"uses: {MIRROR}actions-checkout@"),
          "the push job must download the recorder artifact without checking out landed code")
     want("push-token", "RECORDER_TOKEN: ${{ secrets.RECORDER_TOKEN }}" in push
          and "RATCHET_OUTCOME: ${{ needs.record.outputs.ratchet_outcome }}" in push,
@@ -263,6 +277,9 @@ def selfcheck(off=""):
         bad.append("a commit message carrying [skip ci] is not refused")
     if silenced('# a comment naming [skip ci] is not a commit\nrun: echo one\n', off):
         bad.append("a comment naming the keyword is refused")
+    steps = f"steps:\n  - uses: actions/checkout@v4\n  - uses: {MIRROR}actions-cache@v4\n  - uses: ./local\n  - uses: {WEB}/upstream/x@v1\n"
+    if outside(steps, off) != [(2, "actions/checkout@v4"), (5, f"{WEB}/upstream/x@v1")]:
+        bad.append("a step from github.com or a private forge organisation is not refused, or a public forge or local one is")
     if shared_lane(gate, shared, off) != [("review", "ubuntu-latest")]:
         bad.append("a review job on the gate's own runner lane is not refused")
     spellings = (("a trailing comment", noted), ("a quoted label", quoted), ("a flow list", flow), ("a listed lane", listed))
@@ -332,7 +349,7 @@ def selfcheck(off=""):
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("plain", "blocks", "comments", "silenced", "lane", "candidate", "skills", "install", *RECORDER_CHECKS):
+        for off in ("plain", "blocks", "comments", "silenced", "outside", "lane", "candidate", "skills", "install", *RECORDER_CHECKS):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} check disabled, so it refutes nothing")
         fail(errs, "workflows selfcheck")
@@ -348,6 +365,9 @@ if __name__ == "__main__":
     errs += [f"{f.relative_to(ROOT)}:{n}: `{v}` starts no workflow for the push that carries it, the mirror's "
              f"run included; skip the lane that must not re-run instead, by author or by path"
              for f in files for n, v in silenced(f.read_text())]
+    errs += [f"{f.relative_to(ROOT)}:{n}: `uses: {v}` is fetched from off the forge, and every job dies at set-up "
+             "while that host is down (328 did, 10-05 to 11-22): mirror it under the image registry/, the public organisation, and use its "
+             f"{MIRROR} URL" for f in files for n, v in outside(f.read_text())]
     errs += [f".forgejo/workflows/review.yml: job {job} runs on {lane}, the lane a pr.yml gate job runs on; "
              "a round waits an hour or two on the model at a few percent of one CPU, so the gates queued behind "
              "it for up to four hours (#1310): give the round a lane of its own"
