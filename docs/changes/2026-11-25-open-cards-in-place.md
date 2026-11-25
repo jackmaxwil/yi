@@ -4,6 +4,8 @@ decision: in the console a press on a tool card or a folded thought opens that o
 ledger~: TUI | the console opens a folded thought beside the chat on a press | in the console a press on a tool card or a folded thought opens that one cell whole where it stands and the next press folds it, a shell command's head is whole up to its card's rows, and a long result row takes the rows its card has left
 ledger~: TUI | drive::pressing_a_folded_thought_opens_it_beside_the_chat | drive::pressing_a_folded_thought_opens_it_in_place
 raise: tests +64, crate tui +12
+shares: #2372 this changes two lines of the thought paragraph near line 1361 of docs/YI_DESIGN.md, 450 lines below the subagent section that pull request adds to
+shares: #2375 the same two lines, 450 lines below the subagent section that pull request adds to
 cut: none crates/tui/src/cell.rs
 cut: none crates/tui/tests/cards.rs
 cut: none crates/tui/tests/toolcells.rs
