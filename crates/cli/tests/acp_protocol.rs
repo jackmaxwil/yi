@@ -2529,6 +2529,53 @@ fn a_session_whose_turn_just_ended_is_not_the_idlest() -> TestResult {
     client.finish()
 }
 
+/// A user cell's settled `tool_call_update`, read until the cell ends.
+fn cell(
+    client: &mut AcpClient,
+    n: usize,
+    session: &str,
+    code: &str,
+) -> Result<Value, Box<dyn Error>> {
+    let sent = client.request(
+        &format!("cell-{n}"),
+        "_yi/kernel_execute",
+        json!({"sessionId": session, "code": code}),
+    )?;
+    let call = (sent.last()).and_then(|frame| frame["result"]["callId"].as_str());
+    let call = call.ok_or("no callId")?.to_owned();
+    let frames = client.read_until(|frame| {
+        let update = &frame["params"]["update"];
+        update["toolCallId"] == call.as_str()
+            && update["sessionUpdate"] == "tool_call_update"
+            && (update["status"] == "completed" || update["status"] == "failed")
+    })?;
+    Ok(frames.last().cloned().unwrap_or(Value::Null))
+}
+
+/// Incident: a contained Linux kernel's TMPDIR was its connection dir, which every kernel start
+/// empties, so a file a cell left in its temp dir was gone once the kernel restarted.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_file_in_the_kernels_temp_dir_outlives_a_kernel_restart() -> TestResult {
+    let dir = temp_dir("kernel-tmp")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let id = new_idle_session(&mut client, &dir, 0)?;
+    let kept = format!("pathlib.Path(tempfile.gettempdir(), 'kept-{id}')");
+    let write = format!("import pathlib, tempfile\n{kept}.write_text('kept')");
+    let wrote = cell(&mut client, 0, &id, &write)?;
+    assert_eq!(wrote["params"]["update"]["status"], "completed", "{wrote}");
+    cell(&mut client, 1, &id, "import os\nos._exit(0)")?;
+    let read = format!("import pathlib, tempfile\nprint({kept}.read_text())");
+    let after = cell(&mut client, 2, &id, &read)?;
+    let update = &after["params"]["update"];
+    assert!(
+        update["status"] == "completed" && update.to_string().contains("kept"),
+        "the temp file was gone after the kernel restarted: {after}"
+    );
+    client.finish()
+}
+
 /// A letter to a session the worker unloaded while idle still reaches it: the mailbox's due job
 /// finds no lane, the worker loads the session again, and its subscription delivers.
 #[test]
@@ -2544,11 +2591,11 @@ fn a_letter_to_an_evicted_session_loads_it_and_reads_the_letter() -> TestResult 
     let (asleep, sender) = (ids[0].clone(), ids[8].clone());
     assert!(!attached(&mut client, "list")?.contains(&asleep));
     let code = format!("await rlm.send(\"history://{asleep}\", \"ping\")");
-    client.request(
-        "send",
-        "_yi/kernel_execute",
-        json!({"sessionId": sender, "code": code}),
-    )?;
+    let sent = cell(&mut client, 0, &sender, &code)?;
+    assert_eq!(
+        sent["params"]["update"]["status"], "completed",
+        "the sending cell: {sent}"
+    );
     let meta = dir.join(format!("sessions/channels/mail-{asleep}.json"));
     let acked = || -> Option<u64> {
         let meta: Value = serde_json::from_str(&std::fs::read_to_string(&meta).ok()?).ok()?;
@@ -2568,11 +2615,6 @@ fn a_letter_to_an_evicted_session_loads_it_and_reads_the_letter() -> TestResult 
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    let failed = client.log.iter().find(|frame| {
-        let update = &frame["params"]["update"];
-        update["toolCallId"] == "user-1" && update["status"] == "failed"
-    });
-    assert!(failed.is_none(), "the sending cell failed: {failed:?}");
     assert!(
         woke,
         "the evicted session was not loaded and its letter not read within 30 s"

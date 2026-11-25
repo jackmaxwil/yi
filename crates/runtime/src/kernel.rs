@@ -435,8 +435,15 @@ impl KernelService {
             .unwrap_or_default())
     }
 
-    fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
+    fn kernel_env(
+        &self,
+        state: Option<&std::path::Path>,
+        contained: bool,
+    ) -> Vec<(String, String)> {
         let mut env = Vec::new();
+        let (own, sandbox) = (&self.connection_dir, self.options.sandbox.as_ref());
+        let sandbox = sandbox.filter(|_| contained);
+        env.extend(crate::kernel_bootstrap::contained_env(own, sandbox, state));
         if let Ok(mut slot) = self.kernel_path.lock() {
             *slot = self.plugin_dirs();
         }
@@ -580,9 +587,8 @@ impl KernelService {
         // wrapped before its venv and connection dir existed could not exec its own python.
         let (python, wrap) = match wrap {
             Some(_) => {
-                let home = self.options.home.clone();
                 let python = crate::kernel_bootstrap::venv_python(home, progress).await?;
-                crate::kernel_bootstrap::own_dir(&self.connection_dir)?;
+                yi_tools::private_dir(&self.connection_dir).map_err(|error| error.to_string())?;
                 (
                     Some(python),
                     self.kernel_wrap(self.options.sandbox.as_ref(), state.as_deref()),
@@ -593,13 +599,11 @@ impl KernelService {
         let manager = Arc::new(KernelManager::new(KernelOptions {
             python,
             cwd: Some(self.options.cwd.clone()),
-            env: (self.kernel_env(state.as_deref()).into_iter())
-                .chain(self.egress_env(wrap.is_some())?)
-                .chain(crate::kernel_bootstrap::landlock_env(
-                    &self.connection_dir,
-                    wrap.is_some(),
-                ))
-                .collect(),
+            env: (self
+                .kernel_env(state.as_deref(), wrap.is_some())
+                .into_iter())
+            .chain(self.egress_env(wrap.is_some())?)
+            .collect(),
             username: "yi".to_owned(),
             home: self.options.home.clone(),
             runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
@@ -1039,7 +1043,7 @@ mod tests {
             cell_ceiling: None,
         };
         let path_of = |home: &std::path::Path| {
-            let env = KernelService::new(options(home)).kernel_env(None);
+            let env = KernelService::new(options(home)).kernel_env(None, false);
             env.into_iter()
                 .find_map(|(key, value)| (key == "PATH").then_some(value))
         };
@@ -1048,7 +1052,7 @@ mod tests {
         std::fs::create_dir_all(ripwire.dir(&home))?;
         std::fs::write(ripwire.dir(&home).join("ripwire"), "#!/bin/sh\n")?;
         let service = KernelService::new(options(&home));
-        service.kernel_env(None);
+        service.kernel_env(None, false);
         assert_eq!(
             service
                 .kernel_path
@@ -1067,7 +1071,7 @@ mod tests {
         for file in [browser.name, "config.json", "chrome-box"] {
             std::fs::write(browser.dir(&home).join(file), "#!/bin/sh\n")?;
         }
-        let env = KernelService::new(options(&home)).kernel_env(None);
+        let env = KernelService::new(options(&home)).kernel_env(None, false);
         let config = (env.into_iter())
             .find_map(|(key, value)| (key == "AGENT_BROWSER_CONFIG").then_some(value));
         assert_eq!(

@@ -161,7 +161,7 @@ impl Drop for Spill {
 
 /// Created 0700, made 0700 again when open to others, and refused when it is a link: the sweep
 /// would delete old files wherever a linked root led (#881).
-fn private_dir(dir: &Path) -> io::Result<()> {
+pub fn private_dir(dir: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

@@ -7,9 +7,12 @@ use yi_kernel::client::{ExecuteOptions, KernelManager, KernelOptions};
 
 use crate::kernel::rlm_bootstrap_code;
 
-fn doctor_options(home: &Path) -> yi_kernel::bootstrap::BootstrapOptions {
+pub(crate) fn doctor_options(
+    home: &Path,
+    progress: Box<yi_kernel::bootstrap::ProgressFn>,
+) -> yi_kernel::bootstrap::BootstrapOptions {
     yi_kernel::bootstrap::BootstrapOptions {
-        on_progress: Some(Box::new(|message: &str| eprintln!("{message}"))),
+        on_progress: Some(progress),
         home: home.to_path_buf(),
         runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
         skills_source_dir: yi_kernel::bootstrap::default_skills_source_dir(),
@@ -35,7 +38,7 @@ pub fn doctor_toolchain(home: &Path) -> Result<String, String> {
 /// `yi doctor`'s `kernel-boot` row: the venv (built under `fix`, else only reported), then a
 /// real kernel booted and the runtime cell run, each timed. `Ok((fixed, detail))`.
 pub fn doctor_boot(home: &Path, fix: bool) -> Result<(bool, String), String> {
-    let options = doctor_options(home);
+    let options = doctor_options(home, Box::new(|message: &str| eprintln!("{message}")));
     let (python, fixed, build) = match yi_kernel::bootstrap::ready_kernel_python(&options) {
         Some(python) => (python, false, "cached".to_owned()),
         None if fix => {
