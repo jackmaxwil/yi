@@ -105,8 +105,8 @@ def branch():
     return git("rev-parse", "--abbrev-ref", "HEAD")
 
 
-def pull(number):
-    pr = fgj_api("GET", f"repos/{repo()}/pulls/{number}")
+def pull(number, timeout=None):
+    pr = fgj_api("GET", f"repos/{repo()}/pulls/{number}", timeout=timeout)
     if not pr or "number" not in pr:
         raise SystemExit(f"#{number}: {pr.get('message') if pr else 'no such pull request'}")
     return pr
@@ -505,6 +505,12 @@ def cmd_edit(args):
     return 0
 
 
+def undraft(number, title, timeout=None):
+    """Take the pull request titled `title` out of draft: the forge's refusal, or None once it left."""
+    answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)}, timeout=timeout) or {}
+    return None if answer.get("number") else answer.get("message", "the forge answered 404")
+
+
 def cmd_ready(args):
     import pr_review
 
@@ -521,9 +527,8 @@ def cmd_ready(args):
     if errs and pr_review.MODE == "blocking":
         print(f"ready: refused — #{number} stays a draft until a review round is clean on its head")
         return 1
-    answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
-    if not answer or answer.get("message"):
-        print(f"#{number} not readied: {(answer or {}).get('message', 'the forge answered 404')}")
+    if refused := undraft(number, title):
+        print(f"#{number} not readied: {refused}")
         return 1
     print(f"#{number} is ready: {title.removeprefix(DRAFT)}")
     return 0
@@ -559,8 +564,7 @@ UNREAD = "the commit's statuses, unreadable"
 
 def status_rows(name, sha, timeout=None):
     """The forge's own status objects on one head, in its order; None when the forge did not say."""
-    path = f"repos/{name}/commits/{sha}/status"
-    combined = fgj_api("GET", path) if timeout is None else fgj_api("GET", path, timeout=timeout)
+    combined = fgj_api("GET", f"repos/{name}/commits/{sha}/status", timeout=timeout)
     if not isinstance(combined, dict) or "message" in combined:
         return None
     return combined.get("statuses") or []
@@ -625,11 +629,16 @@ def cmd_status(args):
     return 0
 
 
+def merge_main(number, timeout=None):
+    """The forge's refusal to merge main into the pull request, or None once it did."""
+    answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/update?style=merge", timeout=timeout)
+    return answer.get("message") if answer else None
+
+
 def cmd_update(args):
     number = pull_number(args.number)
-    answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/update?style=merge")
-    if answer and answer.get("message"):
-        print(answer["message"])
+    if refused := merge_main(number):
+        print(refused)
         return 1
     print(f"#{number} brought up to date with main; the gate reruns")
     return 0
@@ -805,7 +814,7 @@ def selfcheck():
     # The listing pages: 102 open pulls are three pages, and a reader of page one never sees the oldest.
     served = [{"number": n, "head": {"ref": f"b{n}"}} for n in range(102)]
 
-    def listing(method, path, payload=None):
+    def listing(method, path, payload=None, timeout=None):
         if "pulls?state=open" not in path:
             return {"message": "not this one"}
         page = int(re.search(r"page=(\d+)", path).group(1))
@@ -824,13 +833,13 @@ def selfcheck():
     finally:
         globals()["fgj_api"] = real[0]
     # A page after the first answering with an error object is returned, never spliced into the list.
-    globals()["fgj_api"] = lambda m, path, payload=None: served[:50] if path.endswith("page=1") else {"message": "no token"}
+    globals()["fgj_api"] = lambda m, path, payload=None, timeout=None: served[:50] if path.endswith("page=1") else {"message": "no token"}
     try:
         late = open_pulls()
         assert not isinstance(late, list) and late["message"] == "no token", f"a later page's error object read as {late[50:]!r}"
     finally:
         globals()["fgj_api"] = real[0]
-    for gone, where in ((lambda *a, **k: None, "first"), (lambda m, path, payload=None: served[:50] if path.endswith("page=1") else None, "later")):
+    for gone, where in ((lambda *a, **k: None, "first"), (lambda m, path, payload=None, timeout=None: served[:50] if path.endswith("page=1") else None, "later")):
         globals()["fgj_api"] = gone
         try:
             assert open_pulls() is None, f"a 404 on the {where} page read as a listing"
@@ -908,7 +917,7 @@ def selfcheck():
     real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
     real_rounds = pr_review.comments, pr_review.authors
     globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}}
-    globals()["fgj_api"] = lambda method, path, payload=None: {"message": "edits are forbidden"}
+    globals()["fgj_api"] = lambda method, path, payload=None, timeout=None: {"message": "edits are forbidden"}
     clean = [{"id": n, "user": {"login": "jack"}, "body": f"<!-- yi-round {n} -->\n<!-- yi-round-meta pr=7 sha=abc1234 verdict=clean -->\n"} for n in (1, 2)]
     pr_review.authors = lambda: {"jack"}
     try:
@@ -926,7 +935,7 @@ def selfcheck():
     fakes = {name: globals()[name] for name in ("pull", "jobs_of", "required", "is_behind", "decide", "unreviewed", "fgj_api")}
     def forge_variable(mode, sink=None, merge=None):
         """A forge whose MERGE_QUEUE answers `mode` (None: the token may not read it); other calls land in `sink`."""
-        def forge(method, path, payload=None):
+        def forge(method, path, payload=None, timeout=None):
             if "actions/variables" in path:
                 return {"message": "403 the token may not read variables"} if mode is None else {"name": "MERGE_QUEUE", "data": mode}
             if sink is not None:
@@ -948,7 +957,7 @@ def selfcheck():
     globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "mergeable": False,
                                      "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
                      jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, decide=lambda *a: "behind",
-                     fgj_api=lambda method, path, payload=None: {"message": "merge conflict"})
+                     fgj_api=lambda method, path, payload=None, timeout=None: {"message": "merge conflict"})
     try:
         with contextlib.redirect_stdout(io.StringIO()) as conflicted:
             refused = cmd_merge(argparse.Namespace(number=7, timeout=0, wait=True))
@@ -1021,7 +1030,7 @@ def selfcheck():
         `statuses`: (exit code, the bodies posted to /merge)."""
         posts = []
 
-        def forge(method, path, payload=None):
+        def forge(method, path, payload=None, timeout=None):
             if path.endswith("/merge"):
                 posts.append(payload)
                 return {}
@@ -1101,7 +1110,7 @@ def selfcheck():
         globals()["pull"] = real_pull
         body_file.unlink()
     assert stopped == 1, "an incomplete body is refused by edit"
-    globals()["fgj_api"] = lambda method, path, payload=None: {"message": "pull request is closed"}
+    globals()["fgj_api"] = lambda method, path, payload=None, timeout=None: {"message": "pull request is closed"}
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             stopped = cmd_edit(argparse.Namespace(number=7, title="Keep the gate", body=None))
