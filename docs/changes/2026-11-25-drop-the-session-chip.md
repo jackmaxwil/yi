@@ -1,4 +1,5 @@
 ---
+version: 0.1128.0
 issue: Closes #2381
 ledger~: TUI | and `session` before the id tile, | and `session` before the id, with no tile beside it,
 cut: crates/tui/src/status.rs | crate::colors::name_tile(&input.session_name), | the chip was the first two characters of the session id, and every id starts `01`; the owner chose to remove it rather than give it another meaning
