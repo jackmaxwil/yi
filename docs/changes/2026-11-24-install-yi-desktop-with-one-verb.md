@@ -1,4 +1,5 @@
 ---
+version: 0.1122.0
 issue: Closes #2361
 shares: #2344 this adds an `install` and a `tools` recipe to desktop/justfile and `tools` to `check`, beside the recipes that pull request renames
 ---
