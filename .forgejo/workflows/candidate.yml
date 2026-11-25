@@ -42,7 +42,7 @@ jobs:
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
       # a shallow clone, so the full history is the gate's precondition.
-      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: https://git.example.invalid/upstream/actions-checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -55,7 +55,7 @@ jobs:
       # The runner's cache server is on, so rust-cache works here as it does on
       # GitHub: one key per lane, and postmerge's `warm` job saves every lane's
       # key on main, which is what a branch's first push inherits.
-      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: https://git.example.invalid/upstream/swatinem-rust-cache@v2 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         # ponytail: the desktop lane builds cold, about two minutes; give it a key when that hurts.
         if: matrix.lane != 'desktop'
         with:
@@ -75,7 +75,7 @@ jobs:
       - run: just lane ${{ matrix.lane }}
       # A failing test keeps a copy of its scratch dir under target/tmp/failed, and every console
       # drive run its frames under target/tmp/drive.
-      - uses: actions/upload-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: https://git.example.invalid/upstream/actions-upload-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         if: failure() && matrix.lane == 'test'
         with:
           name: failed-tests

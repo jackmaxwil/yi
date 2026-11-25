@@ -20,7 +20,7 @@ jobs:
     runs-on: bench
     timeout-minutes: 600
     steps:
-      - uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: https://git.example.invalid/upstream/actions-checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -77,7 +77,7 @@ jobs:
           done
           python3 evals/report.py --verdicts runs/weekly/verdicts.json --html runs/weekly/report.html > runs/weekly/digest.md
           git log --merges --format='%h %s' "$BASE_SHA..HEAD" > runs/weekly/merged.txt
-      - uses: actions/upload-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: https://git.example.invalid/upstream/actions-upload-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         if: always()
         with:
           name: evals-weekly
@@ -90,7 +90,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/download-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: https://git.example.invalid/upstream/actions-download-artifact@v3 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           name: evals-weekly
           path: weekly
