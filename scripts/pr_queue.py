@@ -144,7 +144,7 @@ def facts(pr, notes, statuses, holds, who, parent=None):
     return {"labels": {label["name"] for label in pr.get("labels") or []}, "draft": pr["title"].startswith(forge_pr.DRAFT),
             "base": pr["base"]["ref"], "parent": parent, "gate": gate, "mergeable": pr.get("mergeable"), "since": max(times),
             "fix": fixes[-1].get("verdict") if fixes else None,
-            "lost": bool(seen) and pr_review.lost_attempt(seen[-1]), "retries_spent": len(seen) > pr_review.RETRIES,
+            "lost": bool(seen) and pr_review.lost_attempt(seen[-1]), "retries_spent": pr_review.tries_of(seen) > pr_review.RETRIES,
             "capped": any((c.get("user") or {}).get("login") in who and (c.get("body") or "").startswith(pr_review.CAPPED) for c in notes),
             "verdict": rounds[-1]["verdict"] if rounds and not pr_review.lost_attempt(seen[-1]) else None}
 
@@ -1557,6 +1557,12 @@ def state_cases(off=""):
     pr = {"number": 1694, "title": "t", "labels": [], "base": {"ref": "main"}, "head": {"sha": "f" * 40}, "updated_at": "2026-11-05T22:56:00Z"}
     if (got := state_of(facts(pr, spent[:14] + [notice], [], pr_review.on_head, {pr_review.BOT, "jack"}), off)[0]) != "review capped":
         bad.append(f"#1694 stopped at the review cap read {got}, not review capped")
+    # #2074's round 2 re-read once in place (tries=2) after round 1: three reads lost a lens, so the retries are spent.
+    r1, r2 = json.loads((pr_review.RECORDED / "lost_lens.json").read_text())["2074"]
+    r2 = dict(r2, body="\n".join(line[:-4] + " tries=2 -->" if line.startswith("<!-- yi-round-meta ") else line for line in r2["body"].splitlines()))
+    lost = dict(pr, number=2074, head={"sha": pr_review.parse_round(r2, {pr_review.BOT}, 2074)["sha"]})
+    if (got := state_of(facts(lost, [r1, r2], [], pr_review.on_head, {pr_review.BOT, "jack"}), off)[0]) != "lost answers, retries spent":
+        bad.append(f"#2074 with three lost reads, two of them one round finished in place, read {got}, not lost answers, retries spent")
     return bad + capped_readers(spent[:14] + [notice], pr, off)
 
 

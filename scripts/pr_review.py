@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from unittest import mock
 
@@ -193,22 +194,17 @@ def parse_round(comment, authors, pr=None):
         r["unanswered"] = lost.group(1).split(", ")
         r["lost_lenses"] = [who.removesuffix(" lens") for who in r["unanswered"] if who.endswith(" lens")]
         r["skipped"] = str(len(r["lost_lenses"]))
-    r["notes"] = attempt_notes(comment.get("body") or "")
     return r
 
 
-# The sentences `render` writes for what an attempt dropped, refused or cleared, which a round finished later keeps.
-NOTHING = "Nothing dropped, refused or cleared."
-NOTE_HEADS = ("**Attempt", "**Earlier attempts", "Dropped before this table:", "Dropped against recorded intent", "Cleared:", "Out of scope:", NOTHING)
-
-
-def attempt_notes(body):
-    """A rendered round's own notes on what its attempts dropped, refused and cleared, in order."""
-    out = []
-    for line in body.splitlines():
-        if line.startswith(NOTE_HEADS) or (line.startswith("- ") and out and (out[-1].startswith("Dropped against") or out[-1].startswith("- "))):
-            out.append(line)
-    return out
+def attempt_notes(r):
+    """Each attempt's counts from the round's `notes=` meta field (see `render`); an attempt posted before that
+    field existed, or one that does not decode, is None, which `render` names as not recorded."""
+    try:
+        notes = json.loads(urllib.parse.unquote(r["notes"])) if r.get("notes") else None
+    except json.JSONDecodeError:
+        notes = None
+    return notes if isinstance(notes, list) else [None] * int(r.get("tries") or 1)
 
 
 def rounds_of(comments, authors, pr=None):
@@ -232,15 +228,15 @@ def newest_per_round(every):
     return list({r["n"]: {**r, "posted": first[r["n"]]} for r in every}.values())
 
 
-def tried_before(r):
-    """The attempts a round finished in place made before its newest: each read part of the head, so each counts."""
-    return [{"kind": "tried", "id": r["id"], "sha": r["sha"]}] * (int(r.get("tries") or 1) - 1)
+def tries_of(attempts):
+    """How many reads these attempts are: a void is one, a round its `tries=`, every read it finished in place."""
+    return sum(int(a.get("tries") or 1) for a in attempts)
 
 
 def attempts_of(comments, authors, pr=None):
-    """Every attempt on a head in the order the forge holds it: a posted round with the tries it finished in place,
-    or the void a wholesale loss posted instead of one."""
-    rounds = [a for r in rounds_of(comments, authors, pr) for a in tried_before(r) + [{**r, "kind": "round"}]]
+    """Every attempt on a head in the order the forge holds it: a posted round, or the void a
+    wholesale loss posted instead of one."""
+    rounds = [{**r, "kind": "round"} for r in rounds_of(comments, authors, pr)]
     voided = [{"kind": "void", "id": r["id"], "sha": r["sha"]} for r in bot_meter.rows(comments)
               if r["kind"] == "yi-round-void" and re.fullmatch(r"[0-9a-f]{7,40}", r.get("sha") or "")
               and (pr is None or r.get("pr") == str(pr))]
@@ -319,7 +315,7 @@ def owed(attempts, head, holds=on_head):
     $0.54 round), because only the newest attempt was consulted and a void carries no lens names."""
     left = None
     for a in attempts:
-        if a.get("kind") in ("void", "tried") or not holds(a["sha"], head):
+        if a.get("kind") == "void" or not holds(a["sha"], head):
             continue
         # A loss that names no lens owes them all.
         left = set() if not lost_attempt(a) else set(a["lost_lenses"]) if "lost_lenses" in a else None
@@ -352,7 +348,7 @@ def skip_reason(rounds, head, holds=on_head, attempts=None):
     left = owed(seen, head, holds)
     # Incident: #1897, a bound counting losses and voids apart re-read forever.
     if left is None or left:
-        return None if len(seen) <= RETRIES else f"{len(seen)} attempt(s) on this head lost an answer; the fixer or a push is next"
+        return None if tries_of(seen) <= RETRIES else f"{tries_of(seen)} attempt(s) on this head lost an answer; the fixer or a push is next"
     if here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
     # Incident: #1852's head was read clean by round 2, then round 7 read another commit, and the queue
@@ -384,7 +380,7 @@ def silent(r):
 
 def lost_attempt(attempt):
     """An attempt that read only part of the head: a round that lost a lens, or a void."""
-    return attempt.get("kind") in ("void", "tried") or (silent(attempt) and attempt.get("verdict") != "override")
+    return attempt.get("kind") == "void" or (silent(attempt) and attempt.get("verdict") != "override")
 
 
 ROUND_MEMORY = 12
@@ -472,12 +468,17 @@ def review_diff(git, merge_base, base, sha):
 
 def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, unanswered=(), meter=None, status="", cleared=0, refused=(),
            tries=1, attempt=1, earlier=None):
-    """`earlier` is the notes of the attempts a re-read finishes (see `attempt_notes`), kept under their own label."""
+    """`earlier` is the counts of the attempts a re-read finishes (see `attempt_notes`). A round a re-read may finish
+    carries every attempt's counts in its meta's `notes=`, so the sentences below are written from data, never read."""
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
     said = verdict(findings, overridden, n, unanswered)
+    own = {"dropped": dropped, "refused": list(refused), "cleared": cleared, "outside": outside}
+    every = [*(earlier or []), own]
+    kept = earlier is not None or any(who.endswith(" lens") for who in unanswered)
     meta = " ".join([f"pr={pr}", f"sha={sha}", f"base={base}", f"verdict={said}", f"mode={mode}"]
                     + [f"{s}={counts[s]}" for s in SEVERITIES]
-                    + ([bot_meter.meta(meter.fields())] if meter else []) + ([f"tries={tries}"] if tries > 1 else []))
+                    + ([bot_meter.meta(meter.fields())] if meter else []) + ([f"tries={tries}"] if tries > 1 else [])
+                    + ([f"notes={urllib.parse.quote(json.dumps(every, separators=(',', ':')), safe='')}"] if kept else []))
     note = "shadow: nothing blocks yet" if mode == "shadow" else "a blocked round keeps this draft"
     lines = [
         f"<!-- yi-round {n} -->",
@@ -501,19 +502,25 @@ def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, una
                  f"; its {attempt} attempts are spent, so a person runs `just pr review --again` or pushes.")
         lines += ["", f"No answer after retries from: {', '.join(unanswered)}. This round blocks on what it read"
                   + (again if unread else "; every lens read the head, so it is not read again.")]
-    notes = ([f"Dropped before this table: {dropped} finding(s) whose quote was not on its line, that restate a finding the owner overrode, or that a refuter broke."] if dropped else []) \
-        + (["Dropped against recorded intent, before any refuter:"] + [f"- {why}" for why in refused] if refused else []) \
-        + ([f"Cleared: {cleared} finding(s) the last round left open no longer hold at `{sha[:8]}`."] if cleared else []) \
-        + ([f"Out of scope: {outside} finding(s) on lines this PR's own change (its fork to `{sha[:8]}`) does not add were dropped before any refuter."] if outside else [])
+    notes = note_lines(own, sha)
     if earlier is not None:
-        before = list(earlier) if earlier and earlier[0].startswith("**") else ["**Earlier attempts**:", *(earlier or [NOTHING])]
-        notes = before + [f"**Attempt {attempt}**:", *(notes or [NOTHING])]
+        notes = [line for k, a in enumerate(every, 1) for line in [f"**Attempt {k}**:", *(note_lines(a, sha) or ["Nothing dropped, refused or cleared."])]]
     for note in notes:
         lines += [note] if note.startswith("- ") else ["", note]
     if status:
         lines += ["", status]
     lines += ["", "<!-- yi-round-findings " + json.dumps(findings).replace("-->", "--\\u003e") + " -->"]
     return "\n".join(lines) + "\n"
+
+
+def note_lines(a, sha):
+    """The sentences for what one attempt dropped, refused, cleared or left out of scope."""
+    if a is None:
+        return ["Not recorded: this attempt was posted before rounds kept their counts in the meta."]
+    return ([f"Dropped before this table: {a['dropped']} finding(s) whose quote was not on its line, that restate a finding the owner overrode, or that a refuter broke."] if a.get("dropped") else []) \
+        + (["Dropped against recorded intent, before any refuter:"] + [f"- {why}" for why in a["refused"]] if a.get("refused") else []) \
+        + ([f"Cleared: {a['cleared']} finding(s) the last round left open no longer hold at `{sha[:8]}`."] if a.get("cleared") else []) \
+        + ([f"Out of scope: {a['outside']} finding(s) on lines this PR's own change (its fork to `{sha[:8]}`) does not add were dropped before any refuter."] if a.get("outside") else [])
 
 
 # --- intake -------------------------------------------------------------------------
@@ -1101,7 +1108,7 @@ def read_pr(repo, number, allowed):
         inherit = [{**f, "since": f.get("since") or retry["n"]} for f in inherit]
     return {"pr": pr, "n": finish["n"] if finish else rounds[-1]["n"] + 1 if rounds else 1, "sha": sha, "base": base,
             "intake": found, "kept": inherit + kept, "dropped": dropped, "outside": outside, "finish": finish,
-            "attempt": 1 + sum(1 for a in attempts if holds(a["sha"], sha)),
+            "attempt": 1 + tries_of(a for a in attempts if holds(a["sha"], sha)),
             "unanswered": unanswered, "cleared": cleared, "refused": intent[2]}
 
 
@@ -1177,7 +1184,7 @@ def cmd_review(args):
             status = bot_meter.status_line(meter, pr_total, day_total, f"review round {n}")
             return status, render(n, number, sha, base, findings, dropped, None, MODE, read["outside"], read["unanswered"], meter, status,
                                   read["cleared"], read["refused"], int((finish or {}).get("tries") or 1) + bool(finish), read["attempt"],
-                                  finish["notes"] if finish else None)
+                                  attempt_notes(finish) if finish else None)
 
         # A round finished in its own comment adds the spend that comment carried; posted beside it, its spend stays there.
         own_status, own = posted(METER)
@@ -1552,21 +1559,29 @@ def finished_cases(lost, notes, head, r1):
     else:
         posted_ = notes + [{"id": 10 ** 9, "user": {"login": BOT}, "body": beside[0][2]}]
         read_as = rounds_of(posted_, {BOT}, 7)
-        if [(r["n"], r["id"]) for r in read_as] != [(1, r1["id"]), (2, 10 ** 9)] or len(attempts_of(posted_, {BOT}, 7)) != 3:
+        if [(r["n"], r["id"]) for r in read_as] != [(1, r1["id"]), (2, 10 ** 9)] or tries_of(attempts_of(posted_, {BOT}, 7)) != 3:
             bad.append(f"beside: the newest comment for round 2 is not the round: {[(r['n'], r['id']) for r in read_as]}")
         if abs(bot_meter.spent(bot_meter.rows(posted_)) - bot_meter.spent(bot_meter.rows(notes))) > 1e-9:
             bad.append("beside: the round posted beside counts its earlier attempt's spend a second time")
-    # #2124's round 4 dropped two findings and cleared one; the re-read that finishes it keeps both attempts' lines.
+    # #2124's round 4 dropped two findings and cleared one, written as this code writes it, then with its sentences
+    # reworded: the finished round's counts come from the meta, so a reworded sentence loses nothing.
     r4 = lost[2124][0]
-    h4 = parse_round(r4, {BOT}, 2124)["sha"]
-    _, writes, _, _ = run_review([dict(r4, body=r4["body"].replace("pr=2124 ", "pr=7 "))], h4,
-                                 lens=lambda p: {"findings": [{"severity": "high", "claim": "c", "path": "a.py", "line": 1, "quote": "nowhere"}]})
-    merged = next((w[2] for w in writes if w[0] == "PATCH"), "").splitlines()
-    first_notes = [line for line in r4["body"].splitlines() if line.startswith(("Dropped before", "Cleared:"))]
-    if not (len(first_notes) == 2 and all(line in merged for line in first_notes) and "**Attempt 2**:" in merged
-            and merged.index("**Attempt 2**:") > max(merged.index(line) for line in first_notes)
-            and any(line.startswith("Dropped before this table: ") for line in merged[merged.index("**Attempt 2**:"):])):
-        bad.append(f"notes: the finished round lost what an attempt dropped or cleared: {[l[:40] for l in merged if l.startswith(('Dropped', 'Cleared', '**'))]}")
+    was = parse_round(r4, {BOT}, 2124)
+    first = render(4, 7, was["sha"], was["base"], was["findings"], 2, None, MODE, 0, was["unanswered"], cleared=1)
+    reword = lambda body: body.replace("Dropped before this table", "Thrown out").replace("Cleared:", "No longer open:")
+    # Each of the two lenses round 4 lost answers one finding whose quote is on no line, so the re-read drops two.
+    nowhere = lambda p: {"findings": [{"severity": "high", "claim": "c", "path": "a.py", "line": 1, "quote": "nowhere"}]}
+    for name, body in (("as written", first), ("reworded", reword(first)), ("from before notes=", r4["body"].replace("pr=2124 ", "pr=7 "))):
+        _, writes, _, _ = run_review([dict(r4, body=body)], was["sha"], lens=nowhere)
+        merged = next((w[2] for w in writes if w[0] == "PATCH"), "")
+        got = attempt_notes(parse_round({"id": 1, "user": {"login": BOT}, "body": merged}, {BOT}, 7) or {})
+        want = [None if name == "from before notes=" else {"dropped": 2, "refused": [], "cleared": 1, "outside": 0}, {"dropped": 2, "refused": [], "cleared": 0, "outside": 0}]
+        lines = merged.splitlines()
+        said = lines[lines.index("**Attempt 1**:") + 1:] if "**Attempt 1**:" in lines else []
+        first_said = ["Not recorded"] if want[0] is None else ["Dropped before this table: 2", "Cleared: 1"]
+        if got != want or not all(any(line.startswith(t) for line in said[:said.index("**Attempt 2**:")]) for t in first_said if "**Attempt 2**:" in said) \
+                or "**Attempt 2**:" not in said or not said[said.index("**Attempt 2**:") + 2].startswith("Dropped before this table: 2"):
+            bad.append(f"notes: a round finished in place ({name}) lost what an attempt dropped or cleared: {got} {[l[:30] for l in said if l]}")
     return bad
 
 
@@ -1693,9 +1708,9 @@ def honest_cases():
             bad.append(f"in place: the finished round lost its earlier attempt's tries or spend: {merged.get('tries')}, {merged.get('cost')}")
         if merged["findings"] != first["findings"] or merged["verdict"] != "clean":
             bad.append(f"in place: a re-read that answered its lens changed the round's findings or reads {merged['verdict']}")
-        tries = attempts_of([notes[0], {"id": r2["id"], "user": {"login": BOT}, "body": patched[0][2]}], {BOT}, 7)
-        if len(tries) != 3:
-            bad.append(f"tries: a round finished in place on its second try counts {len(tries)} attempt(s) on the head, not 3")
+        tries = tries_of(attempts_of([notes[0], {"id": r2["id"], "user": {"login": BOT}, "body": patched[0][2]}], {BOT}, 7))
+        if tries != 3:
+            bad.append(f"tries: a round finished in place on its second try counts {tries} attempt(s) on the head, not 3")
     bad += finished_cases(lost, notes, head, r1) + acted_cases(notes, head) + window_cases(notes, head) + written_cases(notes, head)
     # #1888's round 3 lost three refuters and its tests lens; the finished round still names the refuters it lost.
     old = [{"id": 37998, "user": {"login": BOT}, "created_at": "2026-11-06T23:50:43Z", "body": ROUND_1888.replace("pr=1888 ", "pr=7 ")}]
@@ -1772,12 +1787,12 @@ def selfcheck():
     edit_blind = lambda comments, authors, after_id, before_id=None, after_at=None: real_override(comments, authors, after_id, before_id)
     unguarded = lambda repo, number, finish, merged, own: (forge_pr.fgj_api("PATCH", f"repos/{repo}/issues/comments/{finish['id']}", {"body": merged}), "edited")
     for rule, offs in (("partial", {"verdict": old_verdict}), ("in place", {"unfinished": lambda *a, **k: None}),
-                       ("tries", {"tried_before": lambda r: []}), ("ready sweep", {"owes_lens": lambda *a: False}),
+                       ("tries", {"tries_of": lambda attempts: len(list(attempts))}), ("ready sweep", {"owes_lens": lambda *a: False}),
                        ("boundary", {"per_pr": lambda number, act: act()}), ("cap", {"review_cap": lambda notes: None}),
                        ("beside", {"finish_round": lambda repo, number, finish, merged, own: (forge_pr.fgj_api(
                            "PATCH", f"repos/{repo}/issues/comments/{finish['id']}", {"body": merged}), "edited")}),
                        ("beside", {"newest_per_round": lambda every: [{**r, "posted": r["id"]} for r in every]}),
-                       ("notes", {"attempt_notes": lambda body: []}), ("acted", {"acted_on": lambda *a: False}),
+                       ("notes", {"attempt_notes": lambda r: [None] * int(r.get("tries") or 1)}), ("acted", {"acted_on": lambda *a: False}),
                        ("new finding", {"same_findings": lambda found, rnd: True}),
                        ("override", {"acted_on": lambda *a: False, "same_findings": lambda found, rnd: True}),
                        ("window", {"override_of": edit_blind}), ("race", {"finish_round": unguarded}),
