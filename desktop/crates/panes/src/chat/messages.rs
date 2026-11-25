@@ -45,11 +45,6 @@ pub(crate) use plain;
 
 pub use yd_core::reduce::said::{Block, Said};
 
-/// What a message says; none for a kind the pane does not show.
-pub fn said(message: &Message) -> Option<Said> {
-    message.said()
-}
-
 /// `text` with control and direction marks taken out, cut at `cap` characters; the second
 /// value is how many characters there were.
 pub fn clean(text: &str, cap: usize) -> (String, usize) {
@@ -186,7 +181,7 @@ impl Frame<'_> {
     fn range(&self, turn: Option<Turn>, range: Range<usize>, skip: usize, out: &mut Vec<El>) {
         let messages = self.transcript.messages.get(range.clone());
         let messages = messages.unwrap_or_default();
-        let read: Vec<Option<Said>> = messages.iter().map(said).collect();
+        let read: Vec<Option<Said>> = messages.iter().map(|message| message.said()).collect();
         let files = turn.map_or(0, |_| self.changed(&read));
         // Record 3.4.3: tool rows sit one under the next, 20 apart, whichever message of the
         // turn called them; only what is said between them takes the conversation's gap.
@@ -218,7 +213,7 @@ impl Frame<'_> {
         // The turn's prompt opens it; its steps are counted where it is folded from the wire.
         let ended = range.clone().map(|m| m.done.unwrap_or(m.at)).max();
         let ended = ended.unwrap_or(turn.started).max(turn.started);
-        let prompt = range.clone().next().and_then(said).filter(|said| said.user);
+        let prompt = range.clone().next().and_then(|message| message.said()).filter(|said| said.user);
         let typed = prompt
             .iter()
             .flat_map(|said| &said.blocks)

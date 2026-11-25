@@ -7,7 +7,7 @@ use std::error::Error;
 use std::time::Instant;
 
 use rune::{Key, KeyEvent, Mods, Runtime};
-use support::scene::{WINDOW, runtime};
+use support::scene::{WINDOW, runtime, timed};
 use yd_core::command::table::{FLIP_CHAT, Route, Run};
 use yd_core::feed::{ASSETS, FeedEvent};
 use yd_core::ids::Millis;
@@ -25,12 +25,6 @@ const FRAME: f64 = 1.0 / 60.0;
 
 fn report(name: &str, number: f64) {
     println!("\nbudget {name} {number:.3}");
-}
-
-fn timed(rt: &mut Runtime<Win>) -> f64 {
-    let start = Instant::now();
-    rt.frame(FRAME);
-    start.elapsed().as_secs_f64() * 1000.0
 }
 
 /// The window as the app runs it: the poll and the key handler installed.
@@ -95,12 +89,12 @@ fn scrolling_one_hundred_thousand_rows() -> Check {
     let mut rt = window("assets/mockup")?;
     let rows = many_rows(100_000)?;
     rt.update(move |win: &mut Win, _| dispatch(win, Msg::Feed(ASSETS, FeedEvent::Reset(rows))));
-    let first = timed(&mut rt);
+    let first = timed(&mut rt, FRAME);
     let mut spread = Vec::new();
     for step in 0..200 {
         let dy = if step < 150 { -120.0 } else { 120.0 };
         rt.wheel(600.0, 400.0, dy);
-        spread.push(timed(&mut rt));
+        spread.push(timed(&mut rt, FRAME));
     }
     // The first few steps build rows nothing has drawn yet; they are timed on their own.
     let warm = spread.drain(..5).fold(0.0, f64::max);
@@ -162,7 +156,7 @@ fn opening_a_two_thousand_turn_conversation_and_typing_in_it() -> Check {
     let mut rt = Runtime::new(win, root::view, WINDOW, rune::Env::new(true, 1.0));
     rt.poll = Some(root::poll);
     rt.on_key = Some(root::on_key);
-    let first = timed(&mut rt);
+    let first = timed(&mut rt, FRAME);
     report("open_2000_turns_ms", fold + first);
     let all = rt.elements();
     let input = all
@@ -182,7 +176,7 @@ fn opening_a_two_thousand_turn_conversation_and_typing_in_it() -> Check {
             key: Key::Text(letter.to_string()),
             mods: Mods::default(),
         });
-        worst = worst.max(timed(&mut rt));
+        worst = worst.max(timed(&mut rt, FRAME));
     }
     report("type_in_composer_ms", worst);
     Ok(())

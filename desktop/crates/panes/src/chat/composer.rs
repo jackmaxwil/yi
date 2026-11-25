@@ -317,7 +317,7 @@ pub(crate) fn groups(hub: &Hub, thread: &Thread, ids: &[&str]) -> Vec<Vec<(Strin
 
 /// The `provider/model` an answer came from.
 fn said_model(message: &yd_core::reduce::turns::Message) -> Option<String> {
-    crate::chat::messages::said(message)
+    message.said()
         .filter(|said| !said.user)
         .map(|said| said.model)
 }

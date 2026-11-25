@@ -57,7 +57,7 @@ pub fn fresh() -> Result<Win, String> {
 
 /// `turns` turns of long answers, the last holding `answers` of them and left running; the
 /// second and third values are the last sequence number and message number.
-pub fn answers(turns: usize, answers: usize, settle_last: bool) -> (String, usize, usize) {
+pub fn answers(turns: usize, answers: usize) -> (String, usize, usize) {
     let mut lines: Vec<String> = TURN.lines().take(4).map(str::to_owned).collect();
     // Invariant: the reducer drops an event whose number does not follow the last, so only a
     // line that carries one takes the next, from zero.
@@ -86,7 +86,7 @@ pub fn answers(turns: usize, answers: usize, settle_last: bool) -> (String, usiz
                 push(at, message, &mut lines);
             }
         }
-        if !last || settle_last {
+        if !last {
             for at in [25, 26, 27] {
                 push(at, message, &mut lines);
             }

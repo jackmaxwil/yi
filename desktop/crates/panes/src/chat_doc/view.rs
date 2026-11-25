@@ -24,7 +24,7 @@ use yd_ui::win::{Hub, Win};
 
 use crate::chat::approval::{Card, queue};
 use crate::chat::composer::{Composer, Form, Send, drawn};
-use crate::chat::messages::{Block as Part, MAX_FOLDED, clean, clock, line, model_name, said};
+use crate::chat::messages::{Block as Part, MAX_FOLDED, clean, clock, line, model_name};
 use crate::chat::pane::{Chat, chat_mut, jump};
 use crate::chat_doc::hover::{Block, Hover, Said, cost, over};
 use crate::chat_doc::steps::{anchor, calls, card, changed, popover, summary};
@@ -123,7 +123,7 @@ fn messages(thread: &Thread, turn: Turn) -> impl Iterator<Item = (usize, &Messag
 
 /// The words a message says, its text blocks joined.
 fn words(message: &Message) -> Option<(bool, String)> {
-    let said = said(message)?;
+    let said = message.said()?;
     let texts: Vec<String> = said
         .blocks
         .into_iter()
@@ -498,8 +498,8 @@ impl Page<'_> {
     }
 
     fn answer(&self, turn: Turn, at: usize, message: &Message, done: Millis, lead: &str) -> El {
-        let output = said(message).map_or(0, |s| s.output);
-        let model = said(message).map(|s| model_name(self.thread, &s.model));
+        let output = message.said().map_or(0, |s| s.output);
+        let model = message.said().map(|s| model_name(self.thread, &s.model));
         let effort = self.thread.option("thought_level").and_then(|o| {
             let choice = o.options.iter().find(|c| c.value == o.current_value);
             choice.map(|c| c.name.clone())
@@ -554,7 +554,7 @@ impl Page<'_> {
     }
 
     fn writing(&self, message: &Message, said: &str) -> El {
-        let output = crate::chat::messages::said(message).map_or(0, |s| s.output);
+        let output = message.said().map_or(0, |s| s.output);
         let secs = self.model.now.0.saturating_sub(message.at.0) / 1000;
         let mut facts = vec![ago(message.at, self.model.now), "writing".to_owned()];
         if let Some(rate) = output.checked_div(secs) {

@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 use support::long::{ANSWER, answers, feed, fresh, heavy_tool_lines, line, tool_lines};
-use support::scene::WINDOW;
+use support::scene::{WINDOW, timed};
 use yd_core::command::table::{FLIP_CHAT, Route, Run};
 use yd_core::msg::Msg;
 use yd_core::wire::replay::play_line;
@@ -27,17 +27,11 @@ fn window(lines: &str) -> Result<Runtime<Win>, Box<dyn Error>> {
     let mut rt = Runtime::new(win, root::view, WINDOW, Env::new(true, 1.0));
     rt.poll = Some(root::poll);
     rt.on_key = Some(root::on_key);
-    println!("\nfeel first_frame {:.3}", timed(&mut rt));
+    println!("\nfeel first_frame {:.3}", timed(&mut rt, FRAME));
     for _ in 0..30 {
         rt.frame(FRAME);
     }
     Ok(rt)
-}
-
-fn timed(rt: &mut Runtime<Win>) -> f64 {
-    let start = Instant::now();
-    rt.frame(FRAME);
-    start.elapsed().as_secs_f64() * 1000.0
 }
 
 /// Prints the median, 95th percentile and worst of `frames`; the 95th percentile.
@@ -79,7 +73,7 @@ fn stream_into(name: &str, rt: &mut Runtime<Win>, mut seq: usize, message: usize
                 let _ = play_line(&mut hub.model, &delta);
             }
         });
-        frames.push(timed(rt));
+        frames.push(timed(rt, FRAME));
     }
     report(name, frames)
 }
@@ -90,7 +84,7 @@ fn scroll(name: &str, rt: &mut Runtime<Win>) -> f64 {
     for step in 0..240 {
         let dy = if step < 160 { 40.0 } else { -40.0 };
         rt.wheel_xy(x, y, 0.0, dy);
-        frames.push(timed(rt));
+        frames.push(timed(rt, FRAME));
     }
     report(name, frames)
 }
@@ -100,7 +94,7 @@ fn hover(name: &str, rt: &mut Runtime<Win>) {
     for step in 0..120 {
         let x = 300.0 + (step as f32) * 4.0;
         rt.pointer_move(x, 300.0 + ((step % 7) as f32) * 30.0);
-        frames.push(timed(rt));
+        frames.push(timed(rt, FRAME));
     }
     report(name, frames);
 }
@@ -119,7 +113,7 @@ fn typing(name: &str, rt: &mut Runtime<Win>) -> Result<f64, Box<dyn Error>> {
             key: Key::Text(letter.to_string()),
             mods: Mods::default(),
         });
-        frames.push(timed(rt));
+        frames.push(timed(rt, FRAME));
     }
     Ok(report(name, frames))
 }
@@ -144,7 +138,7 @@ fn flip(name: &str, rt: &mut Runtime<Win>) {
 
 #[test]
 fn streaming_into_a_new_thread() -> Check {
-    let (lines, seq, message) = answers(1, 0, false);
+    let (lines, seq, message) = answers(1, 0);
     let mut rt = window(&lines)?;
     stream_into("stream_new_thread", &mut rt, seq, message);
     Ok(())
@@ -152,7 +146,7 @@ fn streaming_into_a_new_thread() -> Check {
 
 #[test]
 fn a_long_thread_of_answers() -> Check {
-    let (lines, seq, message) = answers(40, 60, false);
+    let (lines, seq, message) = answers(40, 60);
     let mut rt = window(&lines)?;
     // Incident: lines numbered out of order are dropped by the reducer, and this thread once
     // drew nothing while its numbers read as fast.
@@ -220,7 +214,7 @@ fn answer_heights(rt: &Runtime<Win>) -> Result<(f32, f32), Box<dyn Error>> {
 
 #[test]
 fn a_streaming_answer_glides_to_its_height_and_lands_on_it() -> Check {
-    let (lines, mut seq, message) = answers(1, 0, false);
+    let (lines, mut seq, message) = answers(1, 0);
     let mut rt = window(&lines)?;
     let message = message.saturating_add(1);
     let mut arriving = Vec::new();

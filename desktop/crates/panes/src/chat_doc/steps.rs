@@ -15,7 +15,7 @@ use yd_ui::theme::look::{CODE, READ_SMALL, colour};
 use yd_ui::theme::scale::{LINE_CARD, LINE_MENU, LINE_SOFT, POPOVER, SEMIBOLD, SHADOW_MENU, STEP};
 use yd_ui::win::Win;
 
-use crate::chat::messages::{Block as Said, clock, line, said};
+use crate::chat::messages::{Block as Said, clock, line};
 use crate::chat::tools::{output, target};
 
 static EYE: Icon = line_icon!(
@@ -49,7 +49,7 @@ pub fn calls(thread: &Thread, turn: Turn) -> Vec<&ToolCall> {
         .iter()
         .take(turn.len);
     range
-        .filter_map(said)
+        .filter_map(|message| message.said())
         .flat_map(|said| said.blocks)
         .filter_map(|block| match block {
             Said::Call(id) => thread.transcript.tools.get(id.as_str()),
