@@ -4,7 +4,7 @@ import plistlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-NAME, EXE = "Yi Desktop", "yi-desktop"
+ID, NAME, EXE = "dev.yi.desktop", "Yi Desktop", "yi-desktop"
 BUNDLE = ROOT / "target/package" / f"{NAME}.app"
 
 

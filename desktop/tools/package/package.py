@@ -18,9 +18,8 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from bundle import BUNDLE, EXE, NAME, ROOT, read_info
+from bundle import BUNDLE, EXE, ID, NAME, ROOT, read_info
 
-ID = "dev.yi.desktop"
 TOOLING = ROOT / "target/package" / f"{EXE}-tooling"
 BUILT = ROOT / "target/dist" / EXE
 # Rune's own installer (scripts/mac_app_install.py) stages bundles for macOS 13.
