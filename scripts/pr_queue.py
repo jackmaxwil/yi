@@ -100,6 +100,7 @@ STATES = (
     ("fixer handed off", "person", 22, lambda f: f["fix"] == "handoff", None),
     ("based off a merged branch", "queue", 0.25, lambda f: f["base"] != "main" and f.get("parent") == "merged", "repoint"),
     ("based off a closed branch", "person", 22, lambda f: f["base"] != "main" and f.get("parent") == "closed", None),
+    ("parent red", "parent's author", 22, lambda f: f["base"] != "main" and f["fix"] == "base-red", None),
     ("based off main", "queue", 10, lambda f: f["base"] != "main", None),
     ("awaiting review", "review", 18, lambda f: f["verdict"] is None and not f["lost"], None),
     ("lost answers", "review", 1.2, lambda f: f["lost"] and not f["retries_spent"], None),
@@ -1526,6 +1527,7 @@ STATE_CASES = (
     ("gate pending", dict(gate="pending")),
     ("queued", dict(labels={"queue"})),
     ("based off a closed branch", dict(base="jack/q-desk", parent="closed")),
+    ("parent red", dict(base="jack/q-desk", parent="open", fix="base-red")),
     ("unknown", dict(verdict="none such")),
 )
 
