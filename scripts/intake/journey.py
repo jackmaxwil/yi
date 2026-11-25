@@ -10,6 +10,11 @@ import tempfile
 import bridge
 import test_bridge
 
+# Incident: a root CI container has no git identity to guess, so a journey commit without one died with exit 128.
+BOT_COMMIT = {"GIT_AUTHOR_NAME": "yi-bot", "GIT_AUTHOR_EMAIL": "yi-bot@localhost", "GIT_COMMITTER_NAME": "yi-bot",
+              "GIT_COMMITTER_EMAIL": "yi-bot@localhost", "GIT_AUTHOR_DATE": "2026-10-28T00:00:00Z", "GIT_COMMITTER_DATE": "2026-10-28T00:00:00Z"}
+
+
 
 def change_signature(changes: list[bridge.Change]) -> list:
     return [(c.old_path, c.path, c.old_mode, c.new_mode, c.binary, c.rename, len(c.added), c.deleted) for c in changes]
@@ -79,7 +84,7 @@ class FakeTransport:
         staged = subprocess.check_output(["git", "-C", str(self.repo), "diff", "--cached", "--no-renames", "--binary", "--full-index"])
         assert change_signature(bridge.parse_diff(staged)) == change_signature(case.changes)
         identity = bridge.import_identity(case)
-        env = dict(os.environ, GIT_AUTHOR_NAME=identity["name"], GIT_AUTHOR_EMAIL=identity["email"], GIT_COMMITTER_NAME="yi-bot", GIT_COMMITTER_EMAIL="yi-bot@localhost", GIT_AUTHOR_DATE="2026-10-28T00:00:00Z", GIT_COMMITTER_DATE="2026-10-28T00:00:00Z")
+        env = dict(os.environ, **BOT_COMMIT, GIT_AUTHOR_NAME=identity["name"], GIT_AUTHOR_EMAIL=identity["email"])
         subprocess.run(["git", "-C", str(self.repo), "-c", "core.hooksPath=/dev/null", "commit", "-m", bridge.imported_message(case)], env=env, check=True, capture_output=True)
         self.imported = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
         return self.imported
@@ -129,9 +134,7 @@ def repository(case: bridge.Case) -> tuple[pathlib.Path, str]:
 
 def commit_file(repo: pathlib.Path, text: str) -> str:
     (repo / "README").write_text(text)
-    # Incident: a root CI container has no git identity to guess, so this commit died with exit 128 on every postmerge.
-    who = {f"GIT_{role}_{part}": value for role in ("AUTHOR", "COMMITTER") for part, value in (("NAME", "yi-bot"), ("EMAIL", "yi-bot@localhost"), ("DATE", "2026-10-28T00:00:00Z"))}
-    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "move"], check=True, capture_output=True, env=dict(os.environ, **who))
+    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "move"], check=True, capture_output=True, env=dict(os.environ, **BOT_COMMIT))
     return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
 
 
