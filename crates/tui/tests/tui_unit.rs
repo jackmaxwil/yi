@@ -536,12 +536,7 @@ fn status_labels_the_worktree_branch_and_session_and_keeps_a_lane_branch_head() 
         ..StatusInput::default()
     };
     let wide = flat(&yi_tui::status::render(&input, 160, &theme()));
-    for needle in [
-        "worktree yi ",
-        "branch ⎇ yi/01a1b3a",
-        "session ",
-        "1b9c1059",
-    ] {
+    for needle in ["worktree yi ", "branch ⎇ yi/01a1b3a", "session 1b9c1059"] {
         assert!(wide.contains(needle), "{needle:?} missing: {wide}");
     }
     let other = StatusInput {

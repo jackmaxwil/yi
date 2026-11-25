@@ -392,11 +392,6 @@ pub fn name_tile(name: &str) -> String {
     }
 }
 
-/// White initials on the name's accent: the text form of the avatar, drawn everywhere.
-pub fn tile_style(name: &str) -> Style {
-    tile_style_at(accent_index(name))
-}
-
 pub fn tile_style_at(index: usize) -> Style {
     Style::default()
         .fg(Color::Rgb(0x1a, 0x1b, 0x26))
