@@ -32,6 +32,14 @@ pub(crate) fn capped(
     rows
 }
 
+/// `text` whole when it fits `cells`, else cut on a character boundary to end in `…` there.
+pub(crate) fn clipped(text: &str, cells: usize) -> String {
+    match text.width().checked_sub(cells) {
+        None | Some(0) => text.to_owned(),
+        Some(over) => crate::status::clip_cells(text, over),
+    }
+}
+
 /// One row: a line wider than `width` keeps what fits before a closing `…`.
 pub fn fit(line: Line<'static>, width: usize) -> Line<'static> {
     let cells = flatten(&line);

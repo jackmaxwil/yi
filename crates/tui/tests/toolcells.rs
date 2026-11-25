@@ -497,6 +497,10 @@ fn a_long_command_shows_whole_and_one_past_its_cards_rows_is_cut() -> TestResult
         rows.contains("y…"),
         "one character past them is cut: {rows}"
     );
+    started(&mut app, "b3", "bash", &"好".repeat(room / 2 + 2));
+    ended(&mut app, "b3", "bash", "");
+    let rows = flat(&app.reflowed(80)).join("");
+    assert!(rows.contains("好…"), "a wide head is cut by cells: {rows}");
     let mut app = self::app();
     let command = format!(
         "grep -rn {} crates/*/src\n  --include='*.rs'",

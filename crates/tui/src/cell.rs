@@ -6,7 +6,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::colors::{ColorTier, Theme, name_accent};
 use crate::diffview::{self, DiffBudget};
 use crate::markdown;
-use crate::wrap::{capped, wrap_line};
+use crate::wrap::{capped, clipped, wrap_line};
 use yi_types::status_mark::StatusMark;
 use yi_types::subagent::{ChildActivity, ChildFlag};
 
@@ -320,10 +320,7 @@ impl ToolCell {
         let inner = crate::card::body_width(width);
         let budget = crate::budget::card_rows(theme.rows, failed);
         let room = inner.saturating_mul(budget).saturating_sub(1);
-        let mut head = self.summary.clone();
-        if !expanded && head.chars().count() > room {
-            head = head.chars().take(room).collect::<String>() + "…";
-        }
+        let head = clipped(&self.summary, if expanded { usize::MAX } else { room });
         spans.extend(self.summary_spans(&head, theme, style));
         let revealed = if expanded || failed {
             REVEAL_ROWS

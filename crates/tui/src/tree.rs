@@ -58,7 +58,7 @@ fn entry_label(entry: &Entry) -> Option<(&'static str, String)> {
                             let args = serde_json::Value::Object(arguments.clone());
                             Some(format!(
                                 "⚙ {name} {}",
-                                crate::transcript::arg_summary(name, &args)
+                                crate::transcript::arg_summary(name, &args, false)
                             ))
                         }
                         _ => None,

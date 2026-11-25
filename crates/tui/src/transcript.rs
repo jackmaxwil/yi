@@ -148,15 +148,11 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
     (done == total && total.parse::<u64>().ok()? > 0).then(|| format!("Todos {total}/{total}"))
 }
 
-/// A tool card's head: a shell command whole, every other tool as one row names it.
-pub(crate) fn arg_whole(tool: &str, args: &Value) -> String {
-    match args.get("command").and_then(Value::as_str) {
-        Some(command) if tool == "bash" => command.split_whitespace().collect::<Vec<_>>().join(" "),
-        _ => arg_summary(tool, args),
-    }
+pub(crate) fn card_head(tool: &str, args: &Value) -> String {
+    crate::cell::ToolCell::summary_of(tool, &arg_summary(tool, args, true))
 }
 
-pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
+pub(crate) fn arg_summary(tool: &str, args: &Value, whole: bool) -> String {
     if tool == "ask_user"
         && let Some(question) = crate::question::Question::from_args(args)
     {
@@ -182,12 +178,14 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
     };
     match arg.and_then(Value::as_str) {
         Some(text) => {
-            let first = text.lines().next().unwrap_or("");
-            let mut text = first.split_whitespace().collect::<Vec<_>>().join(" ");
-            if text.chars().count() > 120 {
-                text = text.chars().take(120).collect::<String>() + "…";
-            }
-            text
+            let whole = whole && tool == "bash";
+            let shown = if whole {
+                text
+            } else {
+                text.lines().next().unwrap_or("")
+            };
+            let text = shown.split_whitespace().collect::<Vec<_>>().join(" ");
+            crate::wrap::clipped(&text, if whole { usize::MAX } else { 120 })
         }
         None => String::new(),
     }

@@ -278,6 +278,10 @@ impl History {
 
     /// Opens the cell at `index` whole where it stands, or folds it back; every row is redrawn.
     pub fn toggle(&mut self, index: usize) {
+        let cell = self.cells.get(index);
+        if !matches!(cell, Some(Cell::Tool(_) | Cell::Thought { .. })) {
+            return;
+        }
         if !self.opened.remove(&index) {
             self.opened.insert(index);
         }
