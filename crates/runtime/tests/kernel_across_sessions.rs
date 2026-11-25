@@ -70,6 +70,7 @@ async fn child_kernel_answer(
         Arc::clone(&provider),
     );
     let kernels = KernelServiceMap::new();
+    yi_runtime::admission::fix_roomy_sample();
     let host = attach_runtime(
         &mut parent,
         RuntimeWiring {
@@ -217,6 +218,7 @@ pub(crate) fn root_session(
         },
         Arc::clone(&provider),
     );
+    yi_runtime::admission::fix_roomy_sample();
     attach_runtime(
         &mut session,
         RuntimeWiring {

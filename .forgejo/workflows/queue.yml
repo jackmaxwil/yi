@@ -26,9 +26,12 @@ jobs:
       - name: install fgj
         run: |
           set -euo pipefail
-          curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
-          echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
-          chmod +x /usr/local/bin/fgj
+          sum=7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39
+          if ! { command -v fgj >/dev/null && echo "$sum  $(command -v fgj)" | sha256sum -c - >/dev/null 2>&1; }; then
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 10 -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
+            echo "$sum  /usr/local/bin/fgj" | sha256sum -c -
+            chmod +x /usr/local/bin/fgj
+          fi
       # Most ticks stop here on one or two API calls, with no checkout, unless the state report is on.
       - name: anything to do
         id: work

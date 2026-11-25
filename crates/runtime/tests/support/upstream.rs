@@ -100,6 +100,7 @@ pub(crate) fn root_at(
         host.attach(slot, yi_runtime::unattended_fragment().to_owned());
         session.install_extensions(host);
     }
+    yi_runtime::admission::fix_roomy_sample();
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
@@ -129,6 +130,8 @@ pub(crate) fn root_at(
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
+    // Invariant: a test judges the code, so its root admits by a fixed answer, not the machine's load.
+    host.admit_with(Arc::new(|_, _| Ok(())));
     Ok((session, host))
 }
 

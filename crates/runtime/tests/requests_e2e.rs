@@ -46,6 +46,7 @@ fn family(parent: &Arc<AgentSession>, kind: Child) -> std::io::Result<Family> {
     let root = Scratch::new("yi-requests")?;
     let store = support::memory_store("requests-parent");
     let kept = store.clone();
+    yi_runtime::admission::fix_roomy_sample();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
