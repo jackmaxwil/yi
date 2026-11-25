@@ -47,12 +47,21 @@ static: fmt-check lint har colours
 # its tests on the `gate` profile.
 gate: static (test "--profile gate")
 
-check: static test scenes
+check: static test tools scenes
 
 # Lay out target/package/Yi Desktop.app (unsigned, the build without tooling) and prove a tooling
 # build kept beside it starts headless from inside the bundle.
 package:
     {{py}} tools/package/package.py
+
+# Package, then put the app in ~/Applications (`--to DIR` for elsewhere), keeping the one it
+# replaces under target/package/previous. Refuses while the installed app is running.
+install *ARGS: package
+    python3 tools/package/install.py {{ARGS}}
+
+# The packaging tools' own checks, on scratch folders.
+tools:
+    python3 tools/package/install.py --selfcheck
 
 # Speed budgets, release profile: three rounds, the worst judged against tests/budgets/budgets.json.
 budgets:

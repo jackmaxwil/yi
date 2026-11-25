@@ -1,0 +1,5 @@
+---
+version: 0.1123.0
+shares: #2363 both edit scripts/guardrails/check_guardrails.sh: this branch adds the intake journey and the changed-file scan to the lanes, #2363 adds its own check for the signed Mac binary; whichever lands second merges main
+---
+The guardrails lane runs two checks that used to run in one place only. The intake journey (`scripts/intake/journey.py`) runs in the fast and the full lane, with no home directory, no git configuration and `user.useConfigOnly=true`, so it fails on a developer Mac the way it would in the forge's root container; it leaves the after-merge `journeys` recipe. `check_scan.py --changed` runs the semgrep rules on the `.py` and `.rs` files changed since `origin/main`, and the commit hook's fast lane now runs it; gitleaks, zizmor and the scan's selfcheck stay in the full lane.
