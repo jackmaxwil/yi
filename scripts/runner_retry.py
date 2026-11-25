@@ -288,7 +288,7 @@ def check_retry_flow():
         mock.patch.object(forge_pr, "pull", lambda value: pr),
         mock.patch.object(forge_pr, "rerun_waits", lambda value: []),
         mock.patch.object(forge_pr, "jobs_of", lambda value: {"gate (test)": "failure", "gate (lint)": "failure"}),
-        mock.patch.object(forge_pr, "required", lambda: ["gate (test)", "gate (lint)"]),
+        mock.patch.object(forge_pr, "required", lambda timeout=None: ["gate (test)", "gate (lint)"]),
         mock.patch.object(forge_pr, "repo", lambda: "o/r"),
         mock.patch.object(forge_pr, "fgj_api", api),
         mock.patch.object(bot_meter, "authors", lambda: {bot_meter.BOT, "jack"}),
@@ -445,7 +445,7 @@ def check_merge_flow():
     patches = (
         mock.patch.object(forge_pr, "pull", pull),
         mock.patch.object(forge_pr, "jobs_of", jobs),
-        mock.patch.object(forge_pr, "required", lambda: ["gate (test)"]),
+        mock.patch.object(forge_pr, "required", lambda timeout=None: ["gate (test)"]),
         mock.patch.object(forge_pr, "is_behind", lambda value: False),
         mock.patch.object(forge_pr, "unreviewed", lambda *args: []),
         mock.patch.object(forge_pr, "fgj_api", api),

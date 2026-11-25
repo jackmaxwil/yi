@@ -1561,7 +1561,7 @@ def state_cases(off=""):
         bad.append(f"#1694 stopped at the review cap read {got}, not review capped")
     # #2074's round 2 re-read once in place (tries=2) after round 1: three reads lost a lens, so the retries are spent.
     r1, r2 = json.loads((pr_review.RECORDED / "lost_lens.json").read_text())["2074"]
-    r2 = dict(r2, body="\n".join(line[:-4] + " tries=2 -->" if line.startswith("<!-- yi-round-meta ") else line for line in r2["body"].splitlines()))
+    r2 = dict(r2, body=pr_review.retried(r2["body"]))
     lost = dict(pr, number=2074, head={"sha": pr_review.parse_round(r2, {pr_review.BOT}, 2074)["sha"]})
     if (got := state_of(facts(lost, [r1, r2], [], pr_review.on_head, {pr_review.BOT, "jack"}), off)[0]) != "lost answers, retries spent":
         bad.append(f"#2074 with three lost reads, two of them one round finished in place, read {got}, not lost answers, retries spent")
@@ -1751,7 +1751,7 @@ def neutral_cases():
         would = {"context": WOULD, "status": "success", "description": "would enqueue (clean, not queued since 11-22 10:04Z)"}
         for extra in ([], [mine], [mine, would]):
             with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: {"statuses": rows + extra}), \
-                    mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(forge_pr, "required", lambda: [*LANES, "title"]):
+                    mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(forge_pr, "required", lambda timeout=None: [*LANES, "title"]):
                 jobs = forge_pr.jobs_of(pr)
                 seen.append((forge_pr.decide(pr, jobs, [*LANES, "title"], False), lanes_state({"lanes": jobs}),
                              pr_autofix.red_lanes("o/r", pr["head"]["sha"]), forge_pr.rerun_waits(pr),
@@ -1839,7 +1839,7 @@ def rows_world(cases, mode, moved=(), refuse=(), report_on="off", rebased=(), pa
     verb = lambda name: lambda ns: calls.append(("verb", name, ns.number)) or 0
     with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "apex/yi"), \
             mock.patch.object(pr_review, "holds_for", on_head), mock.patch.object(forge_pr, "cmd_update", verb("cmd_update")), \
-            mock.patch.object(forge_pr, "cmd_rerun", verb("cmd_rerun")), mock.patch.object(forge_pr, "required", lambda: [*LANES, "title"]), \
+            mock.patch.object(forge_pr, "cmd_rerun", verb("cmd_rerun")), mock.patch.object(forge_pr, "required", lambda timeout=None: [*LANES, "title"]), \
             mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot,jack", "STATE_REPORT": report_on, "QUEUE_ROWS": mode}), \
             contextlib.redirect_stdout(io.StringIO()) as said_out:
         yield (lambda: report([c["pr"] for c in world.values()], mode=mode)), writes, said_out, calls, world
