@@ -24,6 +24,7 @@ from forgejo_pr_comment import send, upsert
 # The sizing the register was written in and the labels carry: S = a day, M = three, L = a week.
 WEIGHTS = {"size:S": 1, "size:M": 3, "size:L": 7}
 PRIORITIES = ("priority:first", "priority:next", "priority:later")
+BOT = "yi-bot"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Forgejo's own default keywords, because they are what closed the issue: a
 # wider pattern would annotate issues this merge only mentioned.
@@ -185,7 +186,7 @@ def hygiene(transport, api, repo, window, today):
             continue
         # Invariant: an unsized area:forge-ci issue the bot opened is its own alarm (pr_queue.heartbeat), which
         # closes itself; a size or milestone would fold it into a due date.
-        if (issue.get("user") or {}).get("login") == "yi-bot" and not sizes and "area:forge-ci" in names:
+        if (issue.get("user") or {}).get("login") == BOT and not sizes and "area:forge-ci" in names:
             continue
         misses.extend(
             found
@@ -357,7 +358,7 @@ def selfcheck():
         [
             issue(20, "size:L", milestone={"id": 1}),
             {"number": 21, "labels": [{"name": "size:S"}, {"name": "size:M"}], "milestone": None},
-            {"number": 22, "labels": [{"name": "area:forge-ci"}], "milestone": None, "user": {"login": "yi-bot"}},
+            {"number": 22, "labels": [{"name": "area:forge-ci"}], "milestone": None, "user": {"login": BOT}},
             {"number": 23, "labels": [{"name": "area:forge-ci"}], "milestone": None, "user": {"login": "jack"}},
         ]
     ]

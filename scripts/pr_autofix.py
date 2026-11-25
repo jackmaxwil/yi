@@ -1327,7 +1327,7 @@ def red_issue(repo, base_ref, title=None, timeout=None):
     """The bot's one open issue saying this base is red, or carrying `title`; None for none, False when the forge
     did not say. Not `q`: a search page of a 2,000-issue repo can miss it, which reads as a green base."""
     path = f"repos/{repo}/issues?state=open&type=issues&labels=area:forge-ci&created_by={pr_review.BOT}&limit=50"
-    found = forge_pr.fgj_api("GET", path) if timeout is None else forge_pr.fgj_api("GET", path, timeout=timeout)
+    found = forge_pr.fgj_api("GET", path, timeout=timeout)
     if not isinstance(found, list):
         return False
     return next((i for i in found if i.get("title") == (title or RED_TITLE.format(base_ref))
@@ -1887,7 +1887,7 @@ def waits_selfcheck():
     iso = lambda at: datetime.datetime.fromtimestamp(at, datetime.timezone.utc).isoformat()
     forge, seen_paths, saved_sh = {"issues": [], "listing": True, "base": [("failure", "Failing after 9m")]}, [], sh
 
-    def api(method, path, payload=None):
+    def api(method, path, payload=None, timeout=None):
         seen_paths.append(path)
         if method == "POST" and path.endswith("/issues"):
             if forge.get("refuse"):
@@ -2504,7 +2504,7 @@ def base_lane_selfcheck():
     errs, rows, saved = [], {}, (forge_pr.git, forge_pr.fgj_api)
     try:
         forge_pr.git = lambda *a, **k: "c0\nc1" if a[0] == "rev-list" else ""
-        forge_pr.fgj_api = lambda method, path, payload=None: {"statuses": rows[path.split("/")[-2]]}
+        forge_pr.fgj_api = lambda method, path, payload=None, timeout=None: {"statuses": rows[path.split("/")[-2]]}
         for newest, want in ((("failure", "Has been cancelled"), forge_pr.UNREAD), (("success", "Has been skipped"), forge_pr.UNREAD)):
             rows.update(c0=[{"context": "pr / gate (test) (push)", "status": newest[0], "description": newest[1]}],
                         c1=[{"context": "pr / gate (test) (push)", "status": "success", "description": "Successful in 9m"}])
@@ -2547,7 +2547,7 @@ def selfcheck():
     if tidied("Refs #1072.", states) is not None or tidied("Closes #1076.", states) is not None:
         errs.append("a body citing only closed issues, or none, was rewritten")
     statuses, real_api, patched = [("gate (test)", "failure"), ("gate (lint)", "pending"), ("title", "failure")], forge_pr.fgj_api, []
-    forge_pr.fgj_api = lambda method, path, payload=None: patched.append(path) if method != "GET" else (
+    forge_pr.fgj_api = lambda method, path, payload=None, timeout=None: patched.append(path) if method != "GET" else (
         {"state": "closed" if path.endswith("/issues/2") else "open"} if "/issues/" in path else {"statuses": [{"context": f"pr / {job} (pull_request)", "status": state} for job, state in statuses]})
     real_repo, forge_pr.repo, real_rerun, forge_pr.cmd_rerun = forge_pr.repo, lambda: "o/r", forge_pr.cmd_rerun, lambda ns: None
     try:

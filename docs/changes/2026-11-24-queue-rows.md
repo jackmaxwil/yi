@@ -1,5 +1,6 @@
 ---
 cut: none scripts/pr_queue.py
+cut: none scripts/pr_review.py
 shares: #2349 both edit .forgejo/workflows/queue.yml: this branch passes QUEUE_ROWS to the tick's step, #2349 rewrites the fgj install step above it
 shares: #2344 both edit scripts/pr_queue.py and scripts/pr_autofix.py: this branch adds the act column, the consent rule and the heartbeat, #2344 adds the desktop lane's name to the lists of gate lanes; whichever lands second merges main
 ---

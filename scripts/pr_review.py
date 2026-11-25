@@ -74,7 +74,7 @@ DUP_SHARED = 8
 # The probes are data: one file each, the brief as its body, so the exam can adopt them unchanged.
 PROBES = ROOT / "skills/yi/pr-review/probes"
 # The review job's fgj is signed in as this account; its rounds count wherever the sweep runs.
-BOT = bot_meter.BOT
+BOT = forge_tracking.BOT
 # Every `yi ask` a round makes adds its sessions here; cmd_review starts a fresh one per round.
 METER = bot_meter.Meter()
 # Incident: a planted .yi/skills/har shadowed yi://skills/har in the bot's checkout and served its
@@ -900,9 +900,8 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
 
 
 def comments(repo, number, timeout=None):
-    # Invariant: without a timeout the call is the two-argument one every forge double in the selfchecks answers.
     def transport(method, path, payload):
-        answer = (forge_pr.fgj_api(method, path, payload) if timeout is None else forge_pr.fgj_api(method, path, payload, timeout=timeout)) or []
+        answer = forge_pr.fgj_api(method, path, payload, timeout=timeout) or []
         if not isinstance(answer, list):
             raise Unanswered(f"#{number}: the forge did not list the comments: {answer.get('message') if isinstance(answer, dict) else answer}")
         return answer
@@ -1269,7 +1268,7 @@ def sweep_heads(listing, notes=None, patched=None, running=()):
     got, saved = [], (forge_pr.fgj_api, forge_pr.repo, forge_pr.jobs_of, comments, holds_for, cmd_review, authors)
     notes = notes or {}
 
-    def served(method, url, body=None):
+    def served(method, url, body=None, timeout=None):
         if method != "GET":
             patched.append(url)
             return {"number": 1}
@@ -2103,7 +2102,7 @@ def selfcheck():
     assert sweep_heads(drafts, notes, running={2, 4}) == [5, 6], "a head whose own review job is still pending is not swept a second time"
     saved = (forge_pr.fgj_api, forge_pr.jobs_of, holds_for)
     try:
-        forge_pr.fgj_api = lambda method, url, body=None: patched.append(url) or {"number": 1}
+        forge_pr.fgj_api = lambda method, url, body=None, timeout=None: patched.append(url) or {"number": 1}
         globals().update(holds_for=lambda n, base: on_head)
         forge_pr.jobs_of = lambda pr: {**dict.fromkeys(GATE_LANES, "success"), "gate (test)": "failure"}
         red = promote("o/r", drafts[0], [{"user": {}, **parse_round(c, {BOT}, None)} for c in notes[1]])

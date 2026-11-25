@@ -16,7 +16,7 @@ import bot_meter, forge_pr, forge_tracking, pr_review
 from check_pr_metadata import CITE
 from _common import scratch_repo
 
-LABEL, CANDIDATE = "queue", "queue/candidate"
+LABEL, CANDIDATE, LEFT = "queue", "queue/candidate", "Left the queue"
 # Sessions sign in as `jack` too, so an enqueue only when the owner asked stays a rule of conduct.
 MERGERS = {"jack"}
 K = 4
@@ -202,8 +202,7 @@ BOT_PATHS = (".forgejo/workflows/", "scripts/hooks/", "scripts/pr_review.py", "s
 
 
 def timeline(number, timeout=None):
-    get = lambda method, url: forge_pr.fgj_api(method, url) if timeout is None else forge_pr.fgj_api(method, url, timeout=timeout)
-    transport = lambda method, url, _: listing(get(method, url) or [], f"#{number}'s timeline")
+    transport = lambda method, url, _: listing(forge_pr.fgj_api(method, url, timeout=timeout) or [], f"#{number}'s timeline")
     return list(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/timeline?x=1"))
 
 
@@ -224,7 +223,7 @@ def stops(events, notes, rows):
     titles = [e for e in events if e.get("type") == "change_title"
               and (e.get("old_title") or "").startswith(forge_pr.DRAFT) != (e.get("new_title") or "").startswith(forge_pr.DRAFT)]
     gate = max((pr_review.when(r.get("updated_at")) for r, (job, _, _) in zip(rows, forge_pr.as_jobs(rows)) if job in (*LANES, "title")), default=0.0)
-    left = [at(c) for c in notes if who(c) == pr_review.BOT and (c.get("body") or "").startswith("Left the queue")]
+    left = [at(c) for c in notes if who(c) == pr_review.BOT and (c.get("body") or "").startswith(LEFT)]
     return {"taken_out": bool(queue) and queue[-1].get("body") != "1" and who(queue[-1]) in MERGERS and at(queue[-1]) > pushed,
             "drafted": bool(titles) and (titles[-1].get("new_title") or "").startswith(forge_pr.DRAFT),
             "ejected": bool(left) and max(left) > max(pushed, gate)}
@@ -273,9 +272,8 @@ def do(pr, act, notes):
             return
         set_label(number, LABEL, True, FORGE_SECS)
     elif act == "promote" and fresh["title"].startswith(forge_pr.DRAFT):
-        ready = api("PATCH", f"pulls/{number}", {"title": fresh["title"].removeprefix(forge_pr.DRAFT)}, FORGE_SECS)
-        if not (ready or {}).get("number"):
-            raise SystemExit(f"the forge refused to take #{number} out of draft: {ready}")
+        if refused := forge_pr.undraft(number, fresh["title"], FORGE_SECS):
+            raise SystemExit(f"the forge refused to take #{number} out of draft: {refused}")
     elif act == "repoint" and fresh["base"]["ref"] != "main":
         repoint(number, judged)
     print(f"queue: #{number} {act} at {judged[:10]}")
@@ -286,8 +284,8 @@ def repoint(number, head):
     moved = api("PATCH", f"pulls/{number}", {"base": "main"}, FORGE_SECS) or {}
     if (moved.get("base") or {}).get("ref") != "main":
         why = f"the forge refused to move this pull request's base to main ({moved.get('message')}). Change the base by hand"
-    elif (merged := api("POST", f"pulls/{number}/update?style=merge", None, FORGE_SECS)) and merged.get("message"):
-        why = f"its base is main now, but the forge refused to merge main in ({merged['message']}). Run `just pr update {number}`"
+    elif refused := forge_pr.merge_main(number, FORGE_SECS):
+        why = f"its base is main now, but the forge refused to merge main in ({refused}). Run `just pr update {number}`"
     else:
         return
     comment(number, f"{marker(head)}\nThe branch this pull request was based on has merged, but {why}.", FORGE_SECS)
@@ -503,8 +501,7 @@ def main_conflict(pr):
 
 
 def api(method, path, payload=None, timeout=None):
-    path = f"repos/{forge_pr.repo()}/{path}"
-    return forge_pr.fgj_api(method, path, payload) if timeout is None else forge_pr.fgj_api(method, path, payload, timeout=timeout)
+    return forge_pr.fgj_api(method, f"repos/{forge_pr.repo()}/{path}", payload, timeout=timeout)
 
 
 def listing(batch, what):
@@ -635,7 +632,7 @@ def observe(mode):
             notes[pr["number"]] = pr_review.comments(forge_pr.repo(), pr["number"])
         if reason := dequeue_reason(pr, notes.get(pr["number"], [])):
             set_label(pr["number"], LABEL, False)
-            comment(pr["number"], f"Left the queue: {reason}. Add the `{LABEL}` label again once that is answered.")
+            comment(pr["number"], f"{LEFT}: {reason}. Add the `{LABEL}` label again once that is answered.")
             pulls.remove(pr)
     obs = {"candidate": None, "in_main": False, "base": None, "main": git("rev-parse", "origin/main").stdout.strip(),
            "stale_member": None, "lanes": {}, "age_minutes": 0, "retries": 0, "members": [], "queued": [], "pulls": pulls, "open": every, "notes": notes}
@@ -816,7 +813,7 @@ def eject(obs):
     for number, _ in obs["members"]:
         set_label(number, LABEL, False)
         where = statuses_url(obs["candidate"], failed[0]) if failed else ""
-        comment(number, f"Left the queue: {', '.join(failed)} failed twice on this PR merged onto main, at "
+        comment(number, f"{LEFT}: {', '.join(failed)} failed twice on this PR merged onto main, at "
                         f"{obs['candidate'][:10]}. {where}\nAdd the `{LABEL}` label again once it is answered.")
         # Without this the fixer sees a green head with no conflict and decides it is clean, so the
         # failure has to reproduce on the PR's own head.
@@ -1150,7 +1147,7 @@ def batch_cases(off=""):
         landed = [number for number, _ in members_of(main, state["base"])]
         if landed != [1, 2, 3]:
             bad.append(f"the red batch left {landed} on main, not [1, 2, 3]")
-        ejected = {number for number, text in state["comments"] if "Left the queue" in text}
+        ejected = {number for number, text in state["comments"] if LEFT in text}
         if ejected != {4}:
             bad.append(f"the red batch ejected {ejected}, not {{4}}")
     return bad
@@ -1404,7 +1401,7 @@ def forge_cases():
              "tick": lambda: tick("on")}
     with mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(sys.modules[__name__], "git", mock.Mock()):
         # A body that is JSON but not an object still has to reach the log.
-        with mock.patch.object(forge_pr, "fgj_api", lambda *a: "bad gateway"):
+        with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: "bad gateway"):
             try:
                 queued_pulls()
                 bad.append("a string answer read as a listing")
@@ -1414,7 +1411,7 @@ def forge_cases():
             except Exception as err:
                 bad.append(f"a string answer died: {err!r}")
         for name, call in calls.items():
-            with mock.patch.object(forge_pr, "fgj_api", lambda *a: locked):
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: locked):
                 try:
                     call()
                     bad.append(f"{name} took an error object for an answer")
@@ -1425,7 +1422,7 @@ def forge_cases():
                     bad.append(f"{name} died on an error object: {err!r}")
         # A round reader's miss is the review job's Unanswered, which a tick turns into the same stop.
         queued = {"number": 1, "labels": [{"name": LABEL}]}
-        answers = lambda method, path, payload=None: locked if "/comments" in path else [queued] if "page=1" in path else []
+        answers = lambda method, path, payload=None, timeout=None: locked if "/comments" in path else [queued] if "page=1" in path else []
         with mock.patch.object(forge_pr, "fgj_api", answers):
             try:
                 tick("on")
@@ -1444,7 +1441,7 @@ def forge_cases():
             except BaseException as err:
                 bad.append(f"comments stopped outside the handlers that retry a miss: {err!r}")
         # A refused close holds the ref inside the patience, so the `landed` rule retries it, and never wedges past it.
-        forge = lambda method, path, payload=None: locked if method == "PATCH" else {"body": "Closes #5"}
+        forge = lambda method, path, payload=None, timeout=None: locked if method == "PATCH" else {"body": "Closes #5"}
         for age, keeps in ((CLOSE_PATIENCE - 1, True), (CLOSE_PATIENCE, False)):
             obs = {"members": [(1, "a" * 40)], "age_minutes": age}
             with mock.patch.object(forge_pr, "fgj_api", forge), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
@@ -1469,7 +1466,7 @@ def forge_cases():
                                                    ("fork/r", on_main, 0, 0, ([], [], [], 0), "o/r")):
             moved, updated, reran = [], [], []
             pulls = [{"number": n, "base": {"ref": ref}, "head": {"sha": "old", "repo": {"full_name": kid}}} for n, ref in bases]
-            with mock.patch.object(forge_pr, "fgj_api", lambda method, path, payload=None: (moved.append((path.rsplit("/", 1)[1], payload)), answer)[1] if method == "PATCH" and "/pulls/" in path else {"body": ""}), \
+            with mock.patch.object(forge_pr, "fgj_api", lambda method, path, payload=None, timeout=None: (moved.append((path.rsplit("/", 1)[1], payload)), answer)[1] if method == "PATCH" and "/pulls/" in path else {"body": ""}), \
                     mock.patch.object(forge_pr, "pull", lambda n: {"body": "", "head": {"ref": "b7", "sha": "old" if update else "new", "repo": {"full_name": owner}}}), mock.patch.object(forge_pr, "open_pulls", lambda: pulls), \
                     mock.patch.object(forge_pr, "repo", lambda: "o/r"), mock.patch.object(forge_pr, "cmd_rerun", lambda ns: reran.append(ns.number) or rerun), \
                     mock.patch.object(forge_pr, "cmd_update", lambda ns: updated.append(ns.number) or update == 1), \
@@ -1484,7 +1481,7 @@ def forge_cases():
                 bad.append(f"a child neither updated nor rerun was not told to run `just pr update`: {said}")
         # A 404 may be a gone issue or a write the token may not make, so only the closed issue itself is an answer.
         for answer, closed in (({"number": 5, "state": "closed"}, True), (None, False)):
-            with mock.patch.object(forge_pr, "fgj_api", lambda *a: answer), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: answer), mock.patch.object(forge_pr, "pull", lambda n: {"body": "Closes #5"}), \
                     mock.patch.multiple(sys.modules[__name__], delete_ref=mock.DEFAULT, record_main=mock.DEFAULT, set_label=mock.DEFAULT, comment=mock.DEFAULT) as stubs:
                 try:
                     with contextlib.redirect_stdout(io.StringIO()):
