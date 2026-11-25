@@ -100,6 +100,7 @@ STATES = (
     ("fixer handed off", "person", 22, lambda f: f["fix"] == "handoff", None),
     ("based off a merged branch", "queue", 0.25, lambda f: f["base"] != "main" and f.get("parent") == "merged", "repoint"),
     ("based off a closed branch", "person", 22, lambda f: f["base"] != "main" and f.get("parent") == "closed", None),
+    ("parent red", "parent's author", 22, lambda f: f["base"] != "main" and f["fix"] == "base-red", None),
     ("based off main", "queue", 10, lambda f: f["base"] != "main", None),
     ("review capped", "person", 22, lambda f: f.get("capped") and f["verdict"] is None, None),
     ("awaiting review", "review", 18, lambda f: f["verdict"] is None and not f["lost"], None),
@@ -368,10 +369,10 @@ def cmd_parked(args):
 DARK_MINUTES, RUN_MINUTES, LOOKBACK_HOURS, PAGES = 165, 100, 6, 20
 
 
-def job_records(watched, now, want):
-    """`watched`'s job records, newest first, read page by page until `want(records)` holds, a record of any
-    job is older than LOOKBACK_HOURS, or PAGES pages are read."""
-    found, pages = [], []
+def job_records(watched, now, want, keep=None):
+    """`watched`'s job records, or those `keep` takes, newest first, read page by page until `want(records)` holds, a
+    record of any job is older than LOOKBACK_HOURS, or PAGES pages are read."""
+    found, pages, keep = [], [], keep or (lambda r: r.get("workflow_id") == watched)
 
     def transport(method, path, payload):
         answer = forge_pr.fgj_api(method, path, payload, timeout=FORGE_SECS)
@@ -379,7 +380,7 @@ def job_records(watched, now, want):
         if rows is None:
             raise SystemExit(f"the forge did not list the job records: {answer}")
         pages.append(path)
-        found.extend(r for r in rows if r.get("workflow_id") == watched)
+        found.extend(filter(keep, rows))
         old = any(now - pr_review.when(r["created_at"]) > LOOKBACK_HOURS * 3600 for r in rows)
         return [] if want(found) or old or len(pages) >= PAGES else rows
 
@@ -1530,6 +1531,7 @@ STATE_CASES = (
     ("gate pending", dict(gate="pending")),
     ("queued", dict(labels={"queue"})),
     ("based off a closed branch", dict(base="jack/q-desk", parent="closed")),
+    ("parent red", dict(base="jack/q-desk", parent="open", fix="base-red")),
     ("unknown", dict(verdict="none such")),
 )
 
@@ -2092,7 +2094,7 @@ def heartbeat_order_cases():
     seen.clear()
     tried, keep = [], {name: getattr(pr_autofix, name) for name in ("attempt", "label_ids", "spent_today", "tidy", "settle_base_red", "lock_job")}
     try:
-        pr_autofix.attempt = lambda repo, pr, ids, asked=False: tried.append(pr["number"]) or "clean"
+        pr_autofix.attempt = lambda repo, pr, ids, asked=False, seen=None, day=0.0: tried.append(pr["number"]) or "clean"
         pr_autofix.label_ids, pr_autofix.spent_today, pr_autofix.tidy = (lambda repo: {}), (lambda repo: 0.0), (lambda repo, pr: False)
         pr_autofix.settle_base_red, pr_autofix.lock_job = (lambda repo, bases: None), (lambda root=None: None)
         fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
