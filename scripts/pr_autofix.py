@@ -1685,6 +1685,12 @@ def shared_wait(repo, ids, pr, notes, lanes, seen, post, labels):
     return "rerun" if rerun_head(pr, post) else "handoff"
 
 
+def poster(repo, number):
+    """A ledger row writer for one PR: True once the forge took the comment, which a row's act waits on."""
+    return lambda body: (lambda said: isinstance(said, dict) and bool(said.get("id")))(
+        forge_pr.fgj_api("POST", f"repos/{repo}/issues/{number}/comments", {"body": body}, timeout=pr_queue.FORGE_SECS))
+
+
 def rerun_head(pr, post, kind="gate"):
     """Close and reopen the PR, its rerun row already posted; True once the forge reran it. A refusal or a raise posts
     one hand-off row in the forge's words, which holds the head for a person, so its rerun is never claimed or retried."""
@@ -1803,9 +1809,7 @@ def attempt(repo, pr, ids, asked=False, seen=None, day=0.0):
         return "waiting"
     lanes = [] if conflicted or blocked or stale else red_lanes(repo, pr["head"]["sha"])
 
-    def post(body):
-        answer = forge_pr.fgj_api("POST", f"repos/{repo}/issues/{number}/comments", {"body": body}, timeout=pr_queue.FORGE_SECS)
-        return isinstance(answer, dict) and bool(answer.get("id"))
+    post = poster(repo, number)
     # A person's `autofix` label and `just pr autofix N` ask for a try past an outage or a red base, as past the quiet wait.
     if lanes and not asked and not labels & {"autofix", "autofix:failed"}:
         try:
@@ -1969,8 +1973,7 @@ def tidy(repo, pr):
         return False
     gone = sorted(set(CITED.findall(pr["body"])) - set(CITED.findall(body)), key=int)
     forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{pr['number']}", {"body": body})
-    post = lambda body: (lambda said: isinstance(said, dict) and bool(said.get("id")))(
-        forge_pr.fgj_api("POST", f"repos/{repo}/issues/{pr['number']}/comments", {"body": body}))
+    post = poster(repo, pr["number"])
     # Invariant: a rerun's row goes first and is the head's rerun every rerunning path counts; refused, nothing reruns.
     if not post(f"<!-- yi-autofix -->\n<!-- yi-autofix-meta pr={pr['number']} kind=title from={pr['head']['sha'][:12]} verdict=rerun -->\n"
                 f"Autofix took the citations of closed issues {', '.join('#' + n for n in gone)} out of the body; the checks rerun."):
@@ -2063,9 +2066,9 @@ def cmd_autofix(args):
         if stop and not capped:
             print(f"autofix: {stop}; comments, reruns and the host's own repairs go on")
             capped = day_sign(repo, ids, today, spent) or True
-        if not any(label["name"] == "autofix:hold" for label in pr.get("labels") or []):
-            tidy(repo, pr)
         try:
+            if not any(label["name"] == "autofix:hold" for label in pr.get("labels") or []):
+                tidy(repo, pr)
             said = attempt(repo, pr, ids, seen=seen, day=CAP_DAY if capped else spent)
             capped = capped or said == "day-capped" and (day_sign(repo, ids, today, spent) or True)
         except Exception as err:
@@ -4259,6 +4262,21 @@ def checks():
             cmd_autofix(type("A", (), {"number": None})())
             if reached != list(range(10, 10 + PER_RUN)):
                 errs.append(f"a pass whose attempts all raised reached {reached}, not {PER_RUN} PRs and a stop")
+            # The review's probe: a tidy whose comment did not answer within its timeout costs that PR, not the pass.
+            reached[:] = []
+            module.attempt = lambda repo, pr, ids, asked=False, **_: reached.append(pr["number"]) or "clean"
+            module.tidy = lambda repo, pr: (_ for _ in ()).throw(subprocess.TimeoutExpired("fgj", pr_queue.FORGE_SECS)) if pr["number"] == 10 else False
+            forge_pr.fgj_api = lambda *a, **k: [dict(fresh, number=n) for n in (10, 11)]
+            try:
+                cmd_autofix(type("A", (), {"number": None})())
+            except subprocess.TimeoutExpired as err:
+                reached.append(f"the pass ended: {err}")
+            module.tidy = lambda repo, pr: False
+            if reached != [11]:
+                errs.append(f"a pass whose first tidy timed out reached {reached}, not the next PR")
+            forge_pr.fgj_api = lambda method, path, payload=None, timeout=None: {"id": 1} if timeout else {"message": "no timeout"}
+            if not poster("o/r", 7)("row"):
+                errs.append("a ledger row was posted with no timeout, so a slow forge holds the pass")
             # A PR the new reads could not finish costs its own pass, never the quota; a model call the day cap met
             # raises one sign and holds the day's later fixes.
             days, opened, reached[:] = [], [], []
