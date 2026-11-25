@@ -17,13 +17,12 @@ import time
 import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-BUNDLE = ROOT / "target/package/Yi Desktop.app"
-EXE = BUNDLE / "Contents/MacOS/yi-desktop"
+from bundle import BUNDLE, EXE, ID, ROOT
+
+APP = BUNDLE / "Contents/MacOS" / EXE
 TOOLING = ROOT / "target/package/yi-desktop-tooling"
 WORK = ROOT / "target/receipts"
 OUT = ROOT / "docs/receipts.md"
-ID = "dev.yi.desktop"
 LAUNCHES = 5
 
 
@@ -49,7 +48,7 @@ def cpu_seconds(pid):
 
 
 def launch(env, sock, ready):
-    app = subprocess.Popen([str(EXE), "--socket", str(sock)], cwd=WORK, env=env,
+    app = subprocess.Popen([str(APP), "--socket", str(sock)], cwd=WORK, env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     file = ready / f"{ID}.{app.pid}"
     deadline = time.monotonic() + 30
@@ -115,7 +114,7 @@ def supply():
 
 
 def main():
-    if not EXE.is_file():
+    if not APP.is_file():
         sys.exit("receipts: run `just package` first")
     budgets = json.loads((ROOT / "target/budgets/last.json").read_text())
     starts, rss, idle = measure_app()
@@ -131,7 +130,7 @@ def main():
         "(load average 20 to 45 on 16 cores). Every time below is therefore a ceiling: a quiet machine is faster. "
         "Re-measure with `just package`, `just budgets`, `just receipts`.", "",
         "| Receipt | Number |", "|---|---|",
-        f"| Binary size, shipped in the bundle (dist profile, no `tooling` feature) | {size_of(EXE):,} B ({mib(size_of(EXE))}) |",
+        f"| Binary size, shipped in the bundle (dist profile, no `tooling` feature) | {size_of(APP):,} B ({mib(size_of(APP))}) |",
         f"| Binary size, the dry run's `tooling` build beside the bundle (not shipped) | {size_of(TOOLING):,} B ({mib(size_of(TOOLING))}) |",
         f"| Bundle size | {size_of(BUNDLE):,} B ({mib(size_of(BUNDLE))}) |",
         f"| Cold start to first frame, real window, first launch after the bundle was built | {starts[0]} ms |",
