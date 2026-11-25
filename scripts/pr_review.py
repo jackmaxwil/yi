@@ -1200,7 +1200,14 @@ def walled(paths):
 
 # Incident: #1111 left draft on a clean round while its test lane was red; a sweep retries
 # each draft, so one whose lanes are still running or red leaves on a later sweep.
-GATE_LANES = ("gate (guardrails)", "gate (lint)", "gate (test)")
+GATE_LANES = ("gate (desktop)", "gate (guardrails)", "gate (lint)", "gate (test)")
+
+
+def head_lanes(jobs, lanes=GATE_LANES):
+    """Invariant: the forge makes every lane of the gate a `Waiting to run` status in the second it
+    makes the run, so a head whose other lanes have one and whose desktop lane has none predates it."""
+    predates = "gate (desktop)" not in jobs and all(lane in jobs for lane in GATE_LANES if lane != "gate (desktop)")
+    return [lane for lane in lanes if lane != "gate (desktop)" or not predates]
 
 
 def promote(repo, pr, rounds):
@@ -1209,7 +1216,7 @@ def promote(repo, pr, rounds):
     if not (title.startswith(DRAFT) and promotes(rounds, pr["head"]["sha"], holds_for(number, pr["base"]["ref"]))):
         return False
     jobs = forge_pr.jobs_of(pr)
-    waiting = [lane for lane in GATE_LANES if jobs.get(lane) != "success"]
+    waiting = [lane for lane in head_lanes(jobs) if jobs.get(lane) != "success"]
     if waiting:
         print(f"#{number}: stays a draft until its gate passes: " + ", ".join(f"{lane} {jobs.get(lane, 'not run')}" for lane in waiting))
         return False

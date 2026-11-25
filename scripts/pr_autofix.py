@@ -732,7 +732,7 @@ def owed_mediums(rnd):
 
 
 def red_lanes(repo, sha):
-    """The gate lanes (lint, guardrails, test) whose newest job on `sha` failed."""
+    """The gate lanes (lint, guardrails, test, desktop) whose newest job on `sha` failed."""
     return sorted(m.group(1) for name, status in forge_pr.head_jobs(repo, sha).items()
                   if status == "failure" and (m := re.fullmatch(r"gate \((\w+)\)", name)))
 

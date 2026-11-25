@@ -118,6 +118,10 @@ fn picked(runtime: &Runtime<Win>, pane: PaneId) -> Result<Option<String>, Box<dy
 /// A ⌘-click on a file opens it right of the viewer in a pane about it, which asks for its
 /// text and has the keys. The viewer keeps its file, and a plain click changes it alone.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "a ⌘ click reads ⌘ as Ctrl off the Mac, where the shortcut table reads it as the logo key"
+)]
 fn a_command_click_opens_the_file_beside_and_each_pane_shows_its_own() -> Check {
     let mut runtime = settled("shell/everything")?;
     let asked = effects(&runtime)?;
@@ -250,6 +254,10 @@ fn a_file_pane_behind_another_is_a_tab_named_by_its_file() -> Check {
 /// An ⌥⌘-click opens the file in a window of its own and leaves the main window as it was;
 /// again, it stays out. A ⌘-click on a file out in its window opens no second pane.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "a ⌘ click reads ⌘ as Ctrl off the Mac, where the shortcut table reads it as the logo key"
+)]
 fn an_option_command_click_opens_the_file_in_a_window_of_its_own() -> Check {
     let mut runtime = settled("shell/everything")?;
     let viewer = one(&runtime, PaneKind::Code)?;

@@ -196,6 +196,10 @@ fn place(frame: Frame) -> [f32; 4] {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn the_pull_out_button_gives_the_pane_a_window_and_the_grid_closes_up() -> Result<(), Box<dyn Error>>
 {
     let events = format!(r#"{OUT},"t":0.3}},{{"t":1.0,"type":"mark","name":"end"}}"#);
@@ -250,6 +254,10 @@ fn the_pull_out_button_gives_the_pane_a_window_and_the_grid_closes_up() -> Resul
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn the_put_back_button_closes_the_window_and_the_pane_is_home() -> Result<(), Box<dyn Error>> {
     let events =
         format!(r#"{OUT},"t":0.3}},{OUT},"t":1.0}},{{"t":1.6,"type":"mark","name":"end"}}"#);
@@ -272,6 +280,10 @@ fn the_put_back_button_closes_the_window_and_the_pane_is_home() -> Result<(), Bo
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn a_pane_pulled_out_a_second_time_opens_its_thread_again() -> Result<(), Box<dyn Error>> {
     let events = format!(
         r#"{OUT},"t":0.3}},{OUT},"t":1.0}},{OUT},"t":1.7}},{{"t":2.4,"type":"mark","name":"end"}}"#
@@ -287,6 +299,10 @@ fn a_pane_pulled_out_a_second_time_opens_its_thread_again() -> Result<(), Box<dy
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn one_pane_out_is_two_windows_and_two_out_are_three() -> Result<(), Box<dyn Error>> {
     let end = r#"{"t":0.5,"type":"mark","name":"end"}"#;
     let ran = desk("two", ONE, two, end)?;
@@ -328,6 +344,10 @@ fn second_screen(hub: &mut Hub) {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn windows_sit_on_a_second_screen() -> Result<(), Box<dyn Error>> {
     let end = r#"{"t":0.5,"type":"mark","name":"end"}"#;
     let ran = desk("two-screens", TWO, second_screen, end)?;
@@ -682,6 +702,10 @@ fn just_chat_picked_and_the_app_killed_comes_back_as_just_chat() -> Result<(), B
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn show_settings_opens_a_window_of_760_by_560_and_a_second_asks_the_same_one_forward()
 -> Result<(), Box<dyn Error>> {
     let show = r#"{"menu":"pane.show-settings""#;
@@ -712,6 +736,10 @@ fn show_settings_opens_a_window_of_760_by_560_and_a_second_asks_the_same_one_for
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn show_themes_opens_its_own_window_too() -> Result<(), Box<dyn Error>> {
     let events = r#"{"menu":"pane.show-themes","t":0.3},{"t":1.0,"type":"mark","name":"end"}"#;
     let ran = desk("show-themes", ONE, docked, events)?;
@@ -724,6 +752,10 @@ fn show_themes_opens_its_own_window_too() -> Result<(), Box<dyn Error>> {
 /// Dies with a Settings window that ⌘W leaves open: with no pane focused, Close Tab found
 /// nothing to close.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn command_w_closes_the_settings_window() -> Result<(), Box<dyn Error>> {
     let show = r#"{"menu":"pane.show-settings","t":0.3}"#;
     let close = r#"{"t":1.0,"type":"key","name":"w","cmd":true,"code":"w"}"#;

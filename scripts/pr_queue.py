@@ -20,10 +20,10 @@ LABEL, CANDIDATE, LEFT = "queue", "queue/candidate", "Left the queue"
 # Sessions sign in as `jack` too, so an enqueue only when the owner asked stays a rule of conduct.
 MERGERS = {"jack"}
 K = 4
-# Invariant: the candidate's three lanes run back to back on one runner, at most 3 x 20 minutes, and a run that
+# Invariant: the candidate's four lanes run back to back on one runner, at most 4 x 20 minutes, and a run that
 # has not reported by then is lost, because a candidate whose candidate.yml runs no lanes has no statuses at all.
-STALE_MINUTES = 80
-# Invariant: past the lanes' 80 minutes, and longer than the 100-minute `database is locked` fault of 2026-11-02.
+STALE_MINUTES = 100
+# Invariant: past the lanes' 100 minutes, and longer than the 100-minute `database is locked` fault of 2026-11-02.
 CLOSE_PATIENCE = 240
 INFRA_RETRIES = 2
 IDENTITY = ("-c", "user.name=yi-queue", "-c", "user.email=queue@yi")
@@ -1708,7 +1708,7 @@ def neutral_cases():
     lanes = lambda *states: [{"context": f"pr / {job} (pull_request)", "status": state} for job, state in zip((*LANES, "title"), states)]
     mine = {"context": STATE, "status": "success", "description": "unknown, waiting on person since 11-22 10:04Z (26 h, clock 0 h) parked"}
     pr = {"number": 7, "title": "t", "state": "open", "head": {"sha": "a" * 40}, "base": {"ref": "main"}, "labels": []}
-    for rows in ([], lanes("success", "success", "success", "success"), lanes("success", "failure", "pending"), lanes("pending")):
+    for rows in ([], lanes(*["success"] * (len(LANES) + 1)), lanes("success", "failure", "pending"), lanes("pending")):
         seen = []
         would = {"context": WOULD, "status": "success", "description": "would enqueue (clean, not queued since 11-22 10:04Z)"}
         for extra in ([], [mine], [mine, would]):

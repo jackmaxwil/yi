@@ -118,6 +118,10 @@ fn escape_during_a_carry_changes_nothing() -> Check {
 
 /// The Move Pane keys: chat, in focus, goes onto the left edge of Changes, then back right.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the chord holds ⌃ and ⌘, which are one key off the Mac"
+)]
 fn the_move_pane_keys_move_the_focused_pane_to_its_neighbours_edge() -> Check {
     let (mut window, _) = window("review")?;
     let at = middle(super::frame(&window, Chat)?);

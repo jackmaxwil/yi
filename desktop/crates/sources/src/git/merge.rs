@@ -173,7 +173,7 @@ mod tests {
     use std::error::Error;
 
     use super::*;
-    use crate::fs::tests::{scratch, sh};
+    use crate::fs::tests::{old_git, scratch, sh};
 
     fn commit(at: &Path, words: &str) -> Result<(), Box<dyn Error>> {
         sh(at, &["add", "-A"])?;
@@ -207,6 +207,9 @@ mod tests {
     #[test]
     fn a_checkouts_commits_merge_into_the_project_folder_once_asked() -> Result<(), Box<dyn Error>>
     {
+        if old_git()? {
+            return Ok(());
+        }
         let (home, lane) = project("merge")?;
         std::fs::write(lane.join("by.rs"), "fn by() {}\n")?;
         commit(&lane, "e")?;
@@ -231,6 +234,9 @@ mod tests {
     #[test]
     fn a_project_folder_with_edits_or_on_another_branch_takes_no_merge()
     -> Result<(), Box<dyn Error>> {
+        if old_git()? {
+            return Ok(());
+        }
         let (home, lane) = project("merge-dirty")?;
         std::fs::write(lane.join("by.rs"), "fn by() {}\n")?;
         commit(&lane, "e")?;
@@ -253,6 +259,9 @@ mod tests {
 
     #[test]
     fn a_conflict_is_left_as_git_left_it_and_says_where() -> Result<(), Box<dyn Error>> {
+        if old_git()? {
+            return Ok(());
+        }
         let (home, lane) = project("merge-conflict")?;
         std::fs::write(lane.join("a.rs"), "lane\n")?;
         commit(&lane, "e")?;
@@ -274,6 +283,9 @@ mod tests {
     /// agent's files, which it had not committed.
     #[test]
     fn uncommitted_work_in_the_checkout_is_named_as_the_reason() -> Result<(), Box<dyn Error>> {
+        if old_git()? {
+            return Ok(());
+        }
         let (_, lane) = project("merge-uncommitted")?;
         std::fs::write(lane.join("by.rs"), "fn by() {}\n")?;
         let rows = super::super::snapshot(&lane)?;
@@ -290,6 +302,9 @@ mod tests {
 
     #[test]
     fn the_row_says_what_a_merge_would_take_before_it_is_asked() -> Result<(), Box<dyn Error>> {
+        if old_git()? {
+            return Ok(());
+        }
         let (_, lane) = project("merge-row")?;
         std::fs::write(lane.join("by.rs"), "fn by() {}\n")?;
         std::fs::write(lane.join("a.rs"), "uno\n")?;

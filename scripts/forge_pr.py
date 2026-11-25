@@ -165,6 +165,9 @@ def decide(pr, jobs, required, behind):
         return "closed"
     if behind:
         return "behind"
+    import pr_review
+
+    required = pr_review.head_lanes(jobs, required)
     failed = [job for job in required if jobs.get(job) == "failure"]
     if "title" in failed:
         return "failed:title"
@@ -545,7 +548,7 @@ def is_behind(pr):
 
 
 def required():
-    """Invariant: a merge waits on the three gates whatever the protection rule lists, because the
+    """Invariant: a merge waits on every gate lane whatever the protection rule lists, because the
     rule is a setting someone can shorten and the merge verb is where red must stop."""
     import pr_review
 
@@ -1051,12 +1054,19 @@ def selfcheck():
             globals().update(saved)
         return code, posts
 
-    green = {"gate (guardrails)": "success", "gate (lint)": "success", "gate (test)": "success", "title": "success"}
+    import pr_review
+
+    green = {**dict.fromkeys(pr_review.GATE_LANES, "success"), "title": "success"}
     listed = ["pr / title (pull_request)"]
     code, posts = merge_on_fake_forge(listed, green)
     assert code == 0 and posts == [{"Do": "merge", "head_commit_id": "abc1234"}], ("the merge names the head the gates ran on", posts)
     code, posts = merge_on_fake_forge(listed, dict(green, **{"gate (test)": "failure"}))
     assert code == 1 and not posts, "a red gate (test) on the head is not merged even when the rule does not list it"
+    code, posts = merge_on_fake_forge(listed, dict(green, **{"gate (desktop)": "failure"}))
+    assert code == 1 and not posts, "a red gate (desktop) on the head is not merged: the forge is where the app is built"
+    before = {job: s for job, s in green.items() if job != "gate (desktop)"}
+    code, posts = merge_on_fake_forge(listed, before)
+    assert code == 0 and len(posts) == 1, "a head pushed before the desktop lane existed waits on a lane that never runs"
     code, posts = merge_on_fake_forge(listed, {job: s for job, s in green.items() if job != "gate (lint)"})
     assert code == 2 and not posts, "a gate that has not run on the head is not merged"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
@@ -1096,6 +1106,7 @@ def selfcheck():
         globals().update(fgj_api=lambda *a, **k: answer, repo=lambda: "o/r")
         try:
             assert required() == [*pr_review.GATE_LANES, *want], ("required()", answer, required())
+            assert "gate (desktop)" in required(), "a merge does not wait on the desktop lane"
         finally:
             globals().update(fgj_api=saved_forge[0], repo=saved_forge[1])
     real_measure, _ = fake_measure(([], [], 0, ([], [])))

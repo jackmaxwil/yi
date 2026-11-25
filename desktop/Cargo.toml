@@ -68,6 +68,14 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# The forge's test build. Incident: with dependencies unoptimised the app's tests, which lay out
+# and draw every frame on the CPU, took 14 of the desktop lane's 19 minutes against a limit of 20.
+[profile.gate]
+inherits = "dev"
+
+[profile.gate.package."*"]
+opt-level = 1
+
 # Rune's own release profile: an app that links Rune builds it the way Rune measures it.
 [profile.release]
 codegen-units = 16
