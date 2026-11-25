@@ -84,7 +84,7 @@ class FakeTransport:
         staged = subprocess.check_output(["git", "-C", str(self.repo), "diff", "--cached", "--no-renames", "--binary", "--full-index"])
         assert change_signature(bridge.parse_diff(staged)) == change_signature(case.changes)
         identity = bridge.import_identity(case)
-        env = dict(os.environ, **BOT_COMMIT, GIT_AUTHOR_NAME=identity["name"], GIT_AUTHOR_EMAIL=identity["email"])
+        env = {**os.environ, **BOT_COMMIT, "GIT_AUTHOR_NAME": identity["name"], "GIT_AUTHOR_EMAIL": identity["email"]}
         subprocess.run(["git", "-C", str(self.repo), "-c", "core.hooksPath=/dev/null", "commit", "-m", bridge.imported_message(case)], env=env, check=True, capture_output=True)
         self.imported = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
         return self.imported
