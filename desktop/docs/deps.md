@@ -34,7 +34,7 @@ Rune comes from `https://github.com/jackmaxwil/rune` at one full revision, never
 
 | Source | Revision | What it is |
 |---|---|---|
-| the Rune fork | `826baf804d14859388f4f24998786b62811c34fc` | branch `yi-desktop`: upstream `dev@4a2e4379` (2026-11-18) and the three patches of `docs/rune-patches.md` |
+| the Rune fork | `1fab9bb198b9ae935b976c8c0a5d0bb516cb6841` | branch `yi-desktop`: upstream `dev@4a2e4379` (2026-11-18) and the four patches of `docs/rune-patches.md` |
 
 ## What later waves use instead of a new dependency
 

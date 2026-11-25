@@ -23,13 +23,17 @@ ROUNDS = 3
 
 
 def in_process():
-    run = subprocess.run(
-        ["cargo", "test", "--release", "-p", "yi-desktop", "--features", "tooling", "--test", "budgets", "--",
-         "--test-threads=1", "--nocapture"],
-        cwd=ROOT, capture_output=True, text=True)
-    if run.returncode:
-        sys.exit(f"budgets: the in-process tests failed:\n{run.stdout[-1500:]}\n{run.stderr[-1500:]}")
-    return {m[1]: float(m[2]) for m in re.finditer(r"^budget (\S+) (\S+)$", run.stdout, re.M)}
+    """The numbers the in-process tests print: the budgets, then the long conversation's."""
+    got = {}
+    for test in ("budgets", "feel"):
+        run = subprocess.run(
+            ["cargo", "test", "--release", "-p", "yi-desktop", "--features", "tooling", "--test", test, "--",
+             "--test-threads=1", "--nocapture"],
+            cwd=ROOT, capture_output=True, text=True)
+        if run.returncode:
+            sys.exit(f"budgets: the in-process {test} tests failed:\n{run.stdout[-1500:]}\n{run.stderr[-1500:]}")
+        got.update({m[1]: float(m[2]) for m in re.finditer(r"^budget (\S+) (\S+)$", run.stdout, re.M)})
+    return got
 
 
 def first_frame():

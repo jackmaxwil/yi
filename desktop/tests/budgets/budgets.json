@@ -49,6 +49,27 @@
    "measured": 0.0,
    "basis": "an idle window draws nothing: zero",
    "what": "frames of 600 that report work pending in an idle chat window"
+  },
+  "scroll_long_turn_ms": {
+   "unit": "ms",
+   "budget": 8.3,
+   "measured": 0.732,
+   "basis": "docs/rune-notes.md: a frame is 8.3 ms",
+   "what": "p95 frame of 240 wheel steps over a running turn of 160 tool calls (200 messages) whose outputs are 30 KB each"
+  },
+  "type_long_turn_ms": {
+   "unit": "ms",
+   "budget": 14,
+   "measured": 11.053,
+   "basis": "worst of three plus a quarter",
+   "what": "p95 frame while typing 55 letters into the composer under that turn (51 ms before each message was read once a frame)"
+  },
+  "stream_long_turn_ms": {
+   "unit": "ms",
+   "budget": 11,
+   "measured": 8.115,
+   "basis": "worst of three plus a quarter",
+   "what": "p95 frame while a 3,100-character Markdown answer streams into that turn, fourteen characters a frame (64 ms before)"
   }
  }
 }
