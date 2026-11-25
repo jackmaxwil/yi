@@ -54,6 +54,7 @@ pub use sandbox::{
     nested_sandbox_note, reseal, sandbox_refusal, set_wrapper, verify_seal, writes_sealed,
 };
 pub use spawn::{FirstUse, Spawn, SpawnFn, SpawnRefused, forget_first_use, register_first_use};
+pub use spill::private_dir;
 /// The spill root's name under `~/.yi`, one dir per session inside it, before spills moved into
 /// the family board; walled sessions still may not read it (D340).
 pub const SPILLS: &str = "spills";
