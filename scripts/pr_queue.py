@@ -76,7 +76,7 @@ def step(obs, off=""):
     return next(((action, name) for name, holds, action in RULES if name != off and holds(obs)), ("none", "none"))
 
 
-STATE, WOULD, FORGE_SECS = "yi/state", "yi/would", 60
+STATE, WOULD, FORGE_SECS = "yi/state", "yi/would", forge_pr.FORGE_SECS
 BLOCKED = lambda f: f["verdict"] == "blocked"
 CLEAN = lambda f: f["verdict"] in ("clean", "override") and f["gate"] == "green"
 
@@ -101,6 +101,7 @@ STATES = (
     ("based off a merged branch", "queue", 0.25, lambda f: f["base"] != "main" and f.get("parent") == "merged", "repoint"),
     ("based off a closed branch", "person", 22, lambda f: f["base"] != "main" and f.get("parent") == "closed", None),
     ("based off main", "queue", 10, lambda f: f["base"] != "main", None),
+    ("review capped", "person", 22, lambda f: f.get("capped") and f["verdict"] is None, None),
     ("awaiting review", "review", 18, lambda f: f["verdict"] is None and not f["lost"], None),
     ("lost answers", "review", 1.2, lambda f: f["lost"] and not f["retries_spent"], None),
     ("lost answers, retries spent", "person", 22, lambda f: f["lost"], None),
@@ -143,7 +144,8 @@ def facts(pr, notes, statuses, holds, who, parent=None):
     return {"labels": {label["name"] for label in pr.get("labels") or []}, "draft": pr["title"].startswith(forge_pr.DRAFT),
             "base": pr["base"]["ref"], "parent": parent, "gate": gate, "mergeable": pr.get("mergeable"), "since": max(times),
             "fix": fixes[-1].get("verdict") if fixes else None,
-            "lost": bool(seen) and pr_review.lost_attempt(seen[-1]), "retries_spent": len(seen) > pr_review.RETRIES,
+            "lost": bool(seen) and pr_review.lost_attempt(seen[-1]), "retries_spent": pr_review.tries_of(seen) > pr_review.RETRIES,
+            "capped": any((c.get("user") or {}).get("login") in who and (c.get("body") or "").startswith(pr_review.CAPPED) for c in notes),
             "verdict": rounds[-1]["verdict"] if rounds and not pr_review.lost_attempt(seen[-1]) else None}
 
 
@@ -526,8 +528,7 @@ def set_label(number, name, present, timeout=None):
         api("DELETE", f"issues/{number}/labels/{ids[name]}", None, timeout)
 
 
-def comment(number, text, timeout=None):
-    api("POST", f"issues/{number}/comments", {"body": text}, timeout)
+comment = forge_pr.comment
 
 
 def delete_ref():
@@ -1093,7 +1094,7 @@ def scenario_repo(numbers, shared=False):
         def remove():
             state["landed_obs"] = observe("on")
             real_git("push", "-q", "origin", "--delete", CANDIDATE, cwd=root, check=False)
-        def jobs(repo, tip):
+        def jobs(repo, tip, timeout=None):
             red = state.get("red")
             return RED if red and red in [number for number, _ in members_of(tip, state["base"])] else GREEN
 
@@ -1521,6 +1522,9 @@ FACTS = {"labels": set(), "draft": False, "base": "main", "gate": "green", "merg
 STATE_CASES = (
     ("fixer working", dict(labels={"autofix:working"}, verdict="blocked")),
     ("lost answers, retries spent", dict(lost=True, retries_spent=True, verdict=None)),
+    ("review capped", dict(capped=True, lost=True, verdict=None)),
+    ("clean, not queued", dict(capped=True)),
+    ("blocked round, ready", dict(capped=True, verdict="blocked")),
     ("blocked round, queued", dict(labels={"queue"}, verdict="blocked")),
     ("conflicted", dict(mergeable=False)),
     ("gate pending", dict(gate="pending")),
@@ -1547,6 +1551,38 @@ def state_cases(off=""):
     for want, change in STATE_CASES:
         if (got := state_of({**FACTS, **change}, off)[0]) != want:
             bad.append(f"{change} read {got}, not {want}")
+    # #1694's recorded round metas past the review cap, a new head, and the one notice the review job posts there.
+    spent = json.loads((pr_review.RECORDED / "spend_1694.json").read_text())["1694"]
+    notice = {"id": 10 ** 9, "user": {"login": pr_review.BOT}, "body": pr_review.cap_note("this PR's review rounds spent $9.42")}
+    pr = {"number": 1694, "title": "t", "labels": [], "base": {"ref": "main"}, "head": {"sha": "f" * 40}, "updated_at": "2026-11-05T22:56:00Z"}
+    if (got := state_of(facts(pr, spent[:14] + [notice], [], pr_review.on_head, {pr_review.BOT, "jack"}), off)[0]) != "review capped":
+        bad.append(f"#1694 stopped at the review cap read {got}, not review capped")
+    # #2074's round 2 re-read once in place (tries=2) after round 1: three reads lost a lens, so the retries are spent.
+    r1, r2 = json.loads((pr_review.RECORDED / "lost_lens.json").read_text())["2074"]
+    r2 = dict(r2, body="\n".join(line[:-4] + " tries=2 -->" if line.startswith("<!-- yi-round-meta ") else line for line in r2["body"].splitlines()))
+    lost = dict(pr, number=2074, head={"sha": pr_review.parse_round(r2, {pr_review.BOT}, 2074)["sha"]})
+    if (got := state_of(facts(lost, [r1, r2], [], pr_review.on_head, {pr_review.BOT, "jack"}), off)[0]) != "lost answers, retries spent":
+        bad.append(f"#2074 with three lost reads, two of them one round finished in place, read {got}, not lost answers, retries spent")
+    return bad + capped_readers(spent[:14] + [notice], pr, off)
+
+
+def capped_readers(notes, pr, off=""):
+    """A capped head is not ready by any reader, its check green; a person's `--again` then reads by its own verdict."""
+    bad, who, head, green = [], {pr_review.BOT, "jack"}, pr["head"]["sha"], dict.fromkeys((*LANES, "title"), "success")
+    draft, writes = dict(pr, title=forge_pr.DRAFT + "t", state="open"), []
+    with mock.patch.object(pr_review, "comments", lambda repo, n, timeout=None: notes), mock.patch.object(pr_review, "authors", lambda: who), \
+            mock.patch.object(pr_review, "holds_for", lambda n, base: pr_review.on_head), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: writes.append(a) or {"number": 1}), \
+            mock.patch.object(forge_pr, "jobs_of", lambda pr, timeout=None: green), contextlib.redirect_stdout(io.StringIO()):
+        read = {"ready_problems": pr_review.ready_problems(pr_review.rounds_of(notes, who, 1694), head),
+                "promote": ["stays a draft"] if not pr_review.promote("o/r", draft, pr_review.rounds_of(notes, who, 1694)) and not writes else [],
+                "unreviewed": forge_pr.unreviewed(1694, pr), "eligible_problem": eligible_problem(dict(pr, state="open"), green)}
+    bad += [f"#1694 at the review cap reads ready by {name}" for name, said in read.items() if not said]
+    for verdict, findings, want in (("clean", [], "clean, not queued"), ("blocked", [{"lens": "reuse", "severity": "high", "claim": "c",
+                                                                                     "path": "a.py", "line": 1, "quote": "x = 1"}], "blocked round, ready")):
+        again = {"id": 10 ** 9 + 1, "user": {"login": pr_review.BOT}, "body": pr_review.render(15, 1694, head, "b" * 40, findings, 0, None, pr_review.MODE)}
+        if (got := state_of({**facts(pr, notes + [again], [], pr_review.on_head, who), "gate": "green"}, off)[0]) != want:
+            bad.append(f"#1694 capped, then a person's --again read {verdict}: reads {got}, not {want}")
     return bad
 
 

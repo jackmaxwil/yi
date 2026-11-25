@@ -1,0 +1,32 @@
+{
+ "override": {
+  "id": 32129,
+  "html_url": "https://git.example.invalid/apex/yi/pulls/1999#issuecomment-32129",
+  "pull_request_url": "https://git.example.invalid/apex/yi/pulls/1999",
+  "issue_url": "",
+  "user": {
+   "login": "jack"
+  },
+  "original_author": "",
+  "original_author_id": 0,
+  "body": "/override Planted failure for the queue ejection test; finding removed in 78a7148b4",
+  "assets": [],
+  "created_at": "2026-11-03T00:29:02Z",
+  "updated_at": "2026-11-03T00:29:02Z"
+ },
+ "declined": {
+  "id": 42020,
+  "html_url": "https://git.example.invalid/apex/yi/pulls/2256#issuecomment-42020",
+  "pull_request_url": "https://git.example.invalid/apex/yi/pulls/2256",
+  "issue_url": "",
+  "user": {
+   "login": "yi-bot"
+  },
+  "original_author": "",
+  "original_author_id": 0,
+  "body": "<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=2256 kind=findings from=b78509940ec7 round=3 cost=0.6902 tin=72 tout=10653 tcache=1603088 calls=1 turns=24 secs=226 models=gpt-5.6-terra verdict=declined -->\n**Autofix declined** every finding of review round 3 with a reason and changed nothing; a person decides, and the fixer waits for a new round, a new head or `just pr autofix N`.\n\n```\nDeclined 1 (medium): crates/runtime/src/rewrite.rs:248-253 uses `.iter().rev().take(RECENT).rev()` before `.map(|(_, content)| crate::rewind::user_text_joined(...))` and `.collect()`, so the reported full-session copy is not present.\n```\n\n<sub>autofix (findings) \u00b7 gpt-5.6-terra \u00b7 1 call(s), 24 turn(s) \u00b7 in 72 (cached 1.60M) \u00b7 out 10.7k \u00b7 $0.69 \u00b7 3m46s \u00b7 skills read caveman:1,ponytail:1,spec:1 \u00b7 this PR $1.91 \u00b7 today $17.78</sub>\n",
+  "assets": [],
+  "created_at": "2026-11-15T12:04:44Z",
+  "updated_at": "2026-11-15T12:04:44Z"
+ }
+}

@@ -23,7 +23,7 @@ import forge_tracking  # noqa: E402
 BOT = forge_tracking.BOT
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
 MARKERS = ("<!-- yi-round-meta ", "<!-- yi-round-void-meta ", "<!-- yi-autofix-meta ")
-FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models")
+FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models", "spends")
 
 
 def skill_name(url):
@@ -42,7 +42,7 @@ class Meter:
     def __init__(self):
         self.lock, self.started = threading.Lock(), time.monotonic()
         self.calls = self.turns = self.tin = self.tout = self.tcache = 0
-        self.cost, self.models, self.skills = 0.0, set(), collections.Counter()
+        self.cost, self.models, self.skills, self.earlier = 0.0, set(), collections.Counter(), []
 
     def add_sessions(self, directory):
         """One call's session files: every assistant reply's usage, model and skill reads."""
@@ -76,11 +76,39 @@ class Meter:
             self.models |= models
             self.skills += skills
 
+    def absorb(self, fields):
+        """A meta line's numbers added in, for a comment rewritten in place: its one meta line stays the ledger, and
+        `spends=` keeps each attempt's own cost and time, so a day's total counts an attempt on the day it ran."""
+        with self.lock:
+            self.earlier = [*self.earlier, *spends(fields)]
+            self.cost += cost(fields)
+            for key in ("calls", "turns", "tin", "tout", "tcache"):
+                setattr(self, key, getattr(self, key) + int(fields.get(key) or 0))
+            self.models |= set((fields.get("models") or "none").split(",")) - {"none"}
+
     def fields(self):
+        own = self.cost - sum(c for c, _ in self.earlier)
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return {"cost": f"{self.cost:.4f}", "tin": self.tin, "tout": self.tout, "tcache": self.tcache,
                 "calls": self.calls, "turns": self.turns, "secs": int(time.monotonic() - self.started),
                 "models": ",".join(sorted(m.split("/")[-1] for m in self.models)) or "none",
-                "skills": ",".join(f"{name}:{n}" for name, n in sorted(self.skills.items())) or "none"}
+                "skills": ",".join(f"{name}:{n}" for name, n in sorted(self.skills.items())) or "none",
+                **({"spends": ",".join(f"{c:.4f}@{at}" for c, at in [*self.earlier, (own, now)])} if self.earlier else {})}
+
+
+def spends(row):
+    """(cost, ISO time) of each attempt a meta row carries: its `spends=` list, or the whole row at the comment's time."""
+    pairs = [part.split("@", 1) for part in (row.get("spends") or "").split(",") if "@" in part]
+    return [(cost({"cost": c}), at) for c, at in pairs] or [(cost(row), row.get("at") or "")]
+
+
+def per_attempt(found):
+    """The rows with one per attempt, each at its own time and cost; tokens stay on a comment's newest attempt."""
+    out = []
+    for row in found:
+        *before, last = spends(row)
+        out += [{**row, "cost": c, "at": at, "tin": 0, "tout": 0, "tcache": 0} for c, at in before] + [{**row, "cost": last[0], "at": last[1]}]
+    return out
 
 
 def meta(fields):
@@ -151,9 +179,9 @@ def spent(found):
     return sum(cost(row) for row in found)
 
 
-def since(repo, start):
+def since(repo, start, timeout=None):
     """Every comment on the repository since `start`."""
-    transport = lambda method, url, body: forge_pr.fgj_api(method, url, body)
+    transport = lambda method, url, body: forge_pr.fgj_api(method, url, body, timeout=timeout)
     return [c for c in forge_tracking.paged(transport, f"repos/{repo}/issues/comments?since={start}") if isinstance(c, dict)]
 
 
@@ -161,15 +189,17 @@ def midnight():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
 
 
-def totals(repo, pr_comments, meter):
-    """(this PR's bot spend, today's bot spend), each including the comment about to be posted."""
-    return spent(rows(pr_comments)) + meter.cost, spent(rows(since(repo, midnight()))) + meter.cost
+def totals(repo, pr_comments, meter, timeout=None):
+    """(this PR's bot spend, today's bot spend), each including the comment about to be posted. Invariant: the forge
+    lists a comment edited today under `since=`, so only the attempts that ran today count toward today."""
+    today = [r for r in per_attempt(rows(since(repo, midnight(), timeout))) if r["at"] >= midnight()]
+    return spent(rows(pr_comments)) + meter.cost, spent(today) + meter.cost
 
 
 def cmd_spend(args):
     """Bot spend per day, per PR and per kind, from the comments' own meta lines."""
     start = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=args.days)).strftime("%Y-%m-%dT00:00:00Z")
-    found = rows(since(forge_pr.repo(), start))
+    found = [r for r in per_attempt(rows(since(forge_pr.repo(), start))) if r["at"] >= start]
     if not found:
         print(f"spend: no bot comment carries a cost since {start[:10]}")
         return 0
@@ -247,6 +277,19 @@ def selfcheck():
         errs.append("the models a comment's cost went to are not read back")
     if round(spent(found), 4) != 0.85 or [r["kind"] for r in found] != ["yi-round", "yi-autofix", "yi-round-void"]:
         errs.append(f"the ledger read {found}: only the bot's own meta lines, at the top, count")
+    # #2074's round 2 ($0.0534, 11-07) finished in place on 11-08 for $0.0200: the forge lists it under 11-08's `since=`.
+    first = dict(bot, created_at="2026-11-07T21:27:29Z", body="<!-- yi-round 2 -->\n<!-- yi-round-meta pr=9 sha=abc verdict=partial cost=0.0534 -->\n")
+    finishing = Meter()
+    finishing.absorb(rows([first])[0])
+    finishing.cost += 0.02
+    edited = dict(first, body=f"<!-- yi-round 2 -->\n<!-- yi-round-meta pr=9 sha=abc verdict=clean {meta(finishing.fields())} -->\n")
+    day = sys.modules[__name__]
+    with mock.patch.object(day, "since", lambda repo, start, timeout=None: [edited]), mock.patch.object(day, "midnight", lambda: "2026-11-08T00:00:00Z"):
+        pr_total, day_total = totals("o/r", [edited], Meter())
+    if (round(pr_total, 4), round(day_total, 4)) != (0.0734, 0.02):
+        errs.append(f"an attempt finished in place moved the earlier attempt's spend to its own day: PR {pr_total:.4f}, day {day_total:.4f}")
+    if [(r["cost"], r["at"]) for r in per_attempt(rows([first]))] != [(0.0534, "2026-11-07T21:27:29Z")]:
+        errs.append("a meta line from before `spends=` no longer counts on its comment's day")
     if tokens(1_234_567) != "1.23M" or duration(492) != "8m12s":
         errs.append("the units misprint")
     if errs:
