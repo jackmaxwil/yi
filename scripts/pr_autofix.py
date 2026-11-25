@@ -3365,8 +3365,9 @@ def tier_selfcheck():
     lost = [{"user": {"login": pr_review.BOT}, "created_at": "2026-11-15T09:00:00Z", "body": render(2250, {"kind": "findings", "from": "3327dc4b51e9",
              "round": 3, "arm": "points", "tier": "low"}, verdict, "s", meter=mock.Mock(fields=lambda: {"cost": "0.0500"}))} for verdict in ("missed", "failed")]
     with mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot,jack"}):
-        got = arm_outcomes([c for notes in prs.values() for c in notes] + lost)
-    if got != {"points": {"attempts": 2, "dollars": 0.1, "clean": 0}, "floor": {"attempts": 2, "dollars": 2.8563, "clean": 2}}:
+        got = [arm_outcomes(prs["2238"]), arm_outcomes(prs["2250"] + lost)]
+    if got != [{"floor": {"attempts": 1, "dollars": 1.8113, "clean": 1}},
+               {"floor": {"attempts": 1, "dollars": 1.045, "clean": 1}, "points": {"attempts": 2, "dollars": 0.1, "clean": 0}}]:
         errs.append(f"the recorded arms of #2238 and #2250 and two lost attempts counted {got}")
     for model, room, refused in ((TIERS[2], PRICE["high"], True), (TIERS[2], PRICE["high"] + 0.01, False), (TIERS[0], PRICE["high"], False)):
         try:

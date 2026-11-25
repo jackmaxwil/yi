@@ -71,6 +71,8 @@ jobs:
           YI_REVIEW_MODEL: openrouter/anthropic/claude-haiku-5.5
           # The owner's hand-written rounds count beside the bot's.
           YI_ROUND_AUTHORS: yi-bot,jack
+          # `on` stops a PR's rounds at pr_review.py's CAP_REVIEW; anything else only logs where it would.
+          REVIEW_CAP: ${{ vars.REVIEW_CAP }}
         run: |
           set -euo pipefail
           if [ -z "${FGJ_TOKEN:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then

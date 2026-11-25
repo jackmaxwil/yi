@@ -49,10 +49,13 @@ PLATFORM = sys.platform
 POLL = 20
 WEB = "https://git.example.invalid"
 HOST = WEB.removeprefix("https://")
+# Invariant: a bot pass gives every forge call one of these, so a hung fgj or fetch ends that one PR's step;
+# a fetch moves history and gets the longer one.
+FORGE_SECS, GIT_SECS = 60, 300
 
 
-def git(*args, check=False):
-    out = subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, errors="replace", check=False)
+def git(*args, check=False, timeout=None):
+    out = subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, errors="replace", check=False, timeout=timeout)
     if check and out.returncode != 0:
         raise SystemExit(f"git {' '.join(args)}: {out.stderr.strip()}")
     return out.stdout.strip()
@@ -112,13 +115,13 @@ def pull(number, timeout=None):
     return pr
 
 
-def open_pulls():
+def open_pulls(timeout=None):
     """Every open pull request, page by page: the forge returns 50 a page, and a reader of page one
     alone never sees the oldest. Incident: 102 were open and a pass saw #1830..#1891 only."""
     bad = []
 
     def transport(method, path, body):
-        batch = fgj_api(method, path, body)
+        batch = fgj_api(method, path, body, timeout=timeout)
         if not isinstance(batch, list) and not bad:
             bad.append(batch)
         return batch
@@ -508,6 +511,11 @@ def cmd_edit(args):
     return 0
 
 
+def comment(number, text, timeout=None):
+    """Post `text` on the pull request; the forge's answer, which carries an `id` once it took it."""
+    return fgj_api("POST", f"repos/{repo()}/issues/{number}/comments", {"body": text}, timeout=timeout)
+
+
 def undraft(number, title, timeout=None):
     """Take the pull request titled `title` out of draft: the forge's refusal, or None once it left."""
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)}, timeout=timeout) or {}
@@ -578,9 +586,9 @@ def as_jobs(rows):
     return [(required_jobs([s["context"]])[0], s["status"], s.get("description") or "") for s in rows]
 
 
-def head_statuses(name, sha):
+def head_statuses(name, sha, timeout=None):
     """(job, state, description) for each status on one head, in the forge's order; None when the forge did not say."""
-    rows = status_rows(name, sha)
+    rows = status_rows(name, sha, timeout)
     return None if rows is None else as_jobs(rows)
 
 
@@ -589,15 +597,15 @@ def job_states(rows):
     return {job: "failure" if status == "error" else status for job, status, _ in rows}
 
 
-def head_jobs(name, sha):
+def head_jobs(name, sha, timeout=None):
     """Job name to its newest status on one head. Incident: the task list has no row until a runner
     claims a job, so #1887's waiting rerun read as its old failure, and 60 rows is an hour or two."""
-    rows = head_statuses(name, sha)
+    rows = head_statuses(name, sha, timeout)
     return {UNREAD: "pending"} if rows is None else job_states(rows)
 
 
-def jobs_of(pr):
-    return head_jobs(repo(), pr["head"]["sha"])
+def jobs_of(pr, timeout=None):
+    return head_jobs(repo(), pr["head"]["sha"], timeout)
 
 
 def report(pr, jobs, need, verdict):

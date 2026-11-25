@@ -16,6 +16,10 @@ FAILED=0
 # one's output in launch order, so the report still reads most-legible-failure-first.
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
+# Incident: a selfcheck that reached the real fgj made a live forge call on a Mac and passed, then
+# failed on the runner, which has no fgj; no gate here may reach the forge, so fgj refuses.
+mkdir "$OUT/bin" && printf '#!/bin/sh\necho "fgj $*" >> "%s/reached"\nexit 97\n' "$OUT" > "$OUT/bin/fgj" && chmod +x "$OUT/bin/fgj"
+export PATH="$OUT/bin:$PATH"
 N=0
 run() { N=$((N + 1)); printf '%s\n' "$*" > "$OUT/$N.cmd"; { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
 # A gate that failed without printing a FAIL row is named, with its own output indented under the row: that
@@ -275,5 +279,10 @@ if [ "$DIST" -gt 0 ]; then
   fi
 fi
 
+if [ -s "$OUT/reached" ]; then
+  echo "FAIL forge ($(wc -l < "$OUT/reached" | tr -d ' ') call(s): a gate reached the forge, and none may)"
+  sort -u "$OUT/reached" | head -5 | sed 's/^/  /'
+  FAILED=$((FAILED + 1))
+fi
 [ "$QUIET" = 1 ] || echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "guardrails: all green"; else echo "guardrails: $FAILED failing"; exit 1; fi
