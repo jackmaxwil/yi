@@ -1,4 +1,5 @@
 ---
+version: 0.1119.0
 cut: none scripts/pr_queue.py
 cut: none scripts/pr_review.py
 shares: #2349 both edit .forgejo/workflows/queue.yml: this branch passes QUEUE_ROWS to the tick's step, #2349 rewrites the fgj install step above it
