@@ -1,0 +1,5 @@
+---
+cut: none scripts/pr_review.py
+cut: none scripts/forge_pr.py
+---
+A review round in which a reviewer gave no answer is never `clean`: it reads `partial`, or `blocked` when a finding holds. The retry asks only the lost reviewer and finishes the same round in place when it adds no finding and nobody has acted on the round; otherwise it is posted as the next round, as before. An `/override` covers only what its round showed before it was written. The sweep also retries a ready pull request that owes a reviewer, one pull request's forge failure no longer ends the sweep, and a post that fails after the model was paid is retried. A spend cap per pull request for review rounds ships behind the repo variable `REVIEW_CAP`, off by default. The lines `scripts/pr_review.py` and `scripts/forge_pr.py` lose are rewrites, not removed behaviour: the round-finishing path replaced the old always-a-new-round retry, the take-out-of-draft request moved to `forge_pr.undraft`, and the comment-posting helper moved to `forge_pr.comment`.
