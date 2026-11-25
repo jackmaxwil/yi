@@ -76,6 +76,14 @@ class Meter:
             self.models |= models
             self.skills += skills
 
+    def absorb(self, fields):
+        """A meta line's numbers added in, for a comment rewritten in place: its one meta line stays the ledger."""
+        with self.lock:
+            self.cost += cost(fields)
+            for key in ("calls", "turns", "tin", "tout", "tcache"):
+                setattr(self, key, getattr(self, key) + int(fields.get(key) or 0))
+            self.models |= set((fields.get("models") or "none").split(",")) - {"none"}
+
     def fields(self):
         return {"cost": f"{self.cost:.4f}", "tin": self.tin, "tout": self.tout, "tcache": self.tcache,
                 "calls": self.calls, "turns": self.turns, "secs": int(time.monotonic() - self.started),
@@ -151,9 +159,9 @@ def spent(found):
     return sum(cost(row) for row in found)
 
 
-def since(repo, start):
+def since(repo, start, timeout=None):
     """Every comment on the repository since `start`."""
-    transport = lambda method, url, body: forge_pr.fgj_api(method, url, body)
+    transport = lambda method, url, body: forge_pr.fgj_api(method, url, body, timeout=timeout)
     return [c for c in forge_tracking.paged(transport, f"repos/{repo}/issues/comments?since={start}") if isinstance(c, dict)]
 
 
@@ -161,9 +169,9 @@ def midnight():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
 
 
-def totals(repo, pr_comments, meter):
+def totals(repo, pr_comments, meter, timeout=None):
     """(this PR's bot spend, today's bot spend), each including the comment about to be posted."""
-    return spent(rows(pr_comments)) + meter.cost, spent(rows(since(repo, midnight()))) + meter.cost
+    return spent(rows(pr_comments)) + meter.cost, spent(rows(since(repo, midnight(), timeout))) + meter.cost
 
 
 def cmd_spend(args):

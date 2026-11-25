@@ -76,7 +76,7 @@ def step(obs, off=""):
     return next(((action, name) for name, holds, action in RULES if name != off and holds(obs)), ("none", "none"))
 
 
-STATE, WOULD, FORGE_SECS = "yi/state", "yi/would", 60
+STATE, WOULD, FORGE_SECS = "yi/state", "yi/would", forge_pr.FORGE_SECS
 BLOCKED = lambda f: f["verdict"] == "blocked"
 CLEAN = lambda f: f["verdict"] in ("clean", "override") and f["gate"] == "green"
 
@@ -101,6 +101,7 @@ STATES = (
     ("based off a merged branch", "queue", 0.25, lambda f: f["base"] != "main" and f.get("parent") == "merged", "repoint"),
     ("based off a closed branch", "person", 22, lambda f: f["base"] != "main" and f.get("parent") == "closed", None),
     ("based off main", "queue", 10, lambda f: f["base"] != "main", None),
+    ("review capped", "person", 22, lambda f: f.get("capped") and f["verdict"] is None, None),
     ("awaiting review", "review", 18, lambda f: f["verdict"] is None and not f["lost"], None),
     ("lost answers", "review", 1.2, lambda f: f["lost"] and not f["retries_spent"], None),
     ("lost answers, retries spent", "person", 22, lambda f: f["lost"], None),
@@ -144,6 +145,7 @@ def facts(pr, notes, statuses, holds, who, parent=None):
             "base": pr["base"]["ref"], "parent": parent, "gate": gate, "mergeable": pr.get("mergeable"), "since": max(times),
             "fix": fixes[-1].get("verdict") if fixes else None,
             "lost": bool(seen) and pr_review.lost_attempt(seen[-1]), "retries_spent": len(seen) > pr_review.RETRIES,
+            "capped": any((c.get("user") or {}).get("login") in who and (c.get("body") or "").startswith(pr_review.CAPPED) for c in notes),
             "verdict": rounds[-1]["verdict"] if rounds and not pr_review.lost_attempt(seen[-1]) else None}
 
 
@@ -526,8 +528,7 @@ def set_label(number, name, present, timeout=None):
         api("DELETE", f"issues/{number}/labels/{ids[name]}", None, timeout)
 
 
-def comment(number, text, timeout=None):
-    api("POST", f"issues/{number}/comments", {"body": text}, timeout)
+comment = forge_pr.comment
 
 
 def delete_ref():
@@ -1093,7 +1094,7 @@ def scenario_repo(numbers, shared=False):
         def remove():
             state["landed_obs"] = observe("on")
             real_git("push", "-q", "origin", "--delete", CANDIDATE, cwd=root, check=False)
-        def jobs(repo, tip):
+        def jobs(repo, tip, timeout=None):
             red = state.get("red")
             return RED if red and red in [number for number, _ in members_of(tip, state["base"])] else GREEN
 
@@ -1521,6 +1522,7 @@ FACTS = {"labels": set(), "draft": False, "base": "main", "gate": "green", "merg
 STATE_CASES = (
     ("fixer working", dict(labels={"autofix:working"}, verdict="blocked")),
     ("lost answers, retries spent", dict(lost=True, retries_spent=True, verdict=None)),
+    ("review capped", dict(capped=True, lost=True, verdict=None)),
     ("blocked round, queued", dict(labels={"queue"}, verdict="blocked")),
     ("conflicted", dict(mergeable=False)),
     ("gate pending", dict(gate="pending")),
@@ -1547,6 +1549,12 @@ def state_cases(off=""):
     for want, change in STATE_CASES:
         if (got := state_of({**FACTS, **change}, off)[0]) != want:
             bad.append(f"{change} read {got}, not {want}")
+    # #1694's recorded round metas past the review cap, a new head, and the one notice the review job posts there.
+    spent = json.loads((pr_review.RECORDED / "spend_1694.json").read_text())["1694"]
+    notice = {"id": 10 ** 9, "user": {"login": pr_review.BOT}, "body": pr_review.cap_note("this PR's review rounds spent $9.42")}
+    pr = {"number": 1694, "title": "t", "labels": [], "base": {"ref": "main"}, "head": {"sha": "f" * 40}, "updated_at": "2026-11-05T22:56:00Z"}
+    if (got := state_of(facts(pr, spent[:14] + [notice], [], pr_review.on_head, {pr_review.BOT, "jack"}), off)[0]) != "review capped":
+        bad.append(f"#1694 stopped at the review cap read {got}, not review capped")
     return bad
 
 
