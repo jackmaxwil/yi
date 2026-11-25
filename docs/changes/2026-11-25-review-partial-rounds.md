@@ -1,4 +1,5 @@
 ---
+version: 0.1124.0
 cut: none scripts/pr_review.py
 cut: none scripts/forge_pr.py
 cut: none scripts/bot_meter.py
