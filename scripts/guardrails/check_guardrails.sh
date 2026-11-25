@@ -136,6 +136,7 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # a path in the wrong bucket misprices it silently; only this flag exercises the split.
 run "$PY" scripts/pr_body.py --selfcheck
 run "$PY" scripts/test_sign.py
+run "$PY" scripts/test_fgj_step.py
 # A checked-in filter over test names rots silently, so only this flag proves a stale row is
 # refused; it lists no workspace, so the fast lane runs it too.
 run "$PY" scripts/slow_tests.py --selfcheck
