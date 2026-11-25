@@ -59,13 +59,24 @@ package:
 install *ARGS: package
     python3 tools/package/install.py {{ARGS}}
 
-# The packaging tools' own checks, on scratch folders.
+# The packaging and measuring tools' own checks, on scratch folders.
 tools:
     python3 tools/package/install.py --selfcheck
+    {{py}} tools/harness/feel.py --selfcheck
 
 # Speed budgets, release profile: three rounds, the worst judged against tests/budgets/budgets.json.
 budgets:
     {{py}} tests/budgets/run.py
+
+# How a long, real-shaped conversation feels, in process: the median, 95th percentile and
+# worst frame of each interaction, in milliseconds. `just budgets` judges three of them.
+feel:
+    cargo test --release -p yi-desktop --features tooling --test feel -- --test-threads=1 --nocapture | grep '^feel '
+
+# The same conversation in a real window with every frame logged: frames a second and late
+# frames a phase. It takes the keyboard for about twelve seconds; a covered window draws nothing.
+feel-live *ARGS:
+    {{py}} tools/harness/feel.py {{ARGS}}
 
 # Measure the packaged app and write docs/receipts.md (run `just package` and `just budgets` first).
 receipts:

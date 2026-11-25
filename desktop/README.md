@@ -6,6 +6,7 @@ A native Mac app for Yi, drawn with Rune. It lives in Yi as `desktop/`, its own 
 - Build: `cargo build -p yi-desktop` (toolchain 1.99.1 from `rust-toolchain.toml`); run with `cargo run -p yi-desktop`.
 - Headless: `target/debug/yi-desktop --scene shell/stub --snap hello.png` renders a scene; `--tree tree.json` dumps its element tree; `--list-scenes` lists them. Release builds need `--features tooling` for these flags.
 - Gates: `just check` (format, clippy, HAR, tests, scenes); `just supply` runs cargo-deny and cargo-audit. The forge has no Mac: its `desktop` lane runs `just gate`, which is `check` without the scenes, on Linux, and a test that only a Mac can pass says so in its `ignore`. Scenes and journeys run on a Mac before a change lands.
+- Speed: `just budgets` judges the speed budgets (`tests/budgets/budgets.json`), three of them over a 200-message turn. `just feel` prints the median, 95th percentile and worst frame of each interaction with long, real-shaped conversations; `just feel-live` drives the same conversation in a real window on this Mac and prints frames a second and late frames a phase (it takes the keyboard for twelve seconds).
 - Install: `just install` packages the app and puts it in `~/Applications`, keeping the one it replaces under `target/package/previous`; it refuses while the installed app is running.
 - Lanes: `just lanes add N | reset N | status` manages worktrees at `../lN`.
 - Notes: `docs/rune-notes.md` (Rune facts), `docs/deps.md` (every dependency), `docs/build-cost.md` (build numbers).

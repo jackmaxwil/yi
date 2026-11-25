@@ -1,6 +1,7 @@
 //! A registered scene drawn in process with no GPU, as the window shows it.
 
 use std::error::Error;
+use std::time::Instant;
 
 use rune::{ElementInfo, Env, Runtime};
 use yd_ui::pane::show_scene;
@@ -25,4 +26,10 @@ pub fn runtime(name: &str, size: (f32, f32)) -> Result<Runtime<Win>, Box<dyn Err
 
 pub fn elements(name: &str) -> Result<Vec<ElementInfo>, Box<dyn Error>> {
     Ok(runtime(name, WINDOW)?.elements())
+}
+
+pub fn timed(rt: &mut Runtime<Win>, frame: f64) -> f64 {
+    let start = Instant::now();
+    rt.frame(frame);
+    start.elapsed().as_secs_f64() * 1000.0
 }

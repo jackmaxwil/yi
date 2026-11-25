@@ -1,12 +1,15 @@
 //! Streaming answers and the user's messages.
 
-use rune::{Cursor, Cycle, El, col, el, row, text};
+use std::cell::RefCell;
+use std::ops::Range;
+
+use rune::{Cursor, Cycle, El, col, el, memo, row, text};
 use rune_kit::{Markdown, MarkdownStyle};
 use yd_core::address::uri::Address;
 use yd_core::ids::{Millis, PaneId};
 use yd_core::kind::Kind;
 use yd_core::reduce::threads::Thread;
-use yd_core::reduce::turns::{Body, Message, ToolCall, Transcript, Turn};
+use yd_core::reduce::turns::{Message, Transcript, Turn};
 use yd_core::tokens::Tokens;
 use yd_ui::a11y;
 use yd_ui::theme::look::{BODY, META, colour};
@@ -23,6 +26,8 @@ pub const MAX_CHARS: usize = 20_000;
 pub const MAX_SHOWN: usize = 200;
 /// Earlier turns drawn as one folded line each.
 pub const MAX_FOLDED: usize = 50;
+/// Seconds a word of a streaming answer takes to fade in: the framework's feathered edge.
+const WORD_FADE: f32 = 0.18;
 
 // Incident: this crate cannot name yi-types or serde_json, so a message reaches plain JSON
 // through Rune's in-memory JSON store; a `ToolCall` only lends its JSON-typed field.
@@ -38,64 +43,7 @@ macro_rules! plain {
 }
 pub(crate) use plain;
 
-/// One block of what was said, as the pane draws it.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Block {
-    Text(String),
-    Thinking(String),
-    /// A tool call, by its id.
-    Call(String),
-}
-
-/// A message in the plain terms the pane reads.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Said {
-    pub user: bool,
-    pub blocks: Vec<Block>,
-    /// `provider/model`, for an answer.
-    pub model: String,
-    /// Output tokens, for an answer.
-    pub output: u64,
-    /// An answer the user's Stop cut short.
-    pub stopped: bool,
-}
-
-/// What a message says; none for a kind the pane does not show.
-pub fn said(message: &Message) -> Option<Said> {
-    let Body::Message(body) = &message.body else {
-        return None;
-    };
-    let value = plain!(body.as_ref());
-    let role = value.get("role")?.as_str()?;
-    let field = |name: &str| value.get(name).and_then(|v| v.as_str()).unwrap_or_default();
-    let blocks = match value.get("content")? {
-        content if content.is_string() => vec![Block::Text(content.as_str()?.to_owned())],
-        content => content
-            .as_array()?
-            .iter()
-            .filter_map(|block| {
-                let text = |name: &str| block.get(name)?.as_str().map(str::to_owned);
-                match block.get("type")?.as_str()? {
-                    "text" => text("text").map(Block::Text),
-                    "thinking" => text("thinking").map(Block::Thinking),
-                    "toolCall" => text("id").map(Block::Call),
-                    _ => None,
-                }
-            })
-            .collect(),
-    };
-    let output = message.spent().map(|spent| spent.output);
-    match role {
-        "user" | "assistant" => Some(Said {
-            user: role == "user",
-            blocks,
-            model: format!("{}/{}", field("provider"), field("model")),
-            output: output.unwrap_or(0),
-            stopped: field("stopReason") == "aborted",
-        }),
-        _ => None,
-    }
-}
+pub use yd_core::reduce::said::{Block, Said};
 
 /// `text` with control and direction marks taken out, cut at `cap` characters; the second
 /// value is how many characters there were.
@@ -185,6 +133,10 @@ pub struct Frame<'a> {
     /// An ask holds this thread up.
     pub held: bool,
     pub moving: bool,
+    /// The theme's stamp, which a kept answer is drawn again under.
+    pub stamp: u64,
+    /// The names of the models met in this frame, each looked up once.
+    pub names: RefCell<Vec<(String, String)>>,
 }
 
 impl Frame<'_> {
@@ -207,12 +159,8 @@ impl Frame<'_> {
         for turn in earlier.iter().skip(hidden) {
             out.push(self.folded(turn));
             if self.opened.contains(&turn.number) {
-                let said = all.iter().enumerate().skip(turn.first).take(turn.len);
-                let mut steps = Vec::new();
-                for (at, message) in said {
-                    self.message(message, at, Some(*turn), &mut steps, &mut out);
-                }
-                flush(&mut steps, &mut out);
+                let end = turn.first.saturating_add(turn.len);
+                self.range(Some(*turn), turn.first..end, 0, &mut out);
             }
         }
         let first = open.map_or(0, |turn| turn.first);
@@ -224,15 +172,30 @@ impl Frame<'_> {
                 shown.len()
             )));
         }
+        self.range(open, first..all.len(), skip, &mut out);
+        out
+    }
+
+    /// Incident: each answer read its whole turn again to count changed files, 3,600 reads
+    /// a frame for sixty answers. A turn's messages at `range` are read once, from `skip` on.
+    fn range(&self, turn: Option<Turn>, range: Range<usize>, skip: usize, out: &mut Vec<El>) {
+        let messages = self.transcript.messages.get(range.clone());
+        let messages = messages.unwrap_or_default();
+        let read: Vec<Option<Said>> = messages.iter().map(|message| message.said()).collect();
+        let files = turn.map_or(0, |_| self.changed(&read));
         // Record 3.4.3: tool rows sit one under the next, 20 apart, whichever message of the
         // turn called them; only what is said between them takes the conversation's gap.
         let mut steps = Vec::new();
-        for (index, message) in shown.iter().enumerate().skip(skip) {
-            let at = first.saturating_add(index);
-            self.message(message, at, open, &mut steps, &mut out);
+        for (index, (message, said)) in messages.iter().zip(&read).enumerate().skip(skip) {
+            let Some(said) = said else { continue };
+            let at = Place {
+                at: range.start.saturating_add(index),
+                turn,
+                files,
+            };
+            self.message(message, said, at, &mut steps, out);
         }
-        flush(&mut steps, &mut out);
-        out
+        flush(&mut steps, out);
     }
 
     fn notice(&self, words: &str) -> El {
@@ -247,23 +210,25 @@ impl Frame<'_> {
     fn folded(&self, turn: &Turn) -> El {
         let all = self.transcript.messages.get(turn.first..);
         let range = all.unwrap_or_default().iter().take(turn.len);
-        let mut asked = String::new();
-        let (mut steps, mut ended) = (0usize, turn.started);
-        for message in range {
-            ended = ended.max(message.done.unwrap_or(message.at));
-            let Some(said) = said(message) else {
-                continue;
-            };
-            for block in &said.blocks {
-                match block {
-                    Block::Text(words) if said.user && asked.is_empty() => {
-                        asked = line(words.split(" yi://").next().unwrap_or_default(), 120);
-                    }
-                    Block::Call(_) => steps = steps.saturating_add(1),
-                    Block::Text(_) | Block::Thinking(_) => {}
+        // The turn's prompt opens it; its steps are counted where it is folded from the wire.
+        let ended = range.clone().map(|m| m.done.unwrap_or(m.at)).max();
+        let ended = ended.unwrap_or(turn.started).max(turn.started);
+        let prompt = range
+            .clone()
+            .next()
+            .and_then(|message| message.said())
+            .filter(|said| said.user);
+        let typed = prompt
+            .iter()
+            .flat_map(|said| &said.blocks)
+            .find_map(|b| match b {
+                Block::Text(words) => {
+                    Some(line(words.split(" yi://").next().unwrap_or_default(), 120))
                 }
-            }
-        }
+                Block::Thinking(_) | Block::Call(_) => None,
+            });
+        let asked = typed.unwrap_or_default();
+        let steps = turn.steps;
         let mut words = format!("Turn {} · {asked}", turn.number);
         match steps {
             0 => {}
@@ -309,22 +274,20 @@ impl Frame<'_> {
             )
     }
 
-    /// Draws `message` into `out`; its tool rows wait in `steps` for the rows that follow.
+    /// Draws `message`, read as `said`, into `out`; its tool rows wait in `steps` for the
+    /// rows that follow.
     fn message(
         &self,
         message: &Message,
-        at: usize,
-        turn: Option<Turn>,
+        said: &Said,
+        place: Place,
         steps: &mut Vec<El>,
         out: &mut Vec<El>,
     ) {
-        let Some(said) = said(message) else {
-            return;
-        };
-        let key = format!("{}.message.{at}", self.key);
+        let key = format!("{}.message.{}", self.key, place.at);
         if said.user {
             flush(steps, out);
-            out.extend(self.user(&key, message, &said));
+            out.extend(self.user(&key, message, said));
             return;
         }
         if said.stopped {
@@ -366,7 +329,7 @@ impl Frame<'_> {
         }
         let wrote = said.blocks.iter().any(|b| matches!(b, Block::Text(_)));
         if wrote {
-            out.push(self.meta(&key, message, &said, turn));
+            out.push(self.meta(&key, message, said, place));
         }
     }
 
@@ -434,13 +397,32 @@ impl Frame<'_> {
         ))
     }
 
+    /// Incident: finished answers were parsed again every frame, 9 ms a keystroke for sixty.
+    /// A whole answer is kept until its words or the theme change.
     fn answer(&self, key: &str, words: &str, streaming: bool) -> El {
+        if streaming {
+            return self.written(key, words, true);
+        }
+        let kept = (words, self.stamp);
+        memo(format!("{key}.answer"), kept, || {
+            self.written(key, words, false)
+        })
+    }
+
+    fn written(&self, key: &str, words: &str, streaming: bool) -> El {
         let (shown, total) = clean(words, MAX_CHARS);
         let style = MarkdownStyle::neutral(true).body_font(BODY.lh(17.25));
         // Markdown sets inline code between direction isolates; the label is the plain words.
         let words = shown.replace('`', "");
+        // Words fade in as they arrive; under reduced motion they are simply there.
+        let fade = if streaming && self.moving {
+            WORD_FADE
+        } else {
+            0.0
+        };
         let body = Markdown::new(shown)
             .streaming(streaming)
+            .reveal(fade)
             .selectable(true)
             .render(&style);
         let mut answer = col()
@@ -448,6 +430,7 @@ impl Frame<'_> {
             .label(words)
             .w_full()
             .gap(2.0)
+            .streaming(streaming)
             .child(body);
         if total > MAX_CHARS {
             answer = answer.child(self.cut(total));
@@ -479,7 +462,7 @@ impl Frame<'_> {
         }
     }
 
-    fn meta(&self, key: &str, message: &Message, said: &Said, turn: Option<Turn>) -> El {
+    fn meta(&self, key: &str, message: &Message, said: &Said, place: Place) -> El {
         let words = match message.done {
             None => {
                 let secs = self.now.0.saturating_sub(message.at.0) / 1000;
@@ -493,7 +476,7 @@ impl Frame<'_> {
                 words
             }
             Some(done) => {
-                let started = turn.map_or(message.at, |turn| turn.started);
+                let started = place.turn.map_or(message.at, |turn| turn.started);
                 // A provider that reports no usage gives zero, which is not what was spent.
                 let spent = match said.output {
                     0 => "no usage reported".to_owned(),
@@ -501,12 +484,11 @@ impl Frame<'_> {
                 };
                 let mut words = format!(
                     "{} · {} · {} · {spent}",
-                    model_name(self.thread, &said.model),
+                    self.named(&said.model),
                     clock(done),
                     span(done.0.saturating_sub(started.0)),
                 );
-                let files = turn.map_or(0, |turn| self.changed(turn));
-                match files {
+                match place.files {
                     0 => {}
                     1 => words.push_str(" · 1 file changed"),
                     n => words.push_str(&format!(" · {n} files changed")),
@@ -522,29 +504,46 @@ impl Frame<'_> {
             .truncate()
     }
 
-    /// Files the turn's steps changed: each path an edit names, once.
-    fn changed(&self, turn: Turn) -> usize {
-        let range = self
-            .transcript
-            .messages
-            .get(turn.first..)
-            .unwrap_or_default();
-        let mut paths: Vec<String> = range
-            .iter()
-            .take(turn.len)
-            .filter_map(said)
-            .flat_map(|said| said.blocks)
+    /// [`model_name`] of `id`. Incident: every answer looked its model up among the thread's
+    /// choices, a hundred of them split at each slash, which took a fifth of a long frame.
+    fn named(&self, id: &str) -> String {
+        let known = self.names.try_borrow().ok().and_then(|names| {
+            let found = names.iter().find(|(model, _)| model == id);
+            found.map(|(_, name)| name.clone())
+        });
+        known.unwrap_or_else(|| {
+            let name = model_name(self.thread, id);
+            if let Ok(mut names) = self.names.try_borrow_mut() {
+                names.push((id.to_owned(), name.clone()));
+            }
+            name
+        })
+    }
+
+    /// Files a turn's steps changed, from its messages as read: each path an edit names, once.
+    fn changed(&self, read: &[Option<Said>]) -> usize {
+        let calls = read.iter().flatten().flat_map(|said| &said.blocks);
+        let mut paths: Vec<String> = calls
             .filter_map(|block| match block {
-                Block::Call(id) => self.transcript.tools.get(id.as_str()).cloned(),
+                Block::Call(id) => self.transcript.tools.get(id.as_str()),
                 Block::Text(_) | Block::Thinking(_) => None,
             })
             .filter(|call| call.details.get("added").is_some())
-            .filter_map(|call: ToolCall| tools::target(&call))
+            .filter_map(tools::target)
             .collect();
         paths.sort();
         paths.dedup();
         paths.len()
     }
+}
+
+/// Where a message sits: its number in the transcript, its turn, and the files that turn's
+/// steps changed.
+#[derive(Clone, Copy)]
+struct Place {
+    at: usize,
+    turn: Option<Turn>,
+    files: usize,
 }
 
 /// Puts the tool rows gathered so far into `out` as one block with no gap between them.

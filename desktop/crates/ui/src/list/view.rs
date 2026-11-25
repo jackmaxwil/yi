@@ -14,7 +14,7 @@ use yd_core::list::{Col, ListDesc, RowHeight};
 use yd_core::model::Model;
 use yd_core::pane::PaneKind;
 use yd_core::row::{Row, Rows, Tone};
-use yd_core::tokens::{ThemeValue, Tokens};
+use yd_core::tokens::Tokens;
 
 use super::row::{self, GAP, fit, words};
 use super::state::{ListState, Lists};
@@ -22,7 +22,7 @@ use super::{fit as columns, keys};
 use crate::kit::bars::{header, lead};
 use crate::pane::{PaneCx, Scene};
 use crate::states::status::{self as states, Said, Status, Words, notice};
-use crate::theme::look::{META, colour, white};
+use crate::theme::look::{META, colour, stamp, white};
 use crate::theme::scale::{BAR_QUIET, BAR_TRACK, LINE_PICKED, LINE_TREE, WELL};
 use crate::win::{Hub, Win};
 
@@ -238,26 +238,6 @@ impl Frame {
     }
 }
 
-/// A number that moves when any token does, so kept rows are drawn again in a new theme.
-fn theme_stamp(tokens: &Tokens) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    let named = tokens.values();
-    let named = named.iter().map(|(name, value)| (*name, value));
-    let extra = tokens
-        .extra
-        .iter()
-        .map(|(name, value)| (name.as_str(), value));
-    for (name, value) in named.chain(extra) {
-        name.hash(&mut hasher);
-        match value {
-            ThemeValue::Flag(flag) => flag.hash(&mut hasher),
-            ThemeValue::Number(number) => number.to_bits().hash(&mut hasher),
-            ThemeValue::Text(text) => text.hash(&mut hasher),
-        }
-    }
-    hasher.finish()
-}
-
 /// A number that moves when a kept row of a feed's table must be drawn again.
 fn stamp_of(tokens: &Tokens, desc: &ListDesc, table: &Table, follow: bool, kept: u32) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -266,7 +246,7 @@ fn stamp_of(tokens: &Tokens, desc: &ListDesc, table: &Table, follow: bool, kept:
     let opened = (desc.kind, desc.detail, desc.facts_per_line);
     (
         table.version(),
-        theme_stamp(tokens),
+        stamp(tokens),
         columns,
         opened,
         (follow, kept),
