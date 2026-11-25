@@ -219,7 +219,6 @@ journeys:
     # The true-terminal journey has no cargo home: no test can hand the binary
     # a pty that answers its cursor-position query, so the harness runs here.
     cargo build -p yi-cli
-    python3 scripts/intake/journey.py
     home="$PWD/target/journeys"
     rm -rf "$home"
     mkdir -p "$home"

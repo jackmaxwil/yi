@@ -1662,7 +1662,7 @@ def tick_call_cases():
         answer, calls = forge_double({}, pulls=pulls)
         with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
                 mock.patch.object(sys.modules[__name__], "git", mock.Mock(return_value=mock.Mock(stdout="", returncode=0))), \
-                mock.patch.dict(os.environ, {"STATE_REPORT": switch, "YI_ROUND_AUTHORS": "yi-bot"}), contextlib.redirect_stdout(io.StringIO()):
+                mock.patch.dict(os.environ, {"STATE_REPORT": switch, "QUEUE_ROWS": "off", "YI_ROUND_AUTHORS": "yi-bot"}), contextlib.redirect_stdout(io.StringIO()):
             tick("on")
         seen[switch] = calls
         if switch == "off" and [c for c in calls if "/issues/2/" in c[1] or "b" * 40 in c[1]]:
@@ -1691,7 +1691,7 @@ def tick_call_cases():
         answer, calls = forge_double({}, pulls=pulls)
         with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
                 mock.patch.object(sys.modules[__name__], "tick", mock.Mock(return_value=0)) as ticked, \
-                mock.patch.dict(os.environ, {"MERGE_QUEUE": queue, "STATE_REPORT": switch, "YI_ROUND_AUTHORS": "yi-bot"}), \
+                mock.patch.dict(os.environ, {"MERGE_QUEUE": queue, "STATE_REPORT": switch, "QUEUE_ROWS": "off", "YI_ROUND_AUTHORS": "yi-bot"}), \
                 contextlib.redirect_stdout(io.StringIO()):
             main([])
         posts = [c for c in calls if c[0] == "POST"]

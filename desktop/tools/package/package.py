@@ -18,9 +18,8 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-NAME, EXE, ID = "Yi Desktop", "yi-desktop", "dev.yi.desktop"
-BUNDLE = ROOT / "target/package" / f"{NAME}.app"
+from bundle import BUNDLE, EXE, ID, NAME, ROOT, read_info
+
 TOOLING = ROOT / "target/package" / f"{EXE}-tooling"
 BUILT = ROOT / "target/dist" / EXE
 # Rune's own installer (scripts/mac_app_install.py) stages bundles for macOS 13.
@@ -79,7 +78,7 @@ def check():
         return "the bundle holds the tooling build, not the shipping one"
     if any(f.name == TOOLING.name for f in BUNDLE.rglob("*")):
         return "the tooling build is inside the bundle"
-    info = plistlib.loads((BUNDLE / "Contents/Info.plist").read_bytes())
+    info = read_info(BUNDLE)
     if info.get("CFBundleIdentifier") != ID or info.get("CFBundleExecutable") != EXE:
         return f"Info.plist does not name {ID} and {EXE}: {info}"
     with tempfile.TemporaryDirectory() as home:
