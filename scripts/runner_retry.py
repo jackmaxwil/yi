@@ -249,7 +249,7 @@ def check_task_discovery():
     ]
     calls = []
 
-    def api(method, path, payload=None):
+    def api(method, path, payload=None, timeout=None):
         calls.append(path)
         return {"workflow_runs": rows[:2] if "page=1" in path else rows[2:]}
 
@@ -270,7 +270,7 @@ def check_retry_flow():
     logs = {6: "Cannot connect to the Docker daemon", 7: "No such image: yi-term"}
     notes, posts, runs = [], [], []
 
-    def api(method, path, payload=None):
+    def api(method, path, payload=None, timeout=None):
         if method == "GET":
             assert "/comments" in path, path
             return notes if "page=1" in path else []
@@ -337,7 +337,7 @@ def check_ledger():
     old = [{"id": n, "body": row, "user": {"login": login}}
            for n, login in ((50, bot_meter.BOT), (51, bot_meter.BOT), (52, "jack"))]
 
-    def api(method, path, payload=None):
+    def api(method, path, payload=None, timeout=None):
         return [*page1, *old] if "page=1" in path else []
 
     with mock.patch.object(forge_pr, "fgj_api", api):
@@ -353,9 +353,9 @@ def check_ledger():
 def check_workflow_run_id():
     sha = "a" * 40
     row = {"id": 17842, "index_in_repo": 13269, "commit_sha": sha}
-    with mock.patch.object(forge_pr, "fgj_api", lambda *args: {"workflow_runs": [row]}):
+    with mock.patch.object(forge_pr, "fgj_api", lambda *args, **k: {"workflow_runs": [row]}):
         assert workflow_run_id("o/r", 13269, sha) == 17842
-    with mock.patch.object(forge_pr, "fgj_api", lambda *args: {"workflow_runs": [row]}):
+    with mock.patch.object(forge_pr, "fgj_api", lambda *args, **k: {"workflow_runs": [row]}):
         try:
             workflow_run_id("o/r", 13269, "b" * 40)
         except RetryError:
@@ -432,7 +432,7 @@ def check_merge_flow():
         status = "success" if state["retried"] else "failure"
         return {"gate (test)": status}
 
-    def api(method, path, payload=None):
+    def api(method, path, payload=None, timeout=None):
         if "actions/variables/MERGE_QUEUE" in path:
             return {"data": "off"}
         state["merged"] = True

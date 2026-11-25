@@ -1,6 +1,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 bin := "target/debug/yi-desktop"
+# Incident: the forge image's `python3` is 3.10, which has no tomllib; the repo's ladder finds a newer one.
+py := `../scripts/py.sh`
 
 fmt:
     cargo fmt
@@ -12,38 +14,45 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
 har:
-    python3 tools/gate/har.py
+    {{py}} tools/gate/har.py
 
 # Every colour in a view is a theme's: the check proves it fires, then scans the views.
 colours:
-    python3 tools/gate/colours.py --selfcheck && python3 tools/gate/colours.py
+    {{py}} tools/gate/colours.py --selfcheck && {{py}} tools/gate/colours.py
 
-test:
-    cargo test --workspace
+test *FLAGS:
+    cargo test --workspace {{FLAGS}}
 
 # Every registered scene, rendered headless; any failed render fails the recipe.
 scenes:
-    python3 tools/harness/scenes.py
+    {{py}} tools/harness/scenes.py
 
 # Render only the scenes whose name starts with PREFIX.
 scenes-only PREFIX:
-    python3 tools/harness/scenes.py --only {{PREFIX}}
+    {{py}} tools/harness/scenes.py --only {{PREFIX}}
 
 # The starts journey, then the daily journeys (tests/journeys/daily): each starts a private
 # yi serve under target/. They are not part of the task gate.
 journey *NAMES:
-    python3 tools/harness/journey.py {{NAMES}}
+    {{py}} tools/harness/journey.py {{NAMES}}
 
 # Both always run, so one report shows every finding; either failing fails the recipe.
 supply:
     status=0; cargo deny check || status=1; cargo audit || status=1; exit $status
 
-check: fmt-check lint har colours tools test scenes
+# The gates that build no test: format, lint and the two source scans.
+static: fmt-check lint har colours
+
+# What a machine with no Mac can judge: every gate but the pictures. The forge runs it on Linux,
+# its tests on the `gate` profile.
+gate: static (test "--profile gate")
+
+check: static test tools scenes
 
 # Lay out target/package/Yi Desktop.app (unsigned, the build without tooling) and prove a tooling
 # build kept beside it starts headless from inside the bundle.
 package:
-    python3 tools/package/package.py
+    {{py}} tools/package/package.py
 
 # Package, then put the app in ~/Applications (`--to DIR` for elsewhere), keeping the one it
 # replaces under target/package/previous. Refuses while the installed app is running.
@@ -56,8 +65,8 @@ tools:
 
 # Speed budgets, release profile: three rounds, the worst judged against tests/budgets/budgets.json.
 budgets:
-    python3 tests/budgets/run.py
+    {{py}} tests/budgets/run.py
 
 # Measure the packaged app and write docs/receipts.md (run `just package` and `just budgets` first).
 receipts:
-    python3 tools/package/receipts.py
+    {{py}} tools/package/receipts.py

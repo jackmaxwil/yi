@@ -288,20 +288,46 @@ pub(crate) mod tests {
         Ok(at)
     }
 
-    /// `git` in `at`, for setting a scratch repository up.
-    pub(crate) fn sh(at: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
+    /// Whether this git cannot list worktrees with `-z` (new in 2.36), which it says: the test has
+    /// nothing to run. Incident: the forge's git is 2.34. Any other failure is the test's own.
+    pub(crate) fn old_git() -> Result<bool, Box<dyn Error>> {
+        static OLD: std::sync::OnceLock<Result<bool, String>> = std::sync::OnceLock::new();
+        let probe = || -> Result<bool, Box<dyn Error>> {
+            let at = scratch("git-z")?;
+            sh(&at, &["init", "-q"])?;
+            let out = git_output(&at, &["worktree", "list", "--porcelain", "-z"])?;
+            let said = String::from_utf8_lossy(&out.stderr);
+            match (out.status.success(), said.contains("unknown switch")) {
+                (true, _) => Ok(false),
+                (false, true) => Ok(true),
+                (false, false) => Err(format!("git worktree list -z failed: {said}").into()),
+            }
+        };
+        let old = OLD
+            .get_or_init(|| probe().map_err(|e| e.to_string()))
+            .clone()?;
+        if old {
+            eprintln!("skipped: this git has no `worktree list -z`, new in 2.36");
+        }
+        Ok(old)
+    }
+
+    /// What `git` in `at` answered, for a test's scratch repository.
+    fn git_output(at: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
         #[allow(
             clippy::disallowed_methods,
             reason = "a test makes its scratch repository"
         )]
-        let ok = Command::new("/usr/bin/git")
+        Command::new("/usr/bin/git")
             .arg("-C")
             .arg(at)
             .args(args)
-            .output()?
-            .status
-            .success();
-        if ok {
+            .output()
+    }
+
+    /// `git` in `at`, for setting a scratch repository up.
+    pub(crate) fn sh(at: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
+        if git_output(at, args)?.status.success() {
             Ok(())
         } else {
             Err(format!("git {args:?} failed").into())

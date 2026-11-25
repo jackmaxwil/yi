@@ -32,9 +32,12 @@ jobs:
       - name: install fgj
         run: |
           set -euo pipefail
-          curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
-          echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
-          chmod +x /usr/local/bin/fgj
+          sum=7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39
+          if ! { command -v fgj >/dev/null && echo "$sum  $(command -v fgj)" | sha256sum -c - >/dev/null 2>&1; }; then
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 10 -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
+            echo "$sum  /usr/local/bin/fgj" | sha256sum -c -
+            chmod +x /usr/local/bin/fgj
+          fi
       # Incident: the group queues every scheduled pass behind the running one, and a runner backlog
       # stacked eleven, each a full build and pass over the same PRs (2026-10-12). The newest does it.
       - name: skip a pass a newer queued one repeats
@@ -70,6 +73,8 @@ jobs:
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
           MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
+          # `on` lets the pass watch the queue tick's job records after its work (pr_queue.heartbeat).
+          QUEUE_ROWS: ${{ vars.QUEUE_ROWS }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # The rounds the findings fixer answers: the bot's and the owner's, as the review job counts them.
           YI_ROUND_AUTHORS: yi-bot,jack

@@ -279,6 +279,44 @@ impl Drop for Booting {
     }
 }
 
+/// The kernel's python, built before a contained boot names the venv in its profile.
+pub(crate) async fn venv_python(
+    home: &std::path::Path,
+    progress: Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<std::path::PathBuf, String> {
+    let options = crate::kernel_doctor::doctor_options(home, Box::new(move |line| progress(line)));
+    tokio::task::spawn_blocking(move || yi_kernel::bootstrap::ensure_kernel_python(&options))
+        .await
+        .map_err(|error| format!("bootstrap task failed: {error}"))?
+}
+
+/// Invariant: under Landlock access(2) still calls a read-only home writable, so IPython never
+/// takes its temp fallback and dies making `~/.ipython`; it gets the kernel's own dir.
+pub(crate) fn contained_env(
+    own: &std::path::Path,
+    sandbox: Option<&yi_tools::Sandbox>,
+    state: Option<&std::path::Path>,
+) -> Vec<(String, String)> {
+    let Some(sandbox) = sandbox.filter(|_| cfg!(target_os = "linux")) else {
+        return Vec::new();
+    };
+    let ipython = own.join("ipython").to_string_lossy().into_owned();
+    let mut env = vec![("IPYTHONDIR".to_owned(), ipython)];
+    env.extend(kernel_tmp(sandbox, state).map(|dir| ("TMPDIR".to_owned(), dir)));
+    env
+}
+
+/// Invariant: Landlock grants a temp root holding a denied store (a home under it) only as its
+/// children, so a kernel there keeps temp files in its session state, which a restart keeps.
+fn kernel_tmp(sandbox: &yi_tools::Sandbox, state: Option<&std::path::Path>) -> Option<String> {
+    if sandbox.grants_temp() {
+        return None;
+    }
+    let dir = state?.join("tmp");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;

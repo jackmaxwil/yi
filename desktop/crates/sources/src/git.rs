@@ -482,7 +482,7 @@ mod tests {
     use std::error::Error;
 
     use super::*;
-    use crate::fs::tests::{scratch, sh};
+    use crate::fs::tests::{old_git, scratch, sh};
 
     const PATCH: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n-one\n+uno\n two\n@@ -9,1 +9,2 @@\n nine\n+ten\n";
 
@@ -599,6 +599,9 @@ mod tests {
     #[test]
     fn a_sessions_checkout_is_named_and_shows_its_edits_against_the_base()
     -> Result<(), Box<dyn Error>> {
+        if old_git()? {
+            return Ok(());
+        }
         let at = repo("checkout")?;
         let lane = scratch("checkout-lane")?.join("0");
         let lane_text = lane.to_str().ok_or("a path that is not text")?;

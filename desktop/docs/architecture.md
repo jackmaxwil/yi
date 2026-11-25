@@ -10,7 +10,7 @@ Yi Desktop is a native Mac app: a client of Yi's server (`yi serve`), written in
 | `yd-sources` (`crates/sources`) | Things outside the app, each a feed on a worker thread. The only crate that starts a process. | `yd-core`, `yi-browser`, `yi-types` (the browser's input types), `vt100`, `rustix`, `base64` |
 | `yd-ui` (`crates/ui`) | The window state (`Win`, `Hub`), the pane contract, and the engines on Rune: theme, kit, chrome, grid view, list, code, terminal, screen, menu, overlay, states. | `rune`, `rune-kit`, `vt100`, `png`, `yd-core` |
 | `yd-panes` (`crates/panes`) | One module per pane, and the pane table. Most panes are data over an engine. | `yd-ui`, `yd-core`, `rune`, `rune-kit`, `rune-luau` |
-| `yd-mac` (`crates/mac`) | Menu-bar status items. The only place `unsafe` may appear. | `objc2` family |
+| `yd-mac` (`crates/mac`) | Menu-bar status items. The only place `unsafe` may appear. Off the Mac it is a stub that makes no item, so the workspace builds on Linux. | `objc2` family, on the Mac alone |
 | `yi-desktop` (`crates/app`) | The program: the root view, the scene table, the shell, windows, notifications, the menu bar. A library plus a three-line `main.rs`. | all of the above, `rune-notify` |
 
 Nothing depends upward. `yd-panes` never names `yd-sources`: a pane and its source agree on a feed's name and on what is asked of it, both declared once in `yd-core` (`feed::{FILES, CHANGES, TERMINAL, OPEN_FILES, WEB, REPORT, CONTAINERS, DAEMONS, FETCH}` and the typed `SourceCmd`). No crate spells a shared feed or command id as its own string.

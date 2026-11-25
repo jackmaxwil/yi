@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::error::Error;
 use std::rc::Rc;
 
-use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, col};
+use rune::{Cx, El, Env, Key, Runtime, col};
 use yd_core::command::tools::web;
 use yd_core::feed::{FeedEvent, SourceCmd};
 use yd_core::ids::WindowId;
@@ -14,6 +14,7 @@ use yd_ui::pane::{PaneCx, PaneDef, SCENE_PANE};
 use yd_ui::win::{Hub, Win};
 
 use super::{DEF, FEED};
+use crate::test_support::press;
 
 type Check = Result<(), Box<dyn Error>>;
 type Sent = Rc<RefCell<Vec<Effect>>>;
@@ -59,16 +60,6 @@ fn tap(rt: &mut Runtime<Win>, key: &str) -> Check {
             rt.frame(0.016);
         }
     })
-}
-
-fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {
-    let mods = Mods {
-        cmd,
-        logo: cmd,
-        ..Mods::default()
-    };
-    rt.key(KeyEvent { key, mods });
-    rt.frame(0.016);
 }
 
 fn type_address(rt: &mut Runtime<Win>, words: &str) -> Check {

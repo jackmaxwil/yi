@@ -128,7 +128,8 @@ fn the_pane_hears_a_press_a_turn_a_close_and_the_plus() -> Check {
     drop(hub);
     let (cmd, shift) = (
         Mods {
-            cmd: true,
+            cmd: cfg!(target_os = "macos"),
+            logo: true,
             ..Mods::default()
         },
         true,

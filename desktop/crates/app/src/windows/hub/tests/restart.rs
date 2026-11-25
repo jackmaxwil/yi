@@ -89,6 +89,10 @@ fn a_settings_window_open_when_the_app_was_killed_does_not_open_by_itself_next_r
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "off the Mac the framework's drawing refuses its own glyph shader, so no window is drawn"
+)]
 fn a_pane_pulled_out_where_the_desk_has_room_opens_beside_the_app_not_over_it()
 -> Result<(), Box<dyn Error>> {
     let events = format!(r#"{OUT},"t":0.3}},{{"t":1.0,"type":"mark","name":"end"}}"#);

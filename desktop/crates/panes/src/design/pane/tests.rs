@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::error::Error;
 use std::rc::Rc;
 
-use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, col};
+use rune::{Cx, El, Env, Key, Runtime, col};
 use yd_core::command::by_kind::ELEMENT_SOURCE;
 use yd_core::command::table::{Run, Target};
 use yd_core::command::tools::design::{AT, ELEMENT, HAND, RESET, SET};
@@ -22,7 +22,7 @@ use super::scenes::SCENES;
 use super::{DEF, FEED, Mode, carry, mode};
 use crate::design::handles::{fit, measured, resized, thing_at};
 use crate::design::markup::{self, Marks};
-use crate::test_support::tap;
+use crate::test_support::{press, tap};
 
 type Check = Result<(), Box<dyn Error>>;
 type Sent = Rc<RefCell<Vec<Effect>>>;
@@ -88,16 +88,6 @@ fn rect(rt: &Runtime<Win>, key: &str) -> Result<[f32; 4], Box<dyn Error>> {
     let mut live = all.iter().filter(|e| !e.exiting);
     let hit = live.find(|e| e.key.as_deref() == Some(key));
     Ok(hit.ok_or_else(|| format!("no {key}"))?.rect)
-}
-
-fn press(rt: &mut Runtime<Win>, key: Key, cmd: bool) {
-    let mods = Mods {
-        cmd,
-        logo: cmd,
-        ..Mods::default()
-    };
-    rt.key(KeyEvent { key, mods });
-    rt.frame(0.016);
 }
 
 /// The words drawn inside the element keyed `key`, top to bottom then left to right.

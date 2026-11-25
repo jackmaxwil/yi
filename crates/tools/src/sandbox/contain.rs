@@ -130,6 +130,14 @@ impl Sandbox {
         out
     }
 
+    /// Whether the process temp dir itself is write-granted, never only its children.
+    #[must_use]
+    pub fn grants_temp(&self) -> bool {
+        let grants = self.write_grants(None);
+        (super::temp_roots().first())
+            .is_some_and(|temp| grants.iter().any(|at| temp.starts_with(at)))
+    }
+
     /// What `__contain` lets a process write. A leaf that does not exist has no inode to name, and
     /// git replaces a ref by rename: its parent is granted only where that parent is `yi`, so a lane
     /// keeps its branch and sibling `yi/*` refs, and `refs/stash` and `packed-refs.lock` refuse.

@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import forge_pr  # noqa: E402
 import forge_tracking  # noqa: E402
 
-BOT = "yi-bot"
+BOT = forge_tracking.BOT
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
 MARKERS = ("<!-- yi-round-meta ", "<!-- yi-round-void-meta ", "<!-- yi-autofix-meta ")
 FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models")

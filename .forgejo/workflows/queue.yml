@@ -2,6 +2,7 @@
 # queue/candidate, reads that ref's gate, and fast-forwards main to the exact commits that went green.
 # MERGE_QUEUE is `off`, `shadow` or `on`: shadow does everything up to the push and says what it would land.
 # STATE_REPORT `on` writes each open head's `yi/state`, and under an off queue that is all a tick does.
+# QUEUE_ROWS `shadow` records as `yi/would` what the enqueue, promote and re-point rows owe; `on` also acts.
 name: queue
 
 on:
@@ -18,27 +19,31 @@ permissions:
 
 jobs:
   queue:
-    if: vars.MERGE_QUEUE == 'on' || vars.MERGE_QUEUE == 'shadow' || vars.STATE_REPORT == 'on'
+    if: vars.MERGE_QUEUE == 'on' || vars.MERGE_QUEUE == 'shadow' || vars.STATE_REPORT == 'on' || vars.QUEUE_ROWS == 'on' || vars.QUEUE_ROWS == 'shadow'
     runs-on: llm
     timeout-minutes: 10
     steps:
       - name: install fgj
         run: |
           set -euo pipefail
-          curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
-          echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
-          chmod +x /usr/local/bin/fgj
+          sum=7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39
+          if ! { command -v fgj >/dev/null && echo "$sum  $(command -v fgj)" | sha256sum -c - >/dev/null 2>&1; }; then
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 10 -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
+            echo "$sum  /usr/local/bin/fgj" | sha256sum -c -
+            chmod +x /usr/local/bin/fgj
+          fi
       # Most ticks stop here on one or two API calls, with no checkout, unless the state report is on.
       - name: anything to do
         id: work
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
           STATE_REPORT: ${{ vars.STATE_REPORT }}
+          QUEUE_ROWS: ${{ vars.QUEUE_ROWS }}
         run: |
           labelled=$(fgj api --hostname git.example.invalid "repos/${{ github.repository }}/issues?type=pulls&state=open&labels=queue&limit=1" \
             | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' || echo 1)
           ref=$(fgj api --hostname git.example.invalid "repos/${{ github.repository }}/branches/queue%2Fcandidate" >/dev/null 2>&1 && echo 1 || echo 0)
-          [ "$labelled$ref" = "00" ] && [ "$STATE_REPORT" != on ] && echo "run=no" >> "$GITHUB_OUTPUT" || echo "run=yes" >> "$GITHUB_OUTPUT"
+          [ "$labelled$ref" = "00" ] && [ "$STATE_REPORT" != on ] && [ "$QUEUE_ROWS" != on ] && [ "$QUEUE_ROWS" != shadow ] && echo "run=no" >> "$GITHUB_OUTPUT" || echo "run=yes" >> "$GITHUB_OUTPUT"
       - if: steps.work.outputs.run == 'yes'
         uses: actions/checkout@v4 # zizmor: ignore[unpinned-uses,artipacked] Mirror SHA is unverified offline; the tick pushes candidates and main with the checkout's token.
         with:
@@ -54,6 +59,8 @@ jobs:
           MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
           # `on` writes one `yi/state` status per open head; nothing reads it to decide.
           STATE_REPORT: ${{ vars.STATE_REPORT }}
+          # `shadow` writes `yi/would` statuses only; `on` adds the label, readies the draft, re-points the base.
+          QUEUE_ROWS: ${{ vars.QUEUE_ROWS }}
           # Rounds count from the same two authors the review job and the fixer read.
           YI_ROUND_AUTHORS: yi-bot,jack
         run: python3 scripts/pr_queue.py
