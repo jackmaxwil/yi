@@ -1989,11 +1989,12 @@ def selfcheck():
         stubs = {"comments": lambda repo, n, timeout=None: notes, "authors": lambda: {BOT}, "holds_for": lambda n, base: on_head,
                  "review_model": lambda: flags.get("model", "openrouter/z-ai/glm-5.3-flash"), "read_pr": began_round}
         saved = {k: globals()[k] for k in stubs}
-        saved_forge = (forge_pr.repo, forge_pr.pull_number, forge_pr.pull)
+        saved_forge = (forge_pr.repo, forge_pr.pull_number, forge_pr.pull, bot_meter.totals)
         began.clear()
         try:
             globals().update(stubs)
             forge_pr.repo, forge_pr.pull_number = (lambda: "o/r"), (lambda arg: 9)
+            bot_meter.totals = lambda repo, notes, meter, timeout=None: (0.0, 0.0)
             forge_pr.pull = lambda n, timeout=None: {"head": {"sha": "abcdef1ff"}, "base": {"ref": "main"}}
             said = io.StringIO()
             with contextlib.redirect_stdout(said), contextlib.suppress(RuntimeError):
@@ -2001,7 +2002,7 @@ def selfcheck():
             return said.getvalue(), bool(began)
         finally:
             globals().update(saved)
-            forge_pr.repo, forge_pr.pull_number, forge_pr.pull = saved_forge
+            forge_pr.repo, forge_pr.pull_number, forge_pr.pull, bot_meter.totals = saved_forge
 
     posted = lambda cid, *shown, who=BOT, **kw: {"user": {"login": who}, "id": cid, "body": render(cid, 9, "abcdef1ff", "base000", *shown, **kw)}
     blocked_note = [posted(1, [finding], 0, None, "blocking")]
