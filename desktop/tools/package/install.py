@@ -9,23 +9,24 @@ path and version, 1 with why not.
 """
 
 import argparse
-import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-NAME, EXE = "Yi Desktop", "yi-desktop"
-BUNDLE = ROOT / "target/package" / f"{NAME}.app"
+from bundle import BUNDLE, EXE, NAME, ROOT, read_info
+
 PREVIOUS = ROOT / "target/package/previous"
 
 
 def running(app):
-    """Whether some process runs the executable inside `app`."""
+    """Whether a process command line names the executable inside `app`; raises when ps fails."""
     exe = str(app / "Contents/MacOS" / EXE)
-    return subprocess.run(["pgrep", "-f", exe], capture_output=True, text=True, check=False).returncode == 0
+    listed = subprocess.run(["ps", "-axww", "-o", "command="], capture_output=True, text=True, check=False)
+    if listed.returncode:
+        raise RuntimeError(f"ps exited {listed.returncode}: {listed.stderr.strip()}")
+    return any(exe in line for line in listed.stdout.splitlines())
 
 
 def install(bundle, to, previous, is_running=running):
@@ -33,8 +34,13 @@ def install(bundle, to, previous, is_running=running):
     if not (bundle / "Contents/MacOS" / EXE).is_file():
         return f"no packaged app at {bundle}; run `just package` first"
     app = to / bundle.name
-    if app.exists() and is_running(app):
-        return f"{app} is running; quit it, then install"
+    if app.exists():
+        try:
+            busy = is_running(app)
+        except (OSError, RuntimeError) as err:
+            return f"cannot tell whether {app} is running, so nothing was installed: {err}"
+        if busy:
+            return f"{app} is running; quit it, then install"
     to.mkdir(parents=True, exist_ok=True)
     staged = to / f".{bundle.name}.new"
     if staged.exists():
@@ -51,8 +57,7 @@ def install(bundle, to, previous, is_running=running):
 
 
 def version(app):
-    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-    return info.get("CFBundleShortVersionString", "no version")
+    return read_info(app).get("CFBundleShortVersionString", "no version")
 
 
 def selfcheck():
@@ -81,6 +86,26 @@ def selfcheck():
             bad.append("the replaced bundle was not kept")
         if list(to.glob(".*.new")):
             bad.append("a staged copy was left behind")
+
+        regex_home = root / "Apps [(+"
+        live = regex_home / bundle.name
+        (live / "Contents/MacOS").mkdir(parents=True)
+        live_exe = live / "Contents/MacOS" / EXE
+        live_exe.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+        live_exe.chmod(0o755)
+        if running(live):
+            bad.append("an app that is not running was seen running")
+        proc = subprocess.Popen([str(live_exe)])
+        try:
+            if not running(live):
+                bad.append("a running app at a path with regex characters was not seen running")
+            if install(bundle, regex_home, previous, running) is None:
+                bad.append("a running app at a path with regex characters was replaced")
+        finally:
+            proc.kill()
+            proc.wait()
+        if running(live):
+            bad.append("a killed app was still seen running")
     print("\n".join(f"FAIL install selfcheck: {b}" for b in bad) or "ok   install selfcheck")
     return 1 if bad else 0
 
