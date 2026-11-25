@@ -7,7 +7,7 @@
 Nothing is stored: the state is the `queue` label, the `queue/candidate` ref and that ref's statuses,
 so a crashed tick loses nothing. A red candidate stays until it is replaced, since it is the memory
 of what comes next. Base and retry markers ride the tip's body. Recovery is deleting the ref (docs/FORGE.md)."""
-import argparse, contextlib, datetime, functools, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, urllib.parse
+import argparse, contextlib, datetime, functools, io, itertools, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, urllib.parse
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -81,23 +81,25 @@ BLOCKED = lambda f: f["verdict"] == "blocked"
 CLEAN = lambda f: f["verdict"] in ("clean", "override") and f["gate"] == "green"
 
 
-def held(f):
-    """Incident: #2343, clean, green and queued, read `held` because the hold row came first, and the hold
-    only keeps the fixer out; so it names the state only where the fixer would otherwise own the PR."""
-    return "autofix:hold" in f["labels"] and next(row[1] for row in STATES if row[3] is not held and row[3](f)) == "fixer"
+def unqueued(label):
+    """Incident: #2343, clean, green and queued, read `held`; a hold or an import stops promote and enqueue,
+    and a PR the owner queued is past both."""
+    return lambda f: label in f["labels"] and LABEL not in f["labels"]
 
 
 # Invariant: a PR's state is the first row that holds, and a clock is its owner's measured p90 latency on the
 # 2026-10-20..11-24 forge record, or the code's own window where that owner is a timer. The last column is
 # the act the tick owes the state under QUEUE_ROWS; a row without one is someone else's to move.
 STATES = (
-    ("held", "person", 22, held, None),
+    ("external", "person", 22, unqueued("external"), None),
+    ("held", "person", 22, unqueued("autofix:hold"), None),
     ("fixer working", "fixer", 1, lambda f: "autofix:working" in f["labels"], None),
     ("fixer failed", "fixer", 12, lambda f: "autofix:failed" in f["labels"], None),
     ("fixer asked", "fixer", 12, lambda f: "autofix" in f["labels"], None),
     ("fixer declined", "person", 22, lambda f: f["fix"] == "declined", None),
     ("fixer handed off", "person", 22, lambda f: f["fix"] == "handoff", None),
-    ("based off a closed branch", "queue", 0.25, lambda f: f["base"] != "main" and f.get("parent") == "closed", "repoint"),
+    ("based off a merged branch", "queue", 0.25, lambda f: f["base"] != "main" and f.get("parent") == "merged", "repoint"),
+    ("based off a closed branch", "person", 22, lambda f: f["base"] != "main" and f.get("parent") == "closed", None),
     ("based off main", "queue", 10, lambda f: f["base"] != "main", None),
     ("awaiting review", "review", 18, lambda f: f["verdict"] is None and not f["lost"], None),
     ("lost answers", "review", 1.2, lambda f: f["lost"] and not f["retries_spent"], None),
@@ -110,9 +112,14 @@ STATES = (
     ("gate red", "fixer", 4, lambda f: f["gate"] == "red", None),
     ("gate pending", "gate", STALE_MINUTES / 60, lambda f: f["gate"] == "pending", None),
     ("queued", "queue", 1, lambda f: "queue" in f["labels"] and CLEAN(f), None),
+    ("drafted by a person", "person", 22, lambda f: f["draft"] and CLEAN(f) and f.get("drafted"), None),
     ("clean draft", "review", 8, lambda f: f["draft"] and CLEAN(f), "promote"),
+    ("taken out of the queue", "person", 22, lambda f: CLEAN(f) and f.get("taken_out"), None),
+    ("ejected", "person", 22, lambda f: CLEAN(f) and f.get("ejected"), None),
+    ("changes the bots", "person", 22, lambda f: CLEAN(f) and f.get("bots"), None),
     ("clean, not queued", "person", 13, lambda f: not f["draft"] and CLEAN(f), "enqueue"),
-    ("unknown", "person", 0, lambda f: True, "say"),
+    # Invariant: no recorded fact reaches this row, since the rows above cover every verdict and gate value.
+    ("unknown", "person", 0, lambda f: True, None),
 )
 
 
@@ -163,64 +170,100 @@ def assess(pr, who, notes, parent=None):
     return (*state_of(found), rows, found, holds)
 
 
-def rows_mode(ask=False):
-    """QUEUE_ROWS as off, shadow or on: the job's environment, else the forge's variable when `ask`, for a job
-    that does not export it; any other word is said and read as off."""
+def rows_mode():
+    """QUEUE_ROWS as off, shadow or on, from the job's environment alone; any other word is said and read as off."""
     told = os.environ.get("QUEUE_ROWS", "")
-    if not told and ask:
-        answer = forge_pr.fgj_api("GET", f"repos/{forge_pr.repo()}/actions/variables/QUEUE_ROWS", timeout=FORGE_SECS)
-        if isinstance(answer, dict) and "message" in answer:
-            print(f"queue: the forge did not read QUEUE_ROWS ({answer['message']}), so the rows stay off")
-        told = answer.get("data") or "" if isinstance(answer, dict) else ""
     if told not in ("", "off", "shadow", "on"):
         print(f"queue: QUEUE_ROWS reads {told!r}, none of off, shadow, on, so the rows stay off")
     return told if told in ("shadow", "on") else "off"
 
 
 def parent_of(base, every):
-    """Where a stacked PR's base branch stands, and the PR to re-point from: open; closed (its PR into main merged
-    or closed, or the branch deleted); or branch, one no PR into main names, which only a person re-points."""
+    """Where a stacked PR's base branch stands: open, its PR still open; merged, this repository's PR of it into
+    main merged, the one state a child is re-pointed from; closed, any other answer, which a person reads."""
     repo = forge_pr.repo()
     if any(p["head"]["ref"] == base and (p["head"].get("repo") or {}).get("full_name") == repo for p in every):
-        return "open", None
-    path = urllib.parse.quote(base, safe="")
-    found = forge_pr.fgj_api("GET", f"repos/{repo}/pulls/main/{path}", timeout=FORGE_SECS)
-    if isinstance(found, dict) and found.get("number"):
-        return ("open" if found.get("state") == "open" else "closed"), found
-    if found is not None:
-        raise SystemExit(f"the forge did not say which PR has the branch {base}: {found}")
-    branch = forge_pr.fgj_api("GET", f"repos/{repo}/branches/{path}", timeout=FORGE_SECS)
-    if branch is None:
-        return "closed", {"head": {"ref": base, "repo": {"full_name": repo}}}
-    if not isinstance(branch, dict) or branch.get("name") != base:
-        raise SystemExit(f"the forge did not say whether the branch {base} exists: {branch}")
-    return "branch", None
+        return "open"
+    found = forge_pr.fgj_api("GET", f"repos/{repo}/pulls/main/{urllib.parse.quote(base, safe='')}", timeout=FORGE_SECS)
+    if not (found is None or isinstance(found, dict) and found.get("number")):
+        print(f"queue: the forge did not say which PR has the branch {base} ({found}), so a person reads it")
+    found = found if isinstance(found, dict) else {}
+    if found.get("merged") is True and ((found.get("head") or {}).get("repo") or {}).get("full_name") == repo:
+        return "merged"
+    return "open" if found.get("state") == "open" else "closed"
 
 
 def marker(sha):
-    return f"<!-- yi-unknown {sha} -->"
+    return f"<!-- yi-repoint {sha} -->"
+
+
+BOT_PATHS = (".forgejo/workflows/", "scripts/hooks/", "scripts/pr_review.py", "scripts/pr_autofix.py", "scripts/pr_queue.py",
+             "scripts/forge_pr.py", "scripts/forge_tracking.py", "scripts/forgejo_pr_comment.py", "scripts/runner_retry.py", "scripts/bot_meter.py")
+
+
+def timeline(number, timeout=None):
+    get = lambda method, url: forge_pr.fgj_api(method, url) if timeout is None else forge_pr.fgj_api(method, url, timeout=timeout)
+    transport = lambda method, url, _: listing(get(method, url) or [], f"#{number}'s timeline")
+    return list(forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/timeline?x=1"))
+
+
+def bots(number):
+    """Invariant: the workflows run main's scripts, so landing a PR that edits a bot deploys it; only the owner's label does."""
+    transport = lambda method, url, _: listing(forge_pr.fgj_api(method, url, timeout=FORGE_SECS) or [], f"#{number}'s changed files")
+    paths = (f.get(key) or "" for f in forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/pulls/{number}/files?x=1")
+             for key in ("filename", "previous_filename"))
+    return any(path.startswith(BOT_PATHS) for path in paths)
+
+
+def stops(events, notes, rows):
+    """A person's stop: `queue` last taken off by a merger with no push since, a draft made by a title edit (the bot
+    never makes one), or an eject newer than the head's last push and its newest gate status."""
+    at, who = lambda item: pr_review.when(item.get("created_at")), lambda item: (item.get("user") or {}).get("login")
+    pushed = max((at(e) for e in events if e.get("type") == "pull_push"), default=0.0)
+    queue = [e for e in events if e.get("type") == "label" and (e.get("label") or {}).get("name") == LABEL]
+    titles = [e for e in events if e.get("type") == "change_title"
+              and (e.get("old_title") or "").startswith(forge_pr.DRAFT) != (e.get("new_title") or "").startswith(forge_pr.DRAFT)]
+    gate = max((pr_review.when(r.get("updated_at")) for r, (job, _, _) in zip(rows, forge_pr.as_jobs(rows)) if job in (*LANES, "title")), default=0.0)
+    left = [at(c) for c in notes if who(c) == pr_review.BOT and (c.get("body") or "").startswith("Left the queue")]
+    return {"taken_out": bool(queue) and queue[-1].get("body") != "1" and who(queue[-1]) in MERGERS and at(queue[-1]) > pushed,
+            "drafted": bool(titles) and (titles[-1].get("new_title") or "").startswith(forge_pr.DRAFT),
+            "ejected": bool(left) and max(left) > max(pushed, gate)}
 
 
 def owed(pr, state, notes, rows, holds, who):
     """The act the tick owes this PR now, or None: its state's act, refused for what the act itself refuses,
     so that shadow says only what `on` would do."""
     act = next((row[4] for row in STATES if row[0] == state), None)
+    head = pr["head"]["sha"]
     if act == "enqueue":
         # Invariant: the row enqueues PRs opened by the owner's login alone, a subset of what the Mac loop offers.
         mine = (pr.get("user") or {}).get("login") in MERGERS
-        return act if mine and eligible_problem(pr, forge_pr.job_states(forge_pr.as_jobs(rows))) is None else None
+        errs = pr_review.ready_problems(pr_review.rounds_of(notes, who, pr["number"]), head, holds) if pr_review.MODE == "blocking" else []
+        return act if mine and eligible_problem(pr, forge_pr.job_states(forge_pr.as_jobs(rows)), errs) is None else None
     if act == "promote":
-        return act if pr_review.promotes(pr_review.rounds_of(notes, who, pr["number"]), pr["head"]["sha"], holds) else None
-    if act == "say":
-        return None if any(marker(pr["head"]["sha"]) in (c.get("body") or "") for c in notes) else act
+        return act if pr_review.promotes(pr_review.rounds_of(notes, who, pr["number"]), head, holds) else None
+    if act == "repoint":
+        return None if any(marker(head) in (c.get("body") or "") for c in notes) else act
     return act
 
 
-def do(pr, act, notes, who, found, parent):
+def judge(pr, found, notes, rows, holds, who, events=None):
+    """The facts and the act owed, reading the timeline and then the changed paths only while an act is still owed."""
+    act = owed(pr, state_of(found)[0], notes, rows, holds, who)
+    if act in ("enqueue", "promote"):
+        found = {**found, **stops(timeline(pr["number"], FORGE_SECS) if events is None else events, notes, rows)}
+        act = owed(pr, state_of(found)[0], notes, rows, holds, who)
+    if act == "enqueue":
+        found = {**found, "bots": bots(pr["number"])}
+        act = owed(pr, state_of(found)[0], notes, rows, holds, who)
+    return found, act
+
+
+def do(pr, act, notes):
     """Invariant: a label, title or base write carries no sha guard, so the act re-reads the head it judged and
     refuses a moved one; each act is a no-op once done, so a second tick repeats nothing."""
     number, judged = pr["number"], pr["head"]["sha"]
-    fresh = forge_pr.pull(number)
+    fresh = forge_pr.pull(number, timeout=FORGE_SECS)
     if fresh["head"]["sha"] != judged:
         print(f"queue: #{number} skipped {act}: its head moved from {judged[:10]} to {fresh['head']['sha'][:10]} after the judgement")
         return
@@ -228,29 +271,36 @@ def do(pr, act, notes, who, found, parent):
         if LABEL in {label["name"] for label in fresh.get("labels") or []}:
             print(f"queue: #{number} skipped enqueue: it already carries `{LABEL}`")
             return
-        set_label(number, LABEL, True)
-    elif act == "promote":
-        pr_review.promote(forge_pr.repo(), fresh, pr_review.rounds_of(notes, who, number))
-    elif act == "repoint":
-        if fresh["base"]["ref"] == "main":
-            return
-        retarget(parent)
-    else:
-        shown = ", ".join(f"{k}={sorted(v) if isinstance(v, set) else v}" for k, v in found.items())
-        comment(number, f"{marker(judged)}\nNo row of the queue's state table matches this pull request at {judged[:10]}, "
-                        f"so no bot is due to act on it. What it read: {shown}.")
+        set_label(number, LABEL, True, FORGE_SECS)
+    elif act == "promote" and fresh["title"].startswith(forge_pr.DRAFT):
+        ready = api("PATCH", f"pulls/{number}", {"title": fresh["title"].removeprefix(forge_pr.DRAFT)}, FORGE_SECS)
+        if not (ready or {}).get("number"):
+            raise SystemExit(f"the forge refused to take #{number} out of draft: {ready}")
+    elif act == "repoint" and fresh["base"]["ref"] != "main":
+        repoint(number, judged)
     print(f"queue: #{number} {act} at {judged[:10]}")
 
 
-def tend(pr, state, since, rows, notes, holds, who, found, parent, mode):
+def repoint(number, head):
+    """Move a child to main and merge main in; a refusal is said once per head, and nothing closes or reopens it."""
+    moved = api("PATCH", f"pulls/{number}", {"base": "main"}, FORGE_SECS) or {}
+    if (moved.get("base") or {}).get("ref") != "main":
+        why = f"the forge refused to move this pull request's base to main ({moved.get('message')}). Change the base by hand"
+    elif (merged := api("POST", f"pulls/{number}/update?style=merge", None, FORGE_SECS)) and merged.get("message"):
+        why = f"its base is main now, but the forge refused to merge main in ({merged['message']}). Run `just pr update {number}`"
+    else:
+        return
+    comment(number, f"{marker(head)}\nThe branch this pull request was based on has merged, but {why}.", FORGE_SECS)
+
+
+def tend(pr, state, act, since, rows, notes, mode):
     """Record the act this PR's state owes as its head's `yi/would`, and under `on` do it."""
-    act = owed(pr, state, notes, rows, holds, who)
     when = datetime.datetime.fromtimestamp(since, datetime.timezone.utc).strftime("%m-%d %H:%M")
     # Invariant: no `yi/would` reads as nothing owed, so a head gets one only once an act was owed on it.
     if act or old_status(rows, WOULD):
         post(pr, rows, WOULD, f"would {act} ({state} since {when}Z)" if act else f"owes nothing since {when}Z ({state})")
     if act and mode == "on":
-        do(pr, act, notes, who, found, parent)
+        do(pr, act, notes)
 
 
 def old_status(rows, context):
@@ -280,11 +330,14 @@ def report(every, held=None, mode="off"):
             notes = (held or {}).get(pr["number"])
             notes = pr_review.comments(forge_pr.repo(), pr["number"], FORGE_SECS) if notes is None else notes
             base = pr["base"]["ref"]
-            parent = parent_of(base, every) if mode != "off" and base != "main" else (None, None)
-            state, owner, since, clock, rows, found, holds = assess(pr, who, notes, parent[0])
+            parent = parent_of(base, every) if mode != "off" and base != "main" else None
+            state, owner, since, clock, rows, found, holds = assess(pr, who, notes, parent)
+            if mode != "off":
+                found, act = judge(pr, found, notes, rows, holds, who)
+                state, owner, since, clock = state_of(found)
             wrote += on and post(pr, rows, STATE, describe(state, owner, since, clock, now))
             if mode != "off":
-                tend(pr, state, since, rows, notes, holds, who, found, parent[1], mode)
+                tend(pr, state, act, since, rows, notes, mode)
         # Invariant: one PR's forge error, a timeout included, never ends the tick or the report for the others.
         except (Exception, SystemExit) as err:
             print(f"queue: no state for #{pr['number']}: {err}"[:300])
@@ -310,9 +363,9 @@ def cmd_parked(args):
     return 0
 
 
-# Invariant: an autofix pass runs to its 90-minute timeout, so a run still going is alive that long; 45 minutes
-# is three missed autofix crons, and the record's longest gap between passes that each ran was 92 minutes.
-DARK_MINUTES, RUN_MINUTES, LOOKBACK_HOURS, PAGES = 45, 100, 6, 20
+# Invariant: a pass still running is alive to its 90-minute timeout; 165 minutes is the least no-run limit the
+# 10-19..11-24 job records replay with no alarm on the fixer's ordinary 154- and 167-minute gaps.
+DARK_MINUTES, RUN_MINUTES, LOOKBACK_HOURS, PAGES = 165, 100, 6, 20
 
 
 def job_records(watched, now, want):
@@ -350,32 +403,32 @@ def dark(records, now):
     return f"it has not run since {newest['created_at']}" if (now - pr_review.when(newest["created_at"])) / 60 > limit else None
 
 
-def heartbeat(watched, mode=None):
-    """Keep one issue open while the other scheduled job is dark and close it once that job runs green: the queue
-    tick watches the fixer's pass and the pass the tick, so a dead job is reported by the live one."""
+def heartbeat(watched, mode):
+    """Under QUEUE_ROWS on, keep one issue open while the other scheduled job is dark and close it once that job runs
+    green: the queue tick watches the fixer's pass and the pass the tick, each after its own work."""
     import pr_autofix
 
+    if mode != "on":
+        return
     try:
-        if (rows_mode(ask=True) if mode is None else mode) == "off":
-            return
         now, repo, title = time.time(), forge_pr.repo(), f"The {watched} job is dark"
         records = job_records(watched, now, lambda found: len(finished(found)) >= 3)
-        why, have = dark(records, now), pr_autofix.red_issue(repo, None, title)
+        why, have = dark(records, now), pr_autofix.red_issue(repo, None, title, FORGE_SECS)
         if have is False:
             raise SystemExit("the forge did not list the open issues")
         body = f"The scheduled `{watched}` job is dark: {why}. Its newest records:\n\n" + "".join(
             f"- {r['created_at']} {r['status']}\n" for r in records[:5]) if why else ""
         if why and not have:
-            ids = label_ids()
-            stones = api("GET", "milestones?state=open&limit=50") or []
-            stone = next((m["id"] for m in stones if isinstance(m, dict) and m.get("title") == "Forge plumbing"), None)
-            made = api("POST", "issues", {"title": title, "body": body, "milestone": stone,
-                                          "labels": [ids[n] for n in ("size:S", "area:forge-ci") if n in ids]})
+            # Invariant: an alarm is no planned work, so no size or milestone; `area:forge-ci` is how red_issue finds it.
+            area = label_ids(FORGE_SECS).get("area:forge-ci")
+            if area is None:
+                raise SystemExit("no `area:forge-ci` label, which is how the next run finds the issue")
+            made = api("POST", "issues", {"title": title, "body": body, "labels": [area]}, FORGE_SECS)
             print(f"heartbeat: {watched} is dark ({why}); opening its issue answered {(made or {}).get('number') or made}")
         elif why and why not in (have.get("body") or ""):
-            api("PATCH", f"issues/{have['number']}", {"body": body})
+            api("PATCH", f"issues/{have['number']}", {"body": body}, FORGE_SECS)
         elif have and not why and finished(records)[:1] and finished(records)[0]["status"] == "success":
-            api("PATCH", f"issues/{have['number']}", {"state": "closed"})
+            api("PATCH", f"issues/{have['number']}", {"state": "closed"}, FORGE_SECS)
             print(f"heartbeat: {watched} ran green again; #{have['number']} closed")
     except (Exception, SystemExit) as err:
         print(f"heartbeat: {watched} unread, so nothing is said of it: {err}"[:300])
@@ -449,8 +502,9 @@ def main_conflict(pr):
         return merge_member(tree, *recipe_of(pr), pr.get("body") or "")
 
 
-def api(method, path, payload=None):
-    return forge_pr.fgj_api(method, f"repos/{forge_pr.repo()}/{path}", payload)
+def api(method, path, payload=None, timeout=None):
+    path = f"repos/{forge_pr.repo()}/{path}"
+    return forge_pr.fgj_api(method, path, payload) if timeout is None else forge_pr.fgj_api(method, path, payload, timeout=timeout)
 
 
 def listing(batch, what):
@@ -461,22 +515,22 @@ def listing(batch, what):
     raise SystemExit(f"queue: the forge did not list {what}: {batch.get('message') if isinstance(batch, dict) else batch}")
 
 
-def label_ids():
-    return {label["name"]: label["id"] for label in listing(api("GET", "labels?limit=100") or [], "the labels")}
+def label_ids(timeout=None):
+    return {label["name"]: label["id"] for label in listing(api("GET", "labels?limit=100", None, timeout) or [], "the labels")}
 
 
-def set_label(number, name, present):
-    ids = label_ids()
+def set_label(number, name, present, timeout=None):
+    ids = label_ids(timeout)
     if name not in ids:
         raise SystemExit(f"queue: no `{name}` label on {forge_pr.repo()}")
     if present:
-        api("POST", f"issues/{number}/labels", {"labels": [ids[name]]})
+        api("POST", f"issues/{number}/labels", {"labels": [ids[name]]}, timeout)
     else:
-        api("DELETE", f"issues/{number}/labels/{ids[name]}")
+        api("DELETE", f"issues/{number}/labels/{ids[name]}", None, timeout)
 
 
-def comment(number, text):
-    api("POST", f"issues/{number}/comments", {"body": text})
+def comment(number, text, timeout=None):
+    api("POST", f"issues/{number}/comments", {"body": text}, timeout)
 
 
 def delete_ref():
@@ -496,22 +550,25 @@ def enqueue_time(events, rowed=lambda: False):
     return at
 
 
-def rowed(number):
+def rowed(number, events):
     """Invariant: a bot-added label is the owner's consent only through the enqueue row, so it counts while
-    QUEUE_ROWS is on and the row, judging the PR as if unlabelled, would add it at this moment."""
-    if rows_mode(ask=True) != "on":
+    QUEUE_ROWS is on and the row, judging the PR as if unlabelled, would add it now; an unread PR is no consent."""
+    try:
+        if rows_mode() != "on":
+            return False
+        pr = forge_pr.pull(number, timeout=FORGE_SECS)
+        bare = {**pr, "labels": [label for label in pr.get("labels") or [] if label["name"] != LABEL]}
+        who, notes = pr_review.authors(), pr_review.comments(forge_pr.repo(), number, FORGE_SECS)
+        *_, rows, found, holds = assess(bare, who, notes)
+        return judge(bare, found, notes, rows, holds, who, events)[1] == "enqueue"
+    except (Exception, SystemExit) as err:
+        print(f"queue: #{number}'s `{LABEL}` from the bot is not counted, since the row could not read it: {err}"[:300])
         return False
-    pr = forge_pr.pull(number)
-    bare = {**pr, "labels": [label for label in pr.get("labels") or [] if label["name"] != LABEL]}
-    who, notes = pr_review.authors(), pr_review.comments(forge_pr.repo(), number, FORGE_SECS)
-    state, _, _, _, rows, _, holds = assess(bare, who, notes)
-    return owed(bare, state, notes, rows, holds, who) == "enqueue"
 
 
 def enqueued_at(number):
-    transport = lambda method, url, _: listing(forge_pr.fgj_api(method, url) or [], f"#{number}'s timeline")
-    events = forge_tracking.paged(transport, f"repos/{forge_pr.repo()}/issues/{number}/timeline?x=1")
-    return enqueue_time(events, functools.cache(lambda: rowed(number)))
+    events = timeline(number)
+    return enqueue_time(events, functools.cache(lambda: rowed(number, events)))
 
 
 def queued_pulls(every=None):
@@ -519,7 +576,7 @@ def queued_pulls(every=None):
     return [pr for pr in every if LABEL in {label["name"] for label in pr.get("labels") or []}]
 
 
-def eligible_problem(pr, jobs):
+def eligible_problem(pr, jobs, errs=None):
     labels = {label["name"] for label in pr.get("labels") or []}
     if pr["base"]["ref"] != "main":
         return f"based on {pr['base']['ref']}, not main"
@@ -528,7 +585,7 @@ def eligible_problem(pr, jobs):
     verdict = forge_pr.decide(pr, jobs, [*LANES, "title"], False)
     if verdict != "green":
         return f"its own gate reads {verdict}"
-    if errs := forge_pr.unreviewed(pr["number"], pr):
+    if errs := forge_pr.unreviewed(pr["number"], pr) if errs is None else errs:
         return errs[0].strip()
     return None
 
@@ -840,7 +897,7 @@ def land(obs, mode):
     finish(obs, recorded=recorded)
 
 
-def tick(mode):
+def tick(mode, rows=None):
     try:
         obs = observe(mode)
     except pr_review.Unanswered as err:
@@ -865,7 +922,7 @@ def tick(mode):
             finish(obs)
     elif action == "paused":
         print(f"queue: paused on {obs['candidate'][:10]}, whose lanes read {obs['lanes']}; deleting {CANDIDATE} resumes")
-    report(obs["open"], obs["notes"], rows_mode())
+    report(obs["open"], obs["notes"], rows_mode() if rows is None else rows)
     return 0
 
 
@@ -1471,6 +1528,7 @@ STATE_CASES = (
     ("conflicted", dict(mergeable=False)),
     ("gate pending", dict(gate="pending")),
     ("queued", dict(labels={"queue"})),
+    ("based off a closed branch", dict(base="jack/q-desk", parent="closed")),
     ("unknown", dict(verdict="none such")),
 )
 
@@ -1482,11 +1540,13 @@ def state_cases(off=""):
         got = state_of(facts(case["pr"], case["comments"], case["statuses"], pr_review.on_head, {"yi-bot", "jack"}), off)[0]
         if got != case["state"]:
             bad.append(f"#{case['pr']['number']} at {case['at']}, {case['b_state']} for {case['gap_hours']} h, read {got}, not {case['state']}")
-    for case in json.loads(ROWS_RECORDED.read_text()):
-        parent = "closed" if case.get("parent") else None
-        found = facts(case["pr"], case["comments"], case["statuses"], pr_review.on_head, {"yi-bot", "jack"}, parent)
-        if case["state"] != "unknown" and (got := state_of(found, off)[0]) != case["state"]:
-            bad.append(f"{case['case']} read {got}, not {case['state']}")
+    without = mock.patch.object(sys.modules[__name__], "STATES", tuple(row for row in STATES if row[0] != off))
+    with rows_world(json.loads(ROWS_RECORDED.read_text()), "shadow", report_on="on") as (tick_rows, _, said_out, _, world), without:
+        tick_rows()
+    for case in world.values():
+        got = next((s["description"] for s in case["statuses"] if s["context"] == STATE), said_out.getvalue()).split(", waiting on")[0]
+        if got != case["state"]:
+            bad.append(f"{case['case']} read {got[:300]}, not {case['state']}")
     for want, change in STATE_CASES:
         if (got := state_of({**FACTS, **change}, off)[0]) != want:
             bad.append(f"{change} read {got}, not {want}")
@@ -1580,16 +1640,21 @@ def tick_call_cases():
         seen[switch] = calls
         if switch == "off" and [c for c in calls if "/issues/2/" in c[1] or "b" * 40 in c[1]]:
             bad.append(f"a tick with the report off read the unqueued PR: {calls}")
-    # Invariant: QUEUE_ROWS off, set or unset, leaves the tick's calls those of the tick before the rows existed.
-    answer, calls = forge_double({}, pulls=pulls)
-    with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
-            mock.patch.object(sys.modules[__name__], "git", mock.Mock(return_value=mock.Mock(stdout="", returncode=0))), \
-            mock.patch.dict(os.environ, {"MERGE_QUEUE": "off", "STATE_REPORT": "off", "QUEUE_ROWS": "off", "YI_ROUND_AUTHORS": "yi-bot"}), \
-            contextlib.redirect_stdout(io.StringIO()):
-        main([])
-        tick("on")
-    if calls != seen["off"]:
-        bad.append(f"QUEUE_ROWS off changed the tick's forge calls: {calls} against {seen['off']}")
+    # Invariant: QUEUE_ROWS off, unset or misspelled leaves each run's forge calls those main's own code made.
+    recorded = json.loads(OFF_CALLS.read_text())["runs"]
+    for rows in (None, "off", "of"):
+        for run in recorded:
+            pulls = [aged(1, "a" * 40, 1, OFF_NOW, ["queue"]), aged(2, "b" * 40, 1, OFF_NOW)]
+            answer, calls = bot_labelled(*forge_double({}, pulls=pulls))
+            env = {"MERGE_QUEUE": run["MERGE_QUEUE"], "STATE_REPORT": run["STATE_REPORT"], "YI_ROUND_AUTHORS": "yi-bot"}
+            with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+                    mock.patch.object(sys.modules[__name__], "git", mock.Mock(return_value=mock.Mock(stdout="", returncode=0))), \
+                    mock.patch.object(time, "time", lambda: OFF_NOW), mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
+                os.environ.pop("QUEUE_ROWS", None)
+                os.environ.update({} if rows is None else {"QUEUE_ROWS": rows})
+                main([])
+            if [list(c) for c in calls] != run["calls"]:
+                bad.append(f"QUEUE_ROWS {rows} under {env} made {calls}, not main's {run['calls']}")
     comments = {switch: [c[1] for c in calls if "/issues/1/comments" in c[1]] for switch, calls in seen.items()}
     if comments["on"] != comments["off"]:
         bad.append(f"the report read the queued PR's comments again: {comments}")
@@ -1606,6 +1671,16 @@ def tick_call_cases():
         if ticked.called or len(posts) != want or (not want and calls):
             bad.append(f"MERGE_QUEUE {queue} with STATE_REPORT {switch} ticked={ticked.called}, posted {len(posts)} of {want}, calls {len(calls)}")
     return bad
+
+
+def bot_labelled(answer, calls):
+    """The double with #1's `queue` label added by the bot, which only the rows read as consent."""
+    def labelled(method, path, payload=None, timeout=None):
+        if "/issues/1/timeline?" in path and path.endswith("page=1"):
+            calls.append((method, path, payload, timeout))
+            return [{"type": "label", "label": {"name": LABEL}, "user": {"login": pr_review.BOT}, "body": "1", "created_at": "t"}]
+        return answer(method, path, payload, timeout)
+    return labelled, calls
 
 
 def parked_cases():
@@ -1653,27 +1728,34 @@ def neutral_cases():
 
 ROWS_RECORDED = ROOT / "scripts/fixtures/queue_rows/recorded.json"
 JOBS_RECORDED = ROOT / "scripts/fixtures/queue_rows/tasks.json"
+OFF_CALLS, OFF_NOW = ROOT / "scripts/fixtures/queue_rows/off_calls.json", 1795000000.0
 
 
-def rows_forge(cases, moved=(), refuse=(), rebased=()):
-    """A forge holding recorded PRs as the rows read and write them: each write kept in `writes` and applied, a PR
-    in `moved` re-read with a new head and one in `rebased` on main, a path holding a `refuse` word answering an error."""
+def rows_forge(cases, moved=(), refuse=(), rebased=(), parents=None, gone=False):
+    """A forge holding recorded PRs as the rows read and write them: each write kept in `writes` and applied, every
+    call in `calls`, a PR in `moved` re-read with a new head and one in `rebased` on main, a path holding a `refuse`
+    word answering an error; `parents` answers the base branch's PR by name, and `gone` deletes every branch."""
     world = json.loads(json.dumps({str(c["pr"]["number"]): c for c in cases}))
-    writes, ids = [], {"queue": 1, "autofix": 2}
+    writes, calls, ids = [], [], {"queue": 1, "autofix": 2}
     case = lambda n: world[str(n)]
+    first = lambda rest, rows: rows if rest.endswith("page=1") else []
 
     def answer(method, path, payload=None, timeout=None):
+        calls.append((method, path, timeout))
         rest = path.split("/", 3)[3]
         if any(word in path for word in refuse):
             return {"message": "500 database is locked"}
         if method != "GET":
             writes.append((method, rest, payload))
         if rest.startswith("pulls?state=open"):
-            return [c["pr"] for c in world.values()] if rest.endswith("page=1") else []
+            return first(rest, [c["pr"] for c in world.values()])
         if rest.startswith("pulls/main/"):
-            return next((c["parent"] for c in world.values() if c.get("parent", {}).get("head", {}).get("ref") == urllib.parse.unquote(rest[11:])), None)
+            base = urllib.parse.unquote(rest[11:])
+            if parents is not None:
+                return parents.get(base)
+            return next((c["parent"] for c in world.values() if c.get("parent", {}).get("head", {}).get("ref") == base), None)
         if rest.startswith("branches/"):
-            return {"name": urllib.parse.unquote(rest[9:])}
+            return None if gone else {"name": urllib.parse.unquote(rest[9:])}
         if rest.startswith("labels?"):
             return [{"name": name, "id": i} for name, i in ids.items()]
         if rest.startswith("commits/"):
@@ -1685,11 +1767,19 @@ def rows_forge(cases, moved=(), refuse=(), rebased=()):
                         {"context": payload["context"], "status": payload["state"], "description": payload["description"]}]
             return payload
         number = int(rest.split("/")[1].split("?")[0])
+        if "/files?" in rest:
+            return first(rest, case(number)["files"])
+        if "/timeline?" in rest:
+            return first(rest, case(number).get("timeline", []))
+        if rest.startswith(f"pulls/{number}/update"):
+            return {"message": "409 the head branch is protected"} if "update" in case(number).get("refuse", ()) else None
         if rest.startswith("pulls/") and method == "GET":
             pr = json.loads(json.dumps(case(number)["pr"]))
             pr = {**pr, "base": {"ref": "main"}} if number in rebased else pr
             return {**pr, "head": {**pr["head"], "sha": "f" * 40}} if number in moved else pr
         if rest.startswith("pulls/"):
+            if "base" in payload and "base" in case(number).get("refuse", ()):
+                return {"message": "409 a pull request from this head into main already exists"}
             pr = case(number)["pr"]
             pr.update({k: v for k, v in payload.items() if k == "title"})
             pr["base"] = {"ref": payload["base"]} if "base" in payload else pr["base"]
@@ -1698,26 +1788,26 @@ def rows_forge(cases, moved=(), refuse=(), rebased=()):
             case(number)["pr"]["labels"].append({"name": next(n for n, i in ids.items() if i in payload["labels"])})
             return []
         if "/comments" in rest and method == "POST":
-            case(number)["comments"].append({"id": 10**9 + len(writes), "user": {"login": pr_review.BOT}, "body": payload["body"]})
+            case(number)["comments"].append({"id": 10**9 + len(writes), "user": {"login": pr_review.BOT}, "body": payload["body"],
+                                             "created_at": "2026-11-24T23:00:00Z"})
             return {"id": 1}
         if "/comments" in rest:
-            return case(number)["comments"] if rest.endswith("page=1") else []
+            return first(rest, case(number)["comments"])
         raise AssertionError(f"the rows made a call they may not: {method} {path}")
-    return answer, writes, world
+    return answer, writes, world, calls
 
 
 @contextlib.contextmanager
-def rows_world(cases, mode, moved=(), refuse=(), report_on="off", rebased=()):
-    answer, writes, world = rows_forge(cases, moved, refuse, rebased)
+def rows_world(cases, mode, moved=(), refuse=(), report_on="off", rebased=(), parents=None, gone=False):
+    answer, writes, world, calls = rows_forge(cases, moved, refuse, rebased, parents, gone)
     on_head = lambda number, base="main": pr_review.on_head
-    # The recording holds no PR that matches no row, so the stand-in's own label is put first for the last row's act.
-    odd = ("unknown", "person", 0, lambda f: "stand-in:unknown" in f["labels"], STATES[-1][4])
+    verb = lambda name: lambda ns: calls.append(("verb", name, ns.number)) or 0
     with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "apex/yi"), \
-            mock.patch.object(sys.modules[__name__], "STATES", (odd, *STATES)), mock.patch.object(pr_review, "holds_for", on_head), mock.patch.object(forge_pr, "cmd_update", lambda ns: 0), \
-            mock.patch.object(forge_pr, "cmd_rerun", lambda ns: 0), mock.patch.object(forge_pr, "required", lambda: [*LANES, "title"]), \
+            mock.patch.object(pr_review, "holds_for", on_head), mock.patch.object(forge_pr, "cmd_update", verb("cmd_update")), \
+            mock.patch.object(forge_pr, "cmd_rerun", verb("cmd_rerun")), mock.patch.object(forge_pr, "required", lambda: [*LANES, "title"]), \
             mock.patch.dict(os.environ, {"YI_ROUND_AUTHORS": "yi-bot,jack", "STATE_REPORT": report_on, "QUEUE_ROWS": mode}), \
             contextlib.redirect_stdout(io.StringIO()) as said_out:
-        yield (lambda: report([c["pr"] for c in world.values()], mode=mode)), writes, said_out
+        yield (lambda: report([c["pr"] for c in world.values()], mode=mode)), writes, said_out, calls, world
 
 
 def rows_cases():
@@ -1725,17 +1815,17 @@ def rows_cases():
     and only that, a moved head or a label already there is left alone, and one PR's error spares the rest."""
     cases, bad = json.loads(ROWS_RECORDED.read_text()), []
     owing = {c["pr"]["number"]: c["act"] for c in cases if c.get("act")}
-    kinds = {"enqueue": ("POST", "/labels"), "promote": ("PATCH", "pulls/"), "repoint": ("PATCH", "pulls/"), "say": ("POST", "/comments")}
+    kinds = {"enqueue": ("POST", "/labels"), "promote": ("PATCH", "pulls/"), "repoint": ("PATCH", "pulls/")}
     acted = lambda writes: {int(w[1].split("/")[1]) for w in writes if not w[1].startswith("statuses/")}
+    talk = lambda writes: [w for w in writes if not w[1].startswith("statuses/")]
     for mode in ("shadow", "on"):
-        with rows_world(cases, mode) as (tick_rows, writes, said_out):
+        with rows_world(cases, mode) as (tick_rows, writes, said_out, calls, _):
             tick_rows()
-            first = list(writes)
+            first, once = list(writes), list(calls)
             tick_rows()
-        would = {c["pr"]["number"]: s["description"] for c in cases for s in c["statuses"] if s["context"] == WOULD}
         if mode == "shadow":
             if [w for w in first if w[0] != "POST" or not w[1].startswith("statuses/") or w[2]["context"] != WOULD]:
-                bad.append(f"shadow wrote more than yi/would: {[w for w in first if not w[1].startswith('statuses/')]}")
+                bad.append(f"shadow wrote more than yi/would: {talk(first)}")
             got = {n: d.split(" (")[0].removeprefix("would ") for n, d in would_of(first).items()}
             if got != owing:
                 bad.append(f"shadow recorded {got}, not the owed {owing}")
@@ -1743,45 +1833,100 @@ def rows_cases():
             for n, act in owing.items():
                 method, part = kinds[act]
                 if not [w for w in first if w[0] == method and part in w[1] and f"/{n}" in w[1]]:
-                    bad.append(f"on did not {act} #{n}: {[w for w in first if not w[1].startswith('statuses/')]}")
-            if acted(first) - set(owing) - {c["pr"]["number"] for c in cases if c.get("act") == "repoint"}:
-                bad.append(f"on wrote to a PR that owed nothing: {acted(first) - set(owing)}")
+                    bad.append(f"on did not {act} #{n}: {talk(first)}")
+            if acted(first) - set(owing):
+                bad.append(f"on wrote to a PR that owed nothing: {acted(first) - set(owing)}: {talk(first)}")
+            if [c for c in calls if c[0] == "verb"]:
+                bad.append(f"the rows reached a verb that closes and reopens a PR: {[c for c in calls if c[0] == 'verb']}")
+            if untimed := [c for c in once if c[2] is None]:
+                bad.append(f"a rows call had no timeout: {untimed}")
+        # Invariant: the changed paths are read only for a PR the row would otherwise enqueue.
+        read = {int(c[1].split("/")[4]) for c in once if "/files?" in c[1]}
+        if read != {c["pr"]["number"] for c in cases if c.get("act") == "enqueue" or c["state"] == "changes the bots"}:
+            bad.append(f"{mode} read the changed paths of {sorted(read)}")
         done = {(w[0], w[1]) for w in first if not w[1].startswith("statuses/")}
         again = [w for w in writes[len(first):] if (w[0], w[1]) in done]
         if again or (mode == "shadow" and writes[len(first):]):
             bad.append(f"a second {mode} tick wrote again: {writes[len(first):]}")
     enqueue = next(n for n, act in owing.items() if act == "enqueue")
-    with rows_world(cases, "on", moved={enqueue}) as (tick_rows, writes, said_out):
+    with rows_world(cases, "on", moved={enqueue}) as (tick_rows, writes, said_out, *_):
         tick_rows()
     if [w for w in writes if w[1].endswith("/labels")] or "head moved" not in said_out.getvalue():
         bad.append(f"a head that moved after the judgement was enqueued anyway: {writes}, {said_out.getvalue()!r}")
     raced = [c if c["pr"]["number"] != enqueue else {**c, "pr": {**c["pr"], "labels": c["pr"]["labels"] + [{"name": LABEL}]}} for c in cases]
-    with rows_world(raced, "on") as (tick_rows, writes, said_out), mock.patch.object(sys.modules[__name__], "owed", lambda *a: "enqueue"):
+    with rows_world(raced, "on") as (tick_rows, writes, *_), mock.patch.object(sys.modules[__name__], "owed", lambda *a: "enqueue"):
         tick_rows()
     if [w for w in writes if w[1].endswith(f"{enqueue}/labels")]:
         bad.append(f"a PR already carrying `{LABEL}` from the Mac loop was labelled again: {writes}")
-    with rows_world(cases, "on", refuse={f"issues/{enqueue}/comments"}) as (tick_rows, writes, said_out):
+    with rows_world(cases, "on", refuse={f"issues/{enqueue}/comments"}) as (tick_rows, writes, said_out, *_):
         tick_rows()
     if acted(writes) != set(owing) - {enqueue} or f"no state for #{enqueue}" not in said_out.getvalue():
         bad.append(f"one PR's refused read stopped the others: acted on {acted(writes)}, {said_out.getvalue()!r}")
-    child = next(c for c in cases if c.get("act") == "repoint")
-    with rows_world(cases, "on", rebased={child["pr"]["number"]}) as (tick_rows, writes, said_out):
-        tick_rows()
-    if [w for w in writes if w[0] == "PATCH" and "base" in (w[2] or {})]:
-        bad.append(f"a child the queue's own landing re-pointed in the meantime was re-pointed again: {writes}")
-    parent = child["parent"]
-    open_parent = {"case": "the parent still open", "pr": {**parent, "state": "open", "title": "t", "labels": [], "base": {"ref": "main"},
-                   "head": {**parent["head"], "sha": "3" * 40}, "user": {"login": "jack"}, "updated_at": child["pr"]["updated_at"]},
-                   "comments": [], "statuses": []}
-    with rows_world([child, open_parent], "on") as (tick_rows, writes, said_out):
-        tick_rows()
-    if [w for w in writes if not w[1].startswith("statuses/")]:
-        bad.append(f"a child whose parent is still open was acted on: {writes}")
+    bad += stop_cases(cases, enqueue) + repoint_cases(cases)
     stranger = [{**c, "pr": {**c["pr"], "user": {"login": "someone"}}} for c in cases if c.get("act") == "enqueue"]
-    with rows_world(stranger, "on") as (tick_rows, writes, said_out):
+    with rows_world(stranger, "on") as (tick_rows, writes, *_):
         tick_rows()
     if writes:
         bad.append(f"a clean PR from a login outside MERGERS was acted on: {writes}")
+    return bad
+
+
+def stop_cases(cases, enqueue):
+    """Each stop ends where it should: a push after the owner took `queue` off, and a push or a gate status after an
+    eject, each enqueue; a rename out of a bot's path is a change to the bots."""
+    bad, plain, holding = [], next(c for c in cases if c["pr"]["number"] == enqueue), next(c for c in cases if c["pr"]["number"] == 2030)
+    took, eject = (next(c for c in cases if c["state"] == state) for state in ("taken out of the queue", "ejected"))
+    push = {"type": "pull_push", "user": {"login": "jack"}, "body": "", "created_at": "2026-11-07T04:51:30Z", "label": None}
+    status = {**eject["statuses"][0], "updated_at": "2026-11-07T04:51:30Z"}
+    renamed = [{"filename": "scripts/queue_rows.py", "previous_filename": "scripts/pr_queue.py", "status": "renamed"}]
+    bot = [dict(e, user={"login": pr_review.BOT}) if e.get("body") == "" and (e.get("label") or {}).get("name") == LABEL else e for e in took["timeline"]]
+    for how, case, want in (("a push after the owner took the label off", {**took, "timeline": took["timeline"] + [push]}, True),
+                            ("the bot taking the label off", {**took, "timeline": bot}, True),
+                            ("a push after an eject", {**eject, "timeline": eject["timeline"] + [push]}, True),
+                            ("a gate status after an eject", {**eject, "statuses": [status, *eject["statuses"][1:]]}, True),
+                            ("a rename out of a bot's path", {**plain, "files": renamed}, False),
+                            ("#2030's clean draft holding mediums, its hold taken off", {**holding, "pr": {**holding["pr"], "labels": []}}, False)):
+        with rows_world([{**case, "files": case.get("files", plain["files"])}], "on") as (tick_rows, writes, *_):
+            tick_rows()
+        if bool([w for w in writes if w[1].endswith("/labels") or w[0] == "PATCH"]) != want:
+            bad.append(f"{how} acted={not want}: {writes}")
+    return bad
+
+
+def repoint_cases(cases):
+    """Only a parent whose PR merged re-points its child; every other answer is a person's, and a refusal is said once."""
+    bad, child = [], next(c for c in cases if c.get("act") == "repoint")
+    base, parent = child["pr"]["base"]["ref"], child["parent"]
+    with rows_world(cases, "on", rebased={child["pr"]["number"]}) as (tick_rows, writes, *_):
+        tick_rows()
+    if [w for w in writes if w[0] == "PATCH" and "base" in (w[2] or {})]:
+        bad.append(f"a child the queue's own landing re-pointed in the meantime was re-pointed again: {writes}")
+    probes = (("its parent's PR closed without merging", {base: {**parent, "merged": False}}, False),
+              ("its parent's PR a fork's of the same branch name", {base: {**parent, "head": {"ref": base, "repo": {"full_name": "fork/yi"}}}}, False),
+              ("no PR into main names its live base branch", {base: None}, False),
+              ("its base branch deleted with no PR", {base: None}, True),
+              ("the parent's PR unreadable", {base: {"message": "500 database is locked"}}, False))
+    for how, answer, gone in probes:
+        with rows_world([child], "on", parents=answer, gone=gone, report_on="on") as (tick_rows, writes, said_out, calls, world):
+            tick_rows()
+            tick_rows()
+        state = next((s["description"] for s in world[str(child["pr"]["number"])]["statuses"] if s["context"] == STATE), "")
+        if [w for w in writes if not w[1].startswith("statuses/")] or not state.startswith("based off a closed branch, waiting on person"):
+            bad.append(f"a child whose base reads {how} was acted on or read {state!r}: {writes}")
+    opened = {"case": "the parent still open", "pr": {**parent, "state": "open", "title": "t", "labels": [], "base": {"ref": "main"},
+              "head": {**parent["head"], "sha": "3" * 40}, "user": {"login": "jack"}, "updated_at": child["pr"]["updated_at"]},
+              "comments": [], "statuses": []}
+    with rows_world([child, opened], "on", parents={}) as (tick_rows, writes, said_out, calls, _):
+        tick_rows()
+    if [w for w in writes if not w[1].startswith("statuses/")] or [c for c in calls if "/pulls/main/" in c[1]]:
+        bad.append(f"a child whose parent is open in the listing was acted on or its parent read again: {writes}")
+    for refused in ("base", "update"):
+        with rows_world([{**child, "refuse": (refused,)}], "on") as (tick_rows, writes, said_out, calls, world):
+            tick_rows()
+            tick_rows()
+        said = [w for w in writes if w[1].endswith("/comments")]
+        if len(said) != 1 or [c for c in calls if c[0] == "verb"]:
+            bad.append(f"a refused {refused} said {len(said)} comment(s) over two ticks, verbs {[c for c in calls if c[0] == 'verb']}")
     return bad
 
 
@@ -1791,24 +1936,43 @@ def would_of(writes):
 
 
 def consent_cases():
-    """A bot-added `queue` label is consent only while QUEUE_ROWS is on and the row would add it now."""
+    """A bot-added `queue` label is consent only while QUEUE_ROWS is on and the row would add it now, and a failed
+    read of one such PR leaves it out without stopping the order of the others."""
     cases, bad = json.loads(ROWS_RECORDED.read_text()), []
     enqueue = next(c["pr"]["number"] for c in cases if c.get("act") == "enqueue")
     held = next(c["pr"]["number"] for c in cases if c["state"] == "held")
     added = lambda who: [{"type": "label", "label": {"name": LABEL}, "user": {"login": who}, "body": "1", "created_at": "t"}]
     for mode, number, want in (("on", enqueue, "t"), ("shadow", enqueue, None), ("off", enqueue, None), ("on", held, None)):
         with rows_world(cases, mode) as _:
-            got = enqueue_time(added(pr_review.BOT), lambda: rowed(number))
+            with contextlib.redirect_stdout(io.StringIO()):
+                got = enqueue_time(added(pr_review.BOT), lambda: rowed(number, added(pr_review.BOT)))
         if got != want:
             bad.append(f"a bot-added label on #{number} under QUEUE_ROWS {mode} read {got}, not {want}")
     if enqueue_time(added("someone"), lambda: True) is not None:
         bad.append("a label from a login neither in MERGERS nor the bot's was honoured")
+    pulls = [{"number": 1}, {"number": 2}]
+    events = {1: added(pr_review.BOT), 2: added("jack")}
+
+    def forge(method, path, payload=None, timeout=None):
+        number = int(path.split("/")[4])
+        if "/timeline?" in path:
+            return events[number] if path.endswith("page=1") else []
+        return {"message": "500 database is locked"}
+    with mock.patch.object(forge_pr, "fgj_api", forge), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            mock.patch.dict(os.environ, {"QUEUE_ROWS": "on"}), contextlib.redirect_stdout(io.StringIO()):
+        try:
+            got = [pr["number"] for pr in order(pulls)]
+        except (Exception, SystemExit) as err:
+            got = f"a stop: {err}"
+    if got != [2]:
+        bad.append(f"a failed read of one bot-labelled PR left the order {got}, not [2]")
     return bad
 
 
 def heartbeat_cases():
     """The recorded dark windows: the queue's tick dark by 11:18Z on 11-04 and by 07:15Z on 11-18 as the fixer's
-    pass would read it, alive again once it ran green; the issue opens once, is not rewritten, and closes."""
+    pass would read it, alive again once it ran green; under `on` alone the issue opens once, is not rewritten,
+    carries no size or milestone, and closes only on a green run."""
     recs, bad, when = json.loads(JOBS_RECORDED.read_text()), [], pr_review.when
     seen = lambda job, t: [dict(r, status=r["status"] if when(r["updated_at"]) <= t else "running") for r in recs
                            if r["workflow_id"] == job and when(r["created_at"]) <= t]
@@ -1822,15 +1986,16 @@ def heartbeat_cases():
     if dark(running, when("2026-11-04T10:30:00Z")) or not dark(running, when("2026-11-04T11:00:00Z")):
         bad.append("a pass still running inside its 90-minute timeout read dark, or one past it read alive")
     issues, calls = [], []
+
     def answer(method, path, payload=None, timeout=None):
-        calls.append((method, path))
+        calls.append((method, path, payload, timeout))
         rest = path.split("/", 3)[3]
         if rest.startswith("actions/tasks"):
             return {"workflow_runs": state["records"] if rest.endswith("page=1") else []}
         if rest.startswith("issues?state=open"):
             return [i for i in issues if i["state"] == "open"]
-        if rest.startswith(("labels?", "milestones?")):
-            return [{"name": "area:forge-ci", "id": 5}, {"name": "size:S", "id": 6}] if rest.startswith("labels") else []
+        if rest.startswith("labels?"):
+            return [{"name": "area:forge-ci", "id": 5}, {"name": "size:S", "id": 6}]
         if method == "POST":
             issues.append({**payload, "number": 9, "state": "open", "user": {"login": pr_review.BOT}})
             return issues[-1]
@@ -1838,23 +2003,114 @@ def heartbeat_cases():
             issues[-1].update(payload)
             return issues[-1]
         raise AssertionError(f"the heartbeat made a call it may not: {method} {path}")
-    failing = [r for r in seen("queue.yml", when("2026-11-04T11:18:27Z"))]
+    failing = seen("queue.yml", when("2026-11-04T11:18:27Z"))
     green = seen("queue.yml", when("2026-11-04T17:00:36Z"))
+    # Not dark, one failure in the last three, yet the newest finished run failed: no close.
+    mixed = [dict(green[0], status="failure")] + green[1:]
     state = {}
+    ticks = ((failing, "2026-11-04T11:18:27Z"), (failing, "2026-11-04T11:23:27Z"), (mixed, "2026-11-04T17:00:36Z"), (green, "2026-11-04T17:00:36Z"))
     with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
             contextlib.redirect_stdout(io.StringIO()):
-        for records, at in ((failing, "2026-11-04T11:18:27Z"), (failing, "2026-11-04T11:23:27Z"), (green, "2026-11-04T17:00:36Z")):
+        for mode in ("off", "shadow"):
+            state["records"] = failing
+            heartbeat("queue.yml", mode)
+        quiet = len(calls)
+        for records, at in ticks:
             state["records"] = sorted(records, key=lambda r: r["created_at"], reverse=True)
             with mock.patch.object(time, "time", lambda: when(at)):
-                heartbeat("queue.yml", "shadow")
-        opened = [c for c in calls if c[0] == "POST"]
-        state["records"] = failing
-        before = len(calls)
-        heartbeat("queue.yml", "off")
-    if len(opened) != 1 or [c for c in calls if c[0] == "PATCH"] != [("PATCH", "repos/o/r/issues/9")] or issues[0]["state"] != "closed":
+                heartbeat("queue.yml", "on")
+            if records is mixed and issues and issues[0]["state"] != "open":
+                bad.append("the heartbeat closed its issue on a run whose newest finished run failed")
+    with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: {"message": "500 database is locked"}), \
+            mock.patch.object(forge_pr, "repo", lambda: "o/r"), contextlib.redirect_stdout(io.StringIO()) as out:
+        try:
+            heartbeat("queue.yml", "on")
+        except (Exception, SystemExit) as err:
+            bad.append(f"a heartbeat whose forge refused stopped its job: {err!r}")
+    if "database is locked" not in out.getvalue():
+        bad.append(f"a heartbeat whose forge refused said nothing: {out.getvalue()!r}")
+    opened = [c for c in calls if c[0] == "POST"]
+    if quiet:
+        bad.append(f"a heartbeat under QUEUE_ROWS off or shadow asked the forge: {calls[:quiet]}")
+    if len(opened) != 1 or [c[:2] for c in calls if c[0] == "PATCH"] != [("PATCH", "repos/o/r/issues/9")] or issues[0]["state"] != "closed":
         bad.append(f"the heartbeat did not open once, leave it, then close it green: {calls}, {issues}")
-    if len(calls) != before:
-        bad.append("a heartbeat under QUEUE_ROWS off asked the forge")
+    if opened and (opened[0][2].get("labels") != [5] or "milestone" in opened[0][2]):
+        bad.append(f"the heartbeat's issue carries a size or a milestone: {opened[0][2]}")
+    if untimed := [c for c in calls if c[3] is None]:
+        bad.append(f"a heartbeat call had no timeout: {untimed}")
+    return bad + heartbeat_order_cases()
+
+
+def heartbeat_order_cases():
+    """Each job watches the other after its own work, under the mode its environment names, asking the forge nothing for it."""
+    import pr_autofix
+    bad, now, seen = [], time.time(), []
+    pulls = [aged(1, "a" * 40, 1, now, ["queue"])]
+    answer, calls = forge_double({}, pulls=pulls)
+    beat = lambda watched, mode=None: seen.append((watched, mode, len(calls)))
+    with mock.patch.object(forge_pr, "fgj_api", answer), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            mock.patch.object(sys.modules[__name__], "git", mock.Mock(return_value=mock.Mock(stdout="", returncode=0))), \
+            mock.patch.object(sys.modules[__name__], "heartbeat", beat), \
+            mock.patch.dict(os.environ, {"MERGE_QUEUE": "on", "STATE_REPORT": "off", "QUEUE_ROWS": "on", "YI_ROUND_AUTHORS": "yi-bot"}), \
+            contextlib.redirect_stdout(io.StringIO()):
+        main([])
+    if seen != [("autofix.yml", "on", len(calls))] or not calls:
+        bad.append(f"the tick watched the fixer as {seen} after {len(calls)} calls, not last under on")
+    seen.clear()
+    tried, keep = [], {name: getattr(pr_autofix, name) for name in ("attempt", "label_ids", "spent_today", "tidy", "settle_base_red", "lock_job")}
+    try:
+        pr_autofix.attempt = lambda repo, pr, ids, asked=False: tried.append(pr["number"]) or "clean"
+        pr_autofix.label_ids, pr_autofix.spent_today, pr_autofix.tidy = (lambda repo: {}), (lambda repo: 0.0), (lambda repo, pr: False)
+        pr_autofix.settle_base_red, pr_autofix.lock_job = (lambda repo, bases: None), (lambda root=None: None)
+        fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
+        record = lambda watched, mode=None: seen.append((watched, mode, list(tried)))
+        for rows, listed in ((None, [fresh]), ("on", [fresh]), (None, {"message": "500 database is locked"})):
+            env = {} if rows is None else {"QUEUE_ROWS": rows}
+            with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: listed), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+                    mock.patch.object(pr_autofix.pr_queue, "heartbeat", record), mock.patch.dict(os.environ, env), \
+                    mock.patch.object(sys, "stdout", io.TextIOWrapper(io.BytesIO())):
+                os.environ.pop("QUEUE_ROWS", None) if rows is None else None
+                tried.clear()
+                pr_autofix.cmd_autofix(type("A", (), {"number": None})())
+    finally:
+        for name, value in keep.items():
+            setattr(pr_autofix, name, value)
+    want = [("queue.yml", "off", [4]), ("queue.yml", "on", [4]), ("queue.yml", "off", [])]
+    if seen != want:
+        bad.append(f"the fixer's pass watched the tick as {seen}, not {want}")
+    return bad
+
+
+def switch_cases():
+    """QUEUE_ROWS is the job's environment alone: unset, off or a misspelling reads off, says so for a misspelling,
+    asks the forge nothing, and the workflow's work step counts a misspelling as no work."""
+    bad = []
+    with mock.patch.object(forge_pr, "fgj_api", side_effect=AssertionError("asked the forge")):
+        for told, want in ((None, "off"), ("off", "off"), ("of", "off"), ("On", "off"), ("shadow", "shadow"), ("on", "on")):
+            with mock.patch.dict(os.environ, {} if told is None else {"QUEUE_ROWS": told}), contextlib.redirect_stdout(io.StringIO()) as out:
+                os.environ.pop("QUEUE_ROWS", None) if told is None else None
+                try:
+                    got = rows_mode()
+                except AssertionError as err:
+                    got = str(err)
+            if got != want or (told not in (None, "off", "shadow", "on")) != ("none of off, shadow, on" in out.getvalue()):
+                bad.append(f"QUEUE_ROWS {told!r} read {got!r}, saying {out.getvalue()!r}")
+    lines = (ROOT / ".forgejo/workflows/queue.yml").read_text().splitlines()
+    at = next(i for i, line in enumerate(lines) if line.strip() == "id: work")
+    start = next(i for i in range(at, len(lines)) if lines[i].strip() == "run: |") + 1
+    body = [line for line in itertools.takewhile(lambda line: line.startswith("          ") or not line.strip(), lines[start:])]
+    script = "\n".join(line[10:] for line in body).replace("${{ github.repository }}", "o/r")
+    with tempfile.TemporaryDirectory(prefix="yi-queue-work-") as tmp:
+        fake = pathlib.Path(tmp) / "fgj"
+        fake.write_text("#!/bin/sh\ncase \"$*\" in *branches*) exit 1;; *) echo '[]';; esac\n")
+        fake.chmod(0o755)
+        for rows, want in (("of", "run=no"), ("", "run=no"), ("off", "run=no"), ("shadow", "run=yes"), ("on", "run=yes")):
+            out = pathlib.Path(tmp) / "out"
+            out.write_text("")
+            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(out), "STATE_REPORT": "off", "QUEUE_ROWS": rows}
+            subprocess.run(("bash", "-c", script), env=env, capture_output=True, text=True, timeout=30, check=False)
+            if out.read_text().strip() != want:
+                bad.append(f"queue.yml's work step with QUEUE_ROWS {rows!r} wrote {out.read_text().strip()!r}, not {want}")
     return bad
 
 
@@ -1863,7 +2119,7 @@ def offline_cases():
     the guardrails lane installs no fgj."""
     cases = (rule_cases, git_cases, build_cases, record_cases, landing_cases, shadow_cases, forge_cases, queue_verb_cases,
              batch_cases, conflict_cases, green_cases, candidate_gate_cases, state_cases, report_cases, neutral_cases,
-             tick_call_cases, parked_cases, rows_cases, consent_cases, heartbeat_cases)
+             tick_call_cases, parked_cases, rows_cases, consent_cases, heartbeat_cases, switch_cases)
     bad = []
     with mock.patch.object(forge_pr, "fgj_api", side_effect=RuntimeError("fgj")):
         for case in cases:
@@ -1886,12 +2142,12 @@ def selfcheck():
                        ("green batch of four", lambda: green_cases("K")), ("landed batch recovery", lambda: green_cases("FORK"))):
         if not call():
             bad.append(f"{name} passes with its new behavior disabled, so its scenario refutes nothing")
-    for act in ("enqueue", "promote", "repoint", "say"):
+    for act in ("enqueue", "promote", "repoint"):
         with mock.patch.object(sys.modules[__name__], "STATES", tuple(row[:4] + (None if row[4] == act else row[4],) for row in STATES)):
             if not rows_cases():
                 bad.append(f"the `{act}` act disabled and every rows case still passes, so it refutes nothing")
     for name, patch in (("the owner-only enqueue", mock.patch.object(sys.modules[__name__], "MERGERS", MERGERS | {"someone"})),
-                        ("the switch on bot consent", mock.patch.object(sys.modules[__name__], "rows_mode", lambda ask=False: "on")),
+                        ("the switch on bot consent", mock.patch.object(sys.modules[__name__], "rows_mode", lambda: "on")),
                         ("the three-failure rule", mock.patch.object(sys.modules[__name__], "finished", lambda records: []))):
         with patch:
             if not (rows_cases() + consent_cases() + heartbeat_cases()):
@@ -1917,14 +2173,16 @@ def main(argv):
     if "--selfcheck" in argv:
         return selfcheck()
     mode, rows = os.environ.get("MERGE_QUEUE", "off"), rows_mode()
-    heartbeat("autofix.yml", rows)
-    if mode not in ("shadow", "on"):
+    try:
+        if mode in ("shadow", "on"):
+            return tick(mode, rows)
         print(f"queue: MERGE_QUEUE is {mode}; nothing to do but the state report and the rows")
         # Invariant: an off queue takes no queue action, so the report reads the listing itself.
         if os.environ.get("STATE_REPORT") == "on" or rows != "off":
             report(listing(forge_pr.open_pulls(), "the open pull requests"), mode=rows)
         return 0
-    return tick(mode)
+    finally:
+        heartbeat("autofix.yml", rows)
 
 
 if __name__ == "__main__":

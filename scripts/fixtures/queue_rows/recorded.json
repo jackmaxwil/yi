@@ -85,13 +85,14 @@
 "description": "held, waiting on person since 11-24 19:36Z (0 h, clock 22 h)",
 "updated_at": "2026-11-24T19:45:56Z"
 }
-]
+],
+"timeline": []
 },
 {
-"case": "recorded #2231 the second before the Mac loop enqueued it, autofix:hold on",
+"case": "recorded #2231 the second before the Mac loop enqueued it, autofix:hold on, which stops the row",
 "at": "2026-11-24T17:37:07Z",
-"state": "clean, not queued",
-"act": "enqueue",
+"state": "held",
+"act": null,
 "pr": {
 "number": 2231,
 "title": "Add opt-in fast local builds and a Subsecond experiment",
@@ -147,6 +148,65 @@
 "context": "pr / title (pull_request)",
 "status": "success",
 "updated_at": "2026-11-24T17:26:13Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-14T09:37:01Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "jack"
+},
+"body": "1",
+"created_at": "2026-11-14T10:42:51Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:hold"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-15T01:16:25Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-24T17:22:56Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-24T17:36:49Z",
+"old_title": "WIP: Add opt-in fast local builds and a Subsecond experiment",
+"new_title": "Add opt-in fast local builds and a Subsecond experiment",
+"label": null
 }
 ]
 },
@@ -207,6 +267,130 @@
 "status": "success",
 "updated_at": "2026-11-15T05:48:22Z"
 }
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-15T01:49:39Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T03:54:19Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:05:34Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:05:34Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T04:15:58Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:37:01Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:37:03Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T05:14:44Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T05:45:15Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T05:45:16Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+}
 ]
 },
 {
@@ -264,12 +448,576 @@
 "status": "failure",
 "updated_at": "2026-11-04T02:27:23Z"
 }
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-27T17:17:44Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-27T22:00:21Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-27T22:11:22Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-27T22:16:41Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-27T23:35:01Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-28T00:33:12Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-28T00:58:27Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-28T03:03:34Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T03:15:18Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T03:15:18Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-28T03:22:07Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T03:40:36Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T03:40:36Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-28T04:01:10Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T04:11:35Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T04:11:37Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-28T04:19:12Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T04:27:10Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T04:27:10Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-28T04:34:36Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-28T04:34:36Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-28T04:34:36Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:failed"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-28T16:33:28Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-30T05:14:07Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-30T05:55:16Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-30T06:53:06Z",
+"old_title": "WIP: Add yi ask --scope to refuse writes outside a run's brief",
+"new_title": "Add yi ask --scope to refuse writes outside a run's brief",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-30T06:53:32Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-30T07:37:04Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-10-30T12:25:33Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:failed"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-31T01:30:42Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-31T01:42:58Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-31T01:43:00Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-31T02:26:09Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-31T02:56:24Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-31T02:57:06Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-31T03:29:57Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-31T03:32:30Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-31T03:58:44Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-31T03:58:44Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:failed"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-31T16:04:37Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:failed"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-31T16:04:51Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-10-31T16:29:24Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-10-31T16:29:24Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:failed"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "jack"
+},
+"body": "1",
+"created_at": "2026-11-03T03:04:25Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:hold"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-03T23:29:07Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-04T01:05:54Z",
+"old_title": "",
+"new_title": "",
+"label": null
+}
 ]
 },
 {
 "case": "stand-in: recorded #2310 before its parent #2297 merged, read as if that merge had not re-pointed it",
 "at": "2026-11-23T00:59:59Z",
-"state": "based off a closed branch",
+"state": "based off a merged branch",
 "act": "repoint",
 "pr": {
 "number": 2310,
@@ -334,45 +1082,136 @@
 "full_name": "apex/yi"
 }
 }
-}
 },
+"timeline": [
 {
-"case": "stand-in: the recording holds no PR whose facts match no row",
-"at": "2026-11-24T19:50:00Z",
-"state": "unknown",
-"act": "say",
-"pr": {
-"number": 9001,
-"title": "Read a bot's own crash as a failure, never as a busy provider",
-"labels": [
-{
-"name": "stand-in:unknown"
-}
-],
-"base": {
-"ref": "main"
-},
-"state": "open",
-"head": {
-"sha": "0000000000000000000000000000000000000000",
-"ref": "jack/bots-failure-sorter",
-"repo": {
-"full_name": "apex/yi"
-}
-},
+"type": "pull_push",
 "user": {
 "login": "jack"
 },
-"updated_at": "2026-11-24T19:45:57Z",
-"mergeable": true
-},
-"comments": [],
-"statuses": []
+"body": "",
+"created_at": "2026-11-21T09:43:10Z",
+"old_title": "",
+"new_title": "",
+"label": null
 },
 {
-"case": "recorded #2030 a clean draft whose clean round still holds two mediums, which the Mac loop readied",
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-21T12:07:13Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-21T12:21:45Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-21T12:21:45Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-21T12:37:48Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-21T12:56:06Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-21T12:56:12Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-21T13:07:40Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-21T13:07:41Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "change_title",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-21T15:08:15Z",
+"old_title": "WIP: Seat only the panes a session has something to show",
+"new_title": "Seat only the panes a session has something to show",
+"label": null
+}
+]
+},
+{
+"case": "recorded #2030 a clean draft holding mediums, autofix:hold on",
 "at": "2026-11-06T01:33:00Z",
-"state": "clean draft",
+"state": "held",
 "act": null,
 "pr": {
 "number": 2030,
@@ -430,32 +1269,65 @@
 "status": "success",
 "updated_at": "2026-11-06T01:23:33Z"
 }
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-05T19:14:39Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "jack"
+},
+"body": "1",
+"created_at": "2026-11-05T19:14:40Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:hold"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-06T00:05:07Z",
+"old_title": "",
+"new_title": "",
+"label": null
+}
 ]
 },
 {
-"case": "stand-in: #2231's moment with a later round on another sha, so the queue refuses it as not reviewed at the head",
-"at": "2026-11-24T17:37:07Z",
+"case": "recorded #2062 the second before the Mac loop enqueued it",
+"at": "2026-11-07T04:51:54Z",
 "state": "clean, not queued",
-"act": null,
+"act": "enqueue",
 "pr": {
-"number": 9002,
-"title": "Add opt-in fast local builds and a Subsecond experiment",
-"labels": [
-{
-"name": "autofix:hold"
-}
-],
+"number": 2062,
+"title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"labels": [],
 "base": {
 "ref": "main"
 },
 "head": {
-"sha": "2222222222222222222222222222222222222222",
-"ref": "yi/pr-build",
+"sha": "7a377a6e5819b939d92a8767f1dcbe2e785bd364",
+"ref": "jack/readme-guide-sections",
 "repo": {
 "full_name": "apex/yi"
 }
 },
-"updated_at": "2026-11-24T17:36:49Z",
+"updated_at": "2026-11-07T04:51:53Z",
 "mergeable": null,
 "user": {
 "login": "jack"
@@ -464,42 +1336,1097 @@
 },
 "comments": [
 {
-"id": 43710,
+"id": 38472,
 "user": {
 "login": "yi-bot"
 },
-"body": "<!-- yi-round 3 -->\n<!-- yi-round-meta pr=9002 sha=2222222222222222222222222222222222222222 base=a3a76967bd37a4e0fa5c1471fb97f5de9dc4f592 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.0762 tin=26911 tout=58774 tcache=2627616 calls=13 turns=51 secs=252 models=claude-haiku-5.5 -->\n**Review round 3** on `6dc3058d`, reading `a3a76967..6dc3058d`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 3 finding(s) the last round left open no longer hold at `6dc3058d`.\n\n<sub>review round 3 · claude-haiku-5.5 · 13 call(s), 51 turn(s) · in 26.9k (cached 2.63M) · out 58.8k · $0.08 · 4m12s · skills read none · this PR $0.44 · today $22.03</sub>\n\n<!-- yi-round-findings [] -->\n",
-"created_at": "2026-11-24T17:28:01Z"
-},
-{
-"id": 43711,
-"user": {
-"login": "yi-bot"
-},
-"body": "<!-- yi-round 4 -->\n<!-- yi-round-meta pr=9002 sha=1111111111111111111111111111111111111111 base=a3a76967bd37a4e0fa5c1471fb97f5de9dc4f592 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.0762 tin=26911 tout=58774 tcache=2627616 calls=13 turns=51 secs=252 models=claude-haiku-5.5 -->\n**Review round 3** on `6dc3058d`, reading `a3a76967..6dc3058d`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 3 finding(s) the last round left open no longer hold at `6dc3058d`.\n\n<sub>review round 3 · claude-haiku-5.5 · 13 call(s), 51 turn(s) · in 26.9k (cached 2.63M) · out 58.8k · $0.08 · 4m12s · skills read none · this PR $0.44 · today $22.03</sub>\n\n<!-- yi-round-findings [] -->\n",
-"created_at": "2026-11-24T17:28:01Z"
+"body": "<!-- yi-round 2 -->\n<!-- yi-round-meta pr=2062 sha=7a377a6e5819b939d92a8767f1dcbe2e785bd364 base=e1b5555646aede8582b0dd6aaf2627e605e19252 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.1796 tin=593676 tout=109929 tcache=8528640 calls=31 turns=175 secs=554 models=deepseek-v4.1-flash-1017 -->\n**Review round 2** on `7a377a6e`, reading `e1b55556..7a377a6e`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 9 finding(s) the last round left open no longer hold at `7a377a6e`.\n\nOut of scope: 1 finding(s) on lines this PR's own change (its fork to `7a377a6e`) does not add were dropped before any refuter.\n\n<sub>review round 2 · deepseek-v4.1-flash-1017 · 31 call(s), 175 turn(s) · in 593.7k (cached 8.53M) · out 109.9k · $0.18 · 9m14s · skills read none · this PR $0.52 · today $20.01</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-07T04:23:44Z"
 }
 ],
 "statuses": [
 {
 "context": "pr / gate (guardrails) (pull_request)",
 "status": "success",
-"updated_at": "2026-11-24T17:26:03Z"
+"updated_at": "2026-11-07T04:40:24Z"
 },
 {
 "context": "pr / gate (lint) (pull_request)",
 "status": "success",
-"updated_at": "2026-11-24T17:26:07Z"
+"updated_at": "2026-11-07T04:40:05Z"
 },
 {
 "context": "pr / gate (test) (pull_request)",
 "status": "success",
-"updated_at": "2026-11-24T17:35:02Z"
+"updated_at": "2026-11-07T04:50:20Z"
 },
 {
 "context": "pr / title (pull_request)",
 "status": "success",
-"updated_at": "2026-11-24T17:26:13Z"
+"updated_at": "2026-11-07T04:40:32Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T02:50:31Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T03:10:04Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:07:54Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T04:14:02Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:51:53Z",
+"old_title": "WIP: Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"new_title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"label": null
+}
+],
+"files": [
+{
+"filename": "README.md",
+"status": "changed"
+}
+]
+},
+{
+"case": "recorded #2340 the second before the Mac loop enqueued it; it edits a bot script",
+"at": "2026-11-24T06:10:02Z",
+"state": "changes the bots",
+"act": null,
+"pr": {
+"number": 2340,
+"title": "Let the fixer keep the new files it writes under desktop",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "c1040d37f764938070d5d1d37637633d6a98d935",
+"ref": "jack/fixer-keeps-desktop-files",
+"repo": {
+"full_name": "apex/yi"
+}
+},
+"updated_at": "2026-11-24T06:08:09Z",
+"mergeable": null,
+"user": {
+"login": "jack"
+},
+"state": "open"
+},
+"comments": [
+{
+"id": 43498,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 1 -->\n<!-- yi-round-meta pr=2340 sha=c1040d37f764938070d5d1d37637633d6a98d935 base=99dc208e83a20d0f1055598e37ce2412701c2ac1 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.0712 tin=24296 tout=83639 tcache=2121694 calls=6 turns=44 secs=288 models=claude-haiku-5.5 -->\n**Review round 1** on `c1040d37`, reading `99dc208e..c1040d37`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\n<sub>review round 1 · claude-haiku-5.5 · 6 call(s), 44 turn(s) · in 24.3k (cached 2.12M) · out 83.6k · $0.07 · 4m48s · skills read none · this PR $0.07 · today $10.96</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-24T05:54:34Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-24T05:56:54Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-24T05:57:36Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-24T06:07:32Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-24T05:57:05Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-24T05:49:17Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "change_title",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-24T06:08:09Z",
+"old_title": "WIP: Let the fixer keep the new files it writes under desktop",
+"new_title": "Let the fixer keep the new files it writes under desktop",
+"label": null
+}
+],
+"files": [
+{
+"filename": "scripts/pr_autofix.py",
+"status": "changed"
+}
+]
+},
+{
+"case": "stand-in: #2062's moment with a later round on another sha, so the queue refuses it as not reviewed at the head",
+"at": "2026-11-07T04:51:54Z",
+"state": "clean, not queued",
+"act": null,
+"pr": {
+"number": 9002,
+"title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "2222222222222222222222222222222222222222",
+"ref": "jack/readme-guide-sections",
+"repo": {
+"full_name": "apex/yi"
+}
+},
+"updated_at": "2026-11-07T04:51:53Z",
+"mergeable": null,
+"user": {
+"login": "jack"
+},
+"state": "open"
+},
+"comments": [
+{
+"id": 38472,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 2 -->\n<!-- yi-round-meta pr=9002 sha=2222222222222222222222222222222222222222 base=e1b5555646aede8582b0dd6aaf2627e605e19252 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.1796 tin=593676 tout=109929 tcache=8528640 calls=31 turns=175 secs=554 models=deepseek-v4.1-flash-1017 -->\n**Review round 2** on `7a377a6e`, reading `e1b55556..7a377a6e`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 9 finding(s) the last round left open no longer hold at `7a377a6e`.\n\nOut of scope: 1 finding(s) on lines this PR's own change (its fork to `7a377a6e`) does not add were dropped before any refuter.\n\n<sub>review round 2 · deepseek-v4.1-flash-1017 · 31 call(s), 175 turn(s) · in 593.7k (cached 8.53M) · out 109.9k · $0.18 · 9m14s · skills read none · this PR $0.52 · today $20.01</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-07T04:23:44Z"
+},
+{
+"id": 38473,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 3 -->\n<!-- yi-round-meta pr=9002 sha=1111111111111111111111111111111111111111 base=e1b5555646aede8582b0dd6aaf2627e605e19252 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.1796 tin=593676 tout=109929 tcache=8528640 calls=31 turns=175 secs=554 models=deepseek-v4.1-flash-1017 -->\n**Review round 2** on `7a377a6e`, reading `e1b55556..7a377a6e`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 9 finding(s) the last round left open no longer hold at `7a377a6e`.\n\nOut of scope: 1 finding(s) on lines this PR's own change (its fork to `7a377a6e`) does not add were dropped before any refuter.\n\n<sub>review round 2 · deepseek-v4.1-flash-1017 · 31 call(s), 175 turn(s) · in 593.7k (cached 8.53M) · out 109.9k · $0.18 · 9m14s · skills read none · this PR $0.52 · today $20.01</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-07T04:23:44Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:24Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:05Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:50:20Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:32Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T02:50:31Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T03:10:04Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:07:54Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T04:14:02Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:51:53Z",
+"old_title": "WIP: Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"new_title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"label": null
+}
+],
+"files": [
+{
+"filename": "README.md",
+"status": "changed"
+}
+]
+},
+{
+"case": "stand-in: #2062's moment after the owner added and then took off `queue`, with no push since",
+"at": "2026-11-07T04:51:54Z",
+"state": "taken out of the queue",
+"act": null,
+"pr": {
+"number": 9003,
+"title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "3333333333333333333333333333333333333333",
+"ref": "jack/readme-guide-sections",
+"repo": {
+"full_name": "apex/yi"
+}
+},
+"updated_at": "2026-11-07T04:51:53Z",
+"mergeable": null,
+"user": {
+"login": "jack"
+},
+"state": "open"
+},
+"comments": [
+{
+"id": 38472,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 2 -->\n<!-- yi-round-meta pr=9003 sha=3333333333333333333333333333333333333333 base=e1b5555646aede8582b0dd6aaf2627e605e19252 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.1796 tin=593676 tout=109929 tcache=8528640 calls=31 turns=175 secs=554 models=deepseek-v4.1-flash-1017 -->\n**Review round 2** on `7a377a6e`, reading `e1b55556..7a377a6e`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 9 finding(s) the last round left open no longer hold at `7a377a6e`.\n\nOut of scope: 1 finding(s) on lines this PR's own change (its fork to `7a377a6e`) does not add were dropped before any refuter.\n\n<sub>review round 2 · deepseek-v4.1-flash-1017 · 31 call(s), 175 turn(s) · in 593.7k (cached 8.53M) · out 109.9k · $0.18 · 9m14s · skills read none · this PR $0.52 · today $20.01</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-07T04:23:44Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:24Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:05Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:50:20Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:32Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T02:50:31Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T03:10:04Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:07:54Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T04:14:02Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "jack"
+},
+"body": "1",
+"created_at": "2026-11-07T04:42:00Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "queue"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:45:00Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "queue"
+}
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:51:53Z",
+"old_title": "WIP: Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"new_title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"label": null
+}
+]
+},
+{
+"case": "stand-in: #2062's moment with #1830's eject comment newer than its last push and newest gate status",
+"at": "2026-11-07T04:51:54Z",
+"state": "ejected",
+"act": null,
+"pr": {
+"number": 9004,
+"title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "4444444444444444444444444444444444444444",
+"ref": "jack/readme-guide-sections",
+"repo": {
+"full_name": "apex/yi"
+}
+},
+"updated_at": "2026-11-07T04:51:53Z",
+"mergeable": null,
+"user": {
+"login": "jack"
+},
+"state": "open"
+},
+"comments": [
+{
+"id": 38472,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 2 -->\n<!-- yi-round-meta pr=9004 sha=4444444444444444444444444444444444444444 base=e1b5555646aede8582b0dd6aaf2627e605e19252 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.1796 tin=593676 tout=109929 tcache=8528640 calls=31 turns=175 secs=554 models=deepseek-v4.1-flash-1017 -->\n**Review round 2** on `7a377a6e`, reading `e1b55556..7a377a6e`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 9 finding(s) the last round left open no longer hold at `7a377a6e`.\n\nOut of scope: 1 finding(s) on lines this PR's own change (its fork to `7a377a6e`) does not add were dropped before any refuter.\n\n<sub>review round 2 · deepseek-v4.1-flash-1017 · 31 call(s), 175 turn(s) · in 593.7k (cached 8.53M) · out 109.9k · $0.18 · 9m14s · skills read none · this PR $0.52 · today $20.01</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-07T04:23:44Z"
+},
+{
+"id": 38473,
+"user": {
+"login": "yi-bot"
+},
+"body": "Left the queue: gate (guardrails) failed twice on this PR merged onto main, at 27f8c93514. /apex/yi/actions/runs/15509/jobs/0\nAdd the `queue` label again once it is answered.",
+"created_at": "2026-11-07T04:51:00Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:24Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:05Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:50:20Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:32Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T02:50:31Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T03:10:04Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:07:54Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T04:14:02Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:51:53Z",
+"old_title": "WIP: Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"new_title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"label": null
+}
+]
+},
+{
+"case": "stand-in: #2245's clean draft labelled as an import, `external` and `autofix:hold`",
+"at": "2026-11-15T05:57:32Z",
+"state": "external",
+"act": null,
+"pr": {
+"number": 9005,
+"title": "WIP: Report a finished container sweep as completed",
+"labels": [
+{
+"name": "external"
+},
+{
+"name": "autofix:hold"
+}
+],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "5555555555555555555555555555555555555555",
+"ref": "yi/2181-sweep-and-plan-guide",
+"repo": {
+"full_name": "apex/yi"
+}
+},
+"updated_at": "2026-11-15T05:49:00Z",
+"mergeable": null,
+"user": {
+"login": "jack"
+},
+"state": "open"
+},
+"comments": [
+{
+"id": 41827,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 4 -->\n<!-- yi-round-meta pr=9005 sha=5555555555555555555555555555555555555555 base=fa4b34e931bce8760e4bda3aa5af9565a43e614f verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.0410 tin=6491 tout=11440 tcache=350021 calls=5 turns=14 secs=199 models=claude-haiku-5.5 -->\n**Review round 4** on `b5f7b7a0`, reading `fa4b34e9..b5f7b7a0`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\n<sub>review round 4 · claude-haiku-5.5 · 5 call(s), 14 turn(s) · in 6.5k (cached 350.0k) · out 11.4k · $0.04 · 3m19s · skills read none · this PR $1.83 · today $6.14</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-15T05:49:00Z"
+}
+],
+"statuses": [
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-15T05:45:27Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-15T05:55:06Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-15T05:47:49Z"
+},
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-15T05:48:22Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-15T01:49:39Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T03:54:19Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:05:34Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:05:34Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T04:15:58Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:37:01Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:37:03Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T05:14:44Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T05:45:15Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T05:45:16Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+}
+]
+},
+{
+"case": "stand-in: #2062's clean ready moment labelled `external`, its hold taken off",
+"at": "2026-11-07T04:51:54Z",
+"state": "external",
+"act": null,
+"pr": {
+"number": 9006,
+"title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"labels": [
+{
+"name": "external"
+}
+],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "6666666666666666666666666666666666666666",
+"ref": "jack/readme-guide-sections",
+"repo": {
+"full_name": "apex/yi"
+}
+},
+"updated_at": "2026-11-07T04:51:53Z",
+"mergeable": null,
+"user": {
+"login": "jack"
+},
+"state": "open"
+},
+"comments": [
+{
+"id": 38472,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 2 -->\n<!-- yi-round-meta pr=9006 sha=6666666666666666666666666666666666666666 base=e1b5555646aede8582b0dd6aaf2627e605e19252 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.1796 tin=593676 tout=109929 tcache=8528640 calls=31 turns=175 secs=554 models=deepseek-v4.1-flash-1017 -->\n**Review round 2** on `7a377a6e`, reading `e1b55556..7a377a6e`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 9 finding(s) the last round left open no longer hold at `7a377a6e`.\n\nOut of scope: 1 finding(s) on lines this PR's own change (its fork to `7a377a6e`) does not add were dropped before any refuter.\n\n<sub>review round 2 · deepseek-v4.1-flash-1017 · 31 call(s), 175 turn(s) · in 593.7k (cached 8.53M) · out 109.9k · $0.18 · 9m14s · skills read none · this PR $0.52 · today $20.01</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-07T04:23:44Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:24Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:05Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:50:20Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-07T04:40:32Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T02:50:31Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T03:10:04Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:07:54Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-07T04:14:02Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-07T04:51:53Z",
+"old_title": "WIP: Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"new_title": "Explain the kernel, lanes, memory, MCP, ACP and embedding in the README",
+"label": null
+}
+]
+},
+{
+"case": "stand-in: #2245's clean draft after the owner readied it and made it a draft again (#2151's events)",
+"at": "2026-11-15T05:57:32Z",
+"state": "drafted by a person",
+"act": null,
+"pr": {
+"number": 9007,
+"title": "WIP: Report a finished container sweep as completed",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "7777777777777777777777777777777777777777",
+"ref": "yi/2181-sweep-and-plan-guide",
+"repo": {
+"full_name": "apex/yi"
+}
+},
+"updated_at": "2026-11-15T05:49:00Z",
+"mergeable": null,
+"user": {
+"login": "jack"
+},
+"state": "open"
+},
+"comments": [
+{
+"id": 41827,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 4 -->\n<!-- yi-round-meta pr=9007 sha=7777777777777777777777777777777777777777 base=fa4b34e931bce8760e4bda3aa5af9565a43e614f verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.0410 tin=6491 tout=11440 tcache=350021 calls=5 turns=14 secs=199 models=claude-haiku-5.5 -->\n**Review round 4** on `b5f7b7a0`, reading `fa4b34e9..b5f7b7a0`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\n<sub>review round 4 · claude-haiku-5.5 · 5 call(s), 14 turn(s) · in 6.5k (cached 350.0k) · out 11.4k · $0.04 · 3m19s · skills read none · this PR $1.83 · today $6.14</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-15T05:49:00Z"
+}
+],
+"statuses": [
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-15T05:45:27Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-15T05:55:06Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-15T05:47:49Z"
+},
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-15T05:48:22Z"
+}
+],
+"timeline": [
+{
+"type": "pull_push",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-15T01:49:39Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T03:54:19Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:05:34Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:05:34Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T04:15:58Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:37:01Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T04:37:03Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "1",
+"created_at": "2026-11-15T05:14:44Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "pull_push",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T05:45:15Z",
+"old_title": "",
+"new_title": "",
+"label": null
+},
+{
+"type": "label",
+"user": {
+"login": "yi-bot"
+},
+"body": "",
+"created_at": "2026-11-15T05:45:16Z",
+"old_title": "",
+"new_title": "",
+"label": {
+"name": "autofix:working"
+}
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-15T05:50:00Z",
+"old_title": "WIP: Report a finished container sweep as completed",
+"new_title": "Report a finished container sweep as completed",
+"label": null
+},
+{
+"type": "change_title",
+"user": {
+"login": "jack"
+},
+"body": "",
+"created_at": "2026-11-15T05:52:00Z",
+"old_title": "Report a finished container sweep as completed",
+"new_title": "WIP: Report a finished container sweep as completed",
+"label": null
 }
 ]
 }

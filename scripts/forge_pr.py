@@ -105,8 +105,9 @@ def branch():
     return git("rev-parse", "--abbrev-ref", "HEAD")
 
 
-def pull(number):
-    pr = fgj_api("GET", f"repos/{repo()}/pulls/{number}")
+def pull(number, timeout=None):
+    path = f"repos/{repo()}/pulls/{number}"
+    pr = fgj_api("GET", path) if timeout is None else fgj_api("GET", path, timeout=timeout)
     if not pr or "number" not in pr:
         raise SystemExit(f"#{number}: {pr.get('message') if pr else 'no such pull request'}")
     return pr

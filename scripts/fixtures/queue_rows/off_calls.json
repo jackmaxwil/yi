@@ -1,0 +1,218 @@
+{
+"source": "main([]) of origin/main a10b9c17050038ef889b4bf91a81d62152b2bffd, scripts/pr_queue.py, against its own forge_double with #1 labelled by the bot, time fixed at 1795000000",
+"runs": [
+{
+"MERGE_QUEUE": "on",
+"STATE_REPORT": "off",
+"calls": [
+[
+"GET",
+"repos/o/r/pulls?state=open&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/pulls?state=open&limit=50&page=2",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/comments?x=1&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/timeline?x=1&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/timeline?x=1&limit=50&page=2",
+null,
+null
+]
+]
+},
+{
+"MERGE_QUEUE": "on",
+"STATE_REPORT": "on",
+"calls": [
+[
+"GET",
+"repos/o/r/pulls?state=open&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/pulls?state=open&limit=50&page=2",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/comments?x=1&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/timeline?x=1&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/timeline?x=1&limit=50&page=2",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status",
+null,
+60
+],
+[
+"POST",
+"repos/o/r/statuses/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+{
+"state": "success",
+"context": "yi/state",
+"description": "awaiting review, waiting on review since 11-18 10:06Z (1 h, clock 18 h)"
+},
+60
+],
+[
+"GET",
+"repos/o/r/issues/2/comments?x=1&limit=50&page=1",
+null,
+60
+],
+[
+"GET",
+"repos/o/r/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/status",
+null,
+60
+],
+[
+"POST",
+"repos/o/r/statuses/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+{
+"state": "success",
+"context": "yi/state",
+"description": "awaiting review, waiting on review since 11-18 10:06Z (1 h, clock 18 h)"
+},
+60
+]
+]
+},
+{
+"MERGE_QUEUE": "shadow",
+"STATE_REPORT": "off",
+"calls": [
+[
+"GET",
+"repos/o/r/pulls?state=open&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/pulls?state=open&limit=50&page=2",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/comments?x=1&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/timeline?x=1&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/timeline?x=1&limit=50&page=2",
+null,
+null
+]
+]
+},
+{
+"MERGE_QUEUE": "off",
+"STATE_REPORT": "on",
+"calls": [
+[
+"GET",
+"repos/o/r/pulls?state=open&limit=50&page=1",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/pulls?state=open&limit=50&page=2",
+null,
+null
+],
+[
+"GET",
+"repos/o/r/issues/1/comments?x=1&limit=50&page=1",
+null,
+60
+],
+[
+"GET",
+"repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status",
+null,
+60
+],
+[
+"POST",
+"repos/o/r/statuses/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+{
+"state": "success",
+"context": "yi/state",
+"description": "awaiting review, waiting on review since 11-18 10:06Z (1 h, clock 18 h)"
+},
+60
+],
+[
+"GET",
+"repos/o/r/issues/2/comments?x=1&limit=50&page=1",
+null,
+60
+],
+[
+"GET",
+"repos/o/r/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/status",
+null,
+60
+],
+[
+"POST",
+"repos/o/r/statuses/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+{
+"state": "success",
+"context": "yi/state",
+"description": "awaiting review, waiting on review since 11-18 10:06Z (1 h, clock 18 h)"
+},
+60
+]
+]
+},
+{
+"MERGE_QUEUE": "off",
+"STATE_REPORT": "off",
+"calls": []
+}
+]
+}

@@ -1323,11 +1323,11 @@ RED_TITLE, RED_TEST = "The test lane of {} is red", re.compile(r"^- `([\w:.-]+) 
 NO_TESTS_RAN = 4
 
 
-def red_issue(repo, base_ref, title=None):
+def red_issue(repo, base_ref, title=None, timeout=None):
     """The bot's one open issue saying this base is red, or carrying `title`; None for none, False when the forge
     did not say. Not `q`: a search page of a 2,000-issue repo can miss it, which reads as a green base."""
-    found = forge_pr.fgj_api("GET", f"repos/{repo}/issues?state=open&type=issues&labels=area:forge-ci"
-                                    f"&created_by={pr_review.BOT}&limit=50")
+    path = f"repos/{repo}/issues?state=open&type=issues&labels=area:forge-ci&created_by={pr_review.BOT}&limit=50"
+    found = forge_pr.fgj_api("GET", path) if timeout is None else forge_pr.fgj_api("GET", path, timeout=timeout)
     if not isinstance(found, list):
         return False
     return next((i for i in found if i.get("title") == (title or RED_TITLE.format(base_ref))
@@ -1643,10 +1643,10 @@ def cmd_autofix(args):
         pr = forge_pr.pull(forge_pr.pull_number(args.number))
         print(f"#{pr['number']}: {attempt(repo, pr, ids, asked=True)}")
         return 0
-    pr_queue.heartbeat("queue.yml")
     pulls = forge_pr.open_pulls()
     if not isinstance(pulls, list):
         print(f"autofix: the forge did not list the pull requests: {(pulls or {}).get('message')}")
+        pr_queue.heartbeat("queue.yml", pr_queue.rows_mode())
         return 1
     ours = pass_order(pulls, repo)
     # One pass at a time (the workflow's concurrency group), so a working label left here is a dead run's.
@@ -1681,6 +1681,7 @@ def cmd_autofix(args):
         # A missed tier climbs in this pass, not 15 minutes and a queue later: #1187 took four passes.
         if said != "missed":
             ours.pop(0)
+    pr_queue.heartbeat("queue.yml", pr_queue.rows_mode())
     return 0
 
 
