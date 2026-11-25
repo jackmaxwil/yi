@@ -1,4 +1,5 @@
 ---
+version: 0.1126.0
 issue: Closes #2368
 cut: none desktop/crates/panes/src/chat/messages.rs
 cut: none desktop/crates/ui/src/list/view.rs
