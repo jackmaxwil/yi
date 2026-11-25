@@ -1561,7 +1561,7 @@ def state_cases(off=""):
         bad.append(f"#1694 stopped at the review cap read {got}, not review capped")
     # #2074's round 2 re-read once in place (tries=2) after round 1: three reads lost a lens, so the retries are spent.
     r1, r2 = json.loads((pr_review.RECORDED / "lost_lens.json").read_text())["2074"]
-    r2 = dict(r2, body="\n".join(line[:-4] + " tries=2 -->" if line.startswith("<!-- yi-round-meta ") else line for line in r2["body"].splitlines()))
+    r2 = dict(r2, body=pr_review.retried(r2["body"]))
     lost = dict(pr, number=2074, head={"sha": pr_review.parse_round(r2, {pr_review.BOT}, 2074)["sha"]})
     if (got := state_of(facts(lost, [r1, r2], [], pr_review.on_head, {pr_review.BOT, "jack"}), off)[0]) != "lost answers, retries spent":
         bad.append(f"#2074 with three lost reads, two of them one round finished in place, read {got}, not lost answers, retries spent")

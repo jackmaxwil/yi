@@ -1679,6 +1679,11 @@ def written_cases(notes, head):
     return bad
 
 
+def retried(body):
+    """A recorded round's body as the round reads once it finished in place on its second try."""
+    return "\n".join(line[:-4] + " tries=2 -->" if ROUND_META.match(line) else line for line in body.splitlines())
+
+
 def honest_cases():
     """The rules that keep a partial read from reading clean and a lost lens from costing a round, each case on
     recorded comments; a failure names its rule, so the refute pass can tell which one a disabled rule broke."""
@@ -1720,8 +1725,7 @@ def honest_cases():
     patched = next((w[2] for w in run_review(old, SHA_1888)[1] if w[0] == "PATCH"), "")
     if not (LOST_ANSWERS.search(patched) and "refuter on intent finding at justfile:58" in LOST_ANSWERS.search(patched).group(1)):
         bad.append(f"in place: the finished round dropped the refuters its first attempt lost: {patched[:80]!r}")
-    tried = lambda body: "\n".join(line[:-4] + " tries=2 -->" if ROUND_META.match(line) else line for line in body.splitlines())
-    code, writes, lenses, out = run_review([notes[0], dict(notes[1], body=tried(notes[1]["body"]))], head)
+    code, writes, lenses, out = run_review([notes[0], dict(notes[1], body=retried(notes[1]["body"]))], head)
     # A clean round on a draft head whose undraft the forge refused: the sweep is told it stayed a draft.
     draft_pr = {"number": 8, "title": DRAFT + "t", "head": {"sha": "abc1234ff"}, "base": {"ref": "main"}}
     clean_round = parse_round({"id": 9, "user": {"login": BOT}, "body": render(1, 8, "abc1234", "base000", [], 0, None, MODE)}, {BOT}, 8)
@@ -1739,7 +1743,7 @@ def honest_cases():
     merged = "d" * 40
     if sweep_heads([ready(7, merged)], {7: notes}, holds=lambda sha, h: on_head(sha, h) or h == merged) != [7]:
         bad.append("ready sweep: a ready PR that only merged main since its round lost a lens is never read again")
-    if sweep_heads([ready(7, head)], {7: [notes[0], dict(notes[1], body=tried(notes[1]["body"]))]}) != []:
+    if sweep_heads([ready(7, head)], {7: [notes[0], dict(notes[1], body=retried(notes[1]["body"]))]}) != []:
         bad.append("ready sweep: a ready PR past its retries took a sweep slot")
     clean_note = {"id": 9, "user": {"login": BOT}, "body": render(1, 8, "abc1234", "base000", [], 0, None, MODE)}
     if sweep_heads([ready(8, "abc1234ff"), ready(9, "def5678ff")], {8: [clean_note]}) != []:
