@@ -295,12 +295,7 @@ pub(crate) mod tests {
         let probe = || -> Result<bool, Box<dyn Error>> {
             let at = scratch("git-z")?;
             sh(&at, &["init", "-q"])?;
-            #[allow(clippy::disallowed_methods, reason = "a test asks git what it can do")]
-            let out = Command::new("/usr/bin/git")
-                .arg("-C")
-                .arg(&at)
-                .args(["worktree", "list", "--porcelain", "-z"])
-                .output()?;
+            let out = git_output(&at, &["worktree", "list", "--porcelain", "-z"])?;
             let said = String::from_utf8_lossy(&out.stderr);
             match (out.status.success(), said.contains("unknown switch")) {
                 (true, _) => Ok(false),
@@ -317,20 +312,22 @@ pub(crate) mod tests {
         Ok(old)
     }
 
-    /// `git` in `at`, for setting a scratch repository up.
-    pub(crate) fn sh(at: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
+    /// What `git` in `at` answered, for a test's scratch repository.
+    fn git_output(at: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
         #[allow(
             clippy::disallowed_methods,
             reason = "a test makes its scratch repository"
         )]
-        let ok = Command::new("/usr/bin/git")
+        Command::new("/usr/bin/git")
             .arg("-C")
             .arg(at)
             .args(args)
-            .output()?
-            .status
-            .success();
-        if ok {
+            .output()
+    }
+
+    /// `git` in `at`, for setting a scratch repository up.
+    pub(crate) fn sh(at: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
+        if git_output(at, args)?.status.success() {
             Ok(())
         } else {
             Err(format!("git {args:?} failed").into())
