@@ -20,7 +20,8 @@ fn message(thread: &Thread, at: &str, kind: Kind) -> Option<Thing> {
     let message = thread.transcript.messages.get(at.parse::<usize>().ok()?)?;
     let entry = message.entry.as_ref()?;
     let id = format!("{}/{}", thread.id.as_str(), entry.as_str());
-    let words = message.said()?
+    let words = message
+        .said()?
         .blocks
         .into_iter()
         .find_map(|block| match block {

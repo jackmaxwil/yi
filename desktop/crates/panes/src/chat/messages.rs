@@ -213,7 +213,11 @@ impl Frame<'_> {
         // The turn's prompt opens it; its steps are counted where it is folded from the wire.
         let ended = range.clone().map(|m| m.done.unwrap_or(m.at)).max();
         let ended = ended.unwrap_or(turn.started).max(turn.started);
-        let prompt = range.clone().next().and_then(|message| message.said()).filter(|said| said.user);
+        let prompt = range
+            .clone()
+            .next()
+            .and_then(|message| message.said())
+            .filter(|said| said.user);
         let typed = prompt
             .iter()
             .flat_map(|said| &said.blocks)
