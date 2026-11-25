@@ -1,0 +1,180 @@
+{
+ "1694": [
+  {
+   "id": 26278,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-27T17:25:13Z",
+   "body": "<!-- yi-round 1 -->\n<!-- yi-round-meta pr=1694 sha=3dd522a69bafe3cee93af541fde6922767185b4a base=c31ebbd082d68a45c9eb4bcad9f80cff61114ae4 verdict=clean mode=blocking high=0 medium=7 low=0 cost=0.4027 tin=1784279 tout=186108 tcache=5890944 calls=14 turns=140 secs=431 models=glm-5.3-flash -->\n"
+  },
+  {
+   "id": 26478,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-27T22:21:31Z",
+   "body": "<!-- yi-round 2 -->\n<!-- yi-round-meta pr=1694 sha=cc56fba121727962f5c021e1eeae62fb4f98c25d base=3dd522a69bafe3cee93af541fde6922767185b4a verdict=blocked mode=blocking high=1 medium=1 low=0 cost=0.4995 tin=1806431 tout=221179 tcache=9933120 calls=33 turns=317 secs=586 models=glm-5.3-flash -->\n"
+  },
+  {
+   "id": 26547,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-27T23:44:09Z",
+   "body": "<!-- yi-round 3 -->\n<!-- yi-round-meta pr=1694 sha=54c93ad731d201ea50eae21bb339629311a488a4 base=cc56fba121727962f5c021e1eeae62fb4f98c25d verdict=clean mode=blocking high=0 medium=3 low=0 cost=0.3300 tin=1248541 tout=166871 tcache=5839616 calls=16 turns=167 secs=528 models=glm-5.3-flash -->\n"
+  },
+  {
+   "id": 26622,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-28T00:52:11Z",
+   "body": "<!-- yi-round 4 -->\n<!-- yi-round-meta pr=1694 sha=6369ef40e1fd0d014a724e3fad7fb18450e46766 base=54c93ad731d201ea50eae21bb339629311a488a4 verdict=blocked mode=blocking high=2 medium=6 low=0 cost=0.6040 tin=2403946 tout=311769 tcache=9853504 calls=28 turns=301 secs=677 models=glm-5.3-flash -->\n"
+  },
+  {
+   "id": 26717,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-28T03:22:00Z",
+   "body": "<!-- yi-round 5 -->\n<!-- yi-round-meta pr=1694 sha=161980d02e43b1a2148e2d132269402c154026a1 base=6369ef40e1fd0d014a724e3fad7fb18450e46766 verdict=clean mode=blocking high=0 medium=8 low=0 cost=1.1171 tin=1403833 tout=493857 tcache=17216512 calls=36 turns=357 secs=370 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 26748,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-28T03:46:20Z",
+   "body": "<!-- yi-round 6 -->\n<!-- yi-round-meta pr=1694 sha=857e9d6572178f23f73e7ca3a64c208394a01980 base=161980d02e43b1a2148e2d132269402c154026a1 verdict=blocked mode=blocking high=3 medium=4 low=0 cost=1.0548 tin=1331456 tout=464964 tcache=16233344 calls=41 turns=383 secs=325 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 26781,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-28T04:17:42Z",
+   "body": "<!-- yi-round 7 -->\n<!-- yi-round-meta pr=1694 sha=608ff18e437d7727ba431ea9aaf47c09947895c1 base=857e9d6572178f23f73e7ca3a64c208394a01980 verdict=blocked mode=blocking high=2 medium=2 low=0 skipped=2 cost=0.9792 tin=1241604 tout=433279 tcache=14457216 calls=35 turns=334 secs=342 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 26796,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-28T04:33:53Z",
+   "body": "<!-- yi-round 8 -->\n<!-- yi-round-meta pr=1694 sha=913a16dee6093d41c7d784afd2dabc4cdf7eadda base=857e9d6572178f23f73e7ca3a64c208394a01980 verdict=blocked mode=blocking high=2 medium=4 low=0 cost=1.0343 tin=1267032 tout=463877 tcache=16261504 calls=28 turns=334 secs=374 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 28258,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-30T05:23:23Z",
+   "body": "<!-- yi-round 9 -->\n<!-- yi-round-meta pr=1694 sha=8f56e08bbc75257ca56a23a15f6e05661d63df49 base=913a16dee6093d41c7d784afd2dabc4cdf7eadda verdict=clean mode=blocking high=0 medium=2 low=0 cost=0.1924 tin=641114 tout=193145 tcache=8233984 calls=23 turns=164 secs=527 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 28317,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-30T06:02:59Z",
+   "body": "<!-- yi-round 10 -->\n<!-- yi-round-meta pr=1694 sha=fac0f027fdf4124658979fa4a4525f00e06424e1 base=8f56e08bbc75257ca56a23a15f6e05661d63df49 verdict=clean mode=blocking high=0 medium=3 low=0 cost=0.1150 tin=390505 tout=129754 tcache=3747328 calls=18 turns=96 secs=431 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 28477,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-30T06:59:23Z",
+   "body": "<!-- yi-round 12 -->\n<!-- yi-round-meta pr=1694 sha=46e962bb3a31480115b1b2b4039975033410bb66 base=fac0f027fdf4124658979fa4a4525f00e06424e1 verdict=clean mode=blocking high=0 medium=5 low=0 cost=0.1668 tin=591434 tout=127343 tcache=8953088 calls=24 turns=197 secs=326 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 28543,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-30T07:41:57Z",
+   "body": "<!-- yi-round 13 -->\n<!-- yi-round-meta pr=1694 sha=1bff2f33d6297e2d262c8936fc82591b07ba2872 base=46e962bb3a31480115b1b2b4039975033410bb66 verdict=blocked mode=blocking high=3 medium=4 low=0 cost=0.1971 tin=929061 tout=156775 tcache=7776768 calls=39 turns=205 secs=273 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 29593,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-10-31T01:48:45Z",
+   "body": "<!-- yi-round 14 -->\n<!-- yi-round-meta pr=1694 sha=090f9059f10ab659fa597f4bd30f203b9e89cfd5 base=1bff2f33d6297e2d262c8936fc82591b07ba2872 verdict=blocked mode=blocking high=6 medium=8 low=0 cost=0.3587 tin=1507419 tout=251746 tcache=14399616 calls=41 turns=303 secs=321 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 33192,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-03T23:51:49Z",
+   "body": "<!-- yi-round 15 -->\n<!-- yi-round-meta pr=1694 sha=c4b5f7809b92d7f45213f3576108ca3ec0c1b751 base=090f9059f10ab659fa597f4bd30f203b9e89cfd5 verdict=blocked mode=blocking high=6 medium=6 low=0 cost=2.3676 tin=3967891 tout=1225484 tcache=140004864 calls=52 turns=1857 secs=1337 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 36055,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-05T22:56:30Z",
+   "body": "<!-- yi-round 16 -->\n<!-- yi-round-meta pr=1694 sha=c2bb8578a141e09eb77bf38a2228b0ea82ee0188 base=c4b5f7809b92d7f45213f3576108ca3ec0c1b751 verdict=clean mode=blocking high=0 medium=0 low=0 cost=1.1293 tin=1962449 tout=593392 tcache=77086720 calls=41 turns=1001 secs=823 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 36060,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-05T22:59:04Z",
+   "body": "<!-- yi-round-void -->\n<!-- yi-round-void-meta pr=1694 sha=c2bb8578a141e09eb77bf38a2228b0ea82ee0188 cost=0.0357 tin=102369 tout=31493 tcache=1086464 calls=1 turns=16 secs=148 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 36388,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-06T03:52:04Z",
+   "body": "<!-- yi-round 18 -->\n<!-- yi-round-meta pr=1694 sha=0aa89881297d47bfcfa97bcdf6d3066326f61d2c base=c4b5f7809b92d7f45213f3576108ca3ec0c1b751 verdict=clean mode=blocking high=0 medium=7 low=0 cost=0.6150 tin=1405318 tout=460413 tcache=31408512 calls=24 turns=503 secs=410 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 36400,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-06T04:01:51Z",
+   "body": "<!-- yi-round 19 -->\n<!-- yi-round-meta pr=1694 sha=0aa89881297d47bfcfa97bcdf6d3066326f61d2c base=c4b5f7809b92d7f45213f3576108ca3ec0c1b751 verdict=clean mode=blocking high=0 medium=8 low=0 cost=0.6659 tin=1494827 tout=394983 tcache=40803840 calls=25 turns=619 secs=583 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 37615,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-06T21:55:00Z",
+   "body": "<!-- yi-round 20 -->\n<!-- yi-round-meta pr=1694 sha=7224badb6ce74a602f957113fe3a076ee899f391 base=0aa89881297d47bfcfa97bcdf6d3066326f61d2c verdict=clean mode=blocking high=0 medium=8 low=0 cost=0.6309 tin=1494574 tout=412758 tcache=32515328 calls=31 turns=547 secs=388 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 37640,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-06T22:04:07Z",
+   "body": "<!-- yi-round 21 -->\n<!-- yi-round-meta pr=1694 sha=7224badb6ce74a602f957113fe3a076ee899f391 base=0aa89881297d47bfcfa97bcdf6d3066326f61d2c verdict=clean mode=blocking high=0 medium=8 low=0 cost=0.6925 tin=1519109 tout=417004 tcache=39617024 calls=26 turns=617 secs=542 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 38655,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-07T07:52:46Z",
+   "body": "<!-- yi-round 22 -->\n<!-- yi-round-meta pr=1694 sha=3013b68eb67c721242223da6bc109241161e1e0e base=0aa89881297d47bfcfa97bcdf6d3066326f61d2c verdict=clean mode=blocking high=0 medium=8 low=0 cost=0.7937 tin=2078038 tout=517659 tcache=42187392 calls=31 turns=674 secs=530 models=deepseek-v4.1-flash-1017 -->\n"
+  },
+  {
+   "id": 38664,
+   "user": {
+    "login": "yi-bot"
+   },
+   "created_at": "2026-11-07T07:58:33Z",
+   "body": "<!-- yi-round 23 -->\n<!-- yi-round-meta pr=1694 sha=3013b68eb67c721242223da6bc109241161e1e0e base=0aa89881297d47bfcfa97bcdf6d3066326f61d2c verdict=clean mode=blocking high=0 medium=8 low=0 cost=0.5106 tin=1169124 tout=339078 tcache=28750464 calls=25 turns=498 secs=339 models=deepseek-v4.1-flash-1017 -->\n"
+  }
+ ]
+}
