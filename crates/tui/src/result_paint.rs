@@ -314,7 +314,7 @@ pub(crate) fn body(
             continue;
         }
         painter.restart();
-        out.push(Line::from(text_spans(raw, theme, dim)));
+        out.push(Line::from(Span::styled(strip_escapes(raw), dim)));
     }
     out
 }

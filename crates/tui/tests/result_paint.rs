@@ -39,6 +39,11 @@ fn done(name: &str, argument: &str, preview: &[&str]) -> Spans {
     card(name, argument, preview, ToolStatus::Done, json!({}))
 }
 
+fn printed(stdout: &str) -> Spans {
+    let details = json!({ "code": "x", "stdout": stdout });
+    card("ipython", "x", &[], ToolStatus::Done, details)
+}
+
 fn carries(spans: &[(String, Style)], text: &str, token: Token) -> bool {
     let want = theme().syntax_style(token);
     spans
@@ -103,11 +108,7 @@ fn painter_types_untyped_output_by_its_content() {
 
 #[test]
 fn malformed_back_to_back_escapes_and_junk_params_keep_the_colour() {
-    let spans = done(
-        "bash",
-        "x",
-        &["\u{1b}\u{1b}[31mred\u{1b}[0m \u{1b}(Bplain \u{1b}[31;999mstill"],
-    );
+    let spans = printed("\u{1b}\u{1b}[31mred\u{1b}[0m \u{1b}(Bplain \u{1b}[31;999mstill\n");
     assert!(!shows_escape(&spans), "{spans:?}");
     let red = |text: &str| {
         spans
@@ -173,7 +174,6 @@ fn read_streaming_write_is_coloured_by_its_path() {
 fn read_finished_write_report_is_not_parsed_as_its_file() {
     let spans = done("write", "src/main.rs", &["Wrote 12 bytes to src/main.rs"]);
     assert!(!carries(&spans, "12", Token::Number), "{spans:?}");
-    assert!(pathed(&spans, "src/main.rs"), "{spans:?}");
 }
 
 #[test]
@@ -271,15 +271,10 @@ fn search_rows_past_the_tag_cap_are_coloured_with_their_context() {
 }
 
 #[test]
-fn shell_colour_codes_render_as_colour() {
-    let spans = done(
-        "bash",
-        "cargo build",
-        &[
-            "\u{1b}[1;31merror\u{1b}[0m: unused variable \u{1b}[1m`total`\u{1b}[0m",
-            "  \u{1b}[34m-->\u{1b}[0m src/main.rs:55:9",
-            "\u{1b}]8;;https://x\u{7}link\u{1b}]8;;\u{7} \u{1b}[38;2;1;2;3mrgb\u{1b}[K",
-        ],
+fn notebook_colour_codes_render_as_colour() {
+    let spans = printed(
+        "\u{1b}[1;31merror\u{1b}[0m: unused variable \u{1b}[1m`total`\u{1b}[0m\n  \u{1b}[34m-->\u{1b}[0m \
+         src/main.rs:55:9\n\u{1b}]8;;https://x\u{7}link\u{1b}]8;;\u{7} \u{1b}[38;2;1;2;3mrgb\u{1b}[K\n",
     );
     assert!(!shows_escape(&spans), "{spans:?}");
     let error = spans.iter().find(|(content, _)| content == "error");
@@ -299,12 +294,17 @@ fn shell_colour_codes_render_as_colour() {
 
 #[test]
 fn shell_rows_are_one_tone_whatever_their_shape() {
-    let rows = ["--- kimi", "163:let x = 4;", &"x".repeat(2400)];
+    let rows = [
+        "--- kimi",
+        "163:let x = 4;",
+        "\u{1b}[31mE\u{1b}[0m a/b.rs:5",
+        &"x".repeat(2400),
+    ];
     let spans = done("bash", "x", &rows);
     let dim = Some(theme().dim);
     let grey = |row: &str| spans.iter().any(|(t, s)| t.contains(row) && s.fg == dim);
     assert!(rows.into_iter().take(2).all(grey), "{spans:?}");
-    assert!(grey("… 24 of 27 rows"), "{spans:?}");
+    assert!(grey("E a/b.rs:5") && grey("… 24 of 27 rows"), "{spans:?}");
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn malformed_escapes_cut_or_stray_are_dropped() {
 
 #[test]
 fn malformed_non_ascii_path_is_marked_without_a_panic() {
-    let spans = done("mcp__docs__search", "q", &["voir café/ñandú.rs:3 ✓ — fini"]);
+    let spans = printed("voir café/ñandú.rs:3 ✓ — fini\n");
     assert!(pathed(&spans, "café/ñandú.rs:3"), "{spans:?}");
 }
 
