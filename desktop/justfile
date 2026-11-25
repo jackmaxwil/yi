@@ -38,12 +38,21 @@ journey *NAMES:
 supply:
     status=0; cargo deny check || status=1; cargo audit || status=1; exit $status
 
-check: fmt-check lint har colours test scenes
+check: fmt-check lint har colours tools test scenes
 
 # Lay out target/package/Yi Desktop.app (unsigned, the build without tooling) and prove a tooling
 # build kept beside it starts headless from inside the bundle.
 package:
     python3 tools/package/package.py
+
+# Package, then put the app in ~/Applications (`--to DIR` for elsewhere), keeping the one it
+# replaces under target/package/previous. Refuses while the installed app is running.
+install *ARGS: package
+    python3 tools/package/install.py {{ARGS}}
+
+# The packaging tools' own checks, on scratch folders.
+tools:
+    python3 tools/package/install.py --selfcheck
 
 # Speed budgets, release profile: three rounds, the worst judged against tests/budgets/budgets.json.
 budgets:
