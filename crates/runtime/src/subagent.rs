@@ -228,7 +228,8 @@ pub struct SubagentHost {
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
     kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
-    admission: Arc<AdmissionFn>,
+    /// Invariant: unset, a spawn is admitted by [`crate::admission::check`], which reads the machine.
+    admission: std::sync::OnceLock<Arc<AdmissionFn>>,
     checker: std::sync::OnceLock<crate::goal::Checker>,
 }
 
@@ -310,13 +311,14 @@ impl SubagentHost {
             check_gate: std::sync::OnceLock::new(),
             checker: std::sync::OnceLock::new(),
             kernel: std::sync::OnceLock::new(),
-            admission: Arc::new(crate::admission::check),
+            admission: std::sync::OnceLock::new(),
         }
     }
 
-    pub fn with_admission(mut self, admission: Arc<AdmissionFn>) -> Self {
-        self.admission = admission;
-        self
+    /// Gives the host its gate, once. Incident: a test root read the machine it ran on, and a load
+    /// average of 120 on 16 processors refused four commits whose diffs it said nothing about.
+    pub fn admit_with(&self, admission: Arc<AdmissionFn>) {
+        self.admission.get_or_init(|| admission);
     }
 
     /// The lane split, shared with the plan engine so verification and workers count one pool.
@@ -482,7 +484,11 @@ impl SubagentHost {
                 family_cap.get()
             ));
         }
-        (self.admission)(&self.options.home, live).map_err(|refusal| refusal.to_string())?;
+        let admitted = match self.admission.get() {
+            Some(admit) => admit(&self.options.home, live),
+            None => crate::admission::check(&self.options.home, live),
+        };
+        admitted.map_err(|refusal| refusal.to_string())?;
         if self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",

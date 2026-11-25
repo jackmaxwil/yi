@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use yi_runtime::session_store::{
     CreateOptions, ForkPosition, ForkScope, SessionRepo, lock_session,
 };
-use yi_types::acp::{AcpForkParams, AcpForkPosition, AcpMeta};
+use yi_types::acp::{AcpForkParams, AcpForkPosition};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, UserContent};
 
@@ -59,8 +59,10 @@ impl AcpState {
             .fork(&session_id, &scope, CreateOptions::default())
             .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
         let forked = self.attach_later(&store);
-        let mut result = self.session_result(&forked);
-        result.meta.get_or_insert_with(AcpMeta::default).yi.prefill = prefill;
-        Ok(json!(result))
+        let mut meta = self.session_meta(&forked);
+        meta.yi.prefill = prefill;
+        Ok(json!(
+            self.session_result(&forked).meta(crate::meta_map(&meta))
+        ))
     }
 }

@@ -94,7 +94,11 @@ LANE_SECS = 900
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
 # Incident: #1111's pass met a full /tmp, and #1779's was labelled for a git `index.lock` a dead
 # pass left behind: a disk or a lock that frees itself is a blip, never the PR's fault.
-TRANSIENT = re.compile(pr_review.THROTTLED.pattern + r"|No space left|Out of diskspace|Unable to create .*\.lock", re.I)
+DISK_FULL = re.compile(r"No space left|ENOSPC|Out of diskspace", re.I)
+TRANSIENT = re.compile(DISK_FULL.pattern + r"|Unable to create .*\.lock", re.I)
+# Incident: 645 deferrals reran 14 PRs' sandboxes every 15 minutes for two days with no label. The
+# longest real provider loss on record is #1025's three passes, so eight passes (two hours) is a stop.
+DEFERS = 8
 
 
 class Missed(RuntimeError):
@@ -127,7 +131,7 @@ class BaseRed(RuntimeError):
 
 def verdict_of(err, notes):
     """A miss retries one tier up until the top tier has missed too; a disk or provider blip waits."""
-    if TRANSIENT.search(str(err)):
+    if pr_review.throttled(str(err)) or TRANSIENT.search(str(err)):
         return "deferred"
     if isinstance(err, (Missed, pr_review.Unanswered, subprocess.TimeoutExpired)) and misses(notes) + 1 < len(TIERS):
         return "missed"
@@ -171,11 +175,6 @@ def misses(notes):
     return sum(v in ("failed", "deferred", "missed") for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
 
 
-def when(at):
-    """A comment's ISO time as a Unix time, 0 for a row that carries none."""
-    return datetime.datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp() if at else 0.0
-
-
 def autofix_rows(notes):
     """The fixer's own meta rows on this PR, the ledger every cap and streak below is read from."""
     return [row for row in bot_meter.rows(notes) if row["kind"] == "yi-autofix"]
@@ -183,7 +182,7 @@ def autofix_rows(notes):
 
 def last_stop(notes):
     """When the fixer last stopped on this PR (a Unix time, 0 for never): its newest failure or hand-off."""
-    return max((when(row["at"]) for row in autofix_rows(notes) if row.get("verdict") in ("failed", "handoff") and row.get("at")), default=0.0)
+    return max((pr_review.when(row["at"]) for row in autofix_rows(notes) if row.get("verdict") in ("failed", "handoff") and row.get("at")), default=0.0)
 
 
 def stops(notes):
@@ -194,9 +193,9 @@ def stops(notes):
 def retry_due(notes, now):
     """Whether the label a stop left has run out its window and clears itself. A declined round is
     the owner's to rule on and never expires, and the third failure keeps the label for good."""
-    newest = max(autofix_rows(notes), key=lambda row: when(row.get("at")), default=None)
+    newest = max(autofix_rows(notes), key=lambda row: pr_review.when(row.get("at")), default=None)
     return bool(newest and newest.get("verdict") in ("failed", "capped") and stops(notes) <= RETRIES
-                and when(newest.get("at")) + RETRY_AFTER <= now)
+                and pr_review.when(newest.get("at")) + RETRY_AFTER <= now)
 
 
 def head_rows(notes, sha, verdict):
@@ -213,8 +212,8 @@ def handed_off(notes, sha, stop, now, round_=""):
     """Whether this head waits on its hand-off of this kind of fix: until a new head, a new round, or
     the window its comment named, twice per head. A streak is a limit, and a limit only delays."""
     rows = held_rows(notes, sha, stop, round_)
-    newest = max(rows, key=lambda row: when(row.get("at")), default=None)
-    return bool(newest) and (len(rows) > RETRIES or when(newest.get("at")) + RETRY_AFTER > now)
+    newest = max(rows, key=lambda row: pr_review.when(row.get("at")), default=None)
+    return bool(newest) and (len(rows) > RETRIES or pr_review.when(newest.get("at")) + RETRY_AFTER > now)
 
 
 def restart_from(notes):
@@ -232,7 +231,7 @@ def cap_wait(notes, now):
     """This PR's spend in the last 24 hours and when that window reopens, or None while under the cap.
     The reopen is when enough of the window has aged out that what is left is under the cap, not when
     the oldest row expires: a fix that overshot the cap is what usually took the PR past it."""
-    inside = sorted(((when(row["at"]), row) for row in autofix_rows(notes) if row.get("at") and when(row["at"]) > now - WINDOW),
+    inside = sorted(((pr_review.when(row["at"]), row) for row in autofix_rows(notes) if row.get("at") and pr_review.when(row["at"]) > now - WINDOW),
                     key=lambda pair: pair[0])
     spent = bot_meter.spent([row for _, row in inside])
     if spent < CAP_PR:
@@ -252,7 +251,7 @@ def cap_reason(spent, reopens):
 
 def waited(notes, now):
     """Whether this window already carries its wait comment: one per window, not one per pass."""
-    return any(row.get("verdict") == "capped" and when(row.get("at")) > now - WINDOW for row in autofix_rows(notes))
+    return any(row.get("verdict") == "capped" and pr_review.when(row.get("at")) > now - WINDOW for row in autofix_rows(notes))
 
 
 def hourly(at):
@@ -741,12 +740,11 @@ def red_lanes(repo, sha):
 # The test lane as `just lane test` runs it, without stopping at the first failure, so one run
 # names every failing test and the base can be asked about all of them at once.
 TEST_LANE = ["cargo", "nextest", "run", "--workspace", "--no-fail-fast"]
-NEXTEST_FAIL = re.compile(r"\bFAIL \[[^\]]*\] \([^)]*\) (\S+) (\S+)\s*$")
 
 
 def failed_tests(output):
     """The (binary, test) pairs nextest reported failing."""
-    return {m.groups() for line in output.splitlines() if (m := NEXTEST_FAIL.search(line))}
+    return {m.groups() for line in output.splitlines() if (m := pr_review.NEXTEST_FAIL.search(line))}
 
 
 def run_filtered(cwd, expr):
@@ -809,7 +807,7 @@ def lane_failures(clone, lanes, base_ref="main"):
         lines = output.splitlines()
         # nextest indents its FAIL rows and panics, which failures() reads as detail of nothing.
         tests = [row for i, line in enumerate(lines)
-                 if (m := NEXTEST_FAIL.search(line)) and m.group(2) in mine
+                 if (m := pr_review.NEXTEST_FAIL.search(line)) and m.group(2) in mine
                  or "panicked at" in line and any(f"'{t}'" in line for t in mine)
                  for row in (lines[i:i + 8] if "panicked at" in line else [line])]
         rows = list(dict.fromkeys(tests))
@@ -1408,7 +1406,7 @@ def settle_base_red(repo, bases):
 
 def quiet_for(pr, notes, now):
     """Seconds since a person last touched the PR: a comment, or a head commit not the bot's."""
-    times = [when(c.get("created_at")) for c in notes if (c.get("user") or {}).get("login") != pr_review.BOT]
+    times = [pr_review.when(c.get("created_at")) for c in notes if (c.get("user") or {}).get("login") != pr_review.BOT]
     head = sh(ROOT, "git", "log", "-1", "--format=%ct%x00%cn", pr["head"]["sha"], check=False).stdout.strip()
     if "\x00" in head and head.split("\x00", 1)[1] != pr_review.BOT:
         times.append(float(head.split("\x00", 1)[0]))
@@ -1438,7 +1436,7 @@ def attempt(repo, pr, ids, asked=False):
         return "hold"
     forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", pr["base"]["ref"])
     behind = sh(ROOT, "git", "merge-base", "--is-ancestor", f"origin/{pr['base']['ref']}", pr["head"]["sha"], check=False).returncode != 0
-    if behind and time.time() - when(pr.get("updated_at")) < 5 * 60:
+    if behind and time.time() - pr_review.when(pr.get("updated_at")) < 5 * 60:
         return "recent"
     # Incident: a clean main merge into a queued PR moved its head and the queue dropped a green
     # candidate; the queue builds on main itself and labels a real conflict `autofix`. A PR the queue
@@ -1546,7 +1544,9 @@ def attempt(repo, pr, ids, asked=False):
         fields = {"kind": "findings", "from": pr["head"]["sha"][:12], "round": rnd["n"], "declined": err.highs}
         reason, verdict = str(err), "declined"
     except (RuntimeError, pr_review.Unanswered, subprocess.TimeoutExpired) as err:
-        reason, verdict = str(err), verdict_of(err, notes)
+        fields, reason, verdict = {"from": sha[:12]}, str(err), verdict_of(err, notes)
+        if verdict == "deferred" and len(head_rows(notes, sha, "deferred")) >= DEFERS:
+            reason, verdict = f"deferred {DEFERS} times on this head: {reason}", "failed"
     finally:
         set_label(repo, number, ids, "autofix:working", False)
     # What the comment promises: twice it names the hour the label clears itself, then it stays.
@@ -2127,6 +2127,17 @@ def waits_selfcheck():
         module.fix = raising(Flaky("the test lane(s) pass in the fixer's clone at this head"))
         if attempt("o/r", pr, {}) != "handoff" or "rerun failed again" not in posted[-1]:
             errs.append("a true flake's second failure was not handed off")
+        # A head's deferrals stop at DEFERS: the next blip fails under the label a person sees, and its row
+        # names the head, or the count could never reach the stop. Another head's deferrals count for nothing.
+        module.fix = raising(RuntimeError("yi ask exited 1: error: HTTP 503: provider_overloaded"))
+        for rows, want in (([meta(now - 60, "deferred")] * (DEFERS - 1), "deferred"), ([meta(now - 60, "deferred", "c" * 12)] * DEFERS, "deferred"),
+                           ([meta(now - 60, "deferred")] * DEFERS, "failed")):
+            notes[:], labelled[:] = rows, []
+            said = attempt("o/r", pr, {})
+            if said != want or (("autofix:failed", True) in labelled) != (want == "failed") or "from=" + "a" * 12 not in posted[-1]:
+                errs.append(f"{len(rows)} deferral(s) read {said} with labels {labelled}, not {want}: {posted[-1][:160]!r}")
+        if f"deferred {DEFERS} times on this head: yi ask exited 1" not in posted[-1]:
+            errs.append(f"a stopped deferral does not quote its count and last evidence: {posted[-1][-200:]!r}")
     finally:
         for (mod, name), value in zip(stub, saved):
             setattr(mod, name, value)
@@ -2555,6 +2566,11 @@ def selfcheck():
                              (subprocess.TimeoutExpired("yi", 1), tried("missed"), "missed")):
         if verdict_of(err, notes) != want:
             errs.append(f"{err!r} after {len(notes)} miss(es) read {verdict_of(err, notes)}, not {want}")
+    # Incident: 645 rows deferred 14 PRs for two days on "line 503" in a traceback and 512 in a test list.
+    for row in pr_review.recorded_errors():
+        said = verdict_of(RuntimeError(row["text"]), tried())
+        if (said == "deferred") != (row["reads"] in ("provider", "disk")):
+            errs.append(f"a recorded {row['reads']} error ({row['count']}x, {row['source']}) read {said}: {row['text'][-90:]!r}")
     table = [
         (({"autofix:hold", "autofix"}, ["a.rs"], 9e9), "hold"),
         (({"autofix:failed"}, ["a.rs"], 9e9), "stopped"),
@@ -3063,7 +3079,7 @@ def selfcheck():
                                    "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
             lifted = ("autofix:failed", False) in labelled
             if said != want or lifted != (want == "clean"):
-                errs.append(f"a failure {int((now - when(stale_rows[0]['created_at'])) // 3600)}h old read {said} "
+                errs.append(f"a failure {int((now - pr_review.when(stale_rows[0]['created_at'])) // 3600)}h old read {said} "
                             f"with labels {labelled}, not {want} and the label {'lifted' if want == 'clean' else 'kept'}")
         # The capped branch itself: one wait comment and no failed label, and silence inside its window.
         module.conflicts, posted = (lambda pr, push=False: []), []

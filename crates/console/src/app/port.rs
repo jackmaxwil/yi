@@ -1,13 +1,10 @@
 //! The remote port: the chat's session touches become daemon requests, and the `_yi/*`
 //! updates the daemon streams decode into the chat's own events.
 
+use agent_client_protocol_schema::v2 as acp;
 use serde_json::Value;
 use yi_tui::hud::GoalView;
 use yi_tui::{Answer, AskChoice, Reply, SessionPort};
-use yi_types::acp::{
-    AcpConfigOption, AcpExtensionUpdate, AcpPermissionOption, AcpPermissionOptionKind,
-    AcpSessionUpdate, AcpUpdateParams,
-};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::model::{Effort, Model};
@@ -181,7 +178,7 @@ pub struct Config {
     pub context_window: Option<u64>,
     pub rewriter: Option<yi_types::config::RewriteLength>,
     /// Every option as the worker sent it, which the settings page's Session tab lists.
-    pub options: Vec<AcpConfigOption>,
+    pub options: Vec<acp::SessionConfigOption>,
 }
 
 pub enum Decoded {
@@ -229,14 +226,17 @@ pub fn goal_view(value: &Value) -> Option<GoalView> {
     })
 }
 
-pub fn config_of(options: &[AcpConfigOption]) -> Config {
+pub fn config_of(options: &[acp::SessionConfigOption]) -> Config {
     let mut config = Config {
         options: options.to_vec(),
         ..Config::default()
     };
     for option in options {
-        let value = option.current_value.as_str();
-        match option.config_id.as_str() {
+        let acp::SessionConfigKind::Select(select) = &option.kind else {
+            continue;
+        };
+        let value: &str = &select.current_value.0;
+        match &*option.config_id.0 {
             "model" => {
                 config.model = value
                     .split_once('/')
@@ -251,7 +251,7 @@ pub fn config_of(options: &[AcpConfigOption]) -> Config {
 
 /// `session/update` params; a `_`-prefixed kind is an extension, moved into its fields
 /// directly rather than through the untagged enum, which buffers and copies the whole frame.
-pub fn update_params(mut params: Value) -> Option<AcpUpdateParams> {
+pub fn update_params(mut params: Value) -> Option<acp::UpdateSessionNotification> {
     let kind = params
         .pointer("/update/sessionUpdate")
         .and_then(Value::as_str);
@@ -266,16 +266,16 @@ pub fn update_params(mut params: Value) -> Option<AcpUpdateParams> {
     let Value::String(session_update) = fields.remove("sessionUpdate")? else {
         return None;
     };
-    Some(AcpUpdateParams {
+    Some(acp::UpdateSessionNotification::new(
         session_id,
-        update: AcpSessionUpdate::Extension(AcpExtensionUpdate {
+        acp::SessionUpdate::Other(acp::OtherSessionUpdate::new(
             session_update,
-            fields: fields.into_iter().collect(),
-        }),
-    })
+            fields.into_iter().collect(),
+        )),
+    ))
 }
 
-pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
+pub fn decode(extension: acp::OtherSessionUpdate) -> Result<Decoded, Malformed> {
     let mut fields = extension.fields;
     match extension.session_update.as_str() {
         "_yi/event" => {
@@ -338,7 +338,9 @@ pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
         "_yi/config" => {
             let options = fields
                 .remove("configOptions")
-                .and_then(|value| serde_json::from_value::<Vec<AcpConfigOption>>(value).ok())
+                .and_then(|value| {
+                    serde_json::from_value::<Vec<acp::SessionConfigOption>>(value).ok()
+                })
                 .unwrap_or_default();
             let mut config = config_of(&options);
             config.context_window = fields.get("contextWindow").and_then(Value::as_u64);
@@ -366,10 +368,10 @@ pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
 }
 
 /// Only a transcript write spends a replay offset; config, workdir, goal and todo notes do not.
-pub fn writes_transcript(update: &AcpSessionUpdate) -> bool {
+pub fn writes_transcript(update: &acp::SessionUpdate) -> bool {
     match update {
-        AcpSessionUpdate::StateUpdate(_) | AcpSessionUpdate::UsageUpdate { .. } => false,
-        AcpSessionUpdate::Extension(extension) => !matches!(
+        acp::SessionUpdate::StateUpdate(_) | acp::SessionUpdate::UsageUpdate(_) => false,
+        acp::SessionUpdate::Other(extension) => !matches!(
             extension.session_update.as_str(),
             "_yi/config"
                 | "_yi/committed"
@@ -387,20 +389,20 @@ pub fn writes_transcript(update: &AcpSessionUpdate) -> bool {
 }
 
 /// The wire option the chat's answer names: its own ids, and the nth of an always-choice's kind.
-pub fn option_for(choice: AskChoice, options: &[AcpPermissionOption]) -> String {
-    let nth = |kind: AcpPermissionOptionKind, index: usize| {
+pub fn option_for(choice: AskChoice, options: &[acp::PermissionOption]) -> String {
+    let nth = |kind: acp::PermissionOptionKind, index: usize| {
         options
             .iter()
             .filter(|option| option.kind == kind)
             .nth(index)
-            .map(|option| option.option_id.clone())
+            .map(|option| option.option_id.0.to_string())
     };
     let wanted = match choice {
-        AskChoice::AllowOnce => nth(AcpPermissionOptionKind::AllowOnce, 0),
-        AskChoice::AllowAlways(index) => nth(AcpPermissionOptionKind::AllowAlways, index)
-            .or_else(|| nth(AcpPermissionOptionKind::AllowAlways, 0))
-            .or_else(|| nth(AcpPermissionOptionKind::AllowOnce, 0)),
-        AskChoice::Reject => nth(AcpPermissionOptionKind::RejectOnce, 0),
+        AskChoice::AllowOnce => nth(acp::PermissionOptionKind::AllowOnce, 0),
+        AskChoice::AllowAlways(index) => nth(acp::PermissionOptionKind::AllowAlways, index)
+            .or_else(|| nth(acp::PermissionOptionKind::AllowAlways, 0))
+            .or_else(|| nth(acp::PermissionOptionKind::AllowOnce, 0)),
+        AskChoice::Reject => nth(acp::PermissionOptionKind::RejectOnce, 0),
     };
     wanted.unwrap_or_else(|| match choice {
         AskChoice::AllowOnce | AskChoice::AllowAlways(_) => "allow_once".to_owned(),
@@ -408,10 +410,10 @@ pub fn option_for(choice: AskChoice, options: &[AcpPermissionOption]) -> String 
     })
 }
 
-pub fn grant_labels(options: &[AcpPermissionOption]) -> Vec<String> {
+pub fn grant_labels(options: &[acp::PermissionOption]) -> Vec<String> {
     options
         .iter()
-        .filter(|option| option.kind == AcpPermissionOptionKind::AllowAlways)
+        .filter(|option| option.kind == acp::PermissionOptionKind::AllowAlways)
         .filter_map(|option| option.name.strip_prefix("Always allow ").map(str::to_owned))
         .collect()
 }
@@ -419,23 +421,23 @@ pub fn grant_labels(options: &[AcpPermissionOption]) -> Vec<String> {
 #[cfg(test)]
 mod todo_tests {
     use super::*;
-    use yi_types::acp::AcpExtensionUpdate;
+
+    fn extension(
+        kind: &str,
+        fields: impl IntoIterator<Item = (String, Value)>,
+    ) -> acp::OtherSessionUpdate {
+        acp::OtherSessionUpdate::new(kind, fields.into_iter().collect())
+    }
 
     #[test]
     fn a_todo_update_decodes_to_the_list_and_a_null_clears_it() -> Result<(), String> {
         let list = serde_json::json!({"phases": [{"name": "Tasks", "items": [{"label": "a", "state": "running"}]}]});
-        let update = AcpExtensionUpdate {
-            session_update: "_yi/todo".to_owned(),
-            fields: std::iter::once(("list".to_owned(), list)).collect(),
-        };
+        let update = extension("_yi/todo", [("list".to_owned(), list)]);
         match decode(update).map_err(|_| "malformed".to_owned())? {
             Decoded::Todo(Some(list)) => assert_eq!(list.progress().open, 1),
             _ => return Err("not a todo update".to_owned()),
         }
-        let cleared = AcpExtensionUpdate {
-            session_update: "_yi/todo".to_owned(),
-            fields: std::iter::once(("list".to_owned(), Value::Null)).collect(),
-        };
+        let cleared = extension("_yi/todo", [("list".to_owned(), Value::Null)]);
         assert!(matches!(
             decode(cleared).map_err(|_| "malformed".to_owned())?,
             Decoded::Todo(None)
@@ -450,8 +452,8 @@ mod todo_tests {
             "sessionUpdate": "_yi/replay", "entries": [], "from": 3, "leafId": "e9",
         }});
         let params = update_params(replay).ok_or("replay params")?;
-        assert_eq!(params.session_id, "s1");
-        let AcpSessionUpdate::Extension(extension) = params.update else {
+        assert_eq!(&*params.session_id.0, "s1");
+        let acp::SessionUpdate::Other(extension) = params.update else {
             return Err("not an extension".to_owned());
         };
         match decode(extension).map_err(|_| "malformed".to_owned())? {
@@ -463,7 +465,7 @@ mod todo_tests {
         }
         let state = json!({"sessionId": "s1", "update": {"sessionUpdate": "state_update", "state": "running"}});
         let params = update_params(state).ok_or("state params")?;
-        assert!(matches!(params.update, AcpSessionUpdate::StateUpdate(_)));
+        assert!(matches!(params.update, acp::SessionUpdate::StateUpdate(_)));
         assert!(
             update_params(json!({"sessionId": "s1", "update": {"sessionUpdate": "_yi/x"}}))
                 .is_some()
@@ -476,21 +478,16 @@ mod todo_tests {
 #[cfg(test)]
 mod ask_tests {
     use super::*;
-    use yi_types::acp::AcpExtensionUpdate;
 
-    fn option(id: &str, name: &str, kind: AcpPermissionOptionKind) -> AcpPermissionOption {
-        AcpPermissionOption {
-            option_id: id.to_owned(),
-            name: name.to_owned(),
-            kind,
-        }
+    fn option(id: &str, name: &str, kind: acp::PermissionOptionKind) -> acp::PermissionOption {
+        acp::PermissionOption::new(id, name, kind)
     }
 
     #[test]
     fn a_workdir_update_decodes_path_and_lane() {
-        let update = AcpExtensionUpdate {
-            session_update: "_yi/workdir".to_owned(),
-            fields: [
+        let update = acp::OtherSessionUpdate::new(
+            "_yi/workdir",
+            [
                 (
                     "cwd".to_owned(),
                     serde_json::json!("/home/user/.yi/lanes/abc/1"),
@@ -499,7 +496,7 @@ mod ask_tests {
             ]
             .into_iter()
             .collect(),
-        };
+        );
         let decoded = decode(update);
         let named = matches!(
             decoded,
@@ -516,19 +513,23 @@ mod ask_tests {
             option(
                 "allow_once",
                 "Allow once",
-                AcpPermissionOptionKind::AllowOnce,
+                acp::PermissionOptionKind::AllowOnce,
             ),
             option(
                 "allow_always",
                 "Always allow edits under crates/tui/src",
-                AcpPermissionOptionKind::AllowAlways,
+                acp::PermissionOptionKind::AllowAlways,
             ),
             option(
                 "allow_always_1",
                 "Always allow edits anywhere in this tree",
-                AcpPermissionOptionKind::AllowAlways,
+                acp::PermissionOptionKind::AllowAlways,
             ),
-            option("reject_once", "Reject", AcpPermissionOptionKind::RejectOnce),
+            option(
+                "reject_once",
+                "Reject",
+                acp::PermissionOptionKind::RejectOnce,
+            ),
         ];
         assert_eq!(
             option_for(AskChoice::AllowAlways(1), &options),

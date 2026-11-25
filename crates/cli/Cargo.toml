@@ -25,6 +25,7 @@ rustix = { workspace = true, features = ["termios"] }
 ureq = { workspace = true }
 
 [dev-dependencies]
+agent-client-protocol-schema = { workspace = true }
 yi-tools = { workspace = true }
 miniz_oxide = { workspace = true }
 

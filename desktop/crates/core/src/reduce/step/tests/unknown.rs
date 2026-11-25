@@ -1,7 +1,6 @@
 //! A server newer than this app: nothing it sends may break the fold.
 
 use serde_json::{Value, json};
-use yi_types::acp::AcpStopReason;
 
 use super::{Check, feed, head, played, recording, rows, said, sent, thread, update};
 use crate::model::Model;
@@ -10,6 +9,7 @@ use crate::reduce::threads::{MAX_THREADS, Run};
 use crate::reduce::turns::Body;
 use crate::wire::event::WireEvent;
 use crate::wire::replay::Sync;
+use crate::wire::shapes::AcpStopReason;
 
 const THREAD: &str = "01a1de97-bf6c-7514-9fae-b57db1eaa7e1";
 

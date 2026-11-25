@@ -6,3 +6,4 @@ pub mod event;
 pub mod frame;
 pub mod replay;
 pub mod request;
+pub mod shapes;

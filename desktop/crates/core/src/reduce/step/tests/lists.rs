@@ -1,7 +1,6 @@
 //! The polled thread list, pins, forks and Yi's settings, from `lists.jsonl`.
 
 use serde_json::{Value, json};
-use yi_types::acp::AcpStopReason;
 use yi_types::settings::SettingRow;
 
 use super::{Check, head, played, recording, said, sent, thread};
@@ -15,6 +14,7 @@ use crate::reduce::turns::MAX_UNREAD;
 use crate::wire::event::WireEvent;
 use crate::wire::frame::{Kept, Refusal};
 use crate::wire::replay::Sync;
+use crate::wire::shapes::AcpStopReason;
 
 /// The thread the recording's client made and prompted.
 const LIVE: &str = "01a1de97-d02c-79c2-940c-f7bb1e2b2cd8";

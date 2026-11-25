@@ -1,0 +1,741 @@
+[
+{
+"at": "2026-11-03T03:04:10Z",
+"gap_hours": 52.9,
+"b_state": "awaiting-review-of-new-head",
+"state": "awaiting review",
+"pr": {
+"number": 1849,
+"title": "Add a calibration query for the review gate",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "c10f49e438d066b399c8abc44af72f72b39b1aa5"
+},
+"updated_at": "2026-10-31T22:08:29Z",
+"mergeable": null
+},
+"comments": [],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-31T22:39:22Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-31T22:37:37Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-31T22:47:22Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-31T22:37:44Z"
+}
+]
+},
+{
+"at": "2026-11-24T07:53:41Z",
+"gap_hours": 28.8,
+"b_state": "clean-unqueued",
+"state": "based off main",
+"pr": {
+"number": 2325,
+"title": "Move a pane to a place from its bar's menu",
+"labels": [],
+"base": {
+"ref": "<branch>"
+},
+"head": {
+"sha": "0741542fbb2e317cee24dfb092d26a10fa304114"
+},
+"updated_at": "2026-11-23T03:08:03Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 43145,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 5 -->\n<!-- yi-round-meta pr=2325 sha=0741542fbb2e317cee24dfb092d26a10fa304114 base=104ebca31077f550976688d967baf0e5474200b3 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.1206 tin=31848 tout=49273 tcache=2738465 calls=13 turns=58 secs=186 models=claude-haiku-5.5 -->\n**Review round 5** on `0741542f`, reading `104ebca3..0741542f`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\nCleared: 3 finding(s) the last round left open no longer hold at `0741542f`.\n\n<sub>review round 5 · claude-haiku-5.5 · 13 call(s), 58 turn(s) · in 31.8k (cached 2.74M) · out 49.3k · $0.12 · 3m06s · skills read none · this PR $3.86 · today $4.02</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-11-23T01:15:53Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-23T01:54:15Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-23T01:52:45Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-23T02:03:03Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-23T01:54:22Z"
+}
+]
+},
+{
+"at": "2026-11-03T03:04:08Z",
+"gap_hours": 93.2,
+"b_state": "D:blocked",
+"state": "blocked round, draft",
+"pr": {
+"number": 1865,
+"title": "WIP: Ship the kernel package changes in one Python release",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "0a861200420b7e4bd0f085e061bfb2a7670c20e2"
+},
+"updated_at": "2026-10-30T05:50:12Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 28302,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 1 -->\n<!-- yi-round-meta pr=1865 sha=0a861200420b7e4bd0f085e061bfb2a7670c20e2 base=b28e734f04c0a3fbde4bd58a9dc3015caa19a7e2 verdict=blocked mode=blocking high=1 medium=0 low=0 cost=0.0000 tin=0 tout=0 tcache=0 calls=0 turns=0 secs=15 models=none -->\n**Review round 1** on `0a861200`, reading `b28e734f..0a861200`: **blocked** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | duplicate | high | #1838 (open) adds 101 of the same 6-line windows: WIP: Run the document converter from the yi package, not a Rust string | `:0` | close one, or /override with why both land |\n\n<sub>review round 1 · none · 0 call(s), 0 turn(s) · in 0 (cached 0) · out 0 · $0.00 · 15s · this PR $0.00 · today $23.12</sub>\n\n<!-- yi-round-findings [{\"lens\": \"duplicate\", \"severity\": \"high\", \"claim\": \"#1838 (open) adds 101 of the same 6-line windows: WIP: Run the document converter from the yi package, not a Rust string\", \"path\": \"\", \"line\": 0, \"quote\": \"\", \"fix\": \"close one, or /override with why both land\"}] -->\n",
+"created_at": "2026-10-30T05:50:12Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T05:51:51Z"
+},
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "failure",
+"updated_at": "2026-10-30T05:54:22Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T05:56:55Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T05:49:56Z"
+}
+]
+},
+{
+"at": "2026-11-22T21:58:13Z",
+"gap_hours": 46.5,
+"b_state": "blocked",
+"state": "blocked round, ready",
+"pr": {
+"number": 2299,
+"title": "Bound reused sockets and give child turns a longer read wait",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "f85e28e3d316e8e878a8b5aa56c0d4470d6581d0"
+},
+"updated_at": "2026-11-20T23:30:33Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 42558,
+"user": {
+"login": "jack"
+},
+"body": "<!-- yi-round-void -->\n<!-- yi-round-void-meta pr=2299 sha=f85e28e3d316e8e878a8b5aa56c0d4470d6581d0 cost=0.0000 tin=0 tout=0 tcache=0 calls=16 turns=0 secs=8 models=none -->\n**Review round voided** on `f85e28e3`: a lens or refuter did not answer, so no verdict was posted. The next push or `just pr review --again` reads it again.\n\n```\nyi ask exited 2: error: http://127.0.0.1:31337/v1/models: http://127.0.0.1:31337/v1/models: Connection Failed: Connect error: Connection refused (os error 61) [refusal:unknown_model]\n```\n\n<sub>voided round · none · 16 call(s), 0 turn(s) · in 0 (cached 0) · out 0 · $0.00 · 8s · skills read none · this PR $0.24 · today $8.27</sub>\n",
+"created_at": "2026-11-20T23:24:29Z"
+},
+{
+"id": 42559,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 2 -->\n<!-- yi-round-meta pr=2299 sha=f85e28e3d316e8e878a8b5aa56c0d4470d6581d0 base=e9fe5ca3a8f7786a6b40f1ba466a67b05a199cc6 verdict=blocked mode=blocking high=0 medium=1 low=0 cost=0.5175 tin=54184 tout=196275 tcache=5503213 calls=23 turns=99 secs=377 models=claude-haiku-5.5 -->\n**Review round 2** on `f85e28e3`, reading `e9fe5ca3..f85e28e3`: **blocked** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | reuse | medium | The new Helper drop guard is a near-copy of the existing counted-slot guard Pending, which holds a static AtomicUsize and decrements it in Drop (crates/ai/src/settle.rs:19-28). The diff adds a second copy of that shape. | `crates/ai/src/request/pool.rs:95` | Use one shared RAII slot guard for both the settle and helper counters. |\n\nNo answer after retries from: refuter on intent finding at crates/ai/src/request/pool.rs:92. This round blocks on what it read; every lens read the head, so it is not read again.\n\nDropped before this table: 2 finding(s) whose quote was not on its line, that restate a finding the owner overrode, or that a refuter broke.\n\nCleared: 3 finding(s) the last round left open no longer hold at `f85e28e3`.\n\nOut of scope: 8 finding(s) on lines this PR's own change (its fork to `f85e28e3`) does not add were dropped before any refuter.\n\n<sub>review round 2 · claude-haiku-5.5 · 23 call(s), 99 turn(s) · in 54.2k (cached 5.50M) · out 196.3k · $0.52 · 6m17s · skills read none · this PR $0.75 · today $8.79</sub>\n\n<!-- yi-round-findings [{\"severity\": \"medium\", \"claim\": \"The new Helper drop guard is a near-copy of the existing counted-slot guard Pending, which holds a static AtomicUsize and decrements it in Drop (crates/ai/src/settle.rs:19-28). The diff adds a second copy of that shape.\", \"path\": \"crates/ai/src/request/pool.rs\", \"line\": 95, \"quote\": \"impl Drop for Helper {\", \"fix\": \"Use one shared RAII slot guard for both the settle and helper counters.\", \"lens\": \"reuse\"}] -->\n",
+"created_at": "2026-11-20T23:30:33Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-20T23:33:48Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-20T23:26:20Z"
+},
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-20T23:26:53Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-11-20T23:25:17Z"
+}
+]
+},
+{
+"at": "2026-10-30T16:19:19Z",
+"gap_hours": 31.3,
+"b_state": "D:clean-unqueued",
+"state": "clean draft",
+"pr": {
+"number": 1790,
+"title": "WIP: Rebuild a lane slot the deleted lanes directory left registered",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "08980dda022f3f8c38f126923332f57d5fd5b918"
+},
+"updated_at": "2026-10-29T09:04:03Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 27576,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 1 -->\n<!-- yi-round-meta pr=1790 sha=08980dda022f3f8c38f126923332f57d5fd5b918 base=1b54485fc8824ddea9e910be4f9f79c7825811bc verdict=clean mode=blocking high=0 medium=1 low=0 cost=0.1111 tin=395165 tout=113121 tcache=3894784 calls=8 turns=84 secs=493 models=deepseek-v4.1-flash-1017 -->\n**Review round 1** on `08980dda`, reading `1b54485f..08980dda`: **clean** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | correctness | medium | The rebuild only drops git's registration of the slot it reuses, not the registration that holds the branch. When the claim takes the `kept` path (crates/runtime/src/lane/mod.rs:847-848, branch exists and is not merged into the base, i.e. a resumed session with unmerged work), the add vector built at mod.rs:845 is `worktree add -q --lock --reason … <path> <branch>` with no `-f`. Git refuses that by documented default when `<branch>` is checked out by another working tree, and the residue after deleting `~/.yi/lanes` is exactly such a registration: a crashed or live slot left at `.git/worktrees/<n>/HEAD = ref: refs/heads/yi/<session>` (mod.rs:985-1000 detaches only a clean hand-back, a dirty orphan stays on its branch). So a user who deletes `~/.yi/lanes` to reclaim disk and then resumes that session still gets a claim failure, now `fatal: '<branch>' is already checked out at '<…/lanes/<hash>/<n>'`, and every later claim of the session fails the same way until someone hand-runs `git worktree prune` — the stranding #664 reports, one error later. `git worktree add -f` is the documented override for precisely this case (`-f` once for a branch checked out elsewhere, twice for a registered-but-missing path), and it is not passed. | `crates/runtime/src/lane/reap.rs:135` | Clear every stale registration whose gitdir path is gone (a `worktree remove`/`prune` sweep over `worktree list --porcelain` under the pool lock) rather than only the reused slot's, or pass `-f` to the add in `add_fresh` so a branch registered at another dead slot path does not refuse the rebuild. |\n\nDropped before this table: 1 finding(s) whose quote was not on its line, or that a refuter broke.\n\n<sub>review round 1 · deepseek-v4.1-flash-1017 · 8 call(s), 84 turn(s) · in 395.2k (cached 3.89M) · out 113.1k · $0.11 · 8m13s · this PR $0.11 · today $29.17</sub>\n\n<!-- yi-round-findings [{\"severity\": \"medium\", \"claim\": \"The rebuild only drops git's registration of the slot it reuses, not the registration that holds the branch. When the claim takes the `kept` path (crates/runtime/src/lane/mod.rs:847-848, branch exists and is not merged into the base, i.e. a resumed session with unmerged work), the add vector built at mod.rs:845 is `worktree add -q --lock --reason \\u2026 <path> <branch>` with no `-f`. Git refuses that by documented default when `<branch>` is checked out by another working tree, and the residue after deleting `~/.yi/lanes` is exactly such a registration: a crashed or live slot left at `.git/worktrees/<n>/HEAD = ref: refs/heads/yi/<session>` (mod.rs:985-1000 detaches only a clean hand-back, a dirty orphan stays on its branch). So a user who deletes `~/.yi/lanes` to reclaim disk and then resumes that session still gets a claim failure, now `fatal: '<branch>' is already checked out at '<\\u2026/lanes/<hash>/<n>'`, and every later claim of the session fails the same way until someone hand-runs `git worktree prune` \\u2014 the stranding #664 reports, one error later. `git worktree add -f` is the documented override for precisely this case (`-f` once for a branch checked out elsewhere, twice for a registered-but-missing path), and it is not passed.\", \"path\": \"crates/runtime/src/lane/reap.rs\", \"line\": 135, \"quote\": \"        let _ = git(&self.repo, &[\\\"worktree\\\", \\\"remove\\\", \\\"-f\\\", \\\"-f\\\", &text]);\", \"fix\": \"Clear every stale registration whose gitdir path is gone (a `worktree remove`/`prune` sweep over `worktree list --porcelain` under the pool lock) rather than only the reused slot's, or pass `-f` to the add in `add_fresh` so a branch registered at another dead slot path does not refuse the rebuild.\", \"lens\": \"correctness\"}] -->\n",
+"created_at": "2026-10-29T09:04:03Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-29T08:58:57Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-29T08:55:37Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-29T09:00:44Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-29T08:57:31Z"
+}
+]
+},
+{
+"at": "2026-10-30T04:24:42Z",
+"gap_hours": 55.3,
+"b_state": "clean-unqueued",
+"state": "clean, not queued",
+"pr": {
+"number": 1685,
+"title": "Skip Seatbelt when the process already runs inside a sandbox",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "1296cd0413f62648d1ecfc0b153245c21ac064e5"
+},
+"updated_at": "2026-10-27T21:08:20Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 26349,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 3 -->\n<!-- yi-round-meta pr=1685 sha=1296cd0413f62648d1ecfc0b153245c21ac064e5 base=f4eb2108655cce273de186e5af96e74f0c8fd8b7 verdict=clean mode=blocking high=0 medium=0 low=0 cost=0.1307 tin=540495 tout=61992 tcache=2111808 calls=7 turns=62 secs=277 models=glm-5.3-flash -->\n**Review round 3** on `1296cd04`, reading `f4eb2108..1296cd04`: **clean** (a blocked round keeps this draft).\n\nNo finding survived.\n\n<sub>review round 3 · glm-5.3-flash · 7 call(s), 62 turn(s) · in 540.5k (cached 2.11M) · out 62.0k · $0.13 · 4m37s · this PR $1.69 · today $10.84</sub>\n\n<!-- yi-round-findings [] -->\n",
+"created_at": "2026-10-27T20:20:26Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-27T20:20:54Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-27T20:18:33Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-27T20:23:57Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-27T20:18:40Z"
+}
+]
+},
+{
+"at": "2026-10-30T19:47:55Z",
+"gap_hours": 26.9,
+"b_state": "D:clean-unqueued",
+"state": "fixer asked",
+"pr": {
+"number": 1788,
+"title": "WIP: Tighten yolo writes, auto Python cells and the bash read label",
+"labels": [
+{
+"name": "autofix"
+}
+],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "ed57ea31c6f50629155d85ed5ba483695f154035"
+},
+"updated_at": "2026-10-29T16:54:20Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 27566,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 1 -->\n<!-- yi-round-meta pr=1788 sha=ed57ea31c6f50629155d85ed5ba483695f154035 base=1b54485fc8824ddea9e910be4f9f79c7825811bc verdict=clean mode=blocking high=0 medium=7 low=0 cost=0.2740 tin=1013008 tout=230302 tcache=12737664 calls=18 turns=224 secs=605 models=deepseek-v4.1-flash-1017 -->\n**Review round 1** on `ed57ea31`, reading `1b54485f..ed57ea31`: **clean** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | correctness | medium | The `2>/dev/null` stripper in `read_only_command` deletes any space-separated word that merely *ends* in `/dev/null`, including a word whose real content is a destructive flag with the redirect glued on (the shell terminates a word at an unquoted `>`). `find . -delete>/dev/null` therefore loses `-delete` before classification, leaving `find .`, which the classifier proves Safe, so `bash.kind_for` reports `Read` and `irreversible` reports false. That is the exact failure the PR exists to fix: the parallel scheduler (`crates/runtime/src/tools.rs:409` runs `Read`-kind calls concurrently with other tools) treats a delete as a harmless read, and the advisor's blast-radius flag stays silent. `git branch -Dx>/dev/null` and `find . -name '*.tmp' -delete>/dev/null` take the same path. The same stripper also silently drops the argument a redirect was attached to (`rg needle src>/dev/null` becomes `rg needle`), so its output no longer describes the command that will run. | `crates/tools/src/builtins.rs:303` | Strip only tokens whose pre-`>` text is empty, ASCII digits, or `&` (i.e. a bare redirection such as `2>/dev/null`, `&>/dev/null`, `>/dev/null`), never a token that carries other text; e.g. let `(head, _) = token.split_once('>')` and require `head.is_empty() \\|\\| head == \"&\" \\|\\| head.chars().all(\\|c\\| c.is_ascii_digit())` before dropping it. Add the glued spellings (`find . -delete>/dev/null`, `git branch -Dx>/dev/null`) to `crates/tools/tests/bash.rs::a_command_that_writes_behind_a_read_verb_is_not_a_read`. |\n| 2 | intent | medium | The why's last point is that a lost sandbox stays invisible in CI, and the new `seatbelt()?` rule (this line) is applied to the containment files the diff touches, but four macOS containment tests still return `Ok(())` when Seatbelt is absent: `crates/runtime/tests/claude_hooks/mod.rs:950` (`a_hook_allow_runs_contained_and_the_sandbox_still_refuses_an_escape`), `crates/runtime/tests/claude_hooks/gates.rs:122` (`contained_bash_cannot_write_the_projects_claude_dir`) and `:175`, and `crates/cli/tests/mcp_cli.rs:477` (`a_cell_cannot_plant_a_session_the_host_runs_on_a_fetch`). All four pass silently on a macOS host with no Seatbelt, so the incident the PR exists for is only partly closed, and the change file's claim that \"The macOS containment suites fail when Seatbelt is missing where they used to pass\" overstates what landed. | `crates/runtime/tests/kernel_sandbox.rs:15` | Replace the four remaining `if !Sandbox::available() { return Ok(()) }` guards with `seatbelt()?` (the runtime and CLI test binaries can each carry the same helper), or narrow the change file's claim to the files converted. |\n| 3 | intent | medium | The why names one skip that hides a lost guard, the macOS Seatbelt check, but the diff also turns unrelated environment skips into hard test failures: git in `crates/cli/tests/cli_surfaces.rs` (three undo tests, this line), a tmp-root target dir in `crates/cli/tests/tui_drive.rs:1311`, system python3 in `crates/kernel/tests/kernel_e2e.rs:671` and `crates/tools/tests/tools.rs:2873` and `:3155`. Nothing in the why asks for this, and it changes the suite's contract: `cargo test` now fails on a contributor's machine without git or python3, or whose `CARGO_TARGET_DIR` sits under a tmp root, where it previously passed, and those failures say nothing about the code. | `crates/cli/tests/cli_surfaces.rs:821` | Revert the git, python3 and tmp-root guards to their skips, or split them into their own change with a why (an issue, not this one) so the Seatbelt fix lands on its own ask. |\n| 4 | perf | medium | The Performance claim is wrong about this path. read_only_command now runs the classifier twice per invocation, not once: verdict() parses the command, then command_segments() parses it again from scratch (safety.rs:599 and 827 both call parse()), and the whole command is copied into a new String first. The result is not shared with the gate either: runtime/src/tools.rs calls the label three times per bash call (execution_mode:409 via kind_for, the wall check:632 via kind_for, the broker:672 via irreversible), so a single bash call pays roughly six parses plus three full-string copies where it used to pay a whitespace split. Bash is the agent's most frequent tool, so every turn pays this on every call. | `crates/tools/src/builtins.rs:309` | Parse once: call command_segments() a single time and run the Verdict logic over those segments (or have a verdict variant return the segments it parsed), so the label costs one parse; and reuse the vector instead of copying the command through quiet.join. |\n| 5 | perf | medium | is_catastrophic folds and normalizes the path at line 234 and then hands the same path to write_is_catastrophic, which folds and normalizes it again (line 244): every call allocates the normalized PathBuf and the lowercased String twice. command_targets_catastrophic runs is_catastrophic once per path token of a destructive command (catastrophic.rs:791-805), so an `rm` with a long argument list pays the duplicate path clone, lowercase and prefix loops for each argument, and every Remove through ReadGate::remove_after pays it too. | `crates/permission/src/catastrophic.rs:234` | Take the folded path once and pass it down: split write_is_catastrophic into a folded-path body that is_catastrophic can call after its own normalize, so the path is normalized and lowered once per call. |\n| 6 | reuse | medium | The diff adds the shared `seatbelt()` guard twice (crates/runtime/tests/kernel_sandbox.rs:16, `pub(crate) fn seatbelt() -> TestResult`, and the byte-identical crates/tools/tests/sandbox.rs:16) and then re-spells a third copy inline in the same runtime test binary that already holds the pub(crate) one, instead of importing it as kept_rules.rs:148 and sandbox_seam.rs:245 do; the change file's claim that \"60 skip guards became one `seatbelt()?` check per file\" is not what lands, and the green-on-missing-Seatbelt gap this PR closes now has three bodies to keep in step. | `crates/runtime/tests/permission_auto.rs:69` | Import `use crate::kernel_sandbox::seatbelt;` and write `seatbelt()?;` at the top of auto_runs_a_contained_python_cell, deleting the inline check; for the tools crate, move the helper into a shared support module (the `#[path = \"../../types/tests/support/scratch.rs\"] mod scratch;` pattern in crates/tools/tests/integration.rs:7) rather than defining a second copy. |\n| 7 | tests | medium | The new read label is the classifier's verdict, and the classifier never proves several commands the deleted READ_ONLY_VERBS list did read-only: `printenv` and `ag` are absent from `SAFE` (safety.rs:23-66) so they fall to `Class::Unknown` -> `Verdict::Contain`, and `env` is in `LAUNDERING` (safety.rs:99-101) -> `Class::Destructive`, so `env \\| grep PATH` -> `Verdict::Ask`. Because `BashTool::kind_for` returns Read only when this line holds, and `reads_only` in `PermissionBroker::decide_call` is `matches!(kind, ToolKind::Read \\| ToolKind::Ledger)` (crates/runtime/src/permission.rs:553), a user who ran these unasked now gets a prompt (`env \\| grep PATH` destroys its way to Ask on every platform; `printenv`/`ag` become Contain, which the broker downgrades to Ask off macOS), the advisor flags them irreversible, and the parallel scheduler stops overlapping them. Nothing in the suite would fail if this broke back: `crates/tools/tests/bash.rs:33` pins only the two `rg` searches as reads, and the one assertion that used to pin an env-prefixed read (`RUST_LOG=debug rg needle src`, the line this diff replaces at tools.rs:1776) was deleted while the only replacement (`LD_PRELOAD=x.so rg needle src`) pins the opposite direction. | `crates/tools/src/builtins.rs:308` | Add `printenv` and `ag` to `SAFE`, and decide explicitly whether a bare/piped `env` is destructive, then pin the read side in `crates/tools/tests/bash.rs` (e.g. `printenv PATH`, `env \\| grep PATH`) so the demotion cannot happen silently. |\n\nDropped before this table: 2 finding(s) whose quote was not on its line, or that a refuter broke.\n\n<sub>review round 1 · deepseek-v4.1-flash-1017 · 18 call(s), 224 turn(s) · in 1.01M (cached 12.74M) · out 230.3k · $0.27 · 10m05s · this PR $0.27 · today $27.28</sub>\n\n<!-- yi-round-findings [{\"severity\": \"medium\", \"claim\": \"The `2>/dev/null` stripper in `read_only_command` deletes any space-separated word that merely *ends* in `/dev/null`, including a word whose real content is a destructive flag with the redirect glued on (the shell terminates a word at an unquoted `>`). `find . -delete>/dev/null` therefore loses `-delete` before classification, leaving `find .`, which the classifier proves Safe, so `bash.kind_for` reports `Read` and `irreversible` reports false. That is the exact failure the PR exists to fix: the parallel scheduler (`crates/runtime/src/tools.rs:409` runs `Read`-kind calls concurrently with other tools) treats a delete as a harmless read, and the advisor's blast-radius flag stays silent. `git branch -Dx>/dev/null` and `find . -name '*.tmp' -delete>/dev/null` take the same path. The same stripper also silently drops the argument a redirect was attached to (`rg needle src>/dev/null` becomes `rg needle`), so its output no longer describes the command that will run.\", \"path\": \"crates/tools/src/builtins.rs\", \"line\": 303, \"quote\": \"                && token.ends_with(\\\"/dev/null\\\")\", \"fix\": \"Strip only tokens whose pre-`>` text is empty, ASCII digits, or `&` (i.e. a bare redirection such as `2>/dev/null`, `&>/dev/null`, `>/dev/null`), never a token that carries other text; e.g. let `(head, _) = token.split_once('>')` and require `head.is_empty() || head == \\\"&\\\" || head.chars().all(|c| c.is_ascii_digit())` before dropping it. Add the glued spellings (`find . -delete>/dev/null`, `git branch -Dx>/dev/null`) to `crates/tools/tests/bash.rs::a_command_that_writes_behind_a_read_verb_is_not_a_read`.\", \"lens\": \"correctness\"}, {\"severity\": \"medium\", \"claim\": \"The why's last point is that a lost sandbox stays invisible in CI, and the new `seatbelt()?` rule (this line) is applied to the containment files the diff touches, but four macOS containment tests still return `Ok(())` when Seatbelt is absent: `crates/runtime/tests/claude_hooks/mod.rs:950` (`a_hook_allow_runs_contained_and_the_sandbox_still_refuses_an_escape`), `crates/runtime/tests/claude_hooks/gates.rs:122` (`contained_bash_cannot_write_the_projects_claude_dir`) and `:175`, and `crates/cli/tests/mcp_cli.rs:477` (`a_cell_cannot_plant_a_session_the_host_runs_on_a_fetch`). All four pass silently on a macOS host with no Seatbelt, so the incident the PR exists for is only partly closed, and the change file's claim that \\\"The macOS containment suites fail when Seatbelt is missing where they used to pass\\\" overstates what landed.\", \"path\": \"crates/runtime/tests/kernel_sandbox.rs\", \"line\": 15, \"quote\": \"/// Seatbelt ships with every supported macOS, so a missing one fails the suite instead of passing it.\", \"fix\": \"Replace the four remaining `if !Sandbox::available() { return Ok(()) }` guards with `seatbelt()?` (the runtime and CLI test binaries can each carry the same helper), or narrow the change file's claim to the files converted.\", \"lens\": \"intent\"}, {\"severity\": \"medium\", \"claim\": \"The why names one skip that hides a lost guard, the macOS Seatbelt check, but the diff also turns unrelated environment skips into hard test failures: git in `crates/cli/tests/cli_surfaces.rs` (three undo tests, this line), a tmp-root target dir in `crates/cli/tests/tui_drive.rs:1311`, system python3 in `crates/kernel/tests/kernel_e2e.rs:671` and `crates/tools/tests/tools.rs:2873` and `:3155`. Nothing in the why asks for this, and it changes the suite's contract: `cargo test` now fails on a contributor's machine without git or python3, or whose `CARGO_TARGET_DIR` sits under a tmp root, where it previously passed, and those failures say nothing about the code.\", \"path\": \"crates/cli/tests/cli_surfaces.rs\", \"line\": 821, \"quote\": \"true => Err(\\\"git is missing; undo needs it\\\".into()),\", \"fix\": \"Revert the git, python3 and tmp-root guards to their skips, or split them into their own change with a why (an issue, not this one) so the Seatbelt fix lands on its own ask.\", \"lens\": \"intent\"}, {\"severity\": \"medium\", \"claim\": \"The Performance claim is wrong about this path. read_only_command now runs the classifier twice per invocation, not once: verdict() parses the command, then command_segments() parses it again from scratch (safety.rs:599 and 827 both call parse()), and the whole command is copied into a new String first. The result is not shared with the gate either: runtime/src/tools.rs calls the label three times per bash call (execution_mode:409 via kind_for, the wall check:632 via kind_for, the broker:672 via irreversible), so a single bash call pays roughly six parses plus three full-string copies where it used to pay a whitespace split. Bash is the agent's most frequent tool, so every turn pays this on every call.\", \"path\": \"crates/tools/src/builtins.rs\", \"line\": 309, \"quote\": \"        && yi_permission::command_segments(&command)\", \"fix\": \"Parse once: call command_segments() a single time and run the Verdict logic over those segments (or have a verdict variant return the segments it parsed), so the label costs one parse; and reuse the vector instead of copying the command through quiet.join.\", \"lens\": \"perf\"}, {\"severity\": \"medium\", \"claim\": \"is_catastrophic folds and normalizes the path at line 234 and then hands the same path to write_is_catastrophic, which folds and normalizes it again (line 244): every call allocates the normalized PathBuf and the lowercased String twice. command_targets_catastrophic runs is_catastrophic once per path token of a destructive command (catastrophic.rs:791-805), so an `rm` with a long argument list pays the duplicate path clone, lowercase and prefix loops for each argument, and every Remove through ReadGate::remove_after pays it too.\", \"path\": \"crates/permission/src/catastrophic.rs\", \"line\": 234, \"quote\": \"    let folded_path = folded(&lexical_normalize(path));\", \"fix\": \"Take the folded path once and pass it down: split write_is_catastrophic into a folded-path body that is_catastrophic can call after its own normalize, so the path is normalized and lowered once per call.\", \"lens\": \"perf\"}, {\"severity\": \"medium\", \"claim\": \"The diff adds the shared `seatbelt()` guard twice (crates/runtime/tests/kernel_sandbox.rs:16, `pub(crate) fn seatbelt() -> TestResult`, and the byte-identical crates/tools/tests/sandbox.rs:16) and then re-spells a third copy inline in the same runtime test binary that already holds the pub(crate) one, instead of importing it as kept_rules.rs:148 and sandbox_seam.rs:245 do; the change file's claim that \\\"60 skip guards became one `seatbelt()?` check per file\\\" is not what lands, and the green-on-missing-Seatbelt gap this PR closes now has three bodies to keep in step.\", \"path\": \"crates/runtime/tests/permission_auto.rs\", \"line\": 69, \"quote\": \"    if !yi_tools::Sandbox::available() {\", \"fix\": \"Import `use crate::kernel_sandbox::seatbelt;` and write `seatbelt()?;` at the top of auto_runs_a_contained_python_cell, deleting the inline check; for the tools crate, move the helper into a shared support module (the `#[path = \\\"../../types/tests/support/scratch.rs\\\"] mod scratch;` pattern in crates/tools/tests/integration.rs:7) rather than defining a second copy.\", \"lens\": \"reuse\"}, {\"severity\": \"medium\", \"claim\": \"The new read label is the classifier's verdict, and the classifier never proves several commands the deleted READ_ONLY_VERBS list did read-only: `printenv` and `ag` are absent from `SAFE` (safety.rs:23-66) so they fall to `Class::Unknown` -> `Verdict::Contain`, and `env` is in `LAUNDERING` (safety.rs:99-101) -> `Class::Destructive`, so `env | grep PATH` -> `Verdict::Ask`. Because `BashTool::kind_for` returns Read only when this line holds, and `reads_only` in `PermissionBroker::decide_call` is `matches!(kind, ToolKind::Read | ToolKind::Ledger)` (crates/runtime/src/permission.rs:553), a user who ran these unasked now gets a prompt (`env | grep PATH` destroys its way to Ask on every platform; `printenv`/`ag` become Contain, which the broker downgrades to Ask off macOS), the advisor flags them irreversible, and the parallel scheduler stops overlapping them. Nothing in the suite would fail if this broke back: `crates/tools/tests/bash.rs:33` pins only the two `rg` searches as reads, and the one assertion that used to pin an env-prefixed read (`RUST_LOG=debug rg needle src`, the line this diff replaces at tools.rs:1776) was deleted while the only replacement (`LD_PRELOAD=x.so rg needle src`) pins the opposite direction.\", \"path\": \"crates/tools/src/builtins.rs\", \"line\": 308, \"quote\": \"yi_permission::verdict(&command) == yi_permission::Verdict::Allow\", \"fix\": \"Add `printenv` and `ag` to `SAFE`, and decide explicitly whether a bare/piped `env` is destructive, then pin the read side in `crates/tools/tests/bash.rs` (e.g. `printenv PATH`, `env | grep PATH`) so the demotion cannot happen silently.\", \"lens\": \"tests\"}] -->\n",
+"created_at": "2026-10-29T08:53:52Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-29T08:46:36Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-29T08:43:32Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "failure",
+"updated_at": "2026-10-29T08:47:24Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-29T08:44:55Z"
+}
+]
+},
+{
+"at": "2026-11-23T01:02:42Z",
+"gap_hours": 25.7,
+"b_state": "D:blocked",
+"state": "fixer declined",
+"pr": {
+"number": 2316,
+"title": "WIP: Look at a file in one preview tab that the next look replaces",
+"labels": [],
+"base": {
+"ref": "<branch>"
+},
+"head": {
+"sha": "381f0886c29ef646c18fef2b321f759a21dd3e28"
+},
+"updated_at": "2026-11-21T23:20:19Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 42723,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 1 -->\n<!-- yi-round-meta pr=2316 sha=381f0886c29ef646c18fef2b321f759a21dd3e28 base=88b6685ee1ab4e0793ce9c3ae2ce35e4b0c017ea verdict=blocked mode=blocking high=0 medium=1 low=0 cost=0.1904 tin=21244 tout=97871 tcache=2330227 calls=10 turns=41 secs=323 models=claude-haiku-5.5 -->\n**Review round 1** on `381f0886`, reading `88b6685e..381f0886`: **blocked** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | reuse | medium | The new `tap` test helper in code_view/pane/tests.rs repeats the existing `tap` at desktop/crates/panes/src/design/pane/tests.rs:92 (rect lookup, pointer move, down, up, then settle). A shared test helper should serve both. | `desktop/crates/panes/src/code_view/pane/tests.rs:159` | Use the design pane's tap helper, or move it to a test module both panes import. |\n\nDropped before this table: 5 finding(s) whose quote was not on its line, that restate a finding the owner overrode, or that a refuter broke.\n\n<sub>review round 1 · claude-haiku-5.5 · 10 call(s), 41 turn(s) · in 21.2k (cached 2.33M) · out 97.9k · $0.19 · 5m23s · skills read none · this PR $0.19 · today $7.28</sub>\n\n<!-- yi-round-findings [{\"severity\": \"medium\", \"claim\": \"The new `tap` test helper in code_view/pane/tests.rs repeats the existing `tap` at desktop/crates/panes/src/design/pane/tests.rs:92 (rect lookup, pointer move, down, up, then settle). A shared test helper should serve both.\", \"path\": \"desktop/crates/panes/src/code_view/pane/tests.rs\", \"line\": 159, \"quote\": \"fn tap(rt: &mut Window, key: &str) -> Check {\", \"fix\": \"Use the design pane's tap helper, or move it to a test module both panes import.\", \"lens\": \"reuse\"}] -->\n",
+"created_at": "2026-11-21T20:57:41Z"
+},
+{
+"id": 42749,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=2316 kind=findings from=381f0886c29e round=1 cost=0.0142 tin=2346 tout=6188 tcache=235345 calls=1 turns=5 secs=104 models=claude-haiku-5.5 verdict=declined -->\n**Autofix declined** every finding of review round 1 with a reason and changed nothing; a person decides, and the fixer waits for a new round, a new head or `just pr autofix N`.\n\n```\nDeclined 1 (medium): Not fixed, and not shown wrong: the duplication is real (code_view/pane/tests.rs:159 and design/pane/tests.rs:92). Moving it to a shared test module touches six pane test modules and their settle steps, and needs a build and test run I did not do. A person should decide whether to share the helper or keep the per-pane copies.\n```\n\n<sub>autofix (findings) · claude-haiku-5.5 · 1 call(s), 5 turn(s) · in 2.3k (cached 235.3k) · out 6.2k · $0.01 · 1m44s · skills read none · this PR $0.20 · today $8.84</sub>\n",
+"created_at": "2026-11-21T23:20:19Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-21T20:54:18Z"
+},
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-21T20:55:13Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "failure",
+"updated_at": "2026-11-21T20:52:03Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-21T21:01:08Z"
+}
+]
+},
+{
+"at": "2026-10-30T05:14:05Z",
+"gap_hours": 36.7,
+"b_state": "D:failed-label",
+"state": "fixer failed",
+"pr": {
+"number": 1694,
+"title": "WIP: Add yi ask --scope to refuse writes outside a run's brief",
+"labels": [
+{
+"name": "autofix:failed"
+}
+],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "70d8e5cc9cd71d68606965b98fd84e61db24d22b"
+},
+"updated_at": "2026-10-28T16:33:28Z",
+"mergeable": null
+},
+"comments": [],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-28T16:42:03Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-28T16:40:21Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-28T16:44:25Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-28T16:40:31Z"
+}
+]
+},
+{
+"at": "2026-11-02T19:15:44Z",
+"gap_hours": 27.8,
+"b_state": "D:clean-unqueued",
+"state": "fixer handed off",
+"pr": {
+"number": 1733,
+"title": "WIP: Add pinned zizmor, Semgrep and gitleaks scans to the guardrails",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "248d90492d61a5411e96a2a0ceb7639ffa81559d"
+},
+"updated_at": "2026-11-01T15:27:05Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 29085,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 13 -->\n<!-- yi-round-meta pr=1733 sha=248d90492d61a5411e96a2a0ceb7639ffa81559d base=6fe6f47c26abba6fa7fedeecb0e98ba23890fd40 verdict=clean mode=blocking high=0 medium=2 low=0 cost=0.1636 tin=756649 tout=151750 tcache=5816192 calls=33 turns=159 secs=350 models=deepseek-v4.1-flash-1017 -->\n**Review round 13** on `248d9049`, reading `6fe6f47c..248d9049`: **clean** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | bloat | medium | `require_gitleaks` grew a `script` parameter whose value never varies in production: every real caller (`gitleaks()` at line 207) passes nothing and the default `INSTALL` is the only installer path the gate runs. Its sole user is the selfcheck at lines 405/412/421, so the production function now carries a test-only seam, and the `_INSTALLED` cache is keyed by `str(script)` for a path only temp fixtures change — the repo already has the cheaper idiom in this same function's neighbourhood, where the selfcheck rebinds the `BASELINE` global to a temp file (lines 431-434) instead of threading a path through `save_baseline`/`load_baseline`. Nothing production breaks if the parameter goes; the selfcheck keeps its coverage by rebinding `INSTALL`. | `scripts/guardrails/check_scan.py:118` | Delete the parameter: `def require_gitleaks():` with `script = INSTALL` inline, or drop `install_gitleaks`'s one caller indirection too. In the selfcheck block (lines 390-430), rebind the module global as the baseline block does — save `INSTALL`, set it to the temp installer (and to the absent path for the `provision` off-pass), restore in the `finally` — so the gate has one spelling of where the installer lives and no production signature exists for a test's benefit. |\n| 2 | bloat | medium | (open since round 10) A new guardrail assertion makes every gitleaks rule regex a literal line of scripts/mirror/deny.txt, so the credential shapes now live twice and the mirror list must be spelled in gitleaks' exact regex text. This round paid for it: deny.txt's one compacted alternation `\\bsk-(?:ant\\|or-v1\\|proj)-[\\w-]{16,}` was split into three separate lines (22-24) plus `\\bsk-[0-9A-Za-z]{48}` (25) to match gitleaks.toml — four lines where one alternation did. From now on adding or rewording a gitleaks rule forces an edit to the mirror's deny list in the scanner's spelling, a coupling neither file's purpose needs. | `scripts/guardrails/check_scan.py:339` | Delete the exact-line assertion and keep deny.txt's compacted alternation. If the two lists must not drift, generate the gitleaks rule entries from deny.txt's `# Credentials` section (keywords and ids derived, one source of regex text) instead of asserting string equality across files. |\n\nDropped before this table: 2 finding(s) whose quote was not on its line, that restate a finding the owner overrode, or that a refuter broke.\n\nCleared: 7 finding(s) the last round left open no longer hold at `248d9049`.\n\n<sub>review round 13 · deepseek-v4.1-flash-1017 · 33 call(s), 159 turn(s) · in 756.6k (cached 5.82M) · out 151.8k · $0.16 · 5m50s · this PR $7.25 · today $52.49</sub>\n\n<!-- yi-round-findings [{\"severity\": \"medium\", \"claim\": \"`require_gitleaks` grew a `script` parameter whose value never varies in production: every real caller (`gitleaks()` at line 207) passes nothing and the default `INSTALL` is the only installer path the gate runs. Its sole user is the selfcheck at lines 405/412/421, so the production function now carries a test-only seam, and the `_INSTALLED` cache is keyed by `str(script)` for a path only temp fixtures change \\u2014 the repo already has the cheaper idiom in this same function's neighbourhood, where the selfcheck rebinds the `BASELINE` global to a temp file (lines 431-434) instead of threading a path through `save_baseline`/`load_baseline`. Nothing production breaks if the parameter goes; the selfcheck keeps its coverage by rebinding `INSTALL`.\", \"path\": \"scripts/guardrails/check_scan.py\", \"line\": 118, \"quote\": \"def require_gitleaks(script=None):\", \"fix\": \"Delete the parameter: `def require_gitleaks():` with `script = INSTALL` inline, or drop `install_gitleaks`'s one caller indirection too. In the selfcheck block (lines 390-430), rebind the module global as the baseline block does \\u2014 save `INSTALL`, set it to the temp installer (and to the absent path for the `provision` off-pass), restore in the `finally` \\u2014 so the gate has one spelling of where the installer lives and no production signature exists for a test's benefit.\", \"lens\": \"bloat\"}, {\"severity\": \"medium\", \"claim\": \"A new guardrail assertion makes every gitleaks rule regex a literal line of scripts/mirror/deny.txt, so the credential shapes now live twice and the mirror list must be spelled in gitleaks' exact regex text. This round paid for it: deny.txt's one compacted alternation `\\\\bsk-(?:ant|or-v1|proj)-[\\\\w-]{16,}` was split into three separate lines (22-24) plus `\\\\bsk-[0-9A-Za-z]{48}` (25) to match gitleaks.toml \\u2014 four lines where one alternation did. From now on adding or rewording a gitleaks rule forces an edit to the mirror's deny list in the scanner's spelling, a coupling neither file's purpose needs.\", \"path\": \"scripts/guardrails/check_scan.py\", \"line\": 339, \"quote\": \"if regex not in deny:\", \"fix\": \"Delete the exact-line assertion and keep deny.txt's compacted alternation. If the two lists must not drift, generate the gitleaks rule entries from deny.txt's `# Credentials` section (keywords and ids derived, one source of regex text) instead of asserting string equality across files.\", \"lens\": \"bloat\", \"since\": 10}] -->\n",
+"created_at": "2026-10-30T16:56:47Z"
+},
+{
+"id": 29597,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1733 kind=gate from=248d90492d61 cost=0.0000 tin=0 tout=0 tcache=0 calls=0 turns=0 secs=205 models=none verdict=rerun -->\n**Autofix reran the gate**: every red lane passes in the fixer's clone at this head, so the runner or a flaky test failed it. A second failure on this head stops here for a person.\n\n```\nthe guardrails lane(s) pass in the fixer's clone at this head\n```\n\n<sub>autofix (gate) · none · 0 call(s), 0 turn(s) · in 0 (cached 0) · out 0 · $0.00 · 3m25s · this PR $7.25 · today $13.76</sub>\n",
+"created_at": "2026-10-31T01:48:49Z"
+},
+{
+"id": 31242,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1733 kind=conflict from=248d90492d61 stop=conflict cost=0.0000 tin=0 tout=0 tcache=0 calls=0 turns=0 secs=2 models=none verdict=handoff -->\n**Autofix handed this to a person**, not failed; the fixer tries again at 2026-11-02 03:27 UTC or on a new head; `just pr autofix N` tries now.\n\n```\na conflict in a file the fixer may not touch: .forgejo/workflows/autofix.yml\n```\n\n<sub>autofix (conflict) · none · 0 call(s), 0 turn(s) · in 0 (cached 0) · out 0 · $0.00 · 2s · skills read none · this PR $7.25 · today $67.74</sub>\n",
+"created_at": "2026-11-01T15:27:05Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-31T01:53:42Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-31T01:50:46Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-31T01:59:23Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-31T01:48:57Z"
+}
+]
+},
+{
+"at": "2026-11-03T03:04:06Z",
+"gap_hours": 92.2,
+"b_state": "D:clean-unqueued",
+"state": "gate red",
+"pr": {
+"number": 1885,
+"title": "WIP: Make the autofixer's failures say what a person runs next",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "d6e53f7b0af0b1cd0c6e14f2ad6d3bab75725a9d"
+},
+"updated_at": "2026-10-30T06:52:53Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 28458,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 1 -->\n<!-- yi-round-meta pr=1885 sha=d6e53f7b0af0b1cd0c6e14f2ad6d3bab75725a9d base=b05c049dd39d67b831246ccf5f2b267e3374222c verdict=clean mode=blocking high=0 medium=5 low=0 cost=0.1634 tin=817764 tout=131576 tcache=5849728 calls=17 turns=148 secs=341 models=deepseek-v4.1-flash-1017 -->\n**Review round 1** on `d6e53f7b`, reading `b05c049d..d6e53f7b`: **clean** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | correctness | medium | `indexed` raises `Missed` for every staging failure, not only a lock, so a hard git failure that no model can fix is now classified as a model miss: `verdict_of` returns `missed` while `misses(notes) + 1 < len(TIERS)`, which re-runs the same PR at the next tier (kimi-k3.1-pro, then claude-opus-5.5), costing two extra paid model runs and posting `missed` instead of `failed` for something like a corrupt index or a `git add -- <path>` whose pathspec no longer matches. Before this change the `sh(check=True)` call raised RuntimeError, which was labelled `failed` and stopped there. | `scripts/pr_autofix.py:183` | Raise Missed only when the last attempt's output was the lock; re-raise the original git failure as a RuntimeError otherwise. |\n| 2 | intent | medium | Adding `index.lock` and `Another git process` to TRANSIENT routes the #1779 failure class down the deferred path, whose only explanation is `**Autofix deferred**: the model's provider was busy, so the next pass tries again.` (scripts/pr_autofix.py:903). A submission whose staging write lost the clone to a stale git process is therefore told, in the sentence the PR exists to make truthful, that the provider was busy — the wrong cause — while the real git text sits in the fenced block below. The selfcheck at line 1639 only asserts the verdict token, so this wording is never checked. | `scripts/pr_autofix.py:86` | Give the lock its own wording at the cut: either raise a typed error from `indexed` that `render` names (\"another git process held the clone's index; the next pass runs in a fresh clone\") instead of reusing TRANSIENT, or add a `locked` verdict with its own sentence in render, and assert that sentence in selfcheck rather than just the verdict. |\n| 3 | intent | medium | The added promise that a stop names the command a person runs next is not delivered for the stop at scripts/pr_autofix.py:744, where a round's findings are all on walled files or intake lenses: that RuntimeError sets `autofix:failed` and its comment reads `round N is blocked by findings the fixer does not answer; a person does: findings on <path>, which the fixer may not touch` — no command, the same \"names nothing a person can act on\" class as #1709. The diff appended `by_hand()` to the two count stops and the conflict stop but not to this one, so the doc line it added is false for a stop a person must clear by hand. | `docs/FORGE.md:296` | Append `by_hand(pr)` to the RuntimeError at scripts/pr_autofix.py:744, as `resolve_in` and `fix` now do, and extend the existing selfcheck assertion so that stop's text is checked for `just pr autofix N` too. |\n| 4 | reuse | medium | The new index-lock selfcheck case re-pastes the scratch-repo fixture that `selfcheck` already builds four times in this file: scripts/pr_autofix.py:1588-1595 (putback case) and scripts/pr_autofix.py:1646-1651 (ratchet case) carry the identical `g = lambda …; init; write a.rs; add -A; commit; snapshot` block, and this is now the fifth copy. A shared helper should serve it: as is, the branch name, the git identity and the seed file must be changed in five places at once or the later cases silently test a different fixture than the earlier ones. | `scripts/pr_autofix.py:1615` | Extract one `scratch_repo(prefix, files)` helper (mkdtemp + `git init` + the seed write + `add -A` + `commit` + `snapshot`) and call it from the putback, lock and ratchet cases. |\n| 5 | tests | medium | The conflict stop's new command, the PR's stated remedy for a stop in a walled file, is never exercised: the only walled resolution selfcheck (line 1291) writes `scripts/guardrails/x.py` as a post-merge model edit, so it fails in `accept`'s message with no command, and line 256's `{by_hand(pr, base_ref)}` is never built. The gate stop at line 806 is likewise covered only by calling `by_hand` directly (line 1293), never through the message. Remove either interpolation and every selfcheck stays green, so the comment a person reads at that stop silently reverts to \"a person is next\" with nothing to run. | `scripts/pr_autofix.py:256` | In the resolve_in scratch-repo selfcheck, build a base whose merge conflicts on a walled path (e.g. scripts/guardrails/x.py) so `pr_review.walled(conflicted)` is non-empty, and assert the returned reason contains `git fetch origin && git merge origin/main`; likewise drive the gate branch's prior_fixes >= 2 stop and assert it names `just pr autofix 7`. |\n\nDropped before this table: 4 finding(s) whose quote was not on its line, that restate a finding the owner overrode, or that a refuter broke.\n\nOut of scope: 1 finding(s) on lines this PR's own change (its fork to `d6e53f7b`) does not add were dropped before any refuter.\n\n<sub>review round 1 · deepseek-v4.1-flash-1017 · 17 call(s), 148 turn(s) · in 817.8k (cached 5.85M) · out 131.6k · $0.16 · 5m41s · this PR $0.16 · today $26.02</sub>\n\n<!-- yi-round-findings [{\"severity\": \"medium\", \"claim\": \"`indexed` raises `Missed` for every staging failure, not only a lock, so a hard git failure that no model can fix is now classified as a model miss: `verdict_of` returns `missed` while `misses(notes) + 1 < len(TIERS)`, which re-runs the same PR at the next tier (kimi-k3.1-pro, then claude-opus-5.5), costing two extra paid model runs and posting `missed` instead of `failed` for something like a corrupt index or a `git add -- <path>` whose pathspec no longer matches. Before this change the `sh(check=True)` call raised RuntimeError, which was labelled `failed` and stopped there.\", \"path\": \"scripts/pr_autofix.py\", \"line\": 183, \"quote\": \"raise Missed(f\\\"`git {' '.join(args)}` could not take the clone's index: {said[-300:]}\\\")\", \"fix\": \"Raise Missed only when the last attempt's output was the lock; re-raise the original git failure as a RuntimeError otherwise.\", \"lens\": \"correctness\"}, {\"severity\": \"medium\", \"claim\": \"Adding `index.lock` and `Another git process` to TRANSIENT routes the #1779 failure class down the deferred path, whose only explanation is `**Autofix deferred**: the model's provider was busy, so the next pass tries again.` (scripts/pr_autofix.py:903). A submission whose staging write lost the clone to a stale git process is therefore told, in the sentence the PR exists to make truthful, that the provider was busy \\u2014 the wrong cause \\u2014 while the real git text sits in the fenced block below. The selfcheck at line 1639 only asserts the verdict token, so this wording is never checked.\", \"path\": \"scripts/pr_autofix.py\", \"line\": 86, \"quote\": \"                       r\\\"|index\\\\.lock|Another git process\\\", re.I)\", \"fix\": \"Give the lock its own wording at the cut: either raise a typed error from `indexed` that `render` names (\\\"another git process held the clone's index; the next pass runs in a fresh clone\\\") instead of reusing TRANSIENT, or add a `locked` verdict with its own sentence in render, and assert that sentence in selfcheck rather than just the verdict.\", \"lens\": \"intent\"}, {\"severity\": \"medium\", \"claim\": \"The added promise that a stop names the command a person runs next is not delivered for the stop at scripts/pr_autofix.py:744, where a round's findings are all on walled files or intake lenses: that RuntimeError sets `autofix:failed` and its comment reads `round N is blocked by findings the fixer does not answer; a person does: findings on <path>, which the fixer may not touch` \\u2014 no command, the same \\\"names nothing a person can act on\\\" class as #1709. The diff appended `by_hand()` to the two count stops and the conflict stop but not to this one, so the doc line it added is false for a stop a person must clear by hand.\", \"path\": \"docs/FORGE.md\", \"line\": 296, \"quote\": \"not touch, and `just pr autofix N` for a stop it cannot pass. A fix that changed nothing and\", \"fix\": \"Append `by_hand(pr)` to the RuntimeError at scripts/pr_autofix.py:744, as `resolve_in` and `fix` now do, and extend the existing selfcheck assertion so that stop's text is checked for `just pr autofix N` too.\", \"lens\": \"intent\"}, {\"severity\": \"medium\", \"claim\": \"The new index-lock selfcheck case re-pastes the scratch-repo fixture that `selfcheck` already builds four times in this file: scripts/pr_autofix.py:1588-1595 (putback case) and scripts/pr_autofix.py:1646-1651 (ratchet case) carry the identical `g = lambda \\u2026; init; write a.rs; add -A; commit; snapshot` block, and this is now the fifth copy. A shared helper should serve it: as is, the branch name, the git identity and the seed file must be changed in five places at once or the later cases silently test a different fixture than the earlier ones.\", \"path\": \"scripts/pr_autofix.py\", \"line\": 1615, \"quote\": \"        g = lambda *a: sh(repo, \\\"git\\\", \\\"-c\\\", \\\"user.name=t\\\", \\\"-c\\\", \\\"user.email=t@t\\\", *a)\", \"fix\": \"Extract one `scratch_repo(prefix, files)` helper (mkdtemp + `git init` + the seed write + `add -A` + `commit` + `snapshot`) and call it from the putback, lock and ratchet cases.\", \"lens\": \"reuse\"}, {\"severity\": \"medium\", \"claim\": \"The conflict stop's new command, the PR's stated remedy for a stop in a walled file, is never exercised: the only walled resolution selfcheck (line 1291) writes `scripts/guardrails/x.py` as a post-merge model edit, so it fails in `accept`'s message with no command, and line 256's `{by_hand(pr, base_ref)}` is never built. The gate stop at line 806 is likewise covered only by calling `by_hand` directly (line 1293), never through the message. Remove either interpolation and every selfcheck stays green, so the comment a person reads at that stop silently reverts to \\\"a person is next\\\" with nothing to run.\", \"path\": \"scripts/pr_autofix.py\", \"line\": 256, \"quote\": \"        raise RuntimeError(f\\\"a conflict in a file the fixer may not touch: {', '.join(walled)}. {by_hand(pr, base_ref)}\\\")\", \"fix\": \"In the resolve_in scratch-repo selfcheck, build a base whose merge conflicts on a walled path (e.g. scripts/guardrails/x.py) so `pr_review.walled(conflicted)` is non-empty, and assert the returned reason contains `git fetch origin && git merge origin/main`; likewise drive the gate branch's prior_fixes >= 2 stop and assert it names `just pr autofix 7`.\", \"lens\": \"tests\"}] -->\n",
+"created_at": "2026-10-30T06:52:53Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "failure",
+"updated_at": "2026-10-30T06:51:14Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T06:47:01Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T06:54:01Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T06:48:35Z"
+}
+]
+},
+{
+"at": "2026-11-05T02:10:31Z",
+"gap_hours": 25.1,
+"b_state": "D:hold",
+"state": "held",
+"pr": {
+"number": 1837,
+"title": "WIP: Refuse a start whose check is not a string",
+"labels": [
+{
+"name": "autofix:hold"
+}
+],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "915937a70e70b2f3c452cb93885d98da36c474ca"
+},
+"updated_at": "2026-11-04T01:05:37Z",
+"mergeable": null
+},
+"comments": [],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "failure",
+"updated_at": "2026-11-04T02:24:40Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "failure",
+"updated_at": "2026-11-04T02:24:40Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "failure",
+"updated_at": "2026-11-04T02:24:44Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "failure",
+"updated_at": "2026-11-04T02:24:44Z"
+}
+]
+},
+{
+"at": "2026-10-31T06:13:10Z",
+"gap_hours": 26.9,
+"b_state": "D:clean-unqueued",
+"state": "lost answers",
+"pr": {
+"number": 1843,
+"title": "WIP: Borrow history on the request path and parse streamed tool args once",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "8b512ef90b0b987f9c0485f7dbb0ea4de8b22413"
+},
+"updated_at": "2026-10-30T03:21:24Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 28068,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 1 -->\n<!-- yi-round-meta pr=1843 sha=8b512ef90b0b987f9c0485f7dbb0ea4de8b22413 base=b28e734f04c0a3fbde4bd58a9dc3015caa19a7e2 verdict=blocked mode=blocking high=1 medium=0 low=0 cost=0.0000 tin=0 tout=0 tcache=0 calls=0 turns=0 secs=11 models=none -->\n**Review round 1** on `8b512ef9`, reading `b28e734f..8b512ef9`: **blocked** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | duplicate | high | #1795 (open) adds 26 of the same 6-line windows: WIP: Class provider errors once, pool connections and keep partial turns | `:0` | close one, or /override with why both land |\n\n<sub>review round 1 · none · 0 call(s), 0 turn(s) · in 0 (cached 0) · out 0 · $0.00 · 11s · this PR $0.00 · today $10.74</sub>\n\n<!-- yi-round-findings [{\"lens\": \"duplicate\", \"severity\": \"high\", \"claim\": \"#1795 (open) adds 26 of the same 6-line windows: WIP: Class provider errors once, pool connections and keep partial turns\", \"path\": \"\", \"line\": 0, \"quote\": \"\", \"fix\": \"close one, or /override with why both land\"}] -->\n",
+"created_at": "2026-10-30T02:25:55Z"
+},
+{
+"id": 28135,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 2 -->\n<!-- yi-round-meta pr=1843 sha=8b512ef90b0b987f9c0485f7dbb0ea4de8b22413 base=b28e734f04c0a3fbde4bd58a9dc3015caa19a7e2 verdict=clean mode=blocking high=0 medium=4 low=0 skipped=1 cost=0.2730 tin=1508824 tout=220511 tcache=9721728 calls=20 turns=208 secs=422 models=deepseek-v4.1-flash-1017 -->\n**Review round 2** on `8b512ef9`, reading `b28e734f..8b512ef9`: **clean** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | bloat | medium | The new `Counted` writer and `exact_json` serialize every request body twice: the first pass exists only to count bytes, yet it still walks and escape-scans every string in the body (megabytes of base64 in the image-heavy sessions #1558 is about), and the failure branch falls back to `body.to_string()`, a third pass. Delete `exact_json` and call `body.to_string()`: nothing changes on the wire, no test breaks, and the only loss is one resized buffer's transient peak (the change file's 25 MB → 9 MB comes mostly from the copy elision, not this). Every model request now carries an extra full serialization pass to save ~one buffer's worth of peak memory. | `crates/ai/src/request.rs:280` | Drop `Counted` and `exact_json`; call `body.to_string()` in `send_with_retry` as before. If exact sizing is kept, at least stop re-serializing on the `to_writer` error path. |\n| 2 | bloat | medium | `settle_open_calls` is a second copy of the tool-call finish already implemented in `on_block_stop` (lines 675-690): same `partial_json.get_mut(..).and_then(Option::take)` then `parse_streaming_json`, same `!parsed.is_empty() \\|\\| arguments.is_empty()` guard. The two copies have already drifted — the stop path runs `leak::unleak` on the arguments, the settle path does not — so a stream cut inside a tool call is finalized by a slightly different rule than a clean block stop, and the next change to either guard has to be made twice. The smaller shape is one `finish_call(content_index)` helper (or making `on_block_stop` call this settle for its index) that both paths use. | `crates/ai/src/anthropic.rs:774` | Extract a single per-index finalize (take buffer, parse, conditional assign, unleak) and call it from both `on_block_stop` and `settle_open_calls`. |\n| 3 | intent | medium | The loop crate's tool-name precompute and the new `repair::named` lookup are a separate tool-dispatch optimization, not either of the two request-path costs #1558 names; nothing in the borrow or streaming change needs them, and the change file advertises it as a fourth benefit (\"The loop reads tool names once per batch instead of rebuilding every definition for each call\") that the Why needed never asked for. A reviewer of this PR now has to validate an unrelated hot-path change to tool resolution, and the branch pays `crate loop +4` for it. | `crates/loop/src/repair.rs:39` | Drop the crates/loop/src/repair.rs helper and the run.rs signature threading from this PR and land the name-precompute on its own issue/PR; this branch keeps only the history-borrowing and once-per-call argument parsing that #1558 asks for. (If it is an answer to an earlier review round, say so in the PR body, because the Why needed does not carry it.) |\n| 4 | perf | medium | `exact_json` runs the full serde_json encoder over the whole request body twice on every request — once into the counting sink to learn the length, once into the Vec — so the request path pays two complete encode passes where it previously paid one. The PR's Performance table measures only allocated bytes (25 MB -> 9 MB), and on that axis this is a win, but the CPU work for the `ai.serialize` step doubles for a body that can be tens of MB of base64 in an image-heavy session. Encoding 3 MB costs far more than the ~2x memcpy of the geometric reallocation it removes, so the net effect of this hunk is a likely wall-time regression on the exact step it claims to optimize. Encode once instead: `serde_json::to_vec(body)` then `String::from_utf8(vec)`, accepting Vec's growth, or a `Vec::with_capacity` seeded from a size hint; the count-then-write pass exists only to avoid reallocation and buys back less than it costs. | `crates/ai/src/request.rs:283` | Serialize once into a Vec (to_vec + String::from_utf8, or a capacity hint) instead of encoding into Counted first and then re-encoding the same Value. |\n\nNo answer after retries from: reuse lens. This round blocks on what it read, but counts as unread for the delta and for ready.\n\nDropped before this table: 4 finding(s) whose quote was not on its line, or that a refuter broke.\n\n<sub>review round 2 · deepseek-v4.1-flash-1017 · 20 call(s), 208 turn(s) · in 1.51M (cached 9.72M) · out 220.5k · $0.27 · 7m02s · this PR $0.27 · today $13.91</sub>\n\n<!-- yi-round-findings [{\"severity\": \"medium\", \"claim\": \"The new `Counted` writer and `exact_json` serialize every request body twice: the first pass exists only to count bytes, yet it still walks and escape-scans every string in the body (megabytes of base64 in the image-heavy sessions #1558 is about), and the failure branch falls back to `body.to_string()`, a third pass. Delete `exact_json` and call `body.to_string()`: nothing changes on the wire, no test breaks, and the only loss is one resized buffer's transient peak (the change file's 25 MB \\u2192 9 MB comes mostly from the copy elision, not this). Every model request now carries an extra full serialization pass to save ~one buffer's worth of peak memory.\", \"path\": \"crates/ai/src/request.rs\", \"line\": 280, \"quote\": \"    if serde_json::to_writer(&mut counted, body).is_ok() {\", \"fix\": \"Drop `Counted` and `exact_json`; call `body.to_string()` in `send_with_retry` as before. If exact sizing is kept, at least stop re-serializing on the `to_writer` error path.\", \"lens\": \"bloat\"}, {\"severity\": \"medium\", \"claim\": \"`settle_open_calls` is a second copy of the tool-call finish already implemented in `on_block_stop` (lines 675-690): same `partial_json.get_mut(..).and_then(Option::take)` then `parse_streaming_json`, same `!parsed.is_empty() || arguments.is_empty()` guard. The two copies have already drifted \\u2014 the stop path runs `leak::unleak` on the arguments, the settle path does not \\u2014 so a stream cut inside a tool call is finalized by a slightly different rule than a clean block stop, and the next change to either guard has to be made twice. The smaller shape is one `finish_call(content_index)` helper (or making `on_block_stop` call this settle for its index) that both paths use.\", \"path\": \"crates/ai/src/anthropic.rs\", \"line\": 774, \"quote\": \"    fn settle_open_calls(&mut self) {\", \"fix\": \"Extract a single per-index finalize (take buffer, parse, conditional assign, unleak) and call it from both `on_block_stop` and `settle_open_calls`.\", \"lens\": \"bloat\"}, {\"severity\": \"medium\", \"claim\": \"The loop crate's tool-name precompute and the new `repair::named` lookup are a separate tool-dispatch optimization, not either of the two request-path costs #1558 names; nothing in the borrow or streaming change needs them, and the change file advertises it as a fourth benefit (\\\"The loop reads tool names once per batch instead of rebuilding every definition for each call\\\") that the Why needed never asked for. A reviewer of this PR now has to validate an unrelated hot-path change to tool resolution, and the branch pays `crate loop +4` for it.\", \"path\": \"crates/loop/src/repair.rs\", \"line\": 39, \"quote\": \"pub(crate) fn named<'t, T>(items: &'t [T], names: &[String], requested: &str) -> Option<&'t T> {\", \"fix\": \"Drop the crates/loop/src/repair.rs helper and the run.rs signature threading from this PR and land the name-precompute on its own issue/PR; this branch keeps only the history-borrowing and once-per-call argument parsing that #1558 asks for. (If it is an answer to an earlier review round, say so in the PR body, because the Why needed does not carry it.)\", \"lens\": \"intent\"}, {\"severity\": \"medium\", \"claim\": \"`exact_json` runs the full serde_json encoder over the whole request body twice on every request \\u2014 once into the counting sink to learn the length, once into the Vec \\u2014 so the request path pays two complete encode passes where it previously paid one. The PR's Performance table measures only allocated bytes (25 MB -> 9 MB), and on that axis this is a win, but the CPU work for the `ai.serialize` step doubles for a body that can be tens of MB of base64 in an image-heavy session. Encoding 3 MB costs far more than the ~2x memcpy of the geometric reallocation it removes, so the net effect of this hunk is a likely wall-time regression on the exact step it claims to optimize. Encode once instead: `serde_json::to_vec(body)` then `String::from_utf8(vec)`, accepting Vec's growth, or a `Vec::with_capacity` seeded from a size hint; the count-then-write pass exists only to avoid reallocation and buys back less than it costs.\", \"path\": \"crates/ai/src/request.rs\", \"line\": 283, \"quote\": \"match serde_json::to_writer(&mut buffer, body).map(|()| String::from_utf8(buffer)) {\", \"fix\": \"Serialize once into a Vec (to_vec + String::from_utf8, or a capacity hint) instead of encoding into Counted first and then re-encoding the same Value.\", \"lens\": \"perf\"}] -->\n",
+"created_at": "2026-10-30T03:21:24Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T02:29:42Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T02:27:47Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T02:34:10Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "success",
+"updated_at": "2026-10-30T02:27:56Z"
+}
+]
+},
+{
+"at": "2026-11-03T03:04:17Z",
+"gap_hours": 35.9,
+"b_state": "clean-unqueued",
+"state": "title red",
+"pr": {
+"number": 1822,
+"title": "Attach one instruction file when two ruler renders match",
+"labels": [],
+"base": {
+"ref": "main"
+},
+"head": {
+"sha": "a9ddc134868de827c7c3899f40f8432f97a8b6c7"
+},
+"updated_at": "2026-11-01T15:10:02Z",
+"mergeable": null
+},
+"comments": [
+{
+"id": 31092,
+"user": {
+"login": "yi-bot"
+},
+"body": "<!-- yi-round 4 -->\n<!-- yi-round-meta pr=1822 sha=a9ddc134868de827c7c3899f40f8432f97a8b6c7 base=d28ab3ceb15fd1d72d36b2ab3e711da913c48a6d verdict=clean mode=blocking high=0 medium=1 low=0 cost=0.0858 tin=369145 tout=84071 tcache=2983424 calls=16 turns=74 secs=332 models=deepseek-v4.1-flash-1017 -->\n**Review round 4** on `a9ddc134`, reading `d28ab3ce..a9ddc134`: **clean** (a blocked round keeps this draft).\n\n| # | lens | severity | finding | where | fix |\n|---|---|---|---|---|---|\n| 1 | bloat | medium | The dedupe change grows `instruction_text` by a mutable three-state flag (`removed_comment` declared at 239, set at 242, cleared at 247 and 251) whose only effect is to drop one blank line adjacent to a removed comment. The same equality falls out of one unconditional guard: any blank line that follows a blank line is dropped (`kept.dedup_by(\\|a, b\\| a.trim().is_empty() && b.trim().is_empty())`, or a single `prev_blank` check), which subsumes the header case, the interior-marker case and the trailing case the change file names, with no state to trace. As shipped, every future reader of the file-equality hash has to follow the flag through three branches to learn that it never does anything else, and a widened blank run (three blanks, one comment) is handled only by the edge trims. | `crates/runtime/src/ext/project.rs:246` | Delete the `removed_comment` flag and its three touches; after the comment filter, collapse repeated blank lines (`kept.dedup_by(\\|a, b\\| a.trim().is_empty() && b.trim().is_empty())`) before the existing first/last non-blank trim. Keeps both new tests and both doc sentences' contract, in one guard instead of a state machine. |\n\nCleared: 3 finding(s) the last round left open no longer hold at `a9ddc134`.\n\n<sub>review round 4 · deepseek-v4.1-flash-1017 · 16 call(s), 74 turn(s) · in 369.1k (cached 2.98M) · out 84.1k · $0.09 · 5m32s · skills read har:6,har-api:6 · this PR $0.36 · today $56.47</sub>\n\n<!-- yi-round-findings [{\"severity\": \"medium\", \"claim\": \"The dedupe change grows `instruction_text` by a mutable three-state flag (`removed_comment` declared at 239, set at 242, cleared at 247 and 251) whose only effect is to drop one blank line adjacent to a removed comment. The same equality falls out of one unconditional guard: any blank line that follows a blank line is dropped (`kept.dedup_by(|a, b| a.trim().is_empty() && b.trim().is_empty())`, or a single `prev_blank` check), which subsumes the header case, the interior-marker case and the trailing case the change file names, with no state to trace. As shipped, every future reader of the file-equality hash has to follow the flag through three branches to learn that it never does anything else, and a widened blank run (three blanks, one comment) is handled only by the edge trims.\", \"path\": \"crates/runtime/src/ext/project.rs\", \"line\": 246, \"quote\": \"        if blank && removed_comment && kept.last().is_some_and(|prev| prev.trim().is_empty()) {\", \"fix\": \"Delete the `removed_comment` flag and its three touches; after the comment filter, collapse repeated blank lines (`kept.dedup_by(|a, b| a.trim().is_empty() && b.trim().is_empty())`) before the existing first/last non-blank trim. Keeps both new tests and both doc sentences' contract, in one guard instead of a state machine.\", \"lens\": \"bloat\"}] -->\n",
+"created_at": "2026-11-01T09:45:12Z"
+}
+],
+"statuses": [
+{
+"context": "pr / gate (guardrails) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-01T10:00:13Z"
+},
+{
+"context": "pr / gate (lint) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-01T09:58:02Z"
+},
+{
+"context": "pr / gate (test) (pull_request)",
+"status": "success",
+"updated_at": "2026-11-01T10:09:08Z"
+},
+{
+"context": "pr / title (pull_request)",
+"status": "failure",
+"updated_at": "2026-11-01T09:58:11Z"
+}
+]
+}
+]

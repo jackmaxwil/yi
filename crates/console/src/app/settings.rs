@@ -1,6 +1,6 @@
+use agent_client_protocol_schema::v2 as acp;
 use ratatui::crossterm::event::KeyEvent;
 use serde_json::{Value, json};
-use yi_types::acp::AcpConfigOption;
 
 use super::{App, RequestKind};
 use crate::client::Outbound;
@@ -74,7 +74,10 @@ impl App {
     }
 
     /// The settings pane under the press: the session it edits and its option list, once.
-    fn settings_options(&mut self, pane: PaneId) -> (Option<SessionId>, Vec<AcpConfigOption>) {
+    fn settings_options(
+        &mut self,
+        pane: PaneId,
+    ) -> (Option<SessionId>, Vec<acp::SessionConfigOption>) {
         let session = self
             .settings_pane(pane)
             .and_then(|settings| settings.session.clone());

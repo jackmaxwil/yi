@@ -53,7 +53,7 @@ RUNNER_FAILURES = (
     ),
     (
         "disk-full",
-        re.compile(r"No space left on device|ENOSPC|Out of diskspace", re.I),
+        pr_autofix.DISK_FULL,
         "failed to create container: write /var/lib/docker/tmp: ENOSPC: no space left on device",
     ),
 )
@@ -233,6 +233,9 @@ def classifier_cases(off=""):
         bad.append("an unknown failure classified as runner")
     if classify_log(CODE_LOGS[0][1] + "\nCannot connect to the Docker daemon", off)[0] != "code":
         bad.append("a runner signature overrode a code failure")
+    for row in pr_review.recorded_errors():
+        if row["reads"] == "disk" and ".lock" not in row["text"] and classify_log(row["text"], off) != ("runner", "disk-full"):
+            bad.append(f"a recorded full disk ({row['source']}) read {classify_log(row['text'], off)}")
     return bad
 
 
