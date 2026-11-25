@@ -3944,7 +3944,7 @@ def checks():
     kept = {name: getattr(module, name) for name in stand}
     try:
         tried_notes = notes + [dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 verdict=failed -->\n")]
-        forge_pr.git, forge_pr.fgj_api = (lambda *a: ""), (lambda *a, **k: {})
+        forge_pr.git, forge_pr.fgj_api = (lambda *a, **k: ""), (lambda *a, **k: {})
         pr_review.comments, pr_review.authors, bot_meter.since = (lambda repo, n: tried_notes), (lambda: {"jack"}), (lambda *a: [])
         for name, value in stand.items():
             setattr(module, name, value)

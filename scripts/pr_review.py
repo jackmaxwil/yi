@@ -985,7 +985,10 @@ def merges_since(sha, head, base, repo=ROOT):
 
 
 def holds_for(number, base="main"):
-    forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", base)
+    try:
+        forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", base, timeout=forge_pr.GIT_SECS)
+    except subprocess.TimeoutExpired as err:
+        raise Unanswered(f"the fetch of #{number}'s head and {base} did not answer within {err.timeout} s") from err
     # Cached: a PR's rounds are asked about the same head several times a read, each a few git calls.
     return functools.lru_cache(maxsize=None)(lambda sha, head: merges_since(sha, head, f"origin/{base}"))
 
@@ -1779,8 +1782,25 @@ def capped_cases(spend):
     return bad
 
 
+def fetch_cases():
+    """A fetch that does not answer makes the round's hold unknown, never a hold or a stale answer."""
+    def git(*args, timeout=None, **kw):
+        if timeout is None:
+            raise RuntimeError(f"git {' '.join(args)} ran with no timeout")
+        raise subprocess.TimeoutExpired(("git",) + args, timeout)
+    with mock.patch.object(forge_pr, "git", git):
+        try:
+            return [f"fetch: a hung fetch answered {holds_for(7)!r}"]
+        except Unanswered as err:
+            return [] if "#7" in str(err) else [f"fetch: the unanswered fetch names no PR: {err}"]
+        except (Exception, SystemExit) as err:
+            return [f"fetch: a hung fetch raised {err!r}, not Unanswered"]
+
+
 def selfcheck():
-    bad = honest_cases()
+    bad = honest_cases() + fetch_cases()
+    with mock.patch.object(forge_pr, "GIT_SECS", None):
+        bad += [] if fetch_cases() else ["refute: the fetch's timeout disabled and the fetch case still passes"]
     real = verdict
     old_verdict = lambda findings, overridden, n, unanswered=(): real(findings, overridden, n) if holding({"n": n, "findings": findings}) else "clean"
     real_override = override_of
