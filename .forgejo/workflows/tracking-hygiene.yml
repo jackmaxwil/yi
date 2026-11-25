@@ -23,7 +23,7 @@ jobs:
     # Two REST walks over 85 issues; a minute is generous and a hang is a bug.
     timeout-minutes: 5
     steps:
-      - uses: https://git.example.invalid/upstream/actions-checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
+      - uses: https://git.example.invalid/the image registry/actions-checkout@v4 # zizmor: ignore[unpinned-uses] Forgejo mirror SHA is unverified offline.
         with:
           persist-credentials: false
       - name: re-measure every open milestone's due date
