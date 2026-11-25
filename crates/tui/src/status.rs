@@ -340,7 +340,7 @@ fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
-/// The meters, then the session's tile and name.
+/// The meters, then the session's name.
 fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     let input = &fit.input;
     let seg_style = seg_style(input, theme);
@@ -403,11 +403,7 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
         };
         spans.push(Span::styled("session ", theme.dim_style()));
         spans.push(Span::styled(
-            crate::colors::name_tile(&input.session_name),
-            crate::colors::tile_style(&input.session_name),
-        ));
-        spans.push(Span::styled(
-            format!(" {} ", shrink_middle(&display, fit.name_max)),
+            format!("{} ", shrink_middle(&display, fit.name_max)),
             style,
         ));
     }
