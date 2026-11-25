@@ -309,8 +309,7 @@ pub(crate) fn contained_env(
 /// Invariant: Landlock grants a temp root holding a denied store (a home under it) only as its
 /// children, so a kernel there keeps temp files in its session state, which a restart keeps.
 fn kernel_tmp(sandbox: &yi_tools::Sandbox, state: Option<&std::path::Path>) -> Option<String> {
-    let temp = std::env::temp_dir();
-    if (sandbox.write_grants(None).iter()).any(|grant| temp.starts_with(grant)) {
+    if sandbox.grants_temp() {
         return None;
     }
     let dir = state?.join("tmp");
