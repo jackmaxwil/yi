@@ -555,12 +555,12 @@ def is_behind(pr):
     return check.returncode != 0
 
 
-def required():
+def required(timeout=None):
     """Invariant: a merge waits on every gate lane whatever the protection rule lists, because the
     rule is a setting someone can shorten and the merge verb is where red must stop."""
     import pr_review
 
-    protections = fgj_api("GET", f"repos/{repo()}/branch_protections")
+    protections = fgj_api("GET", f"repos/{repo()}/branch_protections", timeout=timeout)
     protected = ["title"]
     for protection in protections if isinstance(protections, list) else []:
         if protection.get("branch_name") == "main":
@@ -655,28 +655,63 @@ def cmd_update(args):
     return 0
 
 
-def rerun_waits(pr):
+def rerun_waits(pr, timeout=None):
     """The gate's jobs still waiting on this head. The review job is left out: a round runs for hours."""
-    jobs = jobs_of(pr)
-    return [job for job in (*required(), UNREAD) if jobs.get(job) == "pending"]
+    jobs = jobs_of(pr, timeout)
+    return [job for job in (*required(timeout), UNREAD) if jobs.get(job) == "pending"]
+
+
+# Invariant: the queue reruns a re-pointed child inside its 10-minute job, so each call of a rerun gets a quarter
+# of FORGE_SECS and the rerun's worst case is under three minutes.
+RERUN_SECS = FORGE_SECS // 4
+
+
+def fgj_pr(verb, number):
+    """(exit, words) of `fgj pr <verb>`: 0 once done, a refusal's code and words, None when it did not answer in RERUN_SECS."""
+    try:
+        out = subprocess.run(("fgj", "pr", verb, *scope(), str(number)), capture_output=True, text=True, check=False, timeout=RERUN_SECS)
+    except subprocess.TimeoutExpired:
+        return None, f"no answer within {RERUN_SECS} s"
+    return out.returncode, (out.stderr or out.stdout).strip()[-200:]
+
+
+def pull_state(number):
+    """(state, the forge's words): None when the read failed or did not answer, which is no state at all."""
+    try:
+        return pull(number, RERUN_SECS).get("state"), ""
+    except (SystemExit, subprocess.TimeoutExpired) as err:
+        return None, str(err)
 
 
 def cmd_rerun(args):
     number = pull_number(args.number)
     # Incident: a second reopen on #1887 cancelled the run still waiting and wrote failure on every context.
-    if waiting := rerun_waits(pull(number)):
+    if waiting := rerun_waits(pull(number, RERUN_SECS), RERUN_SECS):
         print(f"#{number}: a run is already waiting on {', '.join(waiting)}; a reopen would cancel it")
         return 1
-    subprocess.run(("fgj", "pr", "close", *scope(), str(number)), capture_output=True, check=False)
+    code, said = fgj_pr("close", number)
+    # Invariant: a close that did not answer may land at any time, so the PR's state is read and it is reopened anyway;
+    # only a close refused in words with the PR still open is known to have changed nothing.
+    closed = "closed" if code == 0 else pull_state(number)[0]
+    if code and closed == "open":
+        print(f"#{number}: the close was refused (`{said}`) and the PR is still open, so nothing reran")
+        return 1
+    closed = closed == "closed"
     time.sleep(2)
     # Invariant: a rerun never leaves the PR closed. The bots list open PRs only, so a refused reopen hides it.
     for _ in range(3):
-        subprocess.run(("fgj", "pr", "reopen", *scope(), str(number)), capture_output=True, check=False)
-        if pull(number).get("state") == "open":
+        why = fgj_pr("reopen", number)[1]
+        state, read = pull_state(number)
+        if state == "open" and closed:
             print(f"#{number} closed and reopened; the gate reruns")
             return 0
+        if state == "open":
+            print(f"#{number} is open, but its close answered `{said}`, so the gate may not have rerun, and a close landing late "
+                  f"leaves it CLOSED; just pr status {number}")
+            return 1
+        closed = closed or state == "closed"
         time.sleep(2)
-    print(f"#{number} is left CLOSED: the forge refused the reopen three times; fgj pr reopen {number}")
+    print(f"#{number} may be left CLOSED: three reopens did not read open ({why or read or state}); fgj pr reopen {number}")
     return 1
 
 
@@ -1085,9 +1120,9 @@ def selfcheck():
                            {"context": "review / review (pull_request_target)", "status": "pending"}]}
     saved_forge = globals()["fgj_api"], globals()["repo"], globals()["pull"], subprocess.run
     closed = []
-    globals().update(fgj_api=lambda *a, **k: head_status, repo=lambda: "o/r", pull=lambda n: {"number": n, "state": state, "head": {"sha": "abc1234"}})
+    globals().update(fgj_api=lambda *a, **k: head_status, repo=lambda: "o/r", pull=lambda n, timeout=None: {"number": n, "state": state, "head": {"sha": "abc1234"}})
     state = "open"
-    subprocess.run = lambda cmd, **kw: closed.append(cmd)
+    subprocess.run = lambda cmd, **kw: closed.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
     try:
         seen = jobs_of({"head": {"sha": "abc1234"}})
         assert seen.get("gate (test)") == "pending" and seen.get("gate (lint)") == "failure", ("a waiting run read as its old failure", seen)
@@ -1170,7 +1205,92 @@ def selfcheck():
     import runner_retry
     assert runner_retry.selfcheck() == 0, "runner retry selfcheck"
     land_guard_selfcheck()
+    assert not (bad := rerun_cases()), bad
+    for off in ("timeout", "close", "read"):
+        assert rerun_cases(off), f"a rerun with its {off} rule disabled passes every case, so the case refutes nothing"
+    assert (spent := rerun_worst()) <= 180, f"a rerun whose every call answers at its limit takes {spent} s, past three minutes"
+    with __import__("unittest.mock").mock.patch.object(sys.modules[__name__], "RERUN_SECS", FORGE_SECS):
+        assert rerun_worst() > 180, "a rerun on FORGE_SECS calls still fits three minutes, so the budget case refutes nothing"
     print("ok   forge_pr selfcheck")
+
+
+def rerun_worst():
+    """The seconds a rerun takes when every call answers at its limit: the close refused yet done, every reopen refused."""
+    import contextlib, io
+    from unittest import mock
+
+    clock = [0.0]
+
+    def run(cmd, **kw):
+        clock[0] += kw["timeout"]
+        return subprocess.CompletedProcess(cmd, 1, "", "HTTP 500")
+
+    def api(method, path, payload=None, timeout=None):
+        clock[0] += timeout
+        return {"statuses": []} if path.endswith("/status") else [] if path.endswith("branch_protections") else \
+            {"number": 7, "state": "closed" if clock[0] > 3 * timeout else "open", "head": {"sha": "abc1234"}}
+    module = sys.modules[__name__]
+    with mock.patch.object(subprocess, "run", run), mock.patch.object(module, "fgj_api", api), mock.patch.object(module, "repo", lambda: "o/r"), \
+            mock.patch.object(time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)), contextlib.redirect_stdout(io.StringIO()):
+        cmd_rerun(argparse.Namespace(number=7))
+    return clock[0]
+
+
+def rerun_cases(off=""):
+    """A rerun bounds every forge call, reads the PR when its close did not answer, and never hides a closed PR."""
+    import contextlib, io
+    from unittest import mock
+
+    bad, rows = [], [{"context": "pr / gate (test) (pull_request)", "status": "failure"},
+                     {"context": "review / review (pull_request_target)", "status": "pending"}]
+    # (close, reopen, state read): ok; hang, done but answered late (the first review's probe); late, it lands on the
+    # second read after it; after, it lands once the rerun returned (the second review's probe); lost; refused.
+    for close, reopen, read, code, said, reopened in (
+            ("ok", "ok", "ok", 0, "reruns", True), ("hang", "ok", "ok", 0, "reruns", True), ("late", "ok", "ok", 0, "reruns", True),
+            ("after", "ok", "ok", 1, "may not have rerun", True), ("lost", "ok", "ok", 1, "may not have rerun", True),
+            ("refused", "ok", "ok", 1, "still open", False), ("hang", "ok", "hang", 1, "CLOSED", True),
+            ("ok", "lost", "ok", 1, "CLOSED", True), ("ok", "refused", "ok", 1, "CLOSED", True), ("ok", "ok", "hang", 1, "CLOSED", True)):
+        acts, state, pending, reads = [], ["open"], [False], [0]
+
+        def run(cmd, **kw):
+            if kw.get("timeout") is None:
+                raise RuntimeError(f"`{' '.join(cmd[:3])}` ran with no timeout")
+            acts.append(cmd[2])
+            how = close if cmd[2] == "close" else reopen
+            if how in ("ok", "hang"):
+                state[0] = "closed" if cmd[2] == "close" else "open"
+            pending[0] = pending[0] or how in ("late", "after")
+            if how in ("hang", "lost", "late", "after"):
+                raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+            return subprocess.CompletedProcess(cmd, int(how == "refused"), "", "HTTP 403 forbidden" if how == "refused" else "")
+
+        def api(method, path, payload=None, timeout=None):
+            if timeout is None:
+                raise RuntimeError(f"{method} {path} read with no timeout")
+            if path.endswith("/status") or path.endswith("branch_protections"):
+                return {"statuses": rows} if path.endswith("/status") else []
+            if acts and read == "hang":
+                raise subprocess.TimeoutExpired("fgj", timeout)
+            reads[0] += bool(acts)
+            if pending[0] and close == "late" and reads[0] == 2:
+                state[0], pending[0] = "closed", False
+            return {"number": 7, "state": state[0], "head": {"sha": "abc1234"}}
+        module, out = sys.modules[__name__], io.StringIO()
+        refute = {"timeout": mock.patch.object(module, "RERUN_SECS", None),
+                  "close": mock.patch.object(module, "fgj_pr", lambda verb, number, real=fgj_pr: (0, "") if verb == "close" else real(verb, number)),
+                  "read": mock.patch.object(module, "pull_state", lambda number: (pull(number, RERUN_SECS).get("state"), ""))}
+        with mock.patch.object(subprocess, "run", run), mock.patch.object(module, "fgj_api", api), mock.patch.object(module, "repo", lambda: "o/r"), \
+                mock.patch.object(time, "sleep", lambda s: None), refute.get(off, contextlib.nullcontext()), contextlib.redirect_stdout(out):
+            try:
+                got = cmd_rerun(argparse.Namespace(number=7))
+            except (Exception, SystemExit) as err:
+                got = f"a raise: {err!r}"
+        if pending[0]:
+            state[0] = "closed"
+        if got != code or said not in out.getvalue() or ("reopen" in acts) != reopened or state[0] == "closed" and "CLOSED" not in out.getvalue():
+            bad.append(f"close {close}, reopen {reopen}, read {read}: answered {got} saying {out.getvalue().strip()!r} with {acts}, "
+                       f"not {code} naming {said!r} {'with' if reopened else 'without'} a reopen; the PR ends {state[0]}")
+    return bad
 
 
 def land_guard_selfcheck():
