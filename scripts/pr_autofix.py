@@ -1688,7 +1688,7 @@ def shared_wait(repo, ids, pr, notes, lanes, seen, post, labels):
 def poster(repo, number):
     """A ledger row writer for one PR: True once the forge took the comment, which a row's act waits on."""
     return lambda body: (lambda said: isinstance(said, dict) and bool(said.get("id")))(
-        forge_pr.fgj_api("POST", f"repos/{repo}/issues/{number}/comments", {"body": body}, timeout=pr_queue.FORGE_SECS))
+        forge_pr.comment(number, body, pr_queue.FORGE_SECS, repo))
 
 
 def rerun_head(pr, post, kind="gate"):

@@ -511,9 +511,10 @@ def cmd_edit(args):
     return 0
 
 
-def comment(number, text, timeout=None):
-    """Post `text` on the pull request; the forge's answer, which carries an `id` once it took it."""
-    return fgj_api("POST", f"repos/{repo()}/issues/{number}/comments", {"body": text}, timeout=timeout)
+def comment(number, text, timeout=None, where=None):
+    """Post `text` on the pull request in `where` (this checkout's repository by default); the forge's answer,
+    which carries an `id` once it took it."""
+    return fgj_api("POST", f"repos/{where or repo()}/issues/{number}/comments", {"body": text}, timeout=timeout)
 
 
 def undraft(number, title, timeout=None):
@@ -711,9 +712,12 @@ def cmd_rerun(args):
               f"landing later leaves it CLOSED; just pr status {number}")
         return 1
     time.sleep(2)
-    # Invariant: a rerun never leaves the PR closed. The bots list open PRs only, so a refused reopen hides it.
+    # Invariant: a rerun never leaves the PR closed, and reopens again only after a read says closed: a reopen
+    # whose answer was lost may have landed, and a second one cancels the run it started.
+    why = ""
     for _ in range(3):
-        why = fgj_pr("reopen", number, RERUN_SECS)[1]
+        if state == "closed":
+            why = fgj_pr("reopen", number, RERUN_SECS)[1]
         state, read = pull_state(number)
         if state == "open":
             print(f"#{number} closed and reopened; the gate reruns")
@@ -1313,7 +1317,7 @@ def rerun_cases(off=""):
         if close == "after" or lands:
             state[0] = "closed"
         if got != code or said not in out.getvalue() or ("reopen" in acts) != reopened or state[0] == "closed" and "CLOSED" not in out.getvalue() \
-                or read == "prehang" and acts:
+                or read == "prehang" and acts or read == "hang" and acts.count("reopen") > 1:
             bad.append(f"close {close}, reopen {reopen}, read {read}: answered {got} saying {out.getvalue().strip()!r} with {acts}, "
                        f"not {code} naming {said!r} {'with' if reopened else 'without'} a reopen; the PR ends {state[0]}")
     return bad
