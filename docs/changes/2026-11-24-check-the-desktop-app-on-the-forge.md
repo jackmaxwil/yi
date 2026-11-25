@@ -1,4 +1,6 @@
 ---
+version: 0.1121.0
+decisions: D617
 issue: Closes #2341
 cut: none desktop/justfile
 cut: none desktop/crates/panes/src/design/pane/tests.rs

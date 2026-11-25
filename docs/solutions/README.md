@@ -587,5 +587,6 @@ edited by hand.
 - [D614](adr/d614.md) - the model gets one tool, `show`
 - [D615](adr/d615.md) - Model auto-review is deleted, and `ask_user` is registered in every session...
 - [D616](adr/d616.md) - ACP v2 wire shapes are the upstream `agent-client-protocol-schema` crate,...
+- [D617](adr/d617.md) - Yi Desktop is gated on the forge as a Linux build
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
