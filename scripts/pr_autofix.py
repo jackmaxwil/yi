@@ -263,6 +263,11 @@ def head_rows(notes, sha, verdict):
     return [row for row in autofix_rows(notes) if row.get("verdict") == verdict and row.get("from") == sha[:12]]
 
 
+def lane_items(rows):
+    """The non-empty items of these rows' `lanes` fields, in order."""
+    return [item for row in rows for item in (row.get("lanes") or "").split(",") if item]
+
+
 def held_rows(notes, sha, stop, round_=""):
     """This head's hand-offs of this kind of fix and round: the one rule for what a hand-off holds."""
     return [row for row in head_rows(notes, sha, "handoff") if row.get("stop") == stop and row.get("round", "") == str(round_)]
@@ -1622,7 +1627,7 @@ def base_wait(repo, ids, pr, notes, red, seen, post):
         why = ("; ".join(f"`gate ({lane})` is red at the tip of {base_ref} too" for lane in red)
                + f"; that branch is {f'#{parent}' if parent else 'the PR this one is based on'}, so this waits on its author, "
                "and no issue is opened for it")
-    if set(tags) <= {tag for row in head_rows(notes, sha, "base-red") for tag in (row.get("lanes") or "").split(",")}:
+    if set(tags) <= set(lane_items(head_rows(notes, sha, "base-red"))):
         return "waiting"
     post(render(pr["number"], {"kind": "gate", "from": sha[:12], "lanes": ",".join(tags)}, "base-red", why + "."))
     return "base-red"
@@ -1642,11 +1647,11 @@ def shared_wait(repo, ids, pr, notes, lanes, seen, post, labels):
             seen["bases"][base_ref, lane] = base_lane(repo, base_ref, lane)
     said = head_rows(notes, sha, "shared")
     # A lane this head's comment called shared stays so once its burst's heads have moved on.
-    told = dict(item.partition(":")[::2] for row in said for item in (row.get("lanes") or "").split(",") if item)
+    told = dict(item.partition(":")[::2] for item in lane_items(said))
     found = {lane: shared_red(seen["records"], seen["heads"], sha, lane, seen["bases"][base_ref, lane]) for lane in lanes}
     # Invariant: a lane a base-red row named reads shared once that base is green, so the head reruns once; red again,
     # it takes today's path, so a red base holds a head's own red for the base's red time and one rerun at most.
-    based = {item.split("#")[0] for row in head_rows(notes, sha, "base-red") for item in (row.get("lanes") or "").split(",") if item}
+    based = {item.split("#")[0] for item in lane_items(head_rows(notes, sha, "base-red"))}
     found = {lane: {} if got is None and lane in told else {"how": "based", "passed": True}
              if got is None and lane in based and seen["bases"][base_ref, lane] == "success" else got for lane, got in found.items()}
     # Invariant: one red lane of the head's own makes every lane its own, so a shared lane never hides it.
