@@ -5,6 +5,9 @@ ledger~: TUI | the console opens a folded thought beside the chat on a press | i
 ledger~: TUI | drive::pressing_a_folded_thought_opens_it_beside_the_chat | drive::pressing_a_folded_thought_opens_it_in_place
 raise: tests +64, crate tui +12
 shares: #2372 this changes two lines of the thought paragraph near line 1361 of docs/YI_DESIGN.md, 450 lines below the subagent section that pull request adds to
+shares: #2387 in crates/tui/src/app.rs and port.rs this changes one import and the one call that builds a tool card's head, lines that pull request leaves alone; in docs/YI_DESIGN.md its lines are 12 and 1248, these are 1361 and 1362
+shares: #2378 the same two lines of docs/YI_DESIGN.md, far below the subagent section that pull request changes
+shares: #2377 the same two lines of docs/YI_DESIGN.md, far below the subagent section that pull request changes
 shares: #2375 the same two lines, 450 lines below the subagent section that pull request adds to
 cut: none crates/tui/src/cell.rs
 cut: none crates/tui/tests/cards.rs
