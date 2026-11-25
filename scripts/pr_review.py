@@ -184,7 +184,8 @@ def parse_round(comment, authors, pr=None):
         findings = json.loads(found.group(1).replace("--\\u003e", "-->")) if found else []
     except json.JSONDecodeError:
         findings = []
-    r = {"n": int(key.group(1)), "id": comment.get("id", 0), "findings": findings, **fields}
+    r = {"n": int(key.group(1)), "id": comment.get("id", 0), "findings": findings, **fields, "at": comment.get("created_at") or "",
+         "edited": comment["updated_at"] if comment.get("updated_at") not in (None, comment.get("created_at")) else None}
     # Incident: one refuter seat in 141 of 388 rounds counted as an unread head, so every lens read it
     # again. A lens read the head whatever its refuters did; only a lost lens left part of it unread.
     lost = LOST_ANSWERS.search(comment.get("body") or "")
@@ -212,10 +213,11 @@ def attempt_notes(body):
 
 def rounds_of(comments, authors, pr=None):
     """The rounds in order, each blocked one that an allowed `/override` answered before the
-    next round was posted read as `override`."""
+    next round was posted read as `override`. Invariant: an override answers only what the round showed when it was
+    written, so it comes after the round's newest comment and after that comment's last edit by the forge's clock."""
     rounds = newest_per_round(sorted((r for r in (parse_round(c, authors, pr) for c in comments) if r), key=lambda r: (r["n"], r["id"])))
     for r, later in zip(rounds, rounds[1:] + [None]):
-        reason = override_of(comments, authors, r["posted"], later["posted"] if later else None)
+        reason = override_of(comments, authors, r["id"], later["posted"] if later else None, r["edited"])
         if r["verdict"] == "blocked" and reason:
             r.update(verdict="override", override=reason)
     return rounds
@@ -223,7 +225,7 @@ def rounds_of(comments, authors, pr=None):
 
 def newest_per_round(every):
     """Invariant: the newest comment for a round number is that round, an older one an attempt it finished;
-    `posted` is the first comment's id, from which an `/override` answers it."""
+    `posted` is the first comment's id, where the round began."""
     first = {}
     for r in every:
         first.setdefault(r["n"], r["id"])
@@ -245,11 +247,13 @@ def attempts_of(comments, authors, pr=None):
     return sorted(rounds + voided, key=lambda a: a["id"])
 
 
-def override_of(comments, authors, after_id, before_id=None):
-    """The owner's `/override <reason>` posted after the round it clears, newest first."""
+def override_of(comments, authors, after_id, before_id=None, after_at=None):
+    """The owner's `/override <reason>` posted after the round it clears, and after `after_at` (an edit), newest first."""
     for comment in sorted(comments, key=lambda c: -c.get("id", 0)):
         cid = comment.get("id", 0)
         if cid <= after_id or (before_id and cid >= before_id) or (comment.get("user") or {}).get("login") not in authors:
+            continue
+        if after_at and when(comment.get("created_at")) <= when(after_at):
             continue
         # Only a first line: an `/override` quoted in a fence or a pasted transcript is text.
         found = OVERRIDE.match((comment.get("body") or "").split("\n", 1)[0])
@@ -1020,12 +1024,25 @@ def intake_of(repo, pr):
 
 
 def unfinished(rounds, attempts, head, holds=on_head):
-    """The newest round when it read part of this head and a re-read still owes it named lenses: that re-read
-    finishes it in place, its findings standing as they are, with no refuter paid for again. Incident: #1888's
-    one-lens retry also sent five carried mediums through three refuters each, which is 15 of its 16 calls, and
-    #2074's retry posted as round 2, so the SETTLE count moved on a read nobody finished."""
+    """The newest round when it read part of this head and a re-read still owes it named lenses: its findings stand
+    as they are, with no refuter paid for again. Incident: #1888's one-lens retry also sent five carried mediums
+    through three refuters each, which is 15 of its 16 calls."""
     last = rounds[-1] if rounds else None
     return last if last and holds(last["sha"], head) and lost_attempt(last) and owed(attempts, head, holds) else None
+
+
+def acted_on(notes, allowed, rnd, message, number):
+    """Whether anyone answered round `rnd` since its first comment: an `/override`, a fixer comment, or a head commit
+    the fixer signed for it. Incident: an override written to unstick a partial round covered a high its re-read
+    added in place, which nobody had seen; and the fixer's declined row for that round went stale."""
+    return bool(override_of(notes, allowed, rnd["posted"]) or answered(message, rnd["n"], number)
+                or any(r["kind"] == "yi-autofix" and r["id"] > rnd["posted"] for r in bot_meter.rows(notes)))
+
+
+def same_findings(found, rnd):
+    """Whether a re-read left the round's findings exactly as its first attempt posted them."""
+    key = lambda fs: sorted(json.dumps(f, sort_keys=True) for f in fs)
+    return key(found) == key(rnd["findings"])
 
 
 def lost_only(probes, attempts, head, holds=on_head):
@@ -1043,8 +1060,8 @@ def read_pr(repo, number, allowed):
     notes = comments(repo, number, forge_pr.FORGE_SECS)
     rounds, sha = rounds_of(notes, allowed, number), pr["head"]["sha"]
     holds, attempts = holds_for(number, pr["base"]["ref"]), attempts_of(notes, allowed, number)
-    finish = unfinished(rounds, attempts, sha, holds)
-    inherit = [f for f in finish["findings"] if f.get("severity") in REPORTED and f.get("lens") not in INTAKE] if finish else []
+    retry = unfinished(rounds, attempts, sha, holds)
+    inherit = [f for f in retry["findings"] if f.get("severity") in REPORTED and f.get("lens") not in INTAKE] if retry else []
     with checked_out(sha, f"refs/pull/{number}/head") as tree:
         git = functools.partial(forge_pr.git, timeout=forge_pr.GIT_SECS)
         git("fetch", "-q", "origin", pr["base"]["ref"])
@@ -1072,10 +1089,16 @@ def read_pr(repo, number, allowed):
         else:
             kept, dropped, outside, unanswered, cleared = read_round(
                 pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING, until=JOB_ENDS),
-                load_probes(), full_read=base == merge_base, own=own, carry=[] if finish else carried(rounds, mine),
+                load_probes(), full_read=base == merge_base, own=own, carry=[] if retry else carried(rounds, mine),
                 fix_note=fix_note, memory=earlier(rounds), narrow=lambda fit: lost_only(fit, attempts, sha, holds), intent=intent)
     # Invariant: a refuter the first attempt lost stays named, as its finding stands unverified until a new head is read.
-    unanswered += [who for who in (finish or {}).get("unanswered", []) if not who.endswith(" lens")]
+    unanswered += [who for who in (retry or {}).get("unanswered", []) if not who.endswith(" lens")]
+    # Invariant: a round is finished in its own comment only when that changes nothing anyone has acted on;
+    # otherwise the re-read is the next round, which no earlier `/override` or fixer row reaches.
+    in_place = retry and not acted_on(notes, allowed, retry, message, number) and same_findings(found + inherit + kept, retry)
+    finish = {**retry, "seen": next(c.get("body") for c in notes if c.get("id") == retry["id"])} if in_place else None
+    if retry and not in_place:
+        inherit = [{**f, "since": f.get("since") or retry["n"]} for f in inherit]
     return {"pr": pr, "n": finish["n"] if finish else rounds[-1]["n"] + 1 if rounds else 1, "sha": sha, "base": base,
             "intake": found, "kept": inherit + kept, "dropped": dropped, "outside": outside, "finish": finish,
             "attempt": 1 + sum(1 for a in attempts if holds(a["sha"], sha)),
@@ -1118,8 +1141,9 @@ def cmd_review(args):
         if not runs_past(why or over, attempts, pr["head"]["sha"], holds, args.dry_run, getattr(args, "again", False)):
             print(f"#{number}: no round — {why or over}")
             if over and not any((c.get("body") or "").startswith(CAPPED) for c in listed):
-                forge_pr.comment(number, cap_note(over), forge_pr.FORGE_SECS)
-            return 1 if over else 0
+                written(lambda: forge_pr.comment(number, cap_note(over), forge_pr.FORGE_SECS))
+            # Invariant: the cap never turns the review check red; its notice and the queue's state stop the merge.
+            return 0
         twin = rounds[-1] if rounds and twin_round(rounds[-1]) and rounds[-1]["verdict"] != "override" else None
         if twin and not args.dry_run:
             try:
@@ -1133,17 +1157,20 @@ def cmd_review(args):
         global METER
         METER = bot_meter.Meter()
         notes = comments(repo, number, forge_pr.FORGE_SECS)
+        # Invariant: the totals are read before any model is paid, so a forge timeout here costs nothing.
+        pr_base, day_base = bot_meter.totals(repo, notes, bot_meter.Meter(), forge_pr.FORGE_SECS) if not args.dry_run else (0.0, 0.0)
         try:
             read = read_pr(repo, number, allowed)
         except Unanswered as err:
             print(f"#{number}: no round — a lens or refuter did not answer ({err})")
             # Incident: voided rounds spent money and posted nothing, so no total counted them.
             if not args.dry_run:
-                pr_total, day_total = bot_meter.totals(repo, notes, METER, forge_pr.FORGE_SECS)
-                forge_pr.comment(number, void_body(number, pr["head"]["sha"], err, pr_total, day_total), forge_pr.FORGE_SECS)
+                void = void_body(number, pr["head"]["sha"], err, pr_base + METER.cost, day_base + METER.cost)
+                if not (written(lambda: forge_pr.comment(number, void, forge_pr.FORGE_SECS)) or {}).get("id"):
+                    print(f"#{number}: the forge refused the void; its spend is only in this log:\n{void.splitlines()[1]}")
             return 1
         n, sha, base, findings, dropped = read["n"], read["sha"], read["base"], read["intake"] + read["kept"], read["dropped"]
-        pr_total, day_total = bot_meter.totals(repo, notes, METER, forge_pr.FORGE_SECS) if not args.dry_run else (METER.cost, METER.cost)
+        pr_total, day_total = pr_base + METER.cost, day_base + METER.cost
         finish = read["finish"]
 
         def posted(meter):
@@ -1163,13 +1190,18 @@ def cmd_review(args):
         import forgejo_pr_comment
 
         if finish:
-            answer, beside = finish_round(repo, number, finish, body, own)
-            status = own_status if beside else status
+            answer, how = finish_round(repo, number, finish, body, own)
+            if how == "raced":
+                print(f"#{number}: round {n} changed while this attempt read it, so nothing is posted; this attempt's spend "
+                      f"is only in this log:\n{own.splitlines()[1]}")
+                return 0
+            status = own_status if how == "beside" else status
         else:
-            answer = forgejo_pr_comment.upsert(lambda m, url, p: forge_pr.fgj_api(m, url.split("/api/v1/", 1)[-1], p, timeout=forge_pr.FORGE_SECS),
-                                               f"{forge_pr.WEB}/api/v1", repo, number, body)
+            answer = written(lambda: forgejo_pr_comment.upsert(
+                lambda m, url, p: forge_pr.fgj_api(m, url.split("/api/v1/", 1)[-1], p, timeout=forge_pr.FORGE_SECS),
+                f"{forge_pr.WEB}/api/v1", repo, number, body))
         if not (answer or {}).get("id"):
-            print(f"#{number}: the forge refused the round: {(answer or {}).get('message')}")
+            print(f"#{number}: the forge refused the round: {(answer or {}).get('message')}; its spend is only in this log:\n{own.splitlines()[1]}")
             return 1
         promote(repo, pr, rounds_of(comments(repo, number, forge_pr.FORGE_SECS), allowed, number))
     said = verdict(findings, None, n, read["unanswered"])
@@ -1184,14 +1216,41 @@ CAP_REVIEW, CAPPED = 8.0, "<!-- yi-review-capped -->"
 
 
 def finish_round(repo, number, finish, merged, own):
-    """(the forge's answer, whether it was posted beside): the round edited in place with every attempt's spend,
-    or, refused, posted as a new comment with the same number and only this attempt's spend. Incident: rounds from
-    the owner's Mac are authored by `jack`, which the bot may not edit, and a retry posted as n+1 moved SETTLE."""
-    answer = forge_pr.fgj_api("PATCH", f"repos/{repo}/issues/comments/{finish['id']}", {"body": merged}, timeout=forge_pr.FORGE_SECS)
+    """(the forge's answer, how): `edited`, the round in place with every attempt's spend; `beside`, refused, a new
+    comment with the same number and only this attempt's spend; `raced`, nothing, since the round changed while this
+    attempt read it; `unread`, nothing, the forge would not serve it. Incident: rounds from the owner's Mac are
+    authored by `jack`, which the bot may not edit."""
+    url = f"repos/{repo}/issues/comments/{finish['id']}"
+    # Invariant: the sweep and the PR's own job can finish one round at once; the later edit would drop the earlier's.
+    now = written(lambda: forge_pr.fgj_api("GET", url, timeout=forge_pr.FORGE_SECS))
+    if not (now or {}).get("id"):
+        return now, "unread"
+    if now.get("body") != finish["seen"]:
+        return None, "raced"
+    answer = written(lambda: forge_pr.fgj_api("PATCH", url, {"body": merged}, timeout=forge_pr.FORGE_SECS))
     if (answer or {}).get("id"):
-        return answer, False
+        return answer, "edited"
     print(f"#{number}: the forge refused to finish round {finish['n']} in place ({(answer or {}).get('message')}); posting it beside")
-    return forge_pr.comment(number, own, forge_pr.FORGE_SECS), True
+    return written(lambda: forge_pr.comment(number, own, forge_pr.FORGE_SECS)), "beside"
+
+
+POST_TRIES, POST_PAUSE = 3, 5
+
+
+def written(call):
+    """The forge's answer to a write, tried POST_TRIES times POST_PAUSE seconds apart; an answer with no `id` after
+    the last is its refusal. Incident: a timeout on a post after the lenses were paid dropped the round and its spend."""
+    answer = None
+    for k in range(POST_TRIES):
+        try:
+            answer = call()
+        except subprocess.TimeoutExpired as err:
+            answer = {"message": f"timed out after {err.timeout}s"}
+        if (answer or {}).get("id"):
+            return answer
+        if k + 1 < POST_TRIES:
+            time.sleep(POST_PAUSE)
+    return answer
 
 
 def cap_note(why):
@@ -1338,10 +1397,11 @@ def per_pr(number, act):
         return None
 
 
-def owes_lens(attempts, head):
-    """A head whose newest round lost lenses a re-read still owes, within RETRIES: the one case a ready PR is swept."""
+def owes_lens(attempts, head, holds=on_head):
+    """A head whose newest round lost lenses a re-read still owes, within RETRIES: the one case a ready PR is swept.
+    `holds` is the review job's own (`holds_for`), so a head that only merged main since is still owed."""
     rounds = [a for a in attempts if a["kind"] == "round"]
-    return bool(owed(attempts, head)) and skip_reason(rounds, head, attempts=attempts) is None
+    return bool(owed(attempts, head, holds)) and skip_reason(rounds, head, holds, attempts) is None
 
 
 def cmd_sweep(args):
@@ -1364,7 +1424,8 @@ def cmd_sweep(args):
         if pr["title"].startswith(DRAFT):
             due = not promote(repo, pr, rounds) and skip_reason(rounds, pr["head"]["sha"], attempts=attempts) is None
         else:
-            due = owes_lens(attempts, pr["head"]["sha"])
+            lost = bool(rounds) and lost_attempt(rounds[-1])
+            due = lost and owes_lens(attempts, pr["head"]["sha"], holds_for(pr["number"], pr["base"]["ref"]))
         # Invariant: a head whose own review job still shows `pending` is being read; the sweep reading it
         # too is a second full round that the first has not yet recorded.
         return due and review_cap(listed) is None and forge_pr.jobs_of(pr, forge_pr.FORGE_SECS).get("review") != "pending"
@@ -1381,10 +1442,10 @@ def cmd_sweep(args):
     return 0
 
 
-def sweep_heads(listing, notes=None, patched=None, running=(), broken=()):
+def sweep_heads(listing, notes=None, patched=None, running=(), broken=(), holds=on_head):
     """The PR numbers `cmd_sweep` reads off `listing`, served page by page as the forge serves it;
     `patched` collects the URLs it takes a draft out with, `running` the PRs whose review job is pending,
-    `broken` the PRs whose comments the forge will not list."""
+    `broken` the PRs whose comments the forge will not list, `holds` what `holds_for` answers."""
     patched = [] if patched is None else patched
     got, saved = [], (forge_pr.fgj_api, forge_pr.repo, forge_pr.jobs_of, comments, holds_for, cmd_review, authors)
     notes = notes or {}
@@ -1404,7 +1465,7 @@ def sweep_heads(listing, notes=None, patched=None, running=(), broken=()):
             if n in broken:
                 raise Unanswered(f"#{n}: the forge did not list the comments")
             return notes.get(n, [])
-        globals().update(comments=listed, holds_for=lambda n, base: on_head,
+        globals().update(comments=listed, holds_for=lambda n, base: holds,
                          cmd_review=lambda a: got.append(a.number), authors=lambda: {BOT})
         assert cmd_sweep(None) == 0
     finally:
@@ -1434,15 +1495,24 @@ VOID_1888 = ("<!-- yi-round-void -->\n<!-- yi-round-void-meta pr=1888 sha=" + SH
 RECORDED = ROOT / "scripts/fixtures/review-rounds"
 
 
-def run_review(notes, head, lens=lambda prompt: {"findings": []}, again=False, number=7, refuse=()):
+def run_review(notes, head, lens=lambda prompt: {"findings": []}, again=False, number=7, refuse=(), message="", reread=lambda body: body, hang=0):
     """cmd_review on PR `number` at `head` over these comments, every forge and model call stubbed: (exit, the forge writes,
-    the lenses asked, what it printed)."""
+    the lenses asked, what it printed). `message` is the head commit's, `reread` what a comment reads as when fetched
+    alone, `hang` how many writes time out first."""
     writes, lenses, tree = [], [], pathlib.Path(tempfile.mkdtemp(prefix="yi-round-run-"))
+    (tree / "a.py").write_text("x = 1\n")
+    hung = [hang]
 
     def forge(method, url, payload=None, timeout=None):
         if method != "GET":
             writes.append((method, url, (payload or {}).get("body", "")))
+            if hung[0]:
+                hung[0] -= 1
+                raise subprocess.TimeoutExpired(["fgj"], timeout)
             return {"message": "403 Forbidden"} if method in refuse else {"id": 10 ** 9, "number": number}
+        alone = re.search(r"issues/comments/(\d+)$", url)
+        if alone:
+            return next((dict(c, body=reread(c["body"])) for c in notes if str(c["id"]) == alone.group(1) and reread(c["body"]) is not None), None)
         return list(notes) if url.split("?")[0].endswith(f"issues/{number}/comments") else []
 
     def ask_(prompt, schema, cwd, **_):
@@ -1454,13 +1524,13 @@ def run_review(notes, head, lens=lambda prompt: {"findings": []}, again=False, n
     pr = {"number": number, "title": "t", "body": "", "head": {"sha": head}, "base": {"ref": "main"}}
     stubs = {"comments": lambda repo, n, timeout=None: list(notes), "authors": lambda: {BOT, "jack"}, "holds_for": lambda n, base: on_head,
              "intake_of": lambda repo, pr: [], "checked_out": lambda sha, ref: contextlib.nullcontext(tree), "ask": ask_,
-             "held": lambda n: contextlib.nullcontext(True)}
+             "held": lambda n: contextlib.nullcontext(True), "POST_PAUSE": 0}
     saved, saved_forge = {k: globals()[k] for k in stubs}, (forge_pr.fgj_api, forge_pr.repo, forge_pr.pull_number, forge_pr.pull, forge_pr.git)
     said = io.StringIO()
     try:
         globals().update(stubs)
         forge_pr.fgj_api, forge_pr.repo, forge_pr.pull_number, forge_pr.pull = forge, (lambda: "o/r"), (lambda arg: number), (lambda n, timeout=None: pr)
-        forge_pr.git = lambda *a, **k: "+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n" if a[0] == "diff" else "m" * 40 if a[0] == "merge-base" else ""
+        forge_pr.git = lambda *a, **k: "+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n" if a[0] == "diff" else "m" * 40 if a[0] == "merge-base" else message if a[0] == "log" else ""
         with contextlib.redirect_stdout(said):
             code = cmd_review(argparse.Namespace(number=number, dry_run=False, again=again))
         return code, writes, lenses, said.getvalue()
@@ -1500,6 +1570,97 @@ def finished_cases(lost, notes, head, r1):
     return bad
 
 
+def applied(notes, writes, refuse=()):
+    """The comments as the forge holds them after `run_review`'s writes landed: a POST appended, a PATCH in place."""
+    out = list(notes)
+    for k, (method, url, body) in enumerate(writes):
+        if method == "POST":
+            out.append({"id": 10 ** 9 + k, "user": {"login": BOT}, "body": body})
+        elif method == "PATCH" and method not in refuse:
+            out = [dict(c, body=body) if url.endswith(f"comments/{c['id']}") else c for c in out]
+    return out
+
+
+def acted_cases(notes, head):
+    """#2074's partial round 2 with something answered after it: the re-read is round 3, never round 2 edited in place,
+    so neither an `/override` nor the fixer's row for round 2 reaches what the re-read found."""
+    bad, who = [], {BOT, "jack"}
+    acted = json.loads((RECORDED / "acted.json").read_text())
+    after = lambda c, k: dict(c, id=notes[1]["id"] + k, body=c["body"].replace("pr=2256 ", "pr=7 "))
+    over, declined = after(acted["override"], 1), after(acted["declined"], 1)
+    high = lambda prompt: {"findings": [{"severity": "high", "claim": "unseen high", "path": "a.py", "line": 1, "quote": "x = 1"}]}
+    # The review's finding 1: an /override written to unstick the partial round, then a re-read whose lens finds a high.
+    for refuse in ((), ("PATCH",)):
+        code, writes, lenses, out = run_review(notes + [over], head, lens=high, again=True, refuse=refuse)
+        rounds = rounds_of(applied(notes + [over], writes, refuse), who, 7)
+        if any(w[0] == "PATCH" for w in writes) or rounds[-1]["n"] != 3 or rounds[-1]["verdict"] != "blocked" or not ready_problems(rounds, head):
+            bad.append(f"override: an /override before the re-read covered the high it found ({'refused edit' if refuse else 'in place'}): "
+                       f"{[w[:2] for w in writes]} round {rounds[-1]['n']} reads {rounds[-1]['verdict']}")
+    for why, extra, message in (("an /override", [over], ""), ("a fixer comment", [declined], ""),
+                                ("a fixer commit", [], "Answer the review\n\nFixes review round 2 on #7.\n")):
+        code, writes, lenses, out = run_review(notes + extra, head, message=message)
+        if any(w[0] == "PATCH" for w in writes) or rounds_of(applied(notes + extra, writes), who, 7)[-1]["n"] != 3:
+            bad.append(f"acted: {why} after round 2 and the re-read still edited round 2: {[w[:2] for w in writes]}")
+    code, writes, lenses, out = run_review(notes, head, lens=high)
+    rounds = rounds_of(applied(notes, writes), who, 7)
+    if any(w[0] == "PATCH" for w in writes) or [r["n"] for r in rounds] != [1, 2, 3] or rounds[1]["verdict"] != "clean" or rounds[2]["verdict"] != "blocked":
+        bad.append(f"new finding: a re-read that found a high edited round 2 instead of posting round 3: {[w[:2] for w in writes]}")
+    # #2124's round 4 holds three mediums; round 5 carries each as open since its round, so a medium past SETTLE still holds.
+    r4 = json.loads((RECORDED / "lost_lens.json").read_text())["2124"][0]
+    r4 = dict(r4, body=r4["body"].replace("pr=2124 ", "pr=7 "))
+    code, writes, lenses, out = run_review([r4], parse_round(r4, who, 7)["sha"], lens=high)
+    five = rounds_of(applied([r4], writes), who, 7)[-1]
+    if five["n"] != 5 or not all(f.get("since") for f in five["findings"] if f["severity"] == "medium") or len(holding(five)) < 4:
+        bad.append(f"new finding: round 5 dropped round 4's mediums or their age: {[(f['severity'], f.get('since')) for f in five['findings']]}")
+    return bad
+
+
+def window_cases(notes, head):
+    """An `/override` answers only what a round showed when it was written: never a beside comment posted after it, and
+    never what an edit added after it by the forge's own clock (`updated_at`)."""
+    bad, who = [], {BOT, "jack"}
+    over = json.loads((RECORDED / "acted.json").read_text())["override"]
+    finding = {"lens": "reuse", "severity": "high", "claim": "unseen high", "path": "a.py", "line": 1, "quote": "x = 1"}
+    blocked = render(2, 7, head, "m" * 40, [finding], 0, None, MODE)
+    r2 = dict(notes[1], created_at="2026-11-07T21:27:29Z", updated_at="2026-11-07T22:00:00Z", body=blocked)
+    for at, want in (("2026-11-07T21:40:00Z", "blocked"), ("2026-11-07T22:00:00Z", "blocked"), ("2026-11-07T22:10:00Z", "override")):
+        got = rounds_of([notes[0], r2, dict(over, id=r2["id"] + 1, created_at=at)], who, 7)[-1]["verdict"]
+        if got != want:
+            bad.append(f"window: an /override at {at[11:16]} on a round edited at 22:00 reads {got}, not {want}")
+    jack_r2 = dict(notes[1], user={"login": "jack"})
+    beside = {"id": notes[1]["id"] + 2, "user": {"login": BOT}, "body": blocked}
+    if (got := rounds_of([notes[0], jack_r2, dict(over, id=notes[1]["id"] + 1), beside], who, 7)[-1]["verdict"]) != "blocked":
+        bad.append(f"window: an /override before round 2's beside comment covered its high: {got}")
+    return bad
+
+
+def written_cases(notes, head):
+    """What a re-read does when the forge moves under it, each once the lenses were paid."""
+    bad = []
+    code, writes, lenses, out = run_review(notes, head, reread=lambda body: body + "\nedited by the other finisher")
+    if writes or code or "yi-round-meta" not in out:
+        bad.append(f"race: a round another finisher changed was edited over, or its spend left no line: exit {code} {[w[:2] for w in writes]}")
+    code, writes, lenses, out = run_review(notes, head, reread=lambda body: None)
+    if writes or code != 1 or "yi-round-meta" not in out:
+        bad.append(f"race: a round the forge would not serve again read as raced, or as edited: exit {code} {[w[:2] for w in writes]}")
+    for hang, want in ((2, 0), (3, 1)):
+        try:
+            code, writes, lenses, out = run_review([], "a" * 40, hang=hang)
+        except subprocess.TimeoutExpired as err:
+            code, writes, out = f"raised {err!r}", [], ""
+        if code != want or len([w for w in writes if w[0] == "POST"]) != 3 or (want and "yi-round-meta" not in out):
+            bad.append(f"post: {hang} timed-out post(s) of a paid round exit {code}, not {want}: {[w[:2] for w in writes]}")
+    def lose(prompt):
+        if " as its reuse lens" in prompt:
+            raise Unanswered("timed out")
+        return {"findings": []}
+
+    code, writes, lenses, out = run_review([], "b" * 40, lens=lose)
+    if "#7 round 1: partial" not in out or code:
+        bad.append(f"partial: a first round that lost the reuse lens printed {out.strip().splitlines()[-2:]} and exit {code}")
+    return bad
+
+
 def honest_cases():
     """The rules that keep a partial read from reading clean and a lost lens from costing a round, each case on
     recorded comments; a failure names its rule, so the refute pass can tell which one a disabled rule broke."""
@@ -1535,15 +1696,33 @@ def honest_cases():
         tries = attempts_of([notes[0], {"id": r2["id"], "user": {"login": BOT}, "body": patched[0][2]}], {BOT}, 7)
         if len(tries) != 3:
             bad.append(f"tries: a round finished in place on its second try counts {len(tries)} attempt(s) on the head, not 3")
-    bad += finished_cases(lost, notes, head, r1)
+    bad += finished_cases(lost, notes, head, r1) + acted_cases(notes, head) + window_cases(notes, head) + written_cases(notes, head)
+    # #1888's round 3 lost three refuters and its tests lens; the finished round still names the refuters it lost.
+    old = [{"id": 37998, "user": {"login": BOT}, "created_at": "2026-11-06T23:50:43Z", "body": ROUND_1888.replace("pr=1888 ", "pr=7 ")}]
+    patched = next((w[2] for w in run_review(old, SHA_1888)[1] if w[0] == "PATCH"), "")
+    if not (LOST_ANSWERS.search(patched) and "refuter on intent finding at justfile:58" in LOST_ANSWERS.search(patched).group(1)):
+        bad.append(f"in place: the finished round dropped the refuters its first attempt lost: {patched[:80]!r}")
     tried = lambda body: "\n".join(line[:-4] + " tries=2 -->" if ROUND_META.match(line) else line for line in body.splitlines())
     code, writes, lenses, out = run_review([notes[0], dict(notes[1], body=tried(notes[1]["body"]))], head)
+    # A clean round on a draft head whose undraft the forge refused: the sweep is told it stayed a draft.
+    draft_pr = {"number": 8, "title": DRAFT + "t", "head": {"sha": "abc1234ff"}, "base": {"ref": "main"}}
+    clean_round = parse_round({"id": 9, "user": {"login": BOT}, "body": render(1, 8, "abc1234", "base000", [], 0, None, MODE)}, {BOT}, 8)
+    with mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: {"message": "403 Forbidden"}), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            mock.patch.object(forge_pr, "jobs_of", lambda pr, timeout=None: dict.fromkeys(GATE_LANES, "success")), \
+            mock.patch.dict(globals(), {"holds_for": lambda n, base: on_head}), contextlib.redirect_stdout(io.StringIO()):
+        if promote("o/r", draft_pr, [clean_round]):
+            bad.append("undraft: a draft the forge refused to take out of draft read as promoted")
     if lenses or "attempt(s)" not in out:
         bad.append(f"tries: a head past its retries was read again: {lenses} {out.strip()[-120:]!r}")
     # A ready PR whose last round lost a lens is swept, since no draft rule reaches it; a ready one read whole is not.
     ready = lambda n, sha: {"number": n, "title": "t", "head": {"sha": sha, "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
     if sweep_heads([ready(7, head)], {7: notes}) != [7]:
         bad.append("ready sweep: a ready PR whose round lost a lens is never read again")
+    merged = "d" * 40
+    if sweep_heads([ready(7, merged)], {7: notes}, holds=lambda sha, h: on_head(sha, h) or h == merged) != [7]:
+        bad.append("ready sweep: a ready PR that only merged main since its round lost a lens is never read again")
+    if sweep_heads([ready(7, head)], {7: [notes[0], dict(notes[1], body=tried(notes[1]["body"]))]}) != []:
+        bad.append("ready sweep: a ready PR past its retries took a sweep slot")
     clean_note = {"id": 9, "user": {"login": BOT}, "body": render(1, 8, "abc1234", "base000", [], 0, None, MODE)}
     if sweep_heads([ready(8, "abc1234ff"), ready(9, "def5678ff")], {8: [clean_note]}) != []:
         bad.append("ready sweep: a ready PR read whole, or never read, became a sweep target")
@@ -1570,12 +1749,18 @@ def capped_cases(spend):
     over = run_review(spend[:14], "f" * 40, number=1694)
     if not under[2]:
         bad.append("cap: #1694 at $7.05 with a $0.54 mean round did not run")
-    if over[2] or over[0] != 1 or [w[0] for w in over[1]] != ["POST"] or "$8.00" not in (over[1] or [("", "", "")])[0][2]:
+    between = run_review(spend[:13] + [spend[16]], "f" * 40, number=1694)
+    if between[2]:
+        bad.append("cap: #1694 at $7.67 with a $0.55 mean round ran, though one more passes $8.00")
+    if over[2] or over[0] != 0 or [w[0] for w in over[1]] != ["POST"] or "$8.00" not in (over[1] or [("", "", "")])[0][2]:
         bad.append(f"cap: #1694 at $9.42 ran or did not say so once: {over[2]} exit {over[0]} {[w[:2] for w in over[1]]}")
     elif run_review(spend[:14] + [{"id": 10 ** 9, "user": {"login": BOT}, "body": over[1][0][2]}], "f" * 40, number=1694)[1]:
         bad.append("cap: the cap's notice was posted a second time")
     if not run_review(spend[:14], "f" * 40, again=True, number=1694)[2]:
         bad.append("cap: a person's --again did not read past the cap")
+    draft = {"number": 1694, "title": DRAFT + "t", "head": {"sha": "f" * 40, "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
+    if sweep_heads([draft], {1694: spend[:14]}) != [] or sweep_heads([draft], {1694: spend[:13]}) != [1694]:
+        bad.append("cap: the sweep spent a slot on a PR past the cap, or none on one under it")
     return bad
 
 
@@ -1583,16 +1768,23 @@ def selfcheck():
     bad = honest_cases()
     real = verdict
     old_verdict = lambda findings, overridden, n, unanswered=(): real(findings, overridden, n) if holding({"n": n, "findings": findings}) else "clean"
-    for rule, name, off in (("partial", "verdict", old_verdict), ("in place", "unfinished", lambda *a, **k: None),
-                            ("tries", "tried_before", lambda r: []), ("ready sweep", "owes_lens", lambda *a: False),
-                            ("boundary", "per_pr", lambda number, act: act()), ("cap", "review_cap", lambda notes: None),
-                            ("beside", "finish_round", lambda repo, number, finish, merged, own: (forge_pr.fgj_api(
-                                "PATCH", f"repos/{repo}/issues/comments/{finish['id']}", {"body": merged}), False)),
-                            ("beside", "newest_per_round", lambda every: [{**r, "posted": r["id"]} for r in every]),
-                            ("notes", "attempt_notes", lambda body: [])):
-        with mock.patch.dict(globals(), {name: off}), contextlib.redirect_stdout(io.StringIO()):
+    real_override = override_of
+    edit_blind = lambda comments, authors, after_id, before_id=None, after_at=None: real_override(comments, authors, after_id, before_id)
+    unguarded = lambda repo, number, finish, merged, own: (forge_pr.fgj_api("PATCH", f"repos/{repo}/issues/comments/{finish['id']}", {"body": merged}), "edited")
+    for rule, offs in (("partial", {"verdict": old_verdict}), ("in place", {"unfinished": lambda *a, **k: None}),
+                       ("tries", {"tried_before": lambda r: []}), ("ready sweep", {"owes_lens": lambda *a: False}),
+                       ("boundary", {"per_pr": lambda number, act: act()}), ("cap", {"review_cap": lambda notes: None}),
+                       ("beside", {"finish_round": lambda repo, number, finish, merged, own: (forge_pr.fgj_api(
+                           "PATCH", f"repos/{repo}/issues/comments/{finish['id']}", {"body": merged}), "edited")}),
+                       ("beside", {"newest_per_round": lambda every: [{**r, "posted": r["id"]} for r in every]}),
+                       ("notes", {"attempt_notes": lambda body: []}), ("acted", {"acted_on": lambda *a: False}),
+                       ("new finding", {"same_findings": lambda found, rnd: True}),
+                       ("override", {"acted_on": lambda *a: False, "same_findings": lambda found, rnd: True}),
+                       ("window", {"override_of": edit_blind}), ("race", {"finish_round": unguarded}),
+                       ("post", {"written": lambda call: call()})):
+        with mock.patch.dict(globals(), offs), contextlib.redirect_stdout(io.StringIO()):
             if not any(b.startswith(f"{rule}:") for b in honest_cases()):
-                bad.append(f"refute: `{name}` disabled and every {rule} case still passes, so it refutes nothing")
+                bad.append(f"refute: `{', '.join(offs)}` disabled and every {rule} case still passes, so it refutes nothing")
     assert not bad, "\n".join(bad)
     # Incident: a fixer commit dropped `import fcntl` and every review round died on its lock;
     # nothing else here takes it, so this row does (`held` is also a local name below).

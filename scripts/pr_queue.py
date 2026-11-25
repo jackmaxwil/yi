@@ -1523,6 +1523,8 @@ STATE_CASES = (
     ("fixer working", dict(labels={"autofix:working"}, verdict="blocked")),
     ("lost answers, retries spent", dict(lost=True, retries_spent=True, verdict=None)),
     ("review capped", dict(capped=True, lost=True, verdict=None)),
+    ("clean, not queued", dict(capped=True)),
+    ("blocked round, ready", dict(capped=True, verdict="blocked")),
     ("blocked round, queued", dict(labels={"queue"}, verdict="blocked")),
     ("conflicted", dict(mergeable=False)),
     ("gate pending", dict(gate="pending")),
@@ -1555,6 +1557,26 @@ def state_cases(off=""):
     pr = {"number": 1694, "title": "t", "labels": [], "base": {"ref": "main"}, "head": {"sha": "f" * 40}, "updated_at": "2026-11-05T22:56:00Z"}
     if (got := state_of(facts(pr, spent[:14] + [notice], [], pr_review.on_head, {pr_review.BOT, "jack"}), off)[0]) != "review capped":
         bad.append(f"#1694 stopped at the review cap read {got}, not review capped")
+    return bad + capped_readers(spent[:14] + [notice], pr, off)
+
+
+def capped_readers(notes, pr, off=""):
+    """A capped head is not ready by any reader, its check green; a person's `--again` then reads by its own verdict."""
+    bad, who, head, green = [], {pr_review.BOT, "jack"}, pr["head"]["sha"], dict.fromkeys((*LANES, "title"), "success")
+    draft, writes = dict(pr, title=forge_pr.DRAFT + "t", state="open"), []
+    with mock.patch.object(pr_review, "comments", lambda repo, n, timeout=None: notes), mock.patch.object(pr_review, "authors", lambda: who), \
+            mock.patch.object(pr_review, "holds_for", lambda n, base: pr_review.on_head), mock.patch.object(forge_pr, "repo", lambda: "o/r"), \
+            mock.patch.object(forge_pr, "fgj_api", lambda *a, **k: writes.append(a) or {"number": 1}), \
+            mock.patch.object(forge_pr, "jobs_of", lambda pr, timeout=None: green), contextlib.redirect_stdout(io.StringIO()):
+        read = {"ready_problems": pr_review.ready_problems(pr_review.rounds_of(notes, who, 1694), head),
+                "promote": ["stays a draft"] if not pr_review.promote("o/r", draft, pr_review.rounds_of(notes, who, 1694)) and not writes else [],
+                "unreviewed": forge_pr.unreviewed(1694, pr), "eligible_problem": eligible_problem(dict(pr, state="open"), green)}
+    bad += [f"#1694 at the review cap reads ready by {name}" for name, said in read.items() if not said]
+    for verdict, findings, want in (("clean", [], "clean, not queued"), ("blocked", [{"lens": "reuse", "severity": "high", "claim": "c",
+                                                                                     "path": "a.py", "line": 1, "quote": "x = 1"}], "blocked round, ready")):
+        again = {"id": 10 ** 9 + 1, "user": {"login": pr_review.BOT}, "body": pr_review.render(15, 1694, head, "b" * 40, findings, 0, None, pr_review.MODE)}
+        if (got := state_of({**facts(pr, notes + [again], [], pr_review.on_head, who), "gate": "green"}, off)[0]) != want:
+            bad.append(f"#1694 capped, then a person's --again read {verdict}: reads {got}, not {want}")
     return bad
 
 
