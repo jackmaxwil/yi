@@ -18,7 +18,7 @@ import threading
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import BASE, ROOT, fail, is_public_mirror, may_skip, test_mask
+from _common import BASE, ROOT, fail, is_public_mirror, may_skip, scratch_repo, test_mask
 from check_public_surface import rule_lines, unscanned
 
 BASELINE = BASE / "scan.json"
@@ -38,6 +38,7 @@ _INSTALL_LOCK = threading.Lock()
 FIXTURES = ROOT / "scripts/scan/fixtures"
 RULES = ROOT / "scripts/scan/rules"
 SCAN_ROOTS = ("evals", "scripts", "python", "crates")
+EXCLUDED_TREES = ("scripts/scan/fixtures", "crates/**/tests")
 ZIZMOR_CASES = {
     "unpinned.yml": {"unpinned-uses", "artipacked"},
     "template-injection.yml": {"template-injection"},
@@ -160,25 +161,48 @@ def semgrep_args(paths, fixtures=False):
     args = ["scan", "--config", str(RULES / "semgrep"), "--json", "--metrics=off", "--disable-version-check",
             "--timeout", str(SEMGREP_TIMEOUT)]
     if not fixtures:
-        args += ["--exclude", "scripts/scan/fixtures", "--exclude", "crates/**/tests"]
+        args += [flag for tree in EXCLUDED_TREES for flag in ("--exclude", tree)]
     return [*args, *map(str, paths)]
 
 
-def scannable(paths, off=""):
+def scannable(paths):
     """Incident: `--fast` skipped every scanner, so a commit breaking a semgrep rule passed the hook and
-    failed on the forge. The files here are the ones the full scan would read, minus its excluded trees."""
-    keep = [p for p in paths if p.split("/", 1)[0] in SCAN_ROOTS and p.endswith((".py", ".rs"))
-            and not p.startswith("scripts/scan/fixtures/") and not fnmatch.fnmatch(p, "crates/*/tests/*")]
-    return list(paths) if off == "changed-filter" else keep
+    failed on the forge. Invariant: semgrep ignores `--exclude` for a path named as a target, so the exclusions apply here."""
+    return [p for p in paths if p.split("/", 1)[0] in SCAN_ROOTS and p.endswith((".py", ".rs"))
+            and not any(fnmatch.fnmatch(p, f"{tree}/*") for tree in EXCLUDED_TREES)]
 
 
-def changed_files():
-    base = "origin/main" if run(["git", "rev-parse", "--verify", "-q", "origin/main"]).returncode == 0 else "HEAD"
-    proc = subprocess.run(["git", "diff", "--name-only", "--diff-filter=ACMR", base], cwd=ROOT,
-                          capture_output=True, text=True, check=False, timeout=60)
+def changed_files(root=ROOT):
+    """Staged, unstaged and committed changes against origin/main, or HEAD when there is no origin/main."""
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, check=False, timeout=60)
+    base = "origin/main" if git("rev-parse", "--verify", "-q", "origin/main").returncode == 0 else "HEAD"
+    proc = git("diff", "-z", "--name-only", "--diff-filter=ACMR", base)
     if proc.returncode:
-        raise RuntimeError(f"git diff {base} failed: {proc.stderr.strip()}")
-    return [p for p in scannable(proc.stdout.split()) if (ROOT / p).is_file()]
+        raise RuntimeError(f"git diff {base} failed: {proc.stderr.decode(errors='replace').strip()}")
+    names = [name.decode("utf-8", "surrogateescape") for name in proc.stdout.split(b"\0") if name]
+    return [p for p in scannable(names) if (root / p).is_file()]
+
+
+def changed_files_errors():
+    odd = ("scripts/with space.py", "scripts/na\u00efve.py")
+    seed = {"scripts/kept.py": "a = 1\n", "crates/x/src/lib.rs": "fn a() {}\n", "docs/n.py": "a = 1\n",
+            "scripts/scan/fixtures/semgrep/f.py": "a = 1\n", "crates/x/tests/t.rs": "fn a() {}\n",
+            "scripts/gone.py": "a = 1\n", **{name: "a = 1\n" for name in odd}}
+    with scratch_repo("scan-changed-", seed) as (root, run):
+        git = lambda *args: run("git", "-c", "user.name=t", "-c", "user.email=t@t", *args)
+        git("update-ref", "refs/remotes/origin/main", "main")
+        for name in ("crates/x/src/lib.rs", "docs/n.py", "scripts/scan/fixtures/semgrep/f.py", "crates/x/tests/t.rs"):
+            (root / name).write_text("a = 2\n")
+        git("commit", "-qam", "committed")
+        (root / odd[0]).write_text("a = 2\n")
+        (root / odd[1]).write_text("a = 2\n")
+        git("add", odd[1])
+        (root / "scripts/kept.py").write_text("a = 2\n")
+        (root / "scripts/gone.py").unlink()
+        got = sorted(changed_files(root))
+    want = sorted(["crates/x/src/lib.rs", "scripts/kept.py", *odd])
+    return [] if got == want else [f"changed_files() returned {got}, want {want}"]
 
 
 def semgrep_errors(errors):
@@ -450,9 +474,6 @@ def selfcheck(off="", fixtures=None):
                 errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
-    if scannable(["scripts/scan/fixtures/semgrep/md5.py", "crates/tui/tests/a.rs", "docs/a.py", "scripts/a.py",
-                  "crates/tui/src/a.rs", "scripts/a.sh"], off) != ["scripts/a.py", "crates/tui/src/a.rs"]:
-        errors.append("the changed-file filter kept a fixture, a test tree, a doc or a non-source file")
     argv = semgrep_args(["scripts"])
     bound = argv[argv.index("--timeout") + 1] if off != "semgrep-timeout" else "0"
     if not bound.isdigit() or not int(bound):
@@ -696,12 +717,13 @@ def main(argv):
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for tool, (cases, _) in FAMILIES.items() if tool in fixtures
                   for rules in cases.values() for rule in rules}
-        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout", "uv-cache", "private-dest", "changed-filter"}
+        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout", "uv-cache", "private-dest"}
         if "gitleaks" in fixtures:
             checks |= {"history", "diff"}
         for off in sorted(checks):
             if not selfcheck(off, fixtures):
                 errors.append(f"selfcheck passes with the {off} check disabled")
+        errors += changed_files_errors()
         fail(errors, "scan selfcheck")
         return
     if args.changed:
