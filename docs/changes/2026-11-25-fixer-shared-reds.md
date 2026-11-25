@@ -1,4 +1,5 @@
 ---
+version: 0.1125.0
 cut: none scripts/pr_autofix.py
 cut: none scripts/pr_queue.py
 ---
