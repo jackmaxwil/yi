@@ -75,6 +75,8 @@ jobs:
           MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
           # `on` lets the pass watch the queue tick's job records after its work (pr_queue.heartbeat).
           QUEUE_ROWS: ${{ vars.QUEUE_ROWS }}
+          # `on` splits small findings fixes the streak floor sends up a tier by a coin per PR and round (pr_autofix.findings_tier).
+          FIXER_TIER_SPLIT: ${{ vars.FIXER_TIER_SPLIT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # The rounds the findings fixer answers: the bot's and the owner's, as the review job counts them.
           YI_ROUND_AUTHORS: yi-bot,jack
