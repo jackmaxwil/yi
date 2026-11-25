@@ -164,6 +164,23 @@ def semgrep_args(paths, fixtures=False):
     return [*args, *map(str, paths)]
 
 
+def scannable(paths, off=""):
+    """Incident: `--fast` skipped every scanner, so a commit breaking a semgrep rule passed the hook and
+    failed on the forge. The files here are the ones the full scan would read, minus its excluded trees."""
+    keep = [p for p in paths if p.split("/", 1)[0] in SCAN_ROOTS and p.endswith((".py", ".rs"))
+            and not p.startswith("scripts/scan/fixtures/") and not fnmatch.fnmatch(p, "crates/*/tests/*")]
+    return list(paths) if off == "changed-filter" else keep
+
+
+def changed_files():
+    base = "origin/main" if run(["git", "rev-parse", "--verify", "-q", "origin/main"]).returncode == 0 else "HEAD"
+    proc = subprocess.run(["git", "diff", "--name-only", "--diff-filter=ACMR", base], cwd=ROOT,
+                          capture_output=True, text=True, check=False, timeout=60)
+    if proc.returncode:
+        raise RuntimeError(f"git diff {base} failed: {proc.stderr.strip()}")
+    return [p for p in scannable(proc.stdout.split()) if (ROOT / p).is_file()]
+
+
 def semgrep_errors(errors):
     """A Timeout is one rule that ran out of its per-file budget, and it names the file it gave up on.
     Incident: `--timeout 0` left a slow file with no limit, so the guardrails lane hung with nothing naming it."""
@@ -433,6 +450,9 @@ def selfcheck(off="", fixtures=None):
                 errors.append(f"gitleaks rule {regex!r} is not a credential line in scripts/mirror/deny.txt")
     if not SUPPRESSION.search("uses: x/y@v1 # zizmor: ignore[unpinned-uses] mirror SHA is unverified"):
         errors.append("a same-line zizmor suppression was not counted")
+    if scannable(["scripts/scan/fixtures/semgrep/md5.py", "crates/tui/tests/a.rs", "docs/a.py", "scripts/a.py",
+                  "crates/tui/src/a.rs", "scripts/a.sh"], off) != ["scripts/a.py", "crates/tui/src/a.rs"]:
+        errors.append("the changed-file filter kept a fixture, a test tree, a doc or a non-source file")
     argv = semgrep_args(["scripts"])
     bound = argv[argv.index("--timeout") + 1] if off != "semgrep-timeout" else "0"
     if not bound.isdigit() or not int(bound):
@@ -654,6 +674,7 @@ def main(argv):
     parser.add_argument("--selfcheck", action="store_true")
     parser.add_argument("--update", action="store_true")
     parser.add_argument("--history", action="store_true")
+    parser.add_argument("--changed", action="store_true", help="semgrep only, over the files changed since origin/main")
     args = parser.parse_args(argv)
     strict = bool(os.environ.get("CI"))
     if args.selfcheck:
@@ -675,13 +696,22 @@ def main(argv):
         errors = selfcheck(fixtures=fixtures)
         checks = {rule for tool, (cases, _) in FAMILIES.items() if tool in fixtures
                   for rules in cases.values() for rule in rules}
-        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout", "uv-cache", "private-dest"}
+        checks |= {"baseline", "ignores", "update", "credentials", "provision", "semgrep-timeout", "uv-cache", "private-dest", "changed-filter"}
         if "gitleaks" in fixtures:
             checks |= {"history", "diff"}
         for off in sorted(checks):
             if not selfcheck(off, fixtures):
                 errors.append(f"selfcheck passes with the {off} check disabled")
         fail(errors, "scan selfcheck")
+        return
+    if args.changed:
+        files = changed_files()
+        if not files:
+            print("ok   scan --changed (no .py or .rs file changed)")
+            return
+        findings, tools = gather({"semgrep": lambda: semgrep(files)}, strict)
+        errors, _ = baseline_problems(findings, {key: n for key, n in load_baseline().items() if key[0] in tools})
+        fail(errors, f"scan --changed ({len(files)} files, {len(findings)} findings; gitleaks and zizmor run in the full lane)")
         return
     findings, tools = gather(normal_tasks(args.history), strict)
     if args.update:
