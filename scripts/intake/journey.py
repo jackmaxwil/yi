@@ -129,7 +129,9 @@ def repository(case: bridge.Case) -> tuple[pathlib.Path, str]:
 
 def commit_file(repo: pathlib.Path, text: str) -> str:
     (repo / "README").write_text(text)
-    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "move"], check=True, capture_output=True, env=dict(os.environ, GIT_COMMITTER_DATE="2026-10-28T00:00:00Z", GIT_AUTHOR_DATE="2026-10-28T00:00:00Z"))
+    # Incident: a root CI container has no git identity to guess, so this commit died with exit 128 on every postmerge.
+    who = {f"GIT_{role}_{part}": value for role in ("AUTHOR", "COMMITTER") for part, value in (("NAME", "yi-bot"), ("EMAIL", "yi-bot@localhost"), ("DATE", "2026-10-28T00:00:00Z"))}
+    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "move"], check=True, capture_output=True, env=dict(os.environ, **who))
     return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
 
 
