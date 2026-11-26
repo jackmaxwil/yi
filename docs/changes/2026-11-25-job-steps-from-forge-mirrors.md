@@ -1,4 +1,5 @@
 ---
+version: 0.1132.0
 cut: none scripts/guardrails/check_workflows.py
 cut: none .forgejo/workflows/postmerge.yml
 cut: none .forgejo/workflows/pr.yml
